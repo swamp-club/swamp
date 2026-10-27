@@ -216,6 +216,45 @@ Deno.test("PhaseTally.measure: a nested measurement is excluded from the outer o
   }
 });
 
+Deno.test("PhaseTally.measure: concurrent measurements each add their own time, whichever ends first", async () => {
+  let now = 0;
+  const original = performance.now;
+  performance.now = () => now;
+  try {
+    const tally = new PhaseTally(true);
+    const other = new PhaseTally(true);
+    const { promise: aDone, resolve: endA } = Promise.withResolvers<void>();
+    const { promise: bDone, resolve: endB } = Promise.withResolvers<void>();
+    const a = tally.measure("read", () => aDone);
+    now = 2;
+    const b = tally.measure("read", () => bDone);
+    now = 5;
+    endB();
+    await b;
+    now = 10;
+    endA();
+    await a;
+    // A later measurement has no stale parent to hide its time in.
+    await tally.measure("parse", async () => {
+      now += 4;
+      // Another tally's measurement is not nested in this one.
+      await other.measure("lookup", () => {
+        now += 3;
+        return Promise.resolve();
+      });
+    });
+    assertEquals(tally.attributes(), {
+      "swamp.diagnostic.read_work_ms": 13,
+      "swamp.diagnostic.parse_work_ms": 7,
+    });
+    assertEquals(other.attributes(), {
+      "swamp.diagnostic.lookup_work_ms": 3,
+    });
+  } finally {
+    performance.now = original;
+  }
+});
+
 Deno.test("PhaseTally: a tally that is not recording keeps nothing", async () => {
   const tally = new PhaseTally(false);
   tally.add("files");

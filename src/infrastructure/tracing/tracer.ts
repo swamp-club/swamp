@@ -21,6 +21,7 @@ import {
   type Attributes,
   type Context,
   context,
+  type Link,
   ROOT_CONTEXT,
   type Span,
   SpanKind,
@@ -37,7 +38,7 @@ const TRACER_NAME = "swamp";
  * `@opentelemetry/api` dependency.
  */
 export { SpanStatusCode };
-export type { Span };
+export type { Link, Span };
 
 /**
  * Returns the swamp tracer from the global tracer provider.
@@ -198,6 +199,16 @@ export function withActiveSpan<T>(span: Span, fn: () => T): T {
  */
 export function setActiveSpanAttributes(attributes: Attributes): void {
   trace.getActiveSpan()?.setAttributes(attributes);
+}
+
+/**
+ * A link to the active span, for a span that waits on work this one started
+ * (a shared read another request joined), or undefined when none is
+ * recording.
+ */
+export function activeSpanLink(): Link | undefined {
+  const span = trace.getActiveSpan();
+  return span?.isRecording() ? { context: span.spanContext() } : undefined;
 }
 
 /**

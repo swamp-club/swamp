@@ -29,7 +29,7 @@
  * history together in-process against a real temp repo.
  */
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
 import { Definition } from "../src/domain/definitions/definition.ts";
@@ -52,6 +52,14 @@ import {
 import type { WorkflowRunView } from "../src/libswamp/workflows/workflow_run_view.ts";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { withSpan } from "../src/infrastructure/tracing/mod.ts";
+import {
+  diagnosticPhases,
+  findSpan,
+  isChildOf,
+  withObservedSpans,
+} from "../src/infrastructure/tracing/span_test_helpers.ts";
+import type { ResourceReadPolicy } from "../src/domain/workflows/step_output_resolver.ts";
 
 await initializeLogging({});
 
@@ -290,5 +298,211 @@ Deno.test("step outputs: a resumed run reads earlier step outputs from the datas
     }
     assertEquals(resumed?.status, "succeeded");
     assertEquals(received, ["before-the-gate"]);
+  });
+});
+
+Deno.test("step outputs: resolution exports catalog_open and output_walk phases with read, authorization and child-run counts, and resolves the same with tracing on or off (swamp-club#4002)", async () => {
+  await withRepo(async (repo, dir) => {
+    await repo.workflowRepo.save(Workflow.create({
+      name: "child-flow",
+      jobs: [Job.create({
+        name: "main",
+        steps: [writeStep("write_record", "from-child")],
+      })],
+    }));
+    await repo.workflowRepo.save(Workflow.create({
+      name: "parent-flow",
+      jobs: [Job.create({
+        name: "main",
+        steps: [
+          writeStep("write_own", "from-parent"),
+          Step.create({ name: "child", task: StepTask.workflow("child-flow") }),
+        ],
+      })],
+    }));
+    const run = await (await service(repo, dir)).execute("parent-flow");
+    assertEquals(run.status, "succeeded", JSON.stringify(run.toData()));
+
+    const resolve = (canRead?: ResourceReadPolicy, signal?: AbortSignal) => {
+      const deps = createWorkflowHistoryGetDeps(
+        dir,
+        undefined,
+        repo.workflowRepo,
+        canRead,
+      );
+      return withSpan(
+        "swamp.workflow.step_outputs.resolve",
+        {},
+        () => deps.resolveStepOutputs(run, signal),
+      );
+    };
+    const allow = () => Promise.resolve(true);
+
+    // Tracing off: the reference result.
+    const untraced = await resolve(allow);
+    assertEquals(untraced.main.write_own.outputs, {
+      stdout: "from-parent",
+      exitCode: 0,
+    });
+
+    await withObservedSpans(async (spans) => {
+      assertEquals(await resolve(allow), untraced);
+      const outer = findSpan(spans, "swamp.workflow.step_outputs.resolve");
+      const [opening] = diagnosticPhases(spans, "catalog_open");
+      const [walk] = diagnosticPhases(spans, "output_walk");
+      assert(isChildOf(opening, outer));
+      assert(isChildOf(walk, outer));
+      const a = walk.attributes;
+      assertEquals(a["swamp.diagnostic.area"], "step_outputs");
+      assertEquals(a["swamp.diagnostic.result"], "completed");
+      assertEquals(a["swamp.outcome"], "ok");
+      assertEquals(a["swamp.diagnostic.cancel_observed"], undefined);
+      assertEquals(a["swamp.diagnostic.resources_attempted"], 2);
+      assertEquals(a["swamp.diagnostic.reads_succeeded"], 2);
+      assertEquals(a["swamp.diagnostic.reads_missing"], 0);
+      assertEquals(a["swamp.diagnostic.parse_failed"], 0);
+      assertEquals(a["swamp.diagnostic.authorize_allowed"], 2);
+      assertEquals(a["swamp.diagnostic.authorize_denied"], 0);
+      assertEquals(a["swamp.diagnostic.child_run_lookups"], 1);
+      assertEquals(a["swamp.diagnostic.child_runs_unique"], 1);
+      assertEquals(a["swamp.diagnostic.child_runs_missing"], 0);
+      assert((a["swamp.diagnostic.content_bytes"] as number) > 0);
+      for (
+        const work of [
+          "authorize",
+          "content_read",
+          "json_parse",
+          "child_run_lookup",
+          "assemble",
+        ]
+      ) {
+        assertEquals(typeof a[`swamp.diagnostic.${work}_work_ms`], "number");
+      }
+      assertEquals(outer.attributes["step_outputs.resources_read"], 2);
+      assertEquals(outer.attributes["step_outputs.resources_denied"], 0);
+      assertEquals(outer.attributes["step_outputs.child_runs_read"], 1);
+    });
+
+    // Denied: nothing is read, as before.
+    await withObservedSpans(async (spans) => {
+      const denied = await resolve(() => Promise.resolve(false));
+      assertEquals(denied.main.write_own.outputs, undefined);
+      const [walk] = diagnosticPhases(spans, "output_walk");
+      assertEquals(walk.attributes["swamp.diagnostic.authorize_denied"], 2);
+      assertEquals(walk.attributes["swamp.diagnostic.resources_attempted"], 0);
+      assertEquals(walk.attributes["swamp.diagnostic.reads_succeeded"], 0);
+      assertEquals(
+        findSpan(spans, "swamp.workflow.step_outputs.resolve")
+          .attributes["step_outputs.resources_denied"],
+        2,
+      );
+    });
+
+    // No read policy (the CLI): no authorization counters.
+    await withObservedSpans(async (spans) => {
+      assertEquals(await resolve(), untraced);
+      const [walk] = diagnosticPhases(spans, "output_walk");
+      assertEquals(
+        walk.attributes["swamp.diagnostic.authorize_allowed"],
+        undefined,
+      );
+      assertEquals(
+        walk.attributes["swamp.diagnostic.owner_lookups"],
+        undefined,
+      );
+      assertEquals(walk.attributes["swamp.diagnostic.resources_attempted"], 2);
+    });
+
+    // Cancelled before it starts: the walk ends cancelled with what it reached.
+    await withObservedSpans(async (spans) => {
+      const controller = new AbortController();
+      controller.abort();
+      await assertRejects(() => resolve(allow, controller.signal));
+      const [walk] = diagnosticPhases(spans, "output_walk");
+      assertEquals(walk.attributes["swamp.diagnostic.result"], "partial");
+      assertEquals(walk.attributes["swamp.outcome"], "cancelled");
+      assertEquals(walk.attributes["swamp.diagnostic.cancel_observed"], true);
+      assertEquals(walk.attributes["swamp.diagnostic.resources_attempted"], 0);
+      assertEquals(walk.attributes["swamp.diagnostic.child_runs_unique"], 0);
+      // The step outputs span keeps its counts on a failed resolve too.
+      assertEquals(
+        findSpan(spans, "swamp.workflow.step_outputs.resolve")
+          .attributes["step_outputs.resources_read"],
+        0,
+      );
+    });
+
+    // A failed authorization fails the walk with error, counted.
+    await withObservedSpans(async (spans) => {
+      await assertRejects(
+        () => resolve(() => Promise.reject(new Error("policy unavailable"))),
+        Error,
+        "policy unavailable",
+      );
+      const [walk] = diagnosticPhases(spans, "output_walk");
+      assertEquals(walk.attributes["swamp.outcome"], "error");
+      assertEquals(walk.attributes["swamp.diagnostic.result"], "partial");
+      assertEquals(walk.attributes["swamp.diagnostic.authorize_errors"], 1);
+    });
+
+    // A child run gone since: looked up, missing, and the parent unchanged.
+    const child = await repo.workflowRepo.findByName("child-flow");
+    await repo.workflowRunRepo.deleteAllByWorkflowId(child!.id);
+    await withObservedSpans(async (spans) => {
+      const outputs = await resolve(allow);
+      assertEquals(outputs.main.child.outputs, undefined);
+      assertEquals(outputs.main.write_own, untraced.main.write_own);
+      const [walk] = diagnosticPhases(spans, "output_walk");
+      assertEquals(walk.attributes["swamp.diagnostic.child_runs_missing"], 1);
+      assertEquals(walk.attributes["swamp.diagnostic.resources_attempted"], 1);
+    });
+  });
+});
+
+Deno.test("step outputs: a run whose steps wrote nothing exports a completed walk of zeros and no owner index check (swamp-club#4002)", async () => {
+  await withRepo(async (repo, dir) => {
+    await repo.workflowRepo.save(Workflow.create({
+      name: "quiet-flow",
+      jobs: [Job.create({
+        name: "main",
+        steps: [Step.create({
+          name: "read",
+          task: StepTask.model("reader", "read", { value: "nothing" }),
+        })],
+      })],
+    }));
+    const run = await (await service(repo, dir)).execute("quiet-flow");
+    assertEquals(run.status, "succeeded", JSON.stringify(run.toData()));
+    const deps = createWorkflowHistoryGetDeps(
+      dir,
+      undefined,
+      repo.workflowRepo,
+      () => Promise.resolve(true),
+    );
+    await withObservedSpans(async (spans) => {
+      await withSpan(
+        "swamp.workflow.step_outputs.resolve",
+        {},
+        () => deps.resolveStepOutputs(run),
+      );
+      const [walk] = diagnosticPhases(spans, "output_walk");
+      assertEquals(walk.attributes["swamp.diagnostic.result"], "completed");
+      for (
+        const counter of [
+          "resources_attempted",
+          "authorize_allowed",
+          "authorize_denied",
+          "owner_lookups",
+          "reads_succeeded",
+          "reads_missing",
+          "content_bytes",
+          "child_run_lookups",
+          "child_runs_unique",
+        ]
+      ) {
+        assertEquals(walk.attributes[`swamp.diagnostic.${counter}`], 0);
+      }
+      assertEquals(diagnosticPhases(spans, "owner_index"), []);
+    });
   });
 });

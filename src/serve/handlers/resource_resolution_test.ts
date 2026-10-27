@@ -58,10 +58,16 @@ import { CompositeWorkflowRepository } from "../../infrastructure/persistence/co
 import { ExtensionWorkflowRepository } from "../../infrastructure/persistence/extension_workflow_repository.ts";
 import { withSpan } from "../../infrastructure/tracing/mod.ts";
 import {
+  diagnosticPhases,
   findSpan,
   isChildOf,
   withCapturedSpans,
+  withObservedSpans,
 } from "../../infrastructure/tracing/span_test_helpers.ts";
+import {
+  observeDiagnosticPhase,
+  withDiagnosticArea,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
 import "../../domain/models/models.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -1777,4 +1783,75 @@ Deno.test("CanonicalResources.workflowOwners: an extension read failure fails th
     () => canonical.workflowOwners(crypto.randomUUID(), "ext"),
     UserError,
   );
+});
+
+Deno.test("CanonicalResources: inside a diagnostic phase, counts owner lookups and those it answered without a new lookup, with or without an index", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const prod = Definition.create({ name: "prod-db", globalArguments: {} });
+    const dev = Definition.create({ name: "dev-db", globalArguments: {} });
+    await repo.save(SHELL, prod);
+    await repo.save(SHELL, dev);
+    const flow = Workflow.create({ name: "nightly", jobs: [] });
+    const lookups = async (canonical: CanonicalResources) => {
+      await canonical.modelOwners(prod.id, "command/shell", "prod-db", "data");
+      await canonical.modelOwners(dev.id, "command/shell", "dev-db", "data");
+      await canonical.modelOwners(prod.id, "command/shell", "prod-db", "data");
+      await canonical.dataOwners({
+        modelType: "workflow",
+        modelId: flow.id,
+        modelName: "nightly",
+      });
+      await canonical.dataOwners({
+        modelType: "workflow",
+        modelId: flow.id,
+        modelName: "nightly",
+      });
+    };
+
+    for (
+      const ownerIndex of [new DefinitionIdIndex(repo), undefined]
+    ) {
+      await withObservedSpans(async (spans) => {
+        await withDiagnosticArea(
+          "step_outputs",
+          () =>
+            observeDiagnosticPhase("output_walk", {}, () =>
+              lookups(
+                new CanonicalResources(repo, workflowRepo([flow]), ownerIndex),
+              )),
+        );
+        const [walk] = diagnosticPhases(spans, "output_walk");
+        assertEquals(walk.attributes["swamp.diagnostic.owner_lookups"], 5);
+        // Without an index, one scan answers every id after the first.
+        assertEquals(
+          walk.attributes["swamp.diagnostic.owner_lookups_reused"],
+          ownerIndex ? 2 : 3,
+        );
+      });
+    }
+  });
+});
+
+Deno.test("CanonicalResources: outside a diagnostic phase, lookups export nothing and answer as before", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const prod = Definition.create({ name: "prod-db", globalArguments: {} });
+    await repo.save(SHELL, prod);
+    const owners = () =>
+      new CanonicalResources(
+        repo,
+        workflowRepo([]),
+        new DefinitionIdIndex(repo),
+      )
+        .modelOwners(prod.id, "command/shell", "recorded", "data");
+    const before = await owners();
+    await withObservedSpans(async (spans) => {
+      assertEquals(await owners(), before);
+      assertEquals(
+        spans.filter((s) => s.name.startsWith("swamp.diagnostic.")),
+        [],
+      );
+    });
+  });
 });

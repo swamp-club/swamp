@@ -252,6 +252,7 @@ import {
   withCommittedUnknownSteps,
 } from "./shared.ts";
 import type { ResourceReadPolicy } from "../../domain/workflows/step_output_resolver.ts";
+import { currentDiagnosticTally } from "../../domain/diagnostics/diagnostic_phase.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { join } from "@std/path";
@@ -945,7 +946,13 @@ function dataReadPolicy(
   return async (ref) =>
     (await filterByResources(
       [ref],
-      (item) => canonical.dataOwners(item),
+      // Inside a diagnostic phase, finding the owners is timed apart from
+      // the decision on them (design/enablers/serve-phase-telemetry.md).
+      (item) =>
+        currentDiagnosticTally().measure(
+          "owner_lookup",
+          () => canonical.dataOwners(item),
+        ),
       socket,
       principal,
       "read",
