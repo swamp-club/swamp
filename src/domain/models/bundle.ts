@@ -524,8 +524,8 @@ export interface BundleOptions {
   /**
    * Leave the project's lockfile untouched: bundle with `--frozen` when it
    * has one, so a stale lock fails with {@link staleLockfileError}, and with
-   * `--no-lock` when it has none. Push and quality set this; local loading
-   * does not.
+   * `--no-lock` when it has none. Push, quality and the extension loader
+   * set this (swamp-club#3869).
    */
   readOnlyLock?: ReadOnlyLock;
 

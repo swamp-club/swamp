@@ -31,6 +31,7 @@ import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import {
   denoProjectArgs,
   isStaleLockfile,
+  type ReadOnlyLock,
   staleLockfileError,
 } from "../../domain/models/bundle.ts";
 import { readOnlyLockFor } from "./deno_lockfile_reader.ts";
@@ -394,11 +395,17 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
   /**
    * @param options.readOnlyLock - Never write the project's lockfile, as push
    *   and quality bundle: `--frozen` when it has one, `--no-lock` when not.
+   * @param options.readPastStaleLock - With `readOnlyLock`, read the graph
+   *   again with `--no-lock` when the lock is stale, instead of failing, as
+   *   the extension loader does (swamp-club#3869).
    */
   constructor(
     private readonly denoPath: string,
     private readonly env?: Record<string, string>,
-    private readonly options?: { readOnlyLock?: boolean },
+    private readonly options?: {
+      readOnlyLock?: boolean;
+      readPastStaleLock?: boolean;
+    },
   ) {}
 
   async read(
@@ -408,6 +415,14 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
     const readOnlyLock = this.options?.readOnlyLock
       ? await readOnlyLockFor(project)
       : undefined;
+    return await this.readGraph(entryPoint, project, readOnlyLock);
+  }
+
+  private async readGraph(
+    entryPoint: string,
+    project: ModuleGraphProject,
+    readOnlyLock: ReadOnlyLock | undefined,
+  ): Promise<SourceModuleGraph> {
     const result = await runDenoInfo(
       this.denoPath,
       toFileUrl(entryPoint).href,
@@ -421,6 +436,9 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
     if (!result.success) {
       const stderr = result.stderr;
       if (readOnlyLock?.lockPath && isStaleLockfile(stderr)) {
+        if (this.options?.readPastStaleLock) {
+          return await this.readGraph(entryPoint, project, {});
+        }
         throw staleLockfileError(
           readOnlyLock.lockPath,
           entryPoint,
@@ -537,4 +555,8 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
 export const createDenoInfoModuleGraphReader: ModuleGraphReaderFactory = (
   denoPath,
   env,
-) => new DenoInfoModuleGraphReader(denoPath, env);
+) =>
+  new DenoInfoModuleGraphReader(denoPath, env, {
+    readOnlyLock: true,
+    readPastStaleLock: true,
+  });

@@ -28,13 +28,18 @@
  * `extension fmt` reads the module graph the same way (swamp-club#3717), but
  * leniently: a stale lock is reported, and the entry points it refused are
  * formatted alone, rather than failing the run.
+ *
+ * The extension loader, which every command runs at startup, reads the lock
+ * read-only too (swamp-club#3869), so an extension in the repository's
+ * loaded extensions dir keeps its lock: a stale one warns and loads without
+ * it, and the lock is part of the bundle's fingerprint.
  */
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { TarStream } from "@std/tar/tar-stream";
 import { stringify as stringifyYaml } from "@std/yaml";
-import { getLogger } from "@logtape/logtape";
+import { configure, getLogger, type LogRecord, reset } from "@logtape/logtape";
 import { UserError } from "../src/domain/errors.ts";
 import {
   checkExtensionQuality,
@@ -51,12 +56,24 @@ import {
 } from "../src/libswamp/extensions/fmt.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
 import { collect } from "../src/libswamp/testing.ts";
-import { DenoInfoModuleGraphReader } from "../src/infrastructure/runtime/deno_info_module_graph_reader.ts";
 import {
   type ExtensionProject,
   readOnlyLockFor,
 } from "../src/infrastructure/runtime/deno_lockfile_reader.ts";
 import { SHARED_SWAMP_DENO_CACHE } from "./test_helpers.ts";
+import { ExtensionLoader } from "../src/domain/extensions/extension_loader.ts";
+import { findStaleFiles } from "../src/domain/extensions/bundle_freshness.ts";
+import { modelKindAdapter } from "../src/domain/extensions/model_kind_adapter.ts";
+import type { DenoRuntime } from "../src/domain/runtime/deno_runtime.ts";
+import { ExtensionCatalogStore } from "../src/infrastructure/persistence/extension_catalog_store.ts";
+import { ExtensionRepository } from "../src/infrastructure/persistence/extension_repository.ts";
+import { LockfileRepository } from "../src/infrastructure/persistence/lockfile_repository.ts";
+import {
+  createDenoInfoModuleGraphReader,
+  DenoInfoModuleGraphReader,
+} from "../src/infrastructure/runtime/deno_info_module_graph_reader.ts";
+
+import "../src/domain/models/models.ts";
 
 const ENV = {
   DENO_DIR: SHARED_SWAMP_DENO_CACHE,
@@ -432,3 +449,219 @@ for (const check of [true, false]) {
     });
   });
 }
+
+/**
+ * A one-model extension in the repository's loaded extensions/models
+ * directory, the tutorial layout, with its own deno.json mapping `ms` and
+ * its manifest beside it. The model imports nothing the lock records, so
+ * the bundle runs offline; the lock is checked against the config alone.
+ */
+async function writeLoadedLockExtension(
+  dir: string,
+  range: string,
+  type: string,
+): Promise<{ entry: string; manifestPath: string; modelsDir: string }> {
+  const modelsDir = join(dir, "extensions", "models");
+  await Deno.mkdir(join(dir, ".swamp"), { recursive: true });
+  await Deno.mkdir(modelsDir, { recursive: true });
+  await Deno.writeTextFile(
+    join(dir, ".swamp.yaml"),
+    stringifyYaml({ swampVersion: "0.1.0" }),
+  );
+  await Deno.writeTextFile(
+    join(modelsDir, "deno.json"),
+    JSON.stringify({ imports: { ms: `npm:ms@${range}` } }),
+  );
+  const entry = join(modelsDir, "m.ts");
+  await Deno.writeTextFile(
+    entry,
+    `import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${type}",
+  version: "2026.10.27.1",
+  description: "loaded",
+  globalArguments: z.object({}),
+  resources: {},
+  methods: {
+    noop: {
+      description: "noop",
+      arguments: z.object({}),
+      execute: () => Promise.resolve({ dataHandles: [] }),
+    },
+  },
+};
+`,
+  );
+  const manifestPath = join(modelsDir, "manifest.yaml");
+  await Deno.writeTextFile(
+    manifestPath,
+    stringifyYaml({
+      manifestVersion: 1,
+      name: "@test/loaded-lock",
+      version: "2026.10.27.1",
+      models: ["m.ts"],
+    }),
+  );
+  return { entry, manifestPath, modelsDir };
+}
+
+/**
+ * Indexes `modelsDir` with the real loader and its module graph reader, as
+ * every command does at startup, and returns the warnings it logged.
+ */
+async function loadModels(
+  dir: string,
+  modelsDir: string,
+  catalog: ExtensionCatalogStore,
+  env: Record<string, string>,
+): Promise<string[]> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      { category: ["swamp"], lowestLevel: "warning", sinks: ["capture"] },
+      { category: ["logtape", "meta"], lowestLevel: "warning", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    const runtime: DenoRuntime = {
+      ensureDeno: () => Promise.resolve(Deno.execPath()),
+      getDenoEnv: () => env,
+    };
+    await new ExtensionLoader(
+      runtime,
+      modelKindAdapter,
+      dir,
+      undefined,
+      new ExtensionRepository({
+        catalog,
+        lockfileRepository: new LockfileRepository(
+          join(dir, "upstream_extensions.json"),
+        ),
+        repoRoot: dir,
+      }),
+      undefined,
+      createDenoInfoModuleGraphReader,
+    ).buildIndex(modelsDir);
+  } finally {
+    await reset();
+  }
+  return records.map((r) =>
+    r.message.map((part) => typeof part === "string" ? part : String(part))
+      .join("")
+  );
+}
+
+/** Runs `fn` with a catalog for `dir`, closed afterwards. */
+async function withCatalog(
+  dir: string,
+  fn: (catalog: ExtensionCatalogStore) => Promise<void>,
+): Promise<void> {
+  const catalog = new ExtensionCatalogStore(
+    join(dir, ".swamp", "_extension_catalog.db"),
+  );
+  try {
+    await fn(catalog);
+  } finally {
+    catalog.close();
+  }
+}
+
+const loadedType = () => `@test/loaded-lock-${crypto.randomUUID().slice(0, 8)}`;
+
+Deno.test("loader lockfile: loading and fmt in the loaded dir create no deno.lock (swamp-club#3869)", async () => {
+  await withProject({}, async (dir) => {
+    const type = loadedType();
+    const { entry, manifestPath, modelsDir } = await writeLoadedLockExtension(
+      dir,
+      "^2.0.0",
+      type,
+    );
+    const lockPath = join(modelsDir, "deno.lock");
+    await withCatalog(dir, async (catalog) => {
+      const warnings = await loadModels(dir, modelsDir, catalog, ENV);
+      assertEquals(warnings, []);
+      assertEquals(catalog.findBySourcePath(entry)?.type_normalized, type);
+      assertEquals(await exists(lockPath), false);
+      // The lock it would read is recorded, so one appearing rebundles.
+      assertEquals(
+        catalog.findSourceModules(entry)?.includes(lockPath),
+        true,
+      );
+    });
+    const data = await fmtExtension(dir, manifestPath, ENV, true);
+    assertEquals(data.passed, true);
+    assertEquals(await exists(lockPath), false);
+  });
+});
+
+Deno.test("loader lockfile: a current deno.lock in the loaded dir is unchanged by loading (swamp-club#3869)", async () => {
+  await withProject({}, async (dir) => {
+    const type = loadedType();
+    const { entry, modelsDir } = await writeLoadedLockExtension(
+      dir,
+      "^2.0.0",
+      type,
+    );
+    const lockPath = join(modelsDir, "deno.lock");
+    await Deno.writeTextFile(lockPath, MS_LOCK);
+    await withCatalog(dir, async (catalog) => {
+      assertEquals(await loadModels(dir, modelsDir, catalog, ENV), []);
+      assertEquals(catalog.findBySourcePath(entry)?.type_normalized, type);
+    });
+    assertEquals(await Deno.readTextFile(lockPath), MS_LOCK);
+  });
+});
+
+Deno.test("loader lockfile: a stale deno.lock in the loaded dir loads, warns once and is unchanged, and fmt still reports it (swamp-club#3869)", async () => {
+  await withProject({}, async (dir) => {
+    const type = loadedType();
+    // deno.json has moved past the ^2.0.0 the lock records.
+    const { entry, manifestPath, modelsDir } = await writeLoadedLockExtension(
+      dir,
+      "^2.1.0",
+      type,
+    );
+    const lockPath = join(modelsDir, "deno.lock");
+    await Deno.writeTextFile(lockPath, MS_LOCK);
+    await withCatalog(dir, async (catalog) => {
+      const warnings = await loadModels(dir, modelsDir, catalog, ENV);
+      assertEquals(warnings.length, 1, warnings.join("\n"));
+      assertStringIncludes(warnings[0], "is out of date with");
+      assertStringIncludes(warnings[0], "deno install --entrypoint");
+      assertEquals(catalog.findBySourcePath(entry)?.type_normalized, type);
+      // Nothing changed, so the next load neither rebundles nor warns.
+      assertEquals(await loadModels(dir, modelsDir, catalog, ENV), []);
+    });
+    assertEquals(await Deno.readTextFile(lockPath), MS_LOCK);
+    const data = await fmtExtension(dir, manifestPath, ENV, true);
+    assertEquals(data.staleLockfiles.map((s) => s.lockPath), [lockPath]);
+    assertEquals(await Deno.readTextFile(lockPath), MS_LOCK);
+  });
+});
+
+Deno.test("loader lockfile: a deno.lock appearing in the loaded dir makes the bundle stale (swamp-club#3869)", async () => {
+  await withProject({}, async (dir) => {
+    const { modelsDir } = await writeLoadedLockExtension(
+      dir,
+      "^2.0.0",
+      loadedType(),
+    );
+    await withCatalog(dir, async (catalog) => {
+      await loadModels(dir, modelsDir, catalog, ENV);
+      const staleNow = async () =>
+        (await findStaleFiles({
+          modelsDir,
+          catalog,
+          discoverFiles: () => Promise.resolve(["m.ts"]),
+          kinds: ["model"],
+          repoDir: dir,
+        })).map((s) => s.relativePath);
+      assertEquals(await staleNow(), []);
+      await Deno.writeTextFile(join(modelsDir, "deno.lock"), MS_LOCK);
+      assertEquals(await staleNow(), ["m.ts"]);
+    });
+  });
+});

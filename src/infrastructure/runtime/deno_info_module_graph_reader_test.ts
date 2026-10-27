@@ -22,6 +22,7 @@ import { join, relative, toFileUrl } from "@std/path";
 import { withMockedCommand } from "@swamp-club/swamp-testing";
 import { UserError } from "../../domain/errors.ts";
 import {
+  createDenoInfoModuleGraphReader,
   DenoInfoModuleGraphReader,
   parseDenoInfoGraph,
 } from "./deno_info_module_graph_reader.ts";
@@ -536,6 +537,63 @@ Deno.test("DenoInfoModuleGraphReader: without readOnlyLock the lock flags are De
     );
     assertEquals(calls[0].args.includes("--frozen"), false);
     assertEquals(calls[0].args.includes("--no-lock"), false);
+  });
+});
+
+Deno.test("DenoInfoModuleGraphReader: readPastStaleLock reads a stale lock's graph again with --no-lock", async () => {
+  await withLockedProject(async (dir, entry) => {
+    const { calls } = await withMockedCommand(
+      [
+        { stdout: "", stderr: STALE_LOCK_STDERR, code: 1 },
+        {
+          stdout: JSON.stringify({
+            modules: [{
+              kind: "esm",
+              mediaType: "TypeScript",
+              specifier: toFileUrl(entry).href,
+            }],
+          }),
+          code: 0,
+        },
+      ],
+      async () => {
+        const graph = await new DenoInfoModuleGraphReader("deno", undefined, {
+          readOnlyLock: true,
+          readPastStaleLock: true,
+        }).read(entry, { denoConfigPath: join(dir, "deno.json") });
+        assertEquals(graph.modules.map((m) => m.path), [entry]);
+      },
+    );
+    assertEquals(calls.length, 2);
+    assertEquals(calls[0].args.includes("--frozen"), true);
+    assertEquals(calls[1].args.includes("--no-lock"), true);
+    assertEquals(calls[1].args.includes("--frozen"), false);
+  });
+});
+
+Deno.test("createDenoInfoModuleGraphReader: the loader's reader never writes the lock", async () => {
+  await withLockedProject(async (dir, entry) => {
+    const { calls } = await withMockedCommand(
+      [
+        { stdout: "", stderr: STALE_LOCK_STDERR, code: 1 },
+        {
+          stdout: JSON.stringify({
+            modules: [{
+              kind: "esm",
+              mediaType: "TypeScript",
+              specifier: toFileUrl(entry).href,
+            }],
+          }),
+          code: 0,
+        },
+      ],
+      () =>
+        createDenoInfoModuleGraphReader("deno", {}).read(entry, {
+          denoConfigPath: join(dir, "deno.json"),
+        }),
+    );
+    assertEquals(calls[0].args.includes("--frozen"), true);
+    assertEquals(calls[1].args.includes("--no-lock"), true);
   });
 });
 
