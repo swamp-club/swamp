@@ -19,8 +19,8 @@
 
 /**
  * Serve's direct-type steps resolved through the real wiring: a repository
- * answering global names through the definition index serve keeps
- * (swamp-club#4037), serve's lookup and save deps, and
+ * with the definition index serve keeps attached, the direct-type lookup
+ * answering names from it (swamp-club#4037), serve's save deps, and
  * resolveOrCreateDefinition's creation lock. Concurrent new names create
  * one definition each without reading a stored definition again, and the
  * global lookup's semantics hold: a definition shadows an auto-definition,
@@ -48,7 +48,17 @@ import {
   DefinitionIdIndex,
 } from "../src/infrastructure/persistence/definition_id_index.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
+import { modelRegistry } from "../src/domain/models/model.ts";
+import { Job } from "../src/domain/workflows/job.ts";
+import { Step } from "../src/domain/workflows/step.ts";
+import { StepTask } from "../src/domain/workflows/step_task.ts";
+import { Workflow } from "../src/domain/workflows/workflow.ts";
+import { createWorkflowRunDeps } from "../src/serve/deps.ts";
+import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import "../src/domain/models/models.ts";
 import { statRecord } from "../src/infrastructure/persistence/workflow_run_index.ts";
+
+await initializeLogging({});
 
 const STORED = 200;
 const RUNNER = ModelType.create("test/runner");
@@ -131,7 +141,12 @@ function serveWiring(repoDir: string, ctx: RepositoryContext) {
     ctx.markDirty,
   );
   const deps = {
-    lookupDefinition: (name: string) => findDefinitionByIdOrName(repo, name),
+    lookupDefinition: (name: string) =>
+      findDefinitionByIdOrName(
+        repo,
+        name,
+        (n) => repo.findByNameGlobalFromIndex(n),
+      ),
     getModelDef: () => runnerModel,
     saveDefinition: (
       type: ModelType,
@@ -338,4 +353,76 @@ Deno.test({
       }
     });
   },
+});
+
+Deno.test("integration: a direct-type step run through serve's workflow deps looks its definition name up in the attached index, and findByNameGlobal never does", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-direct-lookup-" });
+  const ctx = createRepositoryContext({ repoDir: dir, enableIndexing: false });
+  const type = ModelType.create(`test/direct-index-${crypto.randomUUID()}`);
+  const executions: unknown[] = [];
+  modelRegistry.register({
+    type,
+    version: "2026.01.01.1",
+    methods: {
+      run: {
+        description: "Records each run",
+        arguments: z.object({ value: z.string() }),
+        execute: (args) => {
+          executions.push(args);
+          return Promise.resolve({ dataHandles: [] });
+        },
+      },
+    },
+  });
+  try {
+    const index = new DefinitionIdIndex(ctx.definitionRepo);
+    const looked: string[] = [];
+    // Attached as serve.ts attaches it as serve starts.
+    ctx.definitionRepo.useNameIndex({
+      findByName: (name) => {
+        looked.push(name);
+        return index.findByName(name);
+      },
+    });
+    const workflow = Workflow.create({
+      name: "direct",
+      jobs: [Job.create({
+        name: "main",
+        steps: [Step.create({
+          name: "run",
+          task: StepTask.directExecution(type.normalized, "direct-new", "run", {
+            value: "x",
+          }),
+        })],
+      })],
+    });
+    await ctx.workflowRepo.save(workflow);
+    const deps = await createWorkflowRunDeps(dir, ctx, {
+      type: "filesystem",
+      path: join(dir, ".swamp"),
+    });
+    const service = deps.createExecutionService(
+      ctx.workflowRepo,
+      ctx.workflowRunRepo,
+      dir,
+      ctx.catalogStore,
+    );
+    const run = await service.execute("direct", {});
+    assertEquals(run.status, "succeeded", JSON.stringify(run.toData()));
+    assertEquals(executions, [{ value: "x" }]);
+    // The lookup before the creation lock, and the re-check under it.
+    assertEquals(looked, ["direct-new", "direct-new"]);
+
+    looked.length = 0;
+    const found = await ctx.definitionRepo.findByNameGlobal("direct-new");
+    assertEquals(found?.definition.name, "direct-new");
+    assertEquals(looked, []);
+  } finally {
+    ctx.catalogStore.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
 });

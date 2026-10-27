@@ -126,13 +126,13 @@ below.
 `secondary_index`, or `none` for a miss. New values may be added. Lookup is
 scoped to one type: a worker lookup reads only worker definitions.
 
-A lookup by name across every type, such as the one a direct-type workflow step
-makes, is a `definition_lookup` with `lookup_method=global_index` in `swamp
-serve` (lab #4037). It sets `hit` and `source` and runs under whatever phase
-called it (`prepare` and `lock_held` in a direct run, `definition_resolve` in a
-worker delete). A hint from an earlier lookup still answers before it, as the
-`name_hint_hits` counter. Outside serve, this lookup walks every definition and
-opens no phase.
+In `swamp serve`, a direct-type workflow step's lookup of its definition by name
+across every type is a `definition_lookup` with `lookup_method=global_index`
+(lab #4037). It sets `hit` and `source`, and runs under `prepare` for the first
+lookup and `lock_held` for the re-check under the creation lock. A hint from an
+earlier lookup of a definition under `models/` still answers before it, as the
+`name_hint_hits` counter. Every other lookup by name across every type, in serve
+or the CLI, walks every definition and opens no phase.
 
 `bytes_read` counts the UTF-8 length of the text read, which can differ from the
 file's size on disk when it holds invalid byte sequences.
@@ -297,12 +297,10 @@ early, or `binding_cleanup` raised. Counters bumped per item or event
 (`eligible`, `skipped_*`, `attempted`, `deleted`, `checked`, `*_walks`) are
 missing, not zero, when nothing happened.
 
-Repeated discovery shows in the per-worker counters. Outside serve, resolving a
-worker's definition by name walks every definition in the repository until a
-hint from an earlier lookup spares it (`primary_walks`, `files_read` against
-`name_hint_hits`); serve answers it from its definition index instead, as a
-`definition_lookup` with `lookup_method=global_index` under
-`definition_resolve`. The reference check loads every workflow. Output discovery
+Repeated discovery shows in the per-worker counters. Resolving a worker's
+definition by name walks every definition in the repository until a hint from an
+earlier lookup spares it (`primary_walks`, `files_read` against
+`name_hint_hits`). The reference check loads every workflow. Output discovery
 reads every output record of the worker type to find one worker's (`files_read`
 against `outputs`). Removing one output reads its method's records until it
 finds the file (`search_files_read`). All of these repeat for each worker in a

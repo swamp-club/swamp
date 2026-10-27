@@ -182,13 +182,19 @@ export async function findDefinitionsByIdGlobal(
 /**
  * Finds a definition by ID or name, searching across all registered model types.
  * Tries name lookup first (most common in workflows), then falls back to ID.
+ * `findByName` replaces the repository's `findByNameGlobal` for the name
+ * lookup, as serve's direct-type steps answer it from a name index.
  */
 export async function findDefinitionByIdOrName(
   definitionRepo: DefinitionRepository,
   idOrName: string,
+  findByName: (
+    name: string,
+  ) => Promise<DefinitionLookupResult | null> = (name) =>
+    definitionRepo.findByNameGlobal(name),
 ): Promise<DefinitionLookupResult | null> {
   // Try by name first (most common case in workflows)
-  const byName = await definitionRepo.findByNameGlobal(idOrName);
+  const byName = await findByName(idOrName);
   if (byName) {
     return { definition: byName.definition, type: byName.type };
   }

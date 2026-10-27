@@ -203,8 +203,15 @@ export async function createWorkflowRunDeps(
         );
         const result = await resolveOrCreateDefinition(
           {
+            // From serve's definition index, so a new name does not walk
+            // every definition, before the creation lock and again under it
+            // (swamp-club#4037).
             lookupDefinition: (name) =>
-              findDefinitionByIdOrName(repoContext.definitionRepo, name),
+              findDefinitionByIdOrName(
+                repoContext.definitionRepo,
+                name,
+                (n) => repoContext.definitionRepo.findByNameGlobalFromIndex(n),
+              ),
             getModelDef: (type) => resolveModelType(type, getAutoResolver()),
             saveDefinition: (type, def) => autoDefRepo.save(type, def),
             getDefinitionPath: (type, id) =>

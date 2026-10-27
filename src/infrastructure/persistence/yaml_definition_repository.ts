@@ -160,7 +160,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     string,
     { path: string; pathSegments: string[]; primary: boolean }
   >();
-  /** Answers {@link findByNameGlobal} once attached: see {@link useNameIndex}. */
+  /** Answers {@link findByNameGlobalFromIndex}: see {@link useNameIndex}. */
   private nameIndex: DefinitionNameIndex | undefined;
 
   constructor(
@@ -640,12 +640,13 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   /**
-   * Answers {@link findByNameGlobal} through `index` from now on, instead of
-   * walking every definition on each lookup that no hint answers
+   * Answers {@link findByNameGlobalFromIndex} through `index` from now on,
+   * instead of walking every definition on each lookup that no hint answers
    * (swamp-club#4037). `swamp serve` attaches the definition index it keeps
    * for its lifetime, once, as it starts; a CLI command attaches none, as
    * building an index reads every definition where a walk for an existing
-   * name stops at the first match. Throws when an index is already attached.
+   * name stops at the first match. {@link findByNameGlobal} never consults
+   * it. Throws when an index is already attached.
    */
   useNameIndex(index: DefinitionNameIndex): void {
     if (this.nameIndex) {
@@ -654,27 +655,34 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     this.nameIndex = index;
   }
 
+  /**
+   * {@link findByNameGlobal}'s answer from the name index attached with
+   * {@link useNameIndex}, or by the walk when none is. The index sees a
+   * definition file rewritten in place to declare another name only once
+   * its directory changes, so only a caller that accepts that uses this:
+   * serve's direct-type workflow steps, whose lookup and re-check under the
+   * creation lock would otherwise each walk every definition for a new name.
+   */
+  async findByNameGlobalFromIndex(
+    name: string,
+  ): Promise<{ definition: Definition; type: ModelType } | null> {
+    if (!this.nameIndex) return await this.findByNameGlobal(name);
+    const hinted = await this.readPrimaryHint(name);
+    if (hinted) return hinted;
+    return await this.findByNameInIndex(this.nameIndex, name);
+  }
+
   async findByNameGlobal(
     name: string,
   ): Promise<{ definition: Definition; type: ModelType } | null> {
-    // Without a name index this method has no name-derived fast path at all —
-    // without a hint every call re-walks and re-parses every definition in
-    // the repository until it hits a match. The running diagnostic phase, if
-    // any, counts which step answered; the walks count their reads
-    // (files_read, read_work_ms).
+    // This method has no name-derived fast path at all — without a hint every
+    // call re-walks and re-parses every definition in the repository until it
+    // hits a match. The running diagnostic phase, if any, counts which step
+    // answered; the walks count their reads (files_read, read_work_ms).
     const tally = currentDiagnosticTally();
     const hint = this.globalNameToActualPath.get(name);
-    if (hint?.primary) {
-      const hinted = await this.readHintedWithType(hint, name);
-      if (hinted) {
-        tally.add("name_hint_hits");
-        return hinted;
-      }
-      this.globalNameToActualPath.delete(name);
-    }
-    if (this.nameIndex) {
-      return await this.findByNameInIndex(this.nameIndex, name);
-    }
+    const hinted = await this.readPrimaryHint(name);
+    if (hinted) return hinted;
 
     tally.add("primary_walks");
     const result = await this.searchDefinitionByName(
@@ -707,6 +715,24 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         await this.throwIfUnreadableByName(this.secondaryBaseDir, name);
       }
     }
+    return null;
+  }
+
+  /**
+   * The definition a recorded primary hint names, counted as a
+   * `name_hint_hits`, or null; a hint the file no longer answers is dropped.
+   */
+  private async readPrimaryHint(
+    name: string,
+  ): Promise<{ definition: Definition; type: ModelType } | null> {
+    const hint = this.globalNameToActualPath.get(name);
+    if (!hint?.primary) return null;
+    const hinted = await this.readHintedWithType(hint, name);
+    if (hinted) {
+      currentDiagnosticTally().add("name_hint_hits");
+      return hinted;
+    }
+    this.globalNameToActualPath.delete(name);
     return null;
   }
 

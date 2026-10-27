@@ -1643,9 +1643,9 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   the read before its next resource, definition directory or owner file, and
   stops waiting on a listing another request shares at once; it gets its
   `cancelled` reply as soon as the one read already in progress ends
-  (swamp-club#3968). The same index answers serve's lookups of a definition by
-  name across every type, such as a direct-type step's lookup and its re-check
-  under the creation lock (swamp-club#4037). The step outputs span
+  (swamp-club#3968). The same index answers a direct-type workflow step's
+  lookup of its definition by name across every type, and its re-check under
+  the creation lock (swamp-club#4037). The step outputs span
   counts `step_outputs.resources_read`, `step_outputs.resources_denied` and
   `step_outputs.child_runs_read`.
 
