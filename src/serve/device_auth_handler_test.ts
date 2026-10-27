@@ -897,3 +897,52 @@ Deno.test("handleDeviceAuth: POST /auth/device traces the upstream device grant"
 Deno.test("oauthPrincipalId: prefixes the OAuth subject with user:", () => {
   assertEquals(oauthPrincipalId("abc-123"), "user:abc-123");
 });
+
+Deno.test("handleDeviceAuth: an admitted login passes on the provider's user name and names the user", async () => {
+  for (const admitted of [true, false]) {
+    const sink = createCollectingSink();
+    const emitter = new AuditEmitter([sink]);
+    const learned: Record<string, string>[] = [];
+    const deps = makeMockDeps({
+      auditEmitter: emitter,
+      getUserInfo: () =>
+        Promise.resolve({
+          sub: "user-1",
+          email: "user@example.com",
+          username: "user-one",
+          collectives: ["team-a"],
+          groups: [],
+        }),
+      checkAdmission: () => ({ admitted, reason: "test" }),
+      onUsernamesResolved: (names) => learned.push({ ...names }),
+    });
+    await handleDeviceAuth(
+      postRequest("/auth/device/token", { deviceCode: "dev-123" }),
+      deps,
+    );
+    await emitter.flush();
+
+    assertEquals(learned, admitted ? [{ "user-1": "user-one" }] : []);
+    assertEquals(sink.events[0].principalId, "user-1");
+    assertEquals(sink.events[0].initiatedBy, "user:user-one");
+  }
+});
+
+Deno.test("handleDeviceAuth: a login without a provider username is named by its known name", async () => {
+  const sink = createCollectingSink();
+  const emitter = new AuditEmitter([sink]);
+  const learned: Record<string, string>[] = [];
+  const deps = makeMockDeps({
+    auditEmitter: emitter,
+    resolvedUserNames: { "user-1": "configured-admin" },
+    onUsernamesResolved: (names) => learned.push({ ...names }),
+  });
+  await handleDeviceAuth(
+    postRequest("/auth/device/token", { deviceCode: "dev-123" }),
+    deps,
+  );
+  await emitter.flush();
+
+  assertEquals(learned, []);
+  assertEquals(sink.events[0].initiatedBy, "user:configured-admin");
+});

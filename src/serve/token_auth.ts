@@ -34,12 +34,13 @@ import type {
 } from "../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
 import { resolveActorIdentity } from "../domain/serve_audit/actor_identity.ts";
-import {
-  parsePrincipal,
-  type Principal,
-  principalToString,
-} from "../domain/access/principal.ts";
+import { parsePrincipal, type Principal } from "../domain/access/principal.ts";
 import { assertAuthenticatablePrincipal } from "../domain/access/service_principal.ts";
+import {
+  displayPrincipal,
+  usernameFromLogin,
+  type UsernamesResolved,
+} from "./known_usernames.ts";
 
 const logger = getSwampLogger(["serve", "token-auth"]);
 
@@ -59,8 +60,10 @@ export interface TokenAuthAuditContext {
   readonly sourceIp?: string;
   readonly requestId?: string;
   readonly ingress?: string;
-  /** Configured user names by id, for the event's username fallback. */
+  /** Known user names by id, for the event's username fallback. */
   readonly resolvedUserNames?: Readonly<Record<string, string>>;
+  /** Told the user name an OAuth-minted token records for its user. */
+  readonly onUsernamesResolved?: UsernamesResolved;
 }
 
 /**
@@ -344,6 +347,7 @@ export async function authenticateServerToken(
       };
     }
 
+    rememberTokenUsername(auditContext, token);
     emitTokenUseAuditEvent(auditContext, split.name, principal, token);
     logger.info("Authenticated token {name} as {principal}", {
       name: split.name,
@@ -412,6 +416,7 @@ export async function authenticateDashboardSession(
         reason: "invalid-principal",
       };
     }
+    rememberTokenUsername(auditContext, token);
     emitTokenUseAuditEvent(auditContext, binding.tokenName, principal, token);
     return {
       ok: true,
@@ -433,6 +438,21 @@ export async function authenticateDashboardSession(
   }
 }
 
+/**
+ * Tells the audit context the user name an OAuth login recorded on the token,
+ * so a token minted by a login on another replica, or before this serve
+ * started, names its user everywhere this serve names a caller.
+ */
+function rememberTokenUsername(
+  auditContext: TokenAuthAuditContext | undefined,
+  token: ServerToken,
+): void {
+  const learned = usernameFromLogin(token.principalId, token.oauthIdentity);
+  if (Object.keys(learned).length > 0) {
+    auditContext?.onUsernamesResolved?.(learned);
+  }
+}
+
 function emitTokenUseAuditEvent(
   auditContext: TokenAuthAuditContext | undefined,
   tokenName: string,
@@ -451,7 +471,7 @@ function emitTokenUseAuditEvent(
       resourceName: tokenName,
       principalKind: principal.kind,
       principalId: principal.id,
-      initiatedBy: principalToString(principal),
+      initiatedBy: displayPrincipal(principal, auditContext.resolvedUserNames),
       actor: resolveActorIdentity(
         principal,
         auditContext.resolvedUserNames,
