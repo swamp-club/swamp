@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import {
   AUTO_DEFINITION_LOCK_RETRY_INTERVAL_MS,
@@ -32,6 +32,16 @@ import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { RunSensitiveValues } from "../../domain/secrets/mod.ts";
 import { deferredExpressionReference } from "../../domain/expressions/deferred_expression.ts";
+import {
+  observeDiagnosticPhase,
+  withDiagnosticArea,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
+import {
+  diagnosticPhases,
+  findSpan,
+  isChildOf,
+  withObservedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 
 function createTestModelDef(
   globalArgs?: z.ZodTypeAny,
@@ -1701,4 +1711,162 @@ Deno.test("resolveOrCreateDefinition: a schema that throws while parsing a sensi
     );
     assertEquals(invalid.error.message.includes("HUNTER2-LONG"), false);
   }
+});
+
+Deno.test("resolveOrCreateDefinition: a creation exports its lookups, lock and save as enrollment phases", async () => {
+  await withTempDir(async (lockDir) => {
+    const modelDef = createTestModelDef(undefined, { run: z.object({}) });
+    const resolvedType = ModelType.create("test/model");
+    await withObservedSpans(async (spans) => {
+      const result = await withDiagnosticArea(
+        "enrollment",
+        () =>
+          resolveOrCreateDefinition(
+            {
+              // A lookup phase of its own, so the label the caller set shows.
+              lookupDefinition: () =>
+                observeDiagnosticPhase(
+                  "definition_lookup",
+                  {},
+                  () => Promise.resolve(null),
+                ),
+              getModelDef: () => modelDef,
+              saveDefinition: () => Promise.resolve(),
+              getDefinitionPath: (_type, id) => `/tmp/${id}.yaml`,
+            },
+            "test/model",
+            "phased-model",
+            "run",
+            {},
+            resolvedType,
+            modelDef,
+            undefined,
+            lockDir,
+          ),
+      );
+      assertEquals(result.ok, true);
+
+      const wait = findSpan(spans, "swamp.diagnostic.lock_wait");
+      const held = findSpan(spans, "swamp.diagnostic.lock_held");
+      const save = findSpan(spans, "swamp.diagnostic.definition_save");
+      assertEquals(
+        wait.attributes["swamp.diagnostic.lock_kind"],
+        "auto_definition",
+      );
+      assertEquals(
+        held.attributes["swamp.diagnostic.lock_kind"],
+        "auto_definition",
+      );
+      assert(isChildOf(save, held));
+      assertEquals(
+        save.attributes["swamp.diagnostic.definition_outcome"],
+        "created",
+      );
+
+      const [initial, recheck] = diagnosticPhases(spans, "definition_lookup");
+      assertEquals(
+        initial.attributes["swamp.diagnostic.lookup_attempt"],
+        "initial",
+      );
+      assertEquals(
+        recheck.attributes["swamp.diagnostic.lookup_attempt"],
+        "recheck",
+      );
+      assert(isChildOf(recheck, held));
+    });
+  });
+});
+
+Deno.test("resolveOrCreateDefinition: adopting a stored definition is a definition_adopt phase", async () => {
+  await withTempDir(async (lockDir) => {
+    const modelDef = createTestModelDef(undefined, { run: z.object({}) });
+    const resolvedType = ModelType.create("test/model");
+    const existing = Definition.create({
+      name: "stored-model",
+      type: "test/model",
+      typeVersion: "2026.01.01.1",
+    });
+    await withObservedSpans(async (spans) => {
+      const result = await withDiagnosticArea(
+        "enrollment",
+        () =>
+          resolveOrCreateDefinition(
+            {
+              lookupDefinition: () =>
+                Promise.resolve({ definition: existing, type: resolvedType }),
+              getModelDef: () => modelDef,
+              saveDefinition: () => Promise.resolve(),
+              getDefinitionPath: (_type, id) => `/tmp/${id}.yaml`,
+            },
+            "test/model",
+            "stored-model",
+            "run",
+            {},
+            resolvedType,
+            modelDef,
+            undefined,
+            lockDir,
+          ),
+      );
+      assertEquals(result.ok, true);
+      const adopt = findSpan(spans, "swamp.diagnostic.definition_adopt");
+      assertEquals(
+        adopt.attributes["swamp.diagnostic.definition_outcome"],
+        "reused",
+      );
+      // The fast path takes no lock and saves nothing.
+      assertEquals(diagnosticPhases(spans, "lock_wait").length, 0);
+      assertEquals(diagnosticPhases(spans, "definition_save").length, 0);
+    });
+  });
+});
+
+Deno.test("resolveOrCreateDefinition: a race loser adopts the winner's definition under the lock", async () => {
+  await withTempDir(async (lockDir) => {
+    const modelDef = createTestModelDef(undefined, { run: z.object({}) });
+    const resolvedType = ModelType.create("test/model");
+    const winner = Definition.create({
+      name: "raced-model",
+      type: "test/model",
+      typeVersion: "2026.01.01.1",
+    });
+    let lookups = 0;
+    await withObservedSpans(async (spans) => {
+      const result = await withDiagnosticArea(
+        "enrollment",
+        () =>
+          resolveOrCreateDefinition(
+            {
+              // Missing at first; the winner has saved it by the re-check.
+              lookupDefinition: () =>
+                Promise.resolve(
+                  lookups++ === 0
+                    ? null
+                    : { definition: winner, type: resolvedType },
+                ),
+              getModelDef: () => modelDef,
+              saveDefinition: () => Promise.resolve(),
+              getDefinitionPath: (_type, id) => `/tmp/${id}.yaml`,
+            },
+            "test/model",
+            "raced-model",
+            "run",
+            {},
+            resolvedType,
+            modelDef,
+            undefined,
+            lockDir,
+          ),
+      );
+      assertEquals(result.ok, true);
+      const held = findSpan(spans, "swamp.diagnostic.lock_held");
+      const adopt = findSpan(spans, "swamp.diagnostic.definition_adopt");
+      assert(isChildOf(adopt, held));
+      assertEquals(
+        adopt.attributes["swamp.diagnostic.definition_outcome"],
+        "reused",
+      );
+      assertEquals(diagnosticPhases(spans, "definition_save").length, 0);
+    });
+  });
 });

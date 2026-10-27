@@ -26,7 +26,13 @@ import {
 import {
   findSpan,
   withCapturedSpans,
+  withObservedSpans,
 } from "../infrastructure/tracing/span_test_helpers.ts";
+import { currentDiagnosticArea } from "../domain/diagnostics/diagnostic_phase.ts";
+import {
+  type ExecutionObservation,
+  setExecutionObserver,
+} from "../domain/remote/observability.ts";
 import { UserError } from "../domain/errors.ts";
 import { UNREADABLE_CONTENT_CODE } from "../domain/datastore/unreadable_content.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
@@ -2588,4 +2594,214 @@ Deno.test("WorkerGateway: a reconnect abandoned while its token was redeemed lea
     "grace expiry removes the worker",
   );
   assertEquals(h.graceExpired.length, 1);
+});
+
+/** A repo context whose token records hold `records`, read by the default reader. */
+function tokenRecordContext(records: EnrollmentToken[]): RepositoryContext {
+  return {
+    unifiedDataRepo: {
+      findAllForType: () =>
+        Promise.resolve(records.map((_, i) => ({
+          data: { name: "token-main", isRenamed: false, isDeleted: false },
+          modelType: "swamp/enrollment-token",
+          modelId: `m-${i}`,
+        }))),
+      getContent: (_type: unknown, modelId: string) =>
+        Promise.resolve(
+          new TextEncoder().encode(
+            JSON.stringify(records[Number(modelId.slice(2))]),
+          ),
+        ),
+    },
+  } as unknown as RepositoryContext;
+}
+
+Deno.test("WorkerGateway: enrollment reads token records as a token_record_scan phase", async () => {
+  await withObservedSpans(async (spans) => {
+    const h = createHarness({
+      repoContext: tokenRecordContext([
+        mintRecord("ci-runner-3", BASE_MINT),
+        mintRecord("other", BASE_MINT),
+      ]),
+      readTokenRecord: undefined,
+    });
+    const { workerChannel } = connectWorkerSocket(h.gateway);
+    await enroll(workerChannel);
+    const scan = findSpan(spans, "swamp.diagnostic.token_record_scan");
+    assertEquals(scan.attributes["swamp.diagnostic.area"], "enrollment");
+    assertEquals(scan.attributes["swamp.diagnostic.records_listed"], 2);
+    assertEquals(scan.attributes["swamp.diagnostic.content_reads"], 2);
+    assertEquals(scan.attributes["swamp.diagnostic.tokens"], 2);
+    assertEquals(scan.attributes["swamp.diagnostic.cancel_observed"], false);
+  });
+});
+
+Deno.test("WorkerGateway: only enrollment preparation runs in the enrollment area, not the work it starts (swamp-club#3986)", async () => {
+  const areas: [string, string | undefined][] = [];
+  const h = createHarness({
+    verifyOnEnroll: true,
+    verifyWorker: () => Promise.resolve({ ok: true }),
+    runModelMethod: (input) => {
+      areas.push([input.methodName, currentDiagnosticArea()]);
+      return Promise.resolve();
+    },
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  await waitFor(
+    () => areas.some(([method]) => method === "set_status"),
+    "verification to record its status",
+  );
+  assertEquals(areas, [
+    ["redeem", "enrollment"],
+    ["enroll", "enrollment"],
+    // Started by the enrollment, after its preparation: no area.
+    ["set_status", undefined],
+  ]);
+});
+
+Deno.test("WorkerGateway: a cancel the worker sends mid-enrollment is recorded as received, and the phases still export", async () => {
+  await withObservedSpans(async (spans) => {
+    const release = Promise.withResolvers<void>();
+    let redeeming = false;
+    const h = createHarness({
+      repoContext: tokenRecordContext([mintRecord("ci-runner-3", BASE_MINT)]),
+      readTokenRecord: undefined,
+      runModelMethod: async (input) => {
+        if (input.methodName === "redeem") {
+          redeeming = true;
+          await release.promise;
+        }
+        h.transitions.push(input);
+      },
+    });
+    let cancelFed = false;
+    const workerChannel: RpcChannel = new RpcChannel({
+      send: (data) =>
+        void Promise.resolve().then(() => {
+          attached.feed(data);
+          if (data.includes('"rpc.cancel"')) cancelFed = true;
+        }),
+    });
+    const attached = h.gateway.attachTransport({
+      send: (data) =>
+        void Promise.resolve().then(() => workerChannel.handleRaw(data)),
+    }, () => attached.closed());
+    const controller = new AbortController();
+    const call = workerChannel.call(RemoteMethod.enroll, enrollParams, {
+      signal: controller.signal,
+    });
+    await waitFor(() => redeeming, "redemption to start");
+    controller.abort();
+    await assertRejects(() => call);
+    await waitFor(() => cancelFed, "the cancel to reach the gateway");
+    release.resolve();
+    await waitFor(
+      () => spans.some((s) => s.name === "swamp.enrollment.request"),
+      "the enrollment request to finish",
+    );
+
+    const request = findSpan(spans, "swamp.enrollment.request");
+    assertEquals(request.attributes["swamp.rpc.cancel_observed"], true);
+    assertEquals(request.attributes["swamp.rpc.cancel_cause"], "cancel_frame");
+    assertEquals(
+      typeof request.attributes["swamp.rpc.cancel_observed_ms"],
+      "number",
+    );
+    // The enrollment stops before recording the worker (swamp-club#3984).
+    assertEquals(request.attributes["swamp.outcome"], "closed");
+    assertEquals(h.transitions.map((t) => t.methodName), ["redeem"]);
+    // The record read after redeem saw the cancel, and still exported.
+    const scan = findSpan(spans, "swamp.diagnostic.token_record_scan");
+    assertEquals(scan.attributes["swamp.diagnostic.cancel_observed"], true);
+    assertEquals(scan.attributes["swamp.outcome"], "ok");
+  });
+});
+
+Deno.test("WorkerGateway: a socket that closes mid-enrollment is recorded as closed, not as a cancel received", async () => {
+  await withObservedSpans(async (spans) => {
+    const release = Promise.withResolvers<void>();
+    let redeeming = false;
+    const h = createHarness({
+      runModelMethod: async (input) => {
+        if (input.methodName === "redeem") {
+          redeeming = true;
+          await release.promise;
+        }
+        h.transitions.push(input);
+      },
+    });
+    const { workerChannel, dropSocket } = connectWorkerSocket(h.gateway);
+    const call = workerChannel.call(RemoteMethod.enroll, enrollParams);
+    await waitFor(() => redeeming, "redemption to start");
+    dropSocket();
+    release.resolve();
+    await waitFor(
+      () => spans.some((s) => s.name === "swamp.enrollment.request"),
+      "the enrollment request to finish",
+    );
+    const request = findSpan(spans, "swamp.enrollment.request");
+    assertEquals(request.attributes["swamp.rpc.cancel_observed"], true);
+    assertEquals(
+      request.attributes["swamp.rpc.cancel_cause"],
+      "channel_closed",
+    );
+    workerChannel.close("test done");
+    await call.catch(() => {});
+  });
+});
+
+Deno.test("WorkerGateway: an enrollment nobody cancels records that no cancel was seen", async () => {
+  await withObservedSpans(async (spans) => {
+    const h = createHarness();
+    const { workerChannel } = connectWorkerSocket(h.gateway);
+    await enroll(workerChannel);
+    const request = findSpan(spans, "swamp.enrollment.request");
+    assertEquals(request.attributes["swamp.rpc.cancel_observed"], false);
+    assertEquals(request.attributes["swamp.rpc.cancel_cause"], undefined);
+  });
+});
+
+Deno.test("WorkerGateway: an observer that throws on the cancel fields neither fails enrollment nor throws from the abort listener", async () => {
+  const silent: ExecutionObservation = {
+    carrier: undefined,
+    run: (fn) => fn(),
+    attributes: (values) => {
+      if (
+        Object.keys(values).some((key) => key.startsWith("swamp.rpc.cancel"))
+      ) {
+        throw new Error("exporter broke");
+      }
+    },
+    end: () => {},
+  };
+  setExecutionObserver({ start: () => silent });
+  try {
+    const h = createHarness();
+    const { workerChannel } = connectWorkerSocket(h.gateway);
+    const result = await enroll(workerChannel);
+    assertEquals(result.workerId, "ci-runner-3");
+
+    // A cancel mid-enrollment calls the listener, which must not throw.
+    const release = Promise.withResolvers<void>();
+    let redeeming = false;
+    const cancelled = createHarness({
+      runModelMethod: async (input) => {
+        if (input.methodName === "redeem") {
+          redeeming = true;
+          await release.promise;
+        }
+      },
+    });
+    const second = connectWorkerSocket(cancelled.gateway);
+    const call = second.workerChannel.call(RemoteMethod.enroll, enrollParams);
+    await waitFor(() => redeeming, "redemption to start");
+    second.dropSocket();
+    second.workerChannel.close("test done");
+    release.resolve();
+    await assertRejects(() => call);
+    await cancelled.gateway.settled();
+  } finally {
+    setExecutionObserver(undefined);
+  }
 });

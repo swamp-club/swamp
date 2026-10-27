@@ -5,6 +5,9 @@ adapter lives in infrastructure. Observations do not authorize work or change
 retry, lease, or recovery policy. Payloads, predicates, credentials, and exception
 messages are excluded from the new observation attributes.
 
+Costly serve paths outside remote execution export their phases through the
+same observations: see [serve phase telemetry](./serve-phase-telemetry.md).
+
 ## Live progress (scope addition, implementation in progress)
 
 The requester approved live waiting-state diagnosis on lab #3786; the scope

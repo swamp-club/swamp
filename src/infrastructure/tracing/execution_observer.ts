@@ -254,6 +254,7 @@ export function installExecutionObserver(): void {
       let ended = false;
       return {
         carrier: context.with(active, () => traceCarrier(injectTraceContext())),
+        recording: span.isRecording(),
         run: (fn) => context.with(active, fn),
         attributes: (values) => span.setAttributes(values),
         end(outcome) {
