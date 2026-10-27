@@ -186,3 +186,13 @@ Deno.test("evaluatedJobMismatch: refuses a job that now evaluates to a name the 
     'Job "site-${{ env.REGION }}" now evaluates to "site-east", but the run stored it as "site-north".',
   );
 });
+
+Deno.test("pairExpressionJobs: a name with an unclosed opener fits only itself", () => {
+  const unclosed = "site-${{ inputs.a";
+  const wf = workflowOf(unclosed);
+  assertEquals(
+    pairExpressionJobs(wf, runOf(wf, unclosed)),
+    new Map([[unclosed, unclosed]]),
+  );
+  assertEquals(pairExpressionJobs(wf, runOf(wf, "site-west")), undefined);
+});

@@ -2115,7 +2115,10 @@ the job or step and points to `swamp workflow history logs <id>`
    job, so a retry re-runs a failed step without touching a same-named step of
    another job. The `steps.*` expression context still keys steps by name
    alone, so a step that reads `steps.<name>` for a name used in more than one
-   job sees the record written last, in a retry as in a run.
+   job sees the record written last. A run writes them as steps finish; a
+   resume first fills the context in stored job order, so a reset step reading
+   a name shared by two parallel jobs can see the other job's output than it
+   did in the run.
 7. Step and job names hold any printable character, with space as the only
    whitespace: the schema refuses control characters, tab and newline
    (`nodeName` in `src/domain/workflows/node_name.ts`, swamp-club#3027).

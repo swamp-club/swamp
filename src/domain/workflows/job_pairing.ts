@@ -60,6 +60,8 @@ function fits(template: string, stored: string): boolean {
     from = span.end;
   }
   parts.push(template.slice(from));
+  // An unclosed `${{` is no expression: the name is literal text.
+  if (parts.length === 1) return stored === template;
   const first = parts[0];
   const last = parts[parts.length - 1];
   if (!stored.startsWith(first)) return false;
@@ -182,6 +184,10 @@ export function evaluatedJobMismatch(
   run: WorkflowRun,
 ): string | undefined {
   const pairs = pairExpressionJobs(workflow, run);
+  // Unpaired, a job is only required to evaluate to a name the run has: two
+  // jobs that now evaluate to each other's stored names pass. The planner
+  // refuses a reset reaching an unpaired job, so such a job is only walked,
+  // never reset.
   for (const [i, job] of workflow.jobs.entries()) {
     if (!evaluatedName(job.name)) continue;
     const now = resolved.jobs[i]?.name;
