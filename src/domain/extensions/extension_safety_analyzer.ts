@@ -30,7 +30,11 @@ import {
   parseExtensionSource,
   parseExtensionSourceWithComments,
 } from "./extension_source_ast.ts";
-import { BundleModuleMap, dependencyLabel } from "./bundle_module_map.ts";
+import {
+  type BundleModule,
+  BundleModuleMap,
+  dependencyLabel,
+} from "./bundle_module_map.ts";
 import { escapeControlCharacters } from "../control_characters.ts";
 import { remediationFor } from "./extension_rule_catalog.ts";
 import { directiveSpans, withoutDirective } from "./extension_acceptances.ts";
@@ -505,6 +509,19 @@ export interface BundleSafetyResult {
   dependencyIssues: BundleDependencyIssue[];
 }
 
+/**
+ * Whether a bundle module's findings are a dependency's: its comment names a
+ * dependency path, and this machine does not know the path to be the
+ * extension's own.
+ */
+function isDependencyCode(
+  module: BundleModule,
+  isExtensionModule: ((path: string) => boolean) | undefined,
+): boolean {
+  if (module.origin !== "dependency" || module.path === undefined) return false;
+  return isExtensionModule?.(module.path) !== true;
+}
+
 /** The longest module path a bundle finding prints. */
 const MAX_PRINTED_MODULE_PATH = 200;
 
@@ -546,7 +563,7 @@ export function analyzeBundleSafety(
   const findings = findDynamicCodeExecution(source, parsed?.program ?? null);
   if (findings.length === 0) return { errors: [], dependencyIssues: [] };
   const modules = parsed
-    ? BundleModuleMap.fromComments(parsed.comments)
+    ? BundleModuleMap.fromComments(source, parsed.comments)
     : BundleModuleMap.fromText(source);
 
   // Grouped by module, in the order each module's first finding appears.
@@ -556,9 +573,7 @@ export function analyzeBundleSafety(
   >();
   for (const finding of findings) {
     const module = modules.moduleAt(finding.line);
-    const dependency = module.origin === "dependency" &&
-      !(module.path !== undefined &&
-        options.isExtensionModule?.(module.path) === true);
+    const dependency = isDependencyCode(module, options.isExtensionModule);
     const key = `${dependency}\0${module.origin}\0${module.path ?? ""}`;
     let group = groups.get(key);
     if (!group) {

@@ -17,12 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { SourceComment } from "./extension_source_ast.ts";
+import { LineIndex, type SourceComment } from "./extension_source_ast.ts";
 
 /**
  * Where a line of a bundle came from:
  * - `author` — a module whose path is not a dependency's: the extension's
- *   own code.
+ *   own code. So is the code after a line comment that names no module and
+ *   is no known annotation, since it cannot be shown to be a dependency's.
  * - `dependency` — a module in a Deno or npm cache, `node_modules`, or at a
  *   remote specifier.
  * - `unattributed` — code above the first module comment (esbuild's runtime
@@ -37,19 +38,25 @@ export interface BundleModule {
   origin: BundleModuleOrigin;
 }
 
-/** A module comment: the line it is on and the path it names. */
+/** A module boundary: the line it is on, and the path its comment names. */
 interface ModuleMark {
   line: number;
   path: string;
+  /** False when the comment names no module the pattern recognizes. */
+  recognized: boolean;
 }
 
 // A module comment's text after `//`: one space, then a module path. esbuild
 // writes the path as it is, spaces included, relative to the working directory
 // or the output file (a bare `compose.ts` included), or a specifier such as
-// `deno:https://...`. A path that went unmatched would hand its code to the
-// module above it.
+// `deno:https://...`.
 const MODULE_COMMENT =
-  /^ ((?:https?|npm|jsr|deno|node|file):\S+|\S.*\.(?:[cm]?[jt]sx?|json))$/;
+  /^ ((?:https?|npm|jsr|deno|node|file):\S+|\S.*\.(?:[cm]?[jt]sx?|json))$/i;
+
+// Line comments esbuild keeps that are not module boundaries: annotations
+// (`@__NO_SIDE_EFFECTS__`), `#` directives (`# sourceMappingURL`), and legal
+// comments (`//!`, `@license`, `@preserve`).
+const ANNOTATION = /^\s*[@#!]|@(?:license|preserve)\b/i;
 
 const DEPENDENCY_PATH = new RegExp(
   [
@@ -97,8 +104,24 @@ export function dependencyLabel(path: string): string {
 }
 
 /**
+ * The boundary a line comment at column 0 marks, or undefined for an
+ * annotation, which marks none.
+ */
+function markFor(line: number, text: string): ModuleMark | undefined {
+  const match = MODULE_COMMENT.exec(text);
+  if (match) return { line, path: match[1], recognized: true };
+  if (ANNOTATION.test(text)) return undefined;
+  return { line, path: text.trim(), recognized: false };
+}
+
+/**
  * The modules of a bundle `deno bundle` wrote, read from the comment esbuild
  * puts above each module's code. Answers which module a line belongs to.
+ *
+ * Every line comment at column 0 other than a known annotation is a
+ * boundary, so a module comment the pattern does not recognize (an unusual
+ * extension, a path broken by a newline) still ends the module above it.
+ * Lines are counted by `\n`, as the safety rules count them.
  *
  * The comments are text in the bundle: whoever built it chose them.
  */
@@ -110,20 +133,25 @@ export class BundleModuleMap {
    * only line comments starting at column 0, so comment-like text inside a
    * string or template literal is not taken for a module.
    */
-  static fromComments(comments: readonly SourceComment[]): BundleModuleMap {
+  static fromComments(
+    source: string,
+    comments: readonly SourceComment[],
+  ): BundleModuleMap {
+    const lines = new LineIndex(source);
     const marks: ModuleMark[] = [];
     for (const comment of comments) {
-      if (comment.type !== "CommentLine" || comment.column !== 0) continue;
-      const match = MODULE_COMMENT.exec(comment.value);
-      if (match) marks.push({ line: comment.line, path: match[1] });
+      if (comment.type !== "CommentLine") continue;
+      if (comment.start > 0 && source[comment.start - 1] !== "\n") continue;
+      const mark = markFor(lines.position(comment.start).line, comment.value);
+      if (mark) marks.push(mark);
     }
     marks.sort((a, b) => a.line - b.line);
     return new BundleModuleMap(marks);
   }
 
   /**
-   * The map of a bundle that does not parse, from every line that reads as
-   * a module comment.
+   * The map of a bundle that does not parse, from every line that starts
+   * with `//`.
    */
   static fromText(source: string): BundleModuleMap {
     const marks: ModuleMark[] = [];
@@ -131,18 +159,18 @@ export class BundleModuleMap {
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].endsWith("\r") ? lines[i].slice(0, -1) : lines[i];
       if (!line.startsWith("//")) continue;
-      const match = MODULE_COMMENT.exec(line.slice(2));
-      if (match) marks.push({ line: i + 1, path: match[1] });
+      const mark = markFor(i + 1, line.slice(2));
+      if (mark) marks.push(mark);
     }
     return new BundleModuleMap(marks);
   }
 
-  /** How many module comments the bundle holds. */
+  /** How many module boundaries the bundle holds. */
   get moduleCount(): number {
     return this.marks.length;
   }
 
-  /** The module the 1-based `line` belongs to: the closest comment above it. */
+  /** The module the 1-based `line` belongs to: the closest boundary above it. */
   moduleAt(line: number): BundleModule {
     let lo = 0;
     let hi = this.marks.length - 1;
@@ -159,7 +187,9 @@ export class BundleModuleMap {
     if (found === undefined) return { origin: "unattributed" };
     return {
       path: found.path,
-      origin: isDependencyModulePath(found.path) ? "dependency" : "author",
+      origin: found.recognized && isDependencyModulePath(found.path)
+        ? "dependency"
+        : "author",
     };
   }
 }

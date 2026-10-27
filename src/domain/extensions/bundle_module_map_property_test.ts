@@ -19,7 +19,11 @@
 
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
-import { BundleModuleMap, dependencyLabel } from "./bundle_module_map.ts";
+import {
+  BundleModuleMap,
+  dependencyLabel,
+  isDependencyModulePath,
+} from "./bundle_module_map.ts";
 import { parseExtensionSourceWithComments } from "./extension_source_ast.ts";
 
 const arbSegment = fc.stringMatching(/^[a-z][a-z0-9_-]{0,8}$/);
@@ -27,7 +31,10 @@ const arbSegment = fc.stringMatching(/^[a-z][a-z0-9_-]{0,8}$/);
 const arbAuthorPath = fc.tuple(
   fc.array(arbSegment, { minLength: 0, maxLength: 3 }),
   arbSegment,
-).map(([dirs, file]) => [...dirs, `${file}.ts`].join("/"));
+).map(([dirs, file]) => [...dirs, `${file}.ts`].join("/"))
+  // A generated segment can spell a cache dir (`deno_dir`); such a path is
+  // a dependency's by design, not an author's.
+  .filter((path) => !isDependencyModulePath(path));
 
 const arbCachePrefix = fc.constantFrom(
   "../../.swamp/deno-cache",
@@ -83,7 +90,7 @@ Deno.test("BundleModuleMap.moduleAt: every body line maps to the module whose co
         if (!parsed) throw new Error("generated bundle does not parse");
         for (
           const map of [
-            BundleModuleMap.fromComments(parsed.comments),
+            BundleModuleMap.fromComments(source, parsed.comments),
             BundleModuleMap.fromText(source),
           ]
         ) {

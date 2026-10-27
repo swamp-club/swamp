@@ -144,14 +144,14 @@ export function parseExtensionSource(
   return parseModule(source, options)?.program ?? null;
 }
 
-/** A comment the parser found, with the 1-based line and 0-based column it starts at. */
+/** A comment the parser found, and where it starts. */
 export interface SourceComment {
   /** `CommentLine` for `// ...`, `CommentBlock` for a block comment. */
   type: string;
   /** The text after `//`, or between the block comment's delimiters. */
   value: string;
-  line: number;
-  column: number;
+  /** The 0-based offset of the comment's first character in the source. */
+  start: number;
 }
 
 /**
@@ -167,13 +167,11 @@ export function parseExtensionSourceWithComments(
   if (!parsed) return null;
   const comments: SourceComment[] = [];
   for (const comment of parsed.comments) {
-    const start = comment.loc?.start;
-    if (!start) continue;
+    if (typeof comment.start !== "number") continue;
     comments.push({
       type: comment.type,
       value: comment.value,
-      line: start.line,
-      column: start.column,
+      start: comment.start,
     });
   }
   return { program: parsed.program, comments };
@@ -188,7 +186,7 @@ function parseModule(
     comments: Array<{
       type: string;
       value: string;
-      loc?: { start: { line: number; column: number } } | null;
+      start?: number | null;
     }>;
   }
   | null {

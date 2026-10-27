@@ -29,7 +29,7 @@ import { parseExtensionSourceWithComments } from "./extension_source_ast.ts";
 function parsedMap(source: string): BundleModuleMap {
   const parsed = parseExtensionSourceWithComments(source);
   if (!parsed) throw new Error("fixture does not parse");
-  return BundleModuleMap.fromComments(parsed.comments);
+  return BundleModuleMap.fromComments(source, parsed.comments);
 }
 
 const BUNDLE = [
@@ -76,6 +76,72 @@ Deno.test("BundleModuleMap.moduleAt: a module path with spaces starts a module, 
       origin: "author",
     });
   }
+});
+
+Deno.test("BundleModuleMap.moduleAt: a module comment the pattern does not recognize ends the dependency above as the extension's code", () => {
+  for (
+    const comment of [
+      "// .swamp/pulled-extensions/@x/y/files/helper.JSX2",
+      "// .swamp/pulled-extensions/@x/y/files/a",
+      "//no space before the path",
+    ]
+  ) {
+    const source = [
+      "// ../.swamp/deno-cache/npm/registry.npmjs.org/dep/1.0.0/index.js",
+      "const a = 1;",
+      comment,
+      "const b = 2;", // 4
+    ].join("\n");
+    for (const map of [parsedMap(source), BundleModuleMap.fromText(source)]) {
+      assertEquals(map.moduleAt(4).origin, "author", comment);
+    }
+  }
+});
+
+Deno.test("BundleModuleMap.moduleAt: an uppercase extension is still a module path", () => {
+  const source = [
+    "// ../.swamp/deno-cache/npm/registry.npmjs.org/dep/1.0.0/index.js",
+    "const a = 1;",
+    "// .swamp/pulled-extensions/@x/y/files/helper.JS",
+    "const b = 2;", // 4
+  ].join("\n");
+  assertEquals(parsedMap(source).moduleAt(4), {
+    path: ".swamp/pulled-extensions/@x/y/files/helper.JS",
+    origin: "author",
+  });
+});
+
+Deno.test("BundleModuleMap.moduleAt: annotations and legal comments do not end a dependency", () => {
+  for (
+    const comment of [
+      "// @__NO_SIDE_EFFECTS__",
+      "//! moment.js",
+      "// @license MIT",
+      "//# sourceMappingURL=x.js.map",
+    ]
+  ) {
+    const source = [
+      "// ../node_modules/dep/index.js",
+      comment,
+      "const b = 2;", // 3
+    ].join("\n");
+    assertEquals(parsedMap(source).moduleAt(3).origin, "dependency", comment);
+  }
+});
+
+Deno.test("BundleModuleMap.fromComments: counts lines by \\n, as the safety rules do", () => {
+  // Babel would count the U+2028 inside the string as a line break; the
+  // detector does not, so the map must not either.
+  const source = [
+    "// ../node_modules/dep/index.js",
+    "const s = '\u2028\u2028';",
+    "// extensions/models/thing.ts",
+    "const b = 2;", // 4
+  ].join("\n");
+  assertEquals(parsedMap(source).moduleAt(4), {
+    path: "extensions/models/thing.ts",
+    origin: "author",
+  });
 });
 
 Deno.test("BundleModuleMap.moduleAt: a bundle without module comments is unattributed throughout", () => {

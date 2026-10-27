@@ -1603,6 +1603,38 @@ Deno.test(
 );
 
 Deno.test(
+  "prepareInstall: scans every bundle dir, not only bundles/",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      await withTempRoot(async (tempRoot) => {
+        const name = uniqueExtName();
+        const archive = await buildSkillArchive({
+          name,
+          skills: { guide: { "SKILL.md": "guide" } },
+          files: {
+            "vaults/v.ts": "export const vault = { type: 'v' };\n",
+            "vault-bundles/v.js": "// extensions/vaults/v.ts\neval('1');\n",
+          },
+        });
+        const error = await assertRejects(
+          () =>
+            prepareInstall(
+              { name, version: null },
+              skillInstallContext(repoDir, lockfile, { [name]: archive }),
+              { tempRoot },
+            ),
+          UserError,
+        );
+        assertStringIncludes(
+          error.message,
+          "vault-bundles/v.js line 2: Module extensions/vaults/v.ts contains",
+        );
+      });
+    });
+  },
+);
+
+Deno.test(
   "prepareInstall: a clean bundle adds no warning",
   async () => {
     await withSkillRepo(async (repoDir, lockfile) => {

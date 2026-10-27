@@ -1241,20 +1241,28 @@ as `files/`. So pull also scans bundles (swamp-club#3383), at two points:
   scanned, and a refusal anywhere in the set (the extension or a dependency)
   decides ahead of any other failure. The rebuilt bundle is deleted, because a
   bundle dir the archive had nothing for is not staged; if it cannot be, the
-  refusal names the file to delete. As with a collision, the catalog's recorded
-  source modules for the refused sources stay until the next bundle rewrites
-  them.
+  refusal names the file to delete. On a refused upgrade whose archive had no
+  bundle at that path, the previous version's bundle is gone too and is
+  rebuilt from its source on the next load. As with a collision, the catalog's
+  recorded source modules for the refused sources stay until the next bundle
+  rewrites them.
 
 Only the `dynamic-code` rule runs on a bundle (`analyzeBundleSafety`). It is
 the one hard-error rule that reads content. The file rules (type, size, count)
 are for sources and would refuse every `.js` file or any bundle over 1 MB, and
 links are refused for the whole archive already. The source scan is unchanged.
 
-A finding is attributed to the module whose path comment (`// <path>`, which
-esbuild writes above each module, verbatim, spaces included) is the closest one
-above it (`BundleModuleMap`). A file name cannot hold `/`, so a newline in one
-cannot forge a module comment. When the bundle parses, those comments come from the
-parser's comment list, so comment-like text in a string cannot start a module.
+A finding is attributed to the module whose boundary is the closest one above
+it (`BundleModuleMap`). esbuild writes a path comment (`// <path>`, verbatim,
+spaces included) above each module. Every line comment at column 0 other than
+an annotation (`@__NO_SIDE_EFFECTS__`), a `#` directive or a legal comment is a
+boundary, so a module comment the pattern does not recognize (an unusual
+extension, a path broken by a newline in a file name) still ends the module
+above it, and its code counts as the extension's own. When the bundle parses,
+the comments come from the parser's comment list, so comment-like text in a
+string cannot start a module, and lines are counted by `\n` from each
+comment's offset, as the safety rules count them.
+
 A module whose path is in a Deno or npm cache, under `node_modules`, or at a
 remote specifier is a dependency. Its findings are pull warnings, one per
 dependency module (named by its registry part, such as `npm:ajv/...`), and do

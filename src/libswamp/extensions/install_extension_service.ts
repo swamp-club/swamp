@@ -340,7 +340,9 @@ export class InstallExtensionService {
                 // nothing for is not staged, so the rollback would leave it.
                 // A failed removal must not replace the refusal, which is
                 // what rolls the install back; the refusal names the file.
-                const leftBehind = await Deno.remove(bundlePath).then(
+                const leftBehind = bundlePath === "" ? [] : await Deno.remove(
+                  bundlePath,
+                ).then(
                   () => [],
                   (error: unknown) =>
                     error instanceof Deno.errors.NotFound ? [] : [bundlePath],
@@ -500,8 +502,8 @@ function bundleRefusalError(
   rollback: InstallRollbackOutcome,
 ): UserError {
   const outcome = rollback.status === "rolled-back"
-    ? "The install was rolled back; any previously installed version is " +
-      "still in place."
+    ? "The install was rolled back to the previously installed version, " +
+      "if there was one."
     : rollback.status === "kept"
     ? "The install could not be rolled back (the lockfile could not be " +
       `restored), so it is still installed: remove it with \`swamp ` +
