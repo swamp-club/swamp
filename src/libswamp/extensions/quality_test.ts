@@ -1522,7 +1522,7 @@ Deno.test("resolvePrivateSourceStanding: a lookup that outlasts the timeout is u
   );
 });
 
-Deno.test("extensionQuality: an attested private extension on a self-hosted forge passes repository-verified", async () => {
+Deno.test("extensionQuality: an attested private extension on a self-hosted forge earns repository-verified", async () => {
   await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
     const manifest = makeManifest({
       repository: "https://git.example-corp.internal/team/test-ext",
@@ -1540,7 +1540,10 @@ Deno.test("extensionQuality: an attested private extension on a self-hosted forg
       ).score.factors.find((f) => f.id === "repository-verified")!;
 
     const attested = await run(fakeLookup({ entries: hosting(true) }));
-    assertEquals(attested.status, "provisional");
+    assertEquals(
+      [attested.status, attested.earnedPoints],
+      ["earned", 2],
+    );
     assertEquals(attested.label, "Private repository (collective attested)");
 
     const notAttested = await run(fakeLookup({ entries: hosting(false) }));

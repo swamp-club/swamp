@@ -246,11 +246,9 @@ Deno.test("composeScore: an attested private extension earns repository-verified
     assertEquals(score.provisionalPoints, 0);
     assertEquals(score.ifProvisionalEarned, null);
     assertEquals(score.maxClientEarnablePoints, score.maxEarnablePoints);
+    assertEquals(score.percentage, 100);
     // what a public forge reaches once the registry verifies it
-    assertEquals(
-      score.percentage,
-      publicForge.score.ifProvisionalEarned?.percentage,
-    );
+    assertEquals(publicForge.score.ifProvisionalEarned?.percentage, 100);
   }
 });
 
