@@ -20,6 +20,7 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   INBOX_REQUIRES_USER,
+  isInboxMessageId,
   MAX_INBOX_ACTION_COMMAND_LENGTH,
   MAX_INBOX_BODY_BYTES,
   MAX_INBOX_TITLE_LENGTH,
@@ -263,6 +264,18 @@ Deno.test("parseInboxMessagePage: refuses a malformed envelope", () => {
     parseInboxMessagePage({ messages: [], nextCursor: "a\x1bb" }),
     undefined,
   );
+  // Not a message id: shell text must never reach the older-page command.
+  assertEquals(
+    parseInboxMessagePage({
+      messages: [],
+      nextCursor: "01JBX5Q8ZK00000000000000ZF; rm -rf ~",
+    }),
+    undefined,
+  );
+  assertEquals(
+    parseInboxMessagePage({ messages: [], nextCursor: "" }),
+    undefined,
+  );
   assertEquals(parseInboxMessagePage({ messages: [], nextCursor: null }), {
     messages: [],
     dropped: 0,
@@ -311,4 +324,24 @@ Deno.test("parseInboxReadIds: keeps string ids and refuses a malformed body", ()
 
 Deno.test("sanitizeInboxBody: normalises line endings", () => {
   assertEquals(sanitizeInboxBody("a\r\nb\rc\n"), "a\nb\nc\n");
+});
+
+Deno.test("parseInboxMessagePage: reports nextCursor upper case", () => {
+  assertEquals(
+    parseInboxMessagePage({
+      messages: [],
+      nextCursor: "01jbx5q8zk00000000000000zf",
+    })?.nextCursor,
+    "01JBX5Q8ZK00000000000000ZF",
+  );
+});
+
+Deno.test("isInboxMessageId: accepts a ULID in either case and nothing else", () => {
+  assert(isInboxMessageId("01JBX5Q8ZK00000000000000ZF"));
+  assert(isInboxMessageId("01jbx5q8zk00000000000000zf"));
+  assertEquals(isInboxMessageId(""), false);
+  assertEquals(isInboxMessageId("01JBX5Q8ZK00000000000000Z"), false);
+  // I, L, O and U are not Crockford base32.
+  assertEquals(isInboxMessageId("01JBX5Q8ZK00000000000000ZU"), false);
+  assertEquals(isInboxMessageId("01JBX5Q8ZK00000000000000ZF "), false);
 });
