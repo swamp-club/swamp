@@ -19,6 +19,14 @@
 
 import { getLogger } from "@logtape/logtape";
 import { withPollCycleSpan } from "../infrastructure/tracing/mod.ts";
+import {
+  type DiagnosticResult,
+  observeDiagnosticPhase,
+  type PhaseTally,
+  startDiagnosticPhase,
+  withDiagnosticArea,
+  withDiagnosticAttributes,
+} from "../domain/diagnostics/diagnostic_phase.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import {
   gatedPull,
@@ -144,14 +152,38 @@ export class AccessDataPoller {
     if (this.#pulling) return;
 
     this.#pendingPull = this.#pendingPull.then(() =>
-      withPollCycleSpan("access_data", () => this.#pullAndReloadPolicy())
+      withPollCycleSpan("access_data", () =>
+        withDiagnosticArea(
+          "access_poll",
+          () =>
+            withDiagnosticAttributes(
+              {
+                "swamp.diagnostic.source_mode": this.#changeSource
+                  ? "local_change_source"
+                  : "sync_pull",
+              },
+              () => this.#pullAndReloadPolicy(),
+            ),
+          this.#stopController.signal,
+        ))
     );
   }
 
+  /**
+   * One cycle, exported as the access_poll diagnostic phases
+   * (design/enablers/serve-phase-telemetry.md): a `poll_cycle` holding
+   * `change_detection` on a local change source or `gate_wait` and
+   * `remote_pull` on a sync pull, then `catalog_invalidate` and the
+   * snapshot phases when it reloads.
+   */
   async #pullAndReloadPolicy(): Promise<void> {
     this.#pulling = true;
+    const cycle = startDiagnosticPhase("poll_cycle");
     try {
-      const count = await this.#changedCount();
+      const pending = this.#needsReload;
+      const detected = await cycle.run(() => this.#changedCount());
+      const count = detected ?? 0;
+      cycle.tally.add("changed", count);
       if (count > 0) {
         if (this.#changeSource) {
           logger
@@ -160,7 +192,12 @@ export class AccessDataPoller {
           logger
             .info`Access data poller: ${count} file(s) updated, reloading policy snapshot`;
         }
-        this.#catalogInvalidate();
+        await cycle.run(() =>
+          observeDiagnosticPhase("catalog_invalidate", {}, () => {
+            this.#catalogInvalidate();
+            return Promise.resolve();
+          })
+        );
         this.#needsReload = true;
       }
       // A snapshot missing records it could not read is rebuilt every cycle
@@ -169,22 +206,42 @@ export class AccessDataPoller {
       // and a remote datastore's read can fail for one cycle. A corrupt
       // record never reads by itself, and the write that fixes it is a
       // change, so it is not retried.
-      if (
-        this.#needsReload ||
-        this.#policySnapshotLoader.unreadable.some((record) =>
-          record.cause === "unreadable"
-        )
-      ) {
-        await this.#policySnapshotLoader.load();
+      const reason = count > 0
+        ? "changed"
+        : pending
+        ? "pending_retry"
+        : this.#unreadableRecords(cycle.tally) > 0
+        ? "unreadable_retry"
+        : "none";
+      cycle.attributes({ "swamp.diagnostic.reload_reason": reason });
+      if (reason !== "none") {
+        await cycle.run(() => this.#policySnapshotLoader.load());
         this.#needsReload = false;
       }
+      // A pull that never ran (the gate was busy, or stop() ended the wait)
+      // is a skip; a stop is also the cycle's cancellation.
+      const result: DiagnosticResult = reason !== "none"
+        ? "applied"
+        : detected === null
+        ? "skipped"
+        : "no_change";
+      cycle.result(result);
       if (this.#consecutiveFailures >= ACCESS_DATA_POLLER_ESCALATE_AFTER) {
         logger
           .info`Access data poller recovered after ${this.#consecutiveFailures} failed cycles`;
       }
       this.#consecutiveFailures = 0;
+      cycle.end(
+        detected === null && this.#stopController.signal.aborted
+          ? "cancelled"
+          : "ok",
+      );
     } catch (error) {
       this.#consecutiveFailures++;
+      cycle.attributes({
+        "swamp.diagnostic.consecutive_failures": this.#consecutiveFailures,
+      });
+      cycle.fail(error);
       const message = error instanceof Error ? error.message : String(error);
       if (this.#consecutiveFailures >= ACCESS_DATA_POLLER_ESCALATE_AFTER) {
         logger
@@ -197,24 +254,49 @@ export class AccessDataPoller {
     }
   }
 
-  async #changedCount(): Promise<number> {
-    if (this.#changeSource) return await this.#changeSource.detect();
+  /** Records the snapshot is missing because they could not be read. */
+  #unreadableRecords(tally: PhaseTally): number {
+    const count =
+      this.#policySnapshotLoader.unreadable.filter((record) =>
+        record.cause === "unreadable"
+      ).length;
+    tally.add("unreadable_records", count);
+    return count;
+  }
+
+  /**
+   * The number of records peers changed, or null when the sync pull never
+   * ran because the gate was not acquired.
+   */
+  async #changedCount(): Promise<number | null> {
+    const changeSource = this.#changeSource;
+    if (changeSource) {
+      return await observeDiagnosticPhase(
+        "change_detection",
+        { "swamp.diagnostic.baseline_missing": !changeSource.hasBaseline },
+        () => changeSource.detect(),
+      );
+    }
     const syncService = this.#syncService!;
+    let pulled = false;
     const result = await gatedPull(
       this.#syncGate,
       "access data poller",
-      (signal) =>
-        syncService.pullChanged({
+      (signal) => {
+        pulled = true;
+        return syncService.pullChanged({
           signal,
           subdirs: [...ACCESS_DATA_SUBDIRS],
           namespace: this.#namespace,
-        }),
+        });
+      },
       {
         state: this.#gateState,
         signal: this.#stopController.signal,
         timing: this.#gateTiming,
       },
     );
+    if (!pulled) return null;
     return typeof result === "number" ? result : 0;
   }
 }

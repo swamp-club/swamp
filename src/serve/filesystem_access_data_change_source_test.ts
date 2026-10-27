@@ -22,6 +22,14 @@ import { join } from "@std/path";
 import { EventBus } from "../domain/events/event_bus.ts";
 import { createModelUpdated } from "../domain/events/types.ts";
 import { FilesystemAccessDataChangeSource } from "./filesystem_access_data_change_source.ts";
+import {
+  observeDiagnosticPhase,
+  withDiagnosticArea,
+} from "../domain/diagnostics/diagnostic_phase.ts";
+import {
+  diagnosticPhases,
+  withObservedSpans,
+} from "../infrastructure/tracing/span_test_helpers.ts";
 
 const GRANT = "swamp/grant";
 const GROUP = "swamp/group";
@@ -479,6 +487,102 @@ Deno.test({
           assertEquals(await source.detect(), 1);
         },
       );
+    });
+  },
+});
+
+// Counts detect() reports into the poller's change_detection phase
+// (swamp-club#4005).
+
+/** Runs detect() as the poller does, inside its change_detection phase. */
+function detectAsPhase(
+  source: FilesystemAccessDataChangeSource,
+): Promise<number> {
+  return withDiagnosticArea(
+    "access_poll",
+    () => observeDiagnosticPhase("change_detection", {}, () => source.detect()),
+  );
+}
+
+Deno.test("FilesystemAccessDataChangeSource.detect: counts records, entries, changes and excluded own writes into its phase", async () => {
+  await withObservedSpans(async (spans) => {
+    await withSource(async ({ grantDir, bus, source }) => {
+      await writeVersion(grantDir, "g1", 1);
+      await source.prime();
+      await writeVersion(grantDir, "g1", 2, "revoked");
+      await ownRun(bus, GRANT, "g1", 2);
+      await writeVersion(grantDir, "g2", 1);
+      assertEquals(await detectAsPhase(source), 1);
+      assertEquals(await detectAsPhase(source), 0);
+    });
+    const [changed, unchanged] = diagnosticPhases(spans, "change_detection");
+    assertEquals(changed.attributes["swamp.diagnostic.records"], 2);
+    // g1: 1/, 1/raw, 1/metadata.yaml, 2/, 2/raw, 2/metadata.yaml, latest;
+    // g2: 1/, 1/raw, 1/metadata.yaml, latest.
+    assertEquals(changed.attributes["swamp.diagnostic.entries"], 11);
+    assertEquals(changed.attributes["swamp.diagnostic.unreadable_entries"], 0);
+    assertEquals(changed.attributes["swamp.diagnostic.changed"], 1);
+    assertEquals(
+      changed.attributes["swamp.diagnostic.own_changes_excluded"],
+      1,
+    );
+    assertEquals(unchanged.attributes["swamp.diagnostic.changed"], 0);
+    assertEquals(
+      unchanged.attributes["swamp.diagnostic.own_changes_excluded"],
+      undefined,
+    );
+  });
+});
+
+Deno.test("FilesystemAccessDataChangeSource.detect: without a baseline counts what it read and no comparison", async () => {
+  await withObservedSpans(async (spans) => {
+    await withSource(async ({ grantDir, source }) => {
+      await writeVersion(grantDir, "g1", 1);
+      assertEquals(source.hasBaseline, false);
+      assertEquals(await detectAsPhase(source), 1);
+      assertEquals(source.hasBaseline, true);
+    });
+    const [phase] = diagnosticPhases(spans, "change_detection");
+    assertEquals(phase.attributes["swamp.diagnostic.records"], 1);
+    assertEquals(phase.attributes["swamp.diagnostic.changed"], undefined);
+  });
+});
+
+Deno.test("FilesystemAccessDataChangeSource.detect: outside a diagnostic area records nothing", async () => {
+  await withObservedSpans(async (spans) => {
+    await withSource(async ({ grantDir, source }) => {
+      await writeVersion(grantDir, "g1", 1);
+      await source.prime();
+      assertEquals(await source.detect(), 0);
+    });
+    assertEquals(spans.length, 0);
+  });
+});
+
+Deno.test({
+  name:
+    "FilesystemAccessDataChangeSource.detect: counts the entries it could not read",
+  ignore: IGNORE_CHMOD,
+  fn: async () => {
+    await withObservedSpans(async (spans) => {
+      await withSource(async ({ grantDir, source }) => {
+        await writeVersion(grantDir, "g-bad", 1);
+        await writeVersion(grantDir, "g-ok", 1);
+        await source.prime();
+        await whileUnreadable(
+          join(grantDir, "g-bad", "grant-main", "1"),
+          async () => {
+            assertEquals(await detectAsPhase(source), 1);
+          },
+        );
+      });
+      const [phase] = diagnosticPhases(spans, "change_detection");
+      assertEquals(phase.attributes["swamp.diagnostic.records"], 2);
+      assertEquals(
+        phase.attributes["swamp.diagnostic.unreadable_entries"],
+        1,
+      );
+      assertEquals(phase.attributes["swamp.diagnostic.changed"], 1);
     });
   },
 });
