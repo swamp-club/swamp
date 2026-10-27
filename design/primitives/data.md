@@ -146,7 +146,10 @@ subprocess is synced by `finalizeVersion` (`contentSynced: false`).
 - **It survives a power cut.** A version's content, and the directory entries
   that reach it, are on disk before anything publishes it: the `latest` marker
   moving to it, a non-pending catalog row, or a settled one. On v2 the
-  repository syncs them first, as above. On v3 the commit is durable and replay
+  repository syncs them first, as above, when the datastore's `durable`
+  setting is on; it is off by default
+  ([datastores.md](../enablers/datastores.md#filesystem)). A failed sync fails
+  the write before it is published. On v3 the commit is durable and replay
   rewrites the checkout (swamp-club#3617), except for data keys the checkout's
   datastore filter keeps local (swamp-club#4019). Without the syncs, ext4's
   delayed allocation can keep the renames, the marker and the catalog row

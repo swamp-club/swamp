@@ -48,6 +48,7 @@ import type { GarbageCollectionPolicy, Lifetime } from "../data/mod.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 import type { SecretReference } from "../vaults/secret_bag_registry.ts";
 import { isReservedVaultName } from "../vaults/vault_name.ts";
+import { markErrorPaths } from "../errors.ts";
 import {
   type BehaviorWords,
   wordedError,
@@ -291,7 +292,18 @@ export class DefaultDataWriter implements DataWriter {
       // error reliably only to handles open when it happened. Not in the
       // finally, so a sync error never hides a stream error.
       if (this.allocated.durable) {
-        await file.sync();
+        try {
+          await file.sync();
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          throw markErrorPaths(
+            new Error(
+              `Could not sync ${this.allocated.contentPath} to disk: ${reason}.`,
+              { cause: error },
+            ),
+            [this.allocated.contentPath],
+          );
+        }
         this.contentSynced = true;
       }
     } finally {

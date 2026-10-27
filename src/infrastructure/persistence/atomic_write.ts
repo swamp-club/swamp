@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { dirname, join } from "@std/path";
-import { syncDirectory } from "./sync_directory.ts";
+import { syncDirectoryStrict, SyncFailedError } from "./sync_directory.ts";
 
 /**
  * How an atomic write is made durable (swamp-club#4017). Each hook is
@@ -34,7 +34,10 @@ export interface AtomicWriteSync {
     file: Deno.FsFile,
     paths: { readonly temp: string; readonly target: string },
   ) => Promise<void>;
-  /** Syncs a directory; {@link syncDirectory} by default. */
+  /**
+   * Syncs a directory; {@link syncDirectoryStrict} by default, which
+   * reports a failed sync rather than swallowing it.
+   */
   readonly syncDirectory?: (dir: string) => Promise<void>;
   /**
    * Whether the parent directory is synced after the rename; true by
@@ -145,7 +148,6 @@ export async function writeSyncedTempFile(
   mode?: number,
 ): Promise<string> {
   const tmpPath = join(dirname(target), `.${crypto.randomUUID()}.tmp`);
-  const syncFile = sync.syncFile ?? ((file: Deno.FsFile) => file.sync());
   const file = await Deno.open(tmpPath, {
     write: true,
     createNew: true,
@@ -156,7 +158,7 @@ export async function writeSyncedTempFile(
     while (written < content.length) {
       written += await file.write(content.subarray(written));
     }
-    await syncFile(file, { temp: tmpPath, target });
+    await syncWrittenFile(file, { temp: tmpPath, target }, sync);
   } catch (error) {
     file.close();
     await Deno.remove(tmpPath).catch(() => {});
@@ -181,7 +183,6 @@ export async function syncExistingFile(
   path: string,
   sync: AtomicWriteSync,
 ): Promise<boolean> {
-  const syncFile = sync.syncFile ?? ((file: Deno.FsFile) => file.sync());
   let file: Deno.FsFile;
   try {
     file = await Deno.open(
@@ -199,7 +200,7 @@ export async function syncExistingFile(
     throw error;
   }
   try {
-    await syncFile(file, { temp: path, target: path });
+    await syncWrittenFile(file, { temp: path, target: path }, sync);
   } finally {
     file.close();
   }
@@ -207,11 +208,47 @@ export async function syncExistingFile(
 }
 
 /**
+ * Syncs `file`, an open handle to what will be or already is
+ * `paths.target`, through `sync.syncFile` (`file.sync()` by default). A
+ * failure rejects with a {@link SyncFailedError} naming `paths.target`
+ * (swamp-club#4017).
+ */
+export async function syncWrittenFile(
+  file: Deno.FsFile,
+  paths: { readonly temp: string; readonly target: string },
+  sync: AtomicWriteSync,
+): Promise<void> {
+  try {
+    await (sync.syncFile ?? ((f: Deno.FsFile) => f.sync()))(file, paths);
+  } catch (error) {
+    throw error instanceof SyncFailedError
+      ? error
+      : new SyncFailedError(paths.target, error);
+  }
+}
+
+/**
+ * Syncs `dir` through `sync.syncDirectory` ({@link syncDirectoryStrict} by
+ * default). A failure rejects with a {@link SyncFailedError} naming `dir`.
+ */
+export async function syncWrittenDirectory(
+  dir: string,
+  sync: AtomicWriteSync,
+): Promise<void> {
+  try {
+    await (sync.syncDirectory ?? syncDirectoryStrict)(dir);
+  } catch (error) {
+    throw error instanceof SyncFailedError
+      ? error
+      : new SyncFailedError(dir, error);
+  }
+}
+
+/**
  * The synced form of the atomic writes: written whole and synced before
  * the rename, the directory synced after it. A failure before the rename
- * leaves the target unchanged; a directory sync that fails after it (only
- * an injected hook can, {@link syncDirectory} never throws) leaves the new
- * target in place.
+ * leaves the target unchanged; a directory sync that fails after it leaves
+ * the new target in place and rejects.
  */
 async function writeSynced(
   path: string,
@@ -227,5 +264,5 @@ async function writeSynced(
     throw error;
   }
   if (sync.syncParent === false) return;
-  await (sync.syncDirectory ?? syncDirectory)(dirname(path));
+  await syncWrittenDirectory(dirname(path), sync);
 }

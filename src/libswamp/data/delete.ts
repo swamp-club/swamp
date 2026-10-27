@@ -26,6 +26,7 @@ import {
   type DeleteResult,
 } from "../../domain/data/data_delete_service.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { resolveDurableWrites } from "../../domain/datastore/datastore_config.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import {
@@ -126,6 +127,11 @@ export function createDataDeleteDeps(
     undefined,
     undefined,
     namespaceFromResolver(datastoreResolver),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    resolveDurableWrites(datastoreResolver?.config()),
   );
   const autoDefDir = dsPath(SWAMP_SUBDIRS.autoDefinitions);
   const definitionRepo = injectedDefinitionRepo ??

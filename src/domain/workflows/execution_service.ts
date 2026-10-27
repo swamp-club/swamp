@@ -176,6 +176,7 @@ import {
 import { computeWorkflowFingerprint } from "./workflow_fingerprint.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { resolveDurableWrites } from "../datastore/datastore_config.ts";
 import { type Namespace, SOLO_NAMESPACE } from "../data/namespace.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import {
@@ -1640,6 +1641,7 @@ export class DefaultStepExecutor implements StepExecutor {
       undefined,
       opts.fetchForeignContent,
       opts.unreadableContent,
+      resolveDurableWrites(opts.datastoreResolver?.config()),
     );
     const unifiedDataRepo: UnifiedDataRepository = opts.ephemeralRepo
       ? new CompositeUnifiedDataRepository(fsDataRepo, opts.ephemeralRepo)
@@ -3586,6 +3588,7 @@ export class WorkflowExecutionService {
       undefined,
       fetchForeignContent,
       unreadableContent,
+      resolveDurableWrites(datastoreResolver?.config()),
     );
     this.dataRepo = ephemeralRepo
       ? new CompositeUnifiedDataRepository(fsDataRepo, ephemeralRepo)

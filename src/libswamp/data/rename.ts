@@ -22,6 +22,7 @@ import {
   type RenameResult,
 } from "../../domain/data/data_rename_service.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { resolveDurableWrites } from "../../domain/datastore/datastore_config.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import {
@@ -102,6 +103,11 @@ export function createDataRenameDeps(
     undefined,
     undefined,
     namespaceFromResolver(datastoreResolver),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    resolveDurableWrites(datastoreResolver?.config()),
   );
   const definitionRepo = injectedDefinitionRepo ??
     new YamlDefinitionRepository(repoDir);

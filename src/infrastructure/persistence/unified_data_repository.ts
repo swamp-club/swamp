@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { existsSync } from "@std/fs";
-import { dirname, join, relative, resolve, SEPARATOR } from "@std/path";
+import { join, relative, resolve, SEPARATOR } from "@std/path";
 import { dirname as posixDirname } from "@std/path/posix";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import {
@@ -48,9 +48,11 @@ import {
   type AtomicWriteSync,
   atomicWriteTextFile,
   syncExistingFile,
+  syncWrittenDirectory,
+  syncWrittenFile,
   writeSyncedTempFile,
 } from "./atomic_write.ts";
-import { syncDirectory } from "./sync_directory.ts";
+import { makeDirectories } from "./make_directories.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import {
   assertContainedPath,
@@ -269,6 +271,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
      */
     public readonly unreadableContent?: UnreadableContentLookup,
     /**
+     * Whether v2 writes are synced to disk before they are published
+     * (swamp-club#4017): the datastore's `durable` setting, off unless the
+     * datastore config or `SWAMP_DATASTORE_DURABLE` turns it on
+     * (`resolveDurableWrites`). Off, a write is atomic but not synced.
+     */
+    private readonly durable: boolean = false,
+    /**
      * How v2 writes are synced (swamp-club#4017); the defaults in
      * production, recording hooks in tests.
      */
@@ -278,20 +287,21 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * The sync option of a v2 write, or undefined on v3 (swamp-club#4017). On
-   * v2 a version's files, and the directory entries that reach them, are
-   * synced before anything publishes it: the latest marker moving to it, a
-   * non-pending catalog row, or a settled one. v3 writes stay unsynced: its
-   * commits are durable and replay rewrites the checkout (swamp-club#3617).
+   * The sync option of a v2 write, or undefined on v3 or with durable
+   * writes off (swamp-club#4017). On v2 a version's files, and the
+   * directory entries that reach them, are synced before anything
+   * publishes it: the latest marker moving to it, a non-pending catalog
+   * row, or a settled one. v3 writes stay unsynced: its commits are durable
+   * and replay rewrites the checkout (swamp-club#3617).
    */
   private durableSync(): AtomicWriteSync | undefined {
-    return typedStagingActive(this.markDirty)
+    return !this.durable || typedStagingActive(this.markDirty)
       ? undefined
       : this.durableWriteHooks;
   }
 
   private async syncDir(sync: AtomicWriteSync, dir: string): Promise<void> {
-    await (sync.syncDirectory ?? syncDirectory)(dir);
+    await syncWrittenDirectory(dir, sync);
   }
 
   /**
@@ -1533,10 +1543,11 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         // On v2 the appended bytes are synced on the handle that wrote
         // them, before the metadata and catalog record the new size.
         if (sync !== undefined) {
-          await (sync.syncFile ?? ((f: Deno.FsFile) => f.sync()))(file, {
-            temp: contentPath,
-            target: contentPath,
-          });
+          await syncWrittenFile(
+            file,
+            { temp: contentPath, target: contentPath },
+            sync,
+          );
         }
       } finally {
         file.close();
@@ -3390,48 +3401,17 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
   /**
    * Creates the data-name directory and any missing directory above it, one
-   * level at a time, as a recursive mkdir would. On v2 the parent of each
-   * directory created here is synced before this returns, so its entry is
-   * durable before any version under it is published (swamp-club#4017): a
-   * directory sync makes the directory's own entries durable, not its entry
-   * in its parent. A directory a concurrent writer created is left to that
-   * writer.
+   * level at a time. On v2 the parent of each directory created here is
+   * synced before this returns, so its entry is durable before any version
+   * under it is published (swamp-club#4017). The model lock creates the
+   * model directory and those above it first, and syncs them the same way
+   * (`createModelLock`).
    */
   private async makeDataNameDir(dataNameDir: string): Promise<void> {
-    const created: string[] = [];
-    const pending = [dataNameDir];
-    // Parents already made or found present. A child that still reports
-    // NotFound under one (a dangling symlink, or a file on Windows) would
-    // otherwise retry forever; it throws, as a recursive mkdir does.
-    const attempted = new Set<string>();
-    while (pending.length > 0) {
-      const dir = pending[pending.length - 1];
-      try {
-        await Deno.mkdir(dir);
-        created.push(dir);
-        pending.pop();
-      } catch (error) {
-        if (error instanceof Deno.errors.AlreadyExists) {
-          pending.pop();
-          continue;
-        }
-        const parent = dirname(dir);
-        if (
-          !(error instanceof Deno.errors.NotFound) || parent === dir ||
-          attempted.has(parent)
-        ) {
-          throw error;
-        }
-        attempted.add(parent);
-        pending.push(parent);
-      }
-    }
     const sync = this.durableSync();
-    if (sync === undefined || created.length === 0) return;
-    await settleAll(
-      [...new Set(created.map((dir) => dirname(dir)))].map((dir) =>
-        this.syncDir(sync, dir)
-      ),
+    await makeDirectories(
+      dataNameDir,
+      sync === undefined ? undefined : (dir) => this.syncDir(sync, dir),
     );
   }
 

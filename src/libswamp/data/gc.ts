@@ -31,6 +31,7 @@ import {
   RETENTION_EXEMPT_MODEL_TYPES,
 } from "../../domain/retention/retention_exemptions.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { resolveDurableWrites } from "../../domain/datastore/datastore_config.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import {
@@ -158,6 +159,11 @@ export function createDataGcDeps(
     markDirty,
     undefined,
     namespaceFromResolver(datastoreResolver),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    resolveDurableWrites(datastoreResolver?.config()),
   );
   const workflowRunRepo = new YamlWorkflowRunRepository(
     repoDir,

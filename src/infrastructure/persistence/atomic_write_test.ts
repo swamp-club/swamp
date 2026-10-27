@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "@std/path";
 import {
   atomicWriteFile,
@@ -26,6 +31,7 @@ import {
   syncExistingFile,
   writeSyncedTempFile,
 } from "./atomic_write.ts";
+import { SyncFailedError } from "./sync_directory.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-atomic-write-test-" });
@@ -216,16 +222,19 @@ Deno.test("atomicWriteTextFile: with sync, a failed file sync removes the temp f
   await withTempDir(async (dir) => {
     const filePath = join(dir, "test.yaml");
     await Deno.writeTextFile(filePath, "original");
-    await assertRejects(
+    const error = await assertRejects(
       () =>
         atomicWriteTextFile(filePath, "new", {
           sync: {
             syncFile: () => Promise.reject(new Error("EIO")),
           },
         }),
-      Error,
+      SyncFailedError,
       "EIO",
     );
+    // Named by where the file was going, not its temp name.
+    assertEquals(error.path, filePath);
+    assertStringIncludes(error.message, `Could not sync ${filePath} to disk`);
     assertEquals(await Deno.readTextFile(filePath), "original");
     assertEquals(await listTmpFiles(dir), []);
   });
@@ -235,16 +244,17 @@ Deno.test("atomicWriteTextFile: with sync, a directory sync failing after the re
   await withTempDir(async (dir) => {
     const filePath = join(dir, "test.yaml");
     await Deno.writeTextFile(filePath, "original");
-    await assertRejects(
+    const error = await assertRejects(
       () =>
         atomicWriteTextFile(filePath, "new", {
           sync: {
             syncDirectory: () => Promise.reject(new Error("dir EIO")),
           },
         }),
-      Error,
+      SyncFailedError,
       "dir EIO",
     );
+    assertEquals(error.path, dir);
     assertEquals(await Deno.readTextFile(filePath), "new");
     assertEquals(await listTmpFiles(dir), []);
   });

@@ -30,6 +30,7 @@ import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_
 import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { resolveDurableWrites } from "../../domain/datastore/datastore_config.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import {
@@ -202,6 +203,11 @@ export function createModelDeleteDeps(
       markDirty,
       undefined,
       namespaceFromResolver(datastoreResolver),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      resolveDurableWrites(datastoreResolver?.config()),
     );
   const outputRepo = new YamlOutputRepository(
     repoDir,

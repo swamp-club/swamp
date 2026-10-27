@@ -50,6 +50,7 @@ import {
 } from "../../domain/diagnostics/diagnostic_phase.ts";
 import { findSpan, withObservedSpans } from "../tracing/span_test_helpers.ts";
 import type { AtomicWriteSync } from "./atomic_write.ts";
+import { SyncFailedError } from "./sync_directory.ts";
 import { runInUnitOfWork } from "./unit_of_work_scope.ts";
 import { createCommitLogUnitOfWork } from "../datastore_v3/commit_log_unit_of_work.ts";
 import {
@@ -3743,6 +3744,8 @@ async function withDurableRepo(
   options: {
     baseDir?: (dir: string) => string;
     hooks?: (h: Omit<DurableHarness, "repo">) => Partial<AtomicWriteSync>;
+    /** The datastore's `durable` setting; on in this harness. */
+    durable?: boolean;
   } = {},
 ): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-durable-test-" });
@@ -3783,6 +3786,7 @@ async function withDurableRepo(
       undefined,
       undefined,
       undefined,
+      options.durable ?? true,
       hooks,
     );
     await fn({ repo, dir, events, label });
@@ -4193,4 +4197,83 @@ Deno.test({
       );
     });
   },
+});
+
+Deno.test("save: with durable writes off, no write syncs anything and allocateVersion reports not durable", async () => {
+  await withDurableRepo(async ({ repo, events }) => {
+    await repo.save(testType, "m1", makeJsonData("state"), bytes("{}"));
+    await repo.save(testType, "m1", makeStreamingData("log"), bytes("a\n"));
+    await repo.append(testType, "m1", "log", bytes("b\n"));
+    const data = makeJsonData("stream");
+    const allocated = await repo.allocateVersion(testType, "m1", data);
+    assertEquals(allocated.durable, false);
+    await Deno.writeTextFile(allocated.contentPath, "{}");
+    await repo.finalizeVersion(testType, "m1", data, allocated.version);
+    await repo.rename(testType, "m1", "state", "renamed");
+    await repo.delete(testType, "m1", "stream", allocated.version);
+    assertEquals(
+      events.filter((e) => e.startsWith("file ") || e.startsWith("dir ")),
+      [],
+    );
+    assertEquals(
+      await Deno.readTextFile(
+        join(repo.getDataNameDir(testType, "m1", "renamed"), "latest"),
+      ),
+      "1",
+    );
+  }, { durable: false });
+});
+
+Deno.test("save: on v2, a failed directory sync stops the version before the marker and the catalog, naming the directory", async () => {
+  await withDurableRepo(
+    async ({ repo, events }) => {
+      await repo.save(testType, "m1", makeJsonData("state"), bytes("1"));
+      events.length = 0;
+      const error = await assertRejects(
+        () => repo.save(testType, "m1", makeJsonData("state"), bytes("2")),
+        SyncFailedError,
+      );
+      assertStringIncludes(error.message, join("state", "2"));
+      assertStringIncludes(error.message, "Input/output error");
+      assertEquals(
+        await Deno.readTextFile(
+          join(repo.getDataNameDir(testType, "m1", "state"), "latest"),
+        ),
+        "1",
+      );
+      assertEquals(events.includes("catalog"), false);
+    },
+    {
+      hooks: ({ events, label }) => ({
+        syncDirectory: (d) => {
+          events.push(`dir ${label(d)}`);
+          return label(d) === `${dataDir}/state/2`
+            ? Promise.reject(new Error("Input/output error (os error 5)"))
+            : Promise.resolve();
+        },
+      }),
+    },
+  );
+});
+
+Deno.test("save: on v2, a failed file sync names the file it was writing", async () => {
+  await withDurableRepo(
+    async ({ repo }) => {
+      const error = await assertRejects(
+        () => repo.save(testType, "m1", makeJsonData("state"), bytes("{}")),
+        SyncFailedError,
+      );
+      assertStringIncludes(error.message, "Could not sync ");
+      assertStringIncludes(error.message, join("state", "1", "raw"));
+      assertStringIncludes(error.message, "Input/output error");
+    },
+    {
+      hooks: () => ({
+        syncFile: (_file, paths) =>
+          paths.target.endsWith("raw")
+            ? Promise.reject(new Error("Input/output error (os error 5)"))
+            : Promise.resolve(),
+      }),
+    },
+  );
 });
