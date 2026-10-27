@@ -902,6 +902,12 @@ Deno.test("assertSyncServiceRoundTripConformance: an option-skipped case never c
     calls++;
     return inner();
   });
-  assertEquals(result.skipped.map((s) => s.name), ["pull-deletes"]);
+  // vanish-during-walk skips itself on Windows after its factory call.
+  assertEquals(
+    result.skipped.map((s) => s.name),
+    Deno.build.os === "windows"
+      ? ["pull-deletes", "vanish-during-walk"]
+      : ["pull-deletes"],
+  );
   assertEquals(calls, ALL_ROUND_TRIP_CASES.length - 1);
 });
