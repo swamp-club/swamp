@@ -58,6 +58,7 @@ import {
   type WorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
+import { normalizeOwnerAddress } from "../../domain/datastore_v3/datastore_owner.ts";
 import { SIGNAL_WAIT_MAX_TIMEOUT_SECONDS } from "../../domain/workflows/signal_wait.ts";
 import {
   MAX_TIMER_DELAY_MS,
@@ -1233,6 +1234,10 @@ export function buildServeDaemonEnv(): Record<string, string> {
   };
 }
 
+const ADDRESS_DESCRIPTION =
+  "The address clients reach this serve at, as they put it in serverAddress. " +
+  "Required to write a v3 datastore 'swamp datastore claim' gave to that address";
+
 const CLUB_API_KEY_FILE_DESCRIPTION =
   "Path to a file containing the collective API key (oauth:manage scope) " +
   "used for headless OAuth registration, username lookup, instance " +
@@ -1248,6 +1253,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   }
   if (options.grantsFile) {
     args.push("--grants-file", options.grantsFile as string);
+  }
+  if (options.address) {
+    args.push("--address", options.address as string);
   }
   if (options.grantsDir) {
     args.push("--grants-dir", options.grantsDir as string);
@@ -1648,6 +1656,12 @@ function parseTokenGcDuration(
 /** Startup settings parsed from the merged serve options. */
 export interface ServeStartupSettings {
   authConfig: ServeAuthConfig;
+  /**
+   * The normalized address clients reach this serve at, when given: serve
+   * writes a claimed v3 datastore only when it is the owner's
+   * (swamp-club#4063).
+   */
+  ownerAddress?: string;
   tlsEnabled: boolean;
   wsIdleTimeoutSeconds?: number;
   queueTimeoutMs?: number;
@@ -1685,6 +1699,9 @@ export function resolveServeStartupSettings(
     );
   }
   const tlsEnabled = Boolean(certFile && keyFile);
+  const ownerAddress = merged.address === undefined
+    ? undefined
+    : normalizeOwnerAddress(merged.address);
 
   const wsIdleTimeoutRaw = merged.wsIdleTimeout;
   let wsIdleTimeoutSeconds: number | undefined;
@@ -1817,6 +1834,7 @@ export function resolveServeStartupSettings(
   return {
     authConfig,
     tlsEnabled,
+    ...(ownerAddress !== undefined ? { ownerAddress } : {}),
     wsIdleTimeoutSeconds,
     queueTimeoutMs,
     heartbeatIntervalMs,
@@ -1858,6 +1876,10 @@ const daemonEnableCommand = new Command()
   .option("--host <host:string>", "Host for the daemon to bind to", {
     default: "127.0.0.1",
   })
+  .option(
+    "--address <url:string>",
+    ADDRESS_DESCRIPTION,
+  )
   .option("--no-schedule", "Disable scheduled workflow execution")
   .option(
     "--cert-file <path:string>",
@@ -2662,6 +2684,10 @@ export const serveCommand = new Command()
   )
   .option("--port <port:number>", "Port to listen on", { default: 9090 })
   .option("--host <host:string>", "Host to bind to", { default: "127.0.0.1" })
+  .option(
+    "--address <url:string>",
+    `${ADDRESS_DESCRIPTION} (env: SWAMP_SERVE_ADDRESS)`,
+  )
   .option("--no-schedule", "Disable scheduled workflow execution")
   .option(
     "--cert-file <path:string>",
@@ -3023,6 +3049,7 @@ export const serveCommand = new Command()
       maxRunsPerPrincipal,
       maxRunDurationMs,
       grantReloadMode,
+      ownerAddress,
     } = resolveServeStartupSettings(merged);
     const heartbeatIntervalRaw = merged.heartbeatInterval;
     const staleTtlRaw = merged.staleTtl;
@@ -3162,6 +3189,9 @@ export const serveCommand = new Command()
       outputMode: ctx.outputMode,
       // Serve outlives any other writer: once it is done, serve writes again.
       retakeLostV3Lease: true,
+      // Serve writes a claimed datastore as its owner, when its address is
+      // the owner's (swamp-club#4063).
+      v3OwnerCheck: { as: "serve", address: ownerAddress },
     });
     // Serve applies retention on its own timer; its shutdown runs no
     // end-of-command pass (swamp-club#3473).
@@ -5084,6 +5114,7 @@ export const serveCommand = new Command()
         gcMutex,
         eventLoopLag,
         definitionIndex,
+        ...(ownerAddress !== undefined && { ownerAddress }),
         datastoreConfig,
         datastoreResolver,
         syncService,

@@ -5552,3 +5552,105 @@ Deno.test("handleMessage: an untraced request opens no swamp.serve.request span"
     );
   });
 });
+
+// ── datastore.claim / datastore.release (swamp-club#4063) ────────────────
+
+Deno.test("handleMessage: a datastore.claim from a non-admin is refused, and audited with the normalized address and no credential", async () => {
+  const audit: AuditEvent[] = [];
+  using ctx = {
+    ...makeCtx(modeTokenConfig, [
+      makeGrant({
+        subject: { kind: "user", name: "adam" },
+        resource: { kind: "data", pattern: "*" },
+        actions: ["read"],
+      }),
+    ]),
+    instanceId: "inst-1",
+    ownerAddress: "https://swamp.example.com",
+    auditEmitter: { emit: (event: AuditEvent) => audit.push(event) },
+  } as unknown as ConnectionContext & Disposable;
+  const mock = createMockSocket();
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    new Map<string, AbortController>(),
+    makeEvent(JSON.stringify({
+      type: "datastore.claim",
+      id: "claim-1",
+      payload: { address: "https://Swamp.Example.com/?token=secret#frag" },
+    })),
+    testPrincipal,
+  );
+
+  await waitFor(
+    () => audit.some((e) => e.action === "datastore.claim"),
+    "claim audited",
+  );
+  const frame = JSON.parse(mock.sent[0]);
+  assertEquals(frame.type, "error");
+  assertEquals(frame.error.code, "unauthorized");
+  const events = audit.filter((e) => e.action === "datastore.claim");
+  for (const event of events) {
+    assertEquals(event.resourceName, "https://swamp.example.com");
+    assertEquals(JSON.stringify(event).includes("secret"), false);
+  }
+});
+
+Deno.test("handleMessage: an admin's datastore.claim to a serve without --address, or for another address, is refused and changes nothing", async () => {
+  for (
+    const [ownerAddress, message] of [
+      [undefined, "started without --address"],
+      ["https://swamp.example.com", "not https://other.example.com"],
+    ] as const
+  ) {
+    using ctx = {
+      ...makeCtx(modeTokenConfig, [
+        makeGrant({
+          subject: { kind: "user", name: "adam" },
+          resource: { kind: "access", pattern: "*" },
+          actions: ["admin"],
+        }),
+      ]),
+      instanceId: "inst-1",
+      ...(ownerAddress !== undefined ? { ownerAddress } : {}),
+    } as unknown as ConnectionContext & Disposable;
+    const mock = createMockSocket();
+
+    handleMessage(
+      mock as unknown as WebSocket,
+      ctx,
+      new Map<string, AbortController>(),
+      makeEvent(JSON.stringify({
+        type: "datastore.claim",
+        id: "claim-2",
+        payload: { address: "https://other.example.com" },
+      })),
+      testPrincipal,
+    );
+
+    await waitFor(() => mock.sent.length > 0, "claim answered");
+    const frame = JSON.parse(mock.sent[0]);
+    assertEquals(frame.type, "error");
+    assertEquals(frame.error.code, "datastore_claim_failed");
+    assertStringIncludes(frame.error.message, message);
+  }
+});
+
+Deno.test("handleMessage: a datastore.release from a non-admin is refused", async () => {
+  using ctx = makeCtx(modeTokenConfig, []);
+  const mock = createMockSocket();
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    new Map<string, AbortController>(),
+    makeEvent(JSON.stringify({ type: "datastore.release", id: "release-1" })),
+    testPrincipal,
+  );
+
+  await waitFor(() => mock.sent.length > 0, "release answered");
+  const frame = JSON.parse(mock.sent[0]);
+  assertEquals(frame.type, "error");
+  assertEquals(frame.error.code, "unauthorized");
+});

@@ -281,6 +281,87 @@ Deno.test({
 
 Deno.test({
   name:
+    "v3 restore: a claim one machine writes reaches the next machine's restore, which refuses to write, and a release lets it write (swamp-club#4063)",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const a = await world.machine("a");
+      await a.send({ kind: "write", commits: 1, close: true });
+      await a.send({ kind: "claim", address: "https://swamp.example.com" });
+      const b = await world.machine("b");
+      const refused = await assertRejects(
+        () => b.send({ kind: "write", commits: 1, close: true }),
+        MachineError,
+        "https://swamp.example.com",
+      );
+      assertEquals(refused.code, "datastore_claimed");
+      await b.send({ kind: "close" });
+      // Reads stay allowed, and the refused write landed nothing.
+      assertEquals((await read(b)).commits, 1);
+      await a.send({ kind: "release" });
+      await b.send({ kind: "write", commits: 1, close: true });
+      const c = await world.machine("c");
+      assertEquals((await read(c)).commits, 2);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 restore: a refusal on a checkout whose own outbox holds an earlier command's commits names how many and where they stay (swamp-club#4063)",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const a = await world.machine("a");
+      const b = await world.machine("b");
+      await b.send({ kind: "write", commits: 1, close: true });
+      const outbox = await b.send({ kind: "plantOutboxEntry" }) as string;
+      await a.send({ kind: "claim", address: "https://swamp.example.com" });
+      const refused = await assertRejects(
+        () => b.send({ kind: "write", commits: 1, close: true }),
+        MachineError,
+      );
+      assertEquals(refused.code, "datastore_claimed");
+      assertStringIncludes(refused.message, "1 commit an earlier command");
+      assertStringIncludes(refused.message, outbox);
+      assertStringIncludes(refused.message, "not sent through serve");
+      assertStringIncludes(refused.message, "swamp datastore release");
+      assertStringIncludes(refused.message, "Nothing was changed.");
+      await b.send({ kind: "close" });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 restore: a stale copy's claim, met with a busy lease, is refused as the copy's, and the write goes ahead once the lease is free (swamp-club#4063)",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const a = await world.machine("a");
+      const b = await world.machine("b");
+      await a.send({ kind: "claim", address: "https://swamp.example.com" });
+      // B's copy now shows the claim.
+      await read(b);
+      await a.send({ kind: "release" });
+      // Another process holds the lease while B writes.
+      await a.send({ kind: "lease", ttlMs: 60_000 });
+      const refused = await assertRejects(
+        () => b.send({ kind: "write", commits: 1, close: true }),
+        MachineError,
+        "last copy of the datastore shows the claim",
+      );
+      assertEquals(refused.code, "datastore_claimed");
+      await b.send({ kind: "close" });
+      await a.send({ kind: "close" });
+      await b.send({ kind: "write", commits: 1, close: true });
+      assertEquals((await read(b)).commits, 1);
+    });
+  },
+});
+
+Deno.test({
+  name:
     "v3 restore: a stale reader refreshes, and a current one downloads nothing",
   ignore,
   async fn() {

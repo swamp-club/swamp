@@ -48,6 +48,7 @@ import {
 import { audited, type AuditedOptions } from "./audited.ts";
 import { traceWebSocketRequest } from "./ws_request_span.ts";
 import { resolverEngine } from "../domain/datastore/datastore_path_resolver.ts";
+import { normalizeOwnerAddress } from "../domain/datastore_v3/datastore_owner.ts";
 import {
   IDEMPOTENCY_KEY_FORM,
   isIdempotencyKey,
@@ -177,7 +178,9 @@ import {
 import {
   handleAuditTimeline,
   handleClusterInstances,
+  handleDatastoreClaim,
   handleDatastoreNamespaceList,
+  handleDatastoreRelease,
   handleDatastoreSetupExtension,
   handleDatastoreStatus,
   handleDoctorDatastores,
@@ -1077,6 +1080,19 @@ const DatastoreSetupExtensionRequestSchema = z.object({
   }),
 });
 
+const DatastoreClaimRequestSchema = z.object({
+  type: z.literal("datastore.claim"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    address: z.string().min(1).max(2048),
+  }),
+});
+
+const DatastoreReleaseRequestSchema = z.object({
+  type: z.literal("datastore.release"),
+  id: z.string().min(1).max(256),
+});
+
 const VaultMigrateRequestSchema = z.object({
   type: z.literal("vault.migrate"),
   id: z.string().min(1).max(256),
@@ -1573,6 +1589,8 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   WorkerPruneRequestSchema,
   DatastoreStatusRequestSchema,
   DatastoreSetupExtensionRequestSchema,
+  DatastoreClaimRequestSchema,
+  DatastoreReleaseRequestSchema,
   VaultMigrateRequestSchema,
   ExtensionListRequestSchema,
   ExtensionSearchRequestSchema,
@@ -3485,6 +3503,37 @@ export function handleMessage(
         auditOpts("admin", "datastore", "*"),
       );
       break;
+    // A claim is not a commit: its handler confirms it replicated itself
+    // (swamp-club#4063).
+    case "datastore.claim":
+      task = audited(
+        handleDatastoreClaim(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts(
+          "admin",
+          "datastore",
+          auditedAddress(request.payload.address),
+        ),
+      );
+      break;
+    case "datastore.release":
+      task = audited(
+        handleDatastoreRelease(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "datastore", "*"),
+      );
+      break;
     case "vault.migrate":
       task = audited(
         confirmed(() =>
@@ -4571,3 +4620,16 @@ async function handleRunAttach(
 // ── Extension handlers ───────────────────────────────────────────────
 
 // ── Doctor handlers ──────────────────────────────────────────────────
+
+/**
+ * The address a claim names, as its audit entry records it: normalized, so
+ * no credential, query or fragment reaches the audit log, or `*` when it is
+ * not a serve address (swamp-club#4063).
+ */
+function auditedAddress(address: string): string {
+  try {
+    return normalizeOwnerAddress(address);
+  } catch {
+    return "*";
+  }
+}

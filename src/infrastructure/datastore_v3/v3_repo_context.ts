@@ -54,6 +54,7 @@ import {
   openV3Datastore,
   v3CommitsDbPath,
   type V3Datastore,
+  v3OutboxPath,
 } from "./v3_datastore.ts";
 import {
   compactionBound,
@@ -69,10 +70,13 @@ import {
   onV3LeaseTaken,
   refuseLiveV3LegacyWriter,
   tryAcquireV3WriterLock,
+  V3WriterBusyError,
   v3WriterFence,
   type V3WriterLeaseHolder,
   v3WriterLeaseHolder,
 } from "./v3_writer_lock.ts";
+import { peekDatastoreOwner } from "./sqlite_commit_store.ts";
+import { countPendingOutboxEntries } from "./sqlite_commit_outbox.ts";
 import {
   judgeRecordedProcess,
   type LocalProcess,
@@ -110,6 +114,11 @@ import {
   writeWriterMarker,
 } from "./interrupted_writer_recovery.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
+import {
+  DatastoreClaimedError,
+  type DatastoreOwner,
+  normalizeOwnerAddress,
+} from "../../domain/datastore_v3/datastore_owner.ts";
 import {
   isReservedNamespaceName,
   reservedV3NamespaceMessage,
@@ -339,6 +348,28 @@ const recordedCheckouts = new Map<
 let retakeListening = false;
 
 /**
+ * How a hold on a v3 datastore's writer lease meets a claim on it
+ * (swamp-club#4063): a direct writer is refused, `datastore claim` and
+ * `release` change the claim, and serve writes as the owner only when its
+ * address is the owner's.
+ */
+export type V3OwnerCheck =
+  | { readonly as: "writer" }
+  | { readonly as: "claimer" }
+  | { readonly as: "serve"; readonly address: string | undefined };
+
+/**
+ * Serve's holds, by resolved datastore path: its address, and the fence at
+ * which the claim was last found to name it. A retake or a move of the
+ * lease changes the fence, and the next commit checks again, so a claim
+ * written while serve's lease had lapsed stops serve writing.
+ */
+const serveHolds = new Map<
+  string,
+  { readonly address: string | undefined; verifiedFence?: number }
+>();
+
+/**
  * Tells this process's next {@link closeV3Datastores} to keep the writer
  * markers (swamp-club#3299): serve calls it when its shutdown drain leaves
  * runs that may still be writing, so the next command recovers the checkout.
@@ -418,6 +449,7 @@ export function v3DatastoreFor(
             "copy-restoring",
           );
         }
+        assertServeStillOwner(config.path, key);
       },
       assertCopyCurrent: () => {
         // A lost hold is no lease: its copy may lack the new writer's
@@ -622,6 +654,12 @@ export async function holdV3Writer(
   options: {
     /** Take the lease again once it is lost: serve's lifetime hold. */
     readonly retakeLost?: boolean;
+    /**
+     * How the hold meets a claim on the datastore (swamp-club#4063); a
+     * direct writer's by default, or serve's once this process holds as
+     * serve.
+     */
+    readonly ownerCheck?: V3OwnerCheck;
   } = {},
 ): Promise<void> {
   try {
@@ -662,7 +700,10 @@ export async function catchUpV3HandlesAt(datastorePath: string): Promise<void> {
 async function takeV3WriterHold(
   config: V3DatastoreConfig,
   repoDir: string,
-  options: { readonly retakeLost?: boolean },
+  options: {
+    readonly retakeLost?: boolean;
+    readonly ownerCheck?: V3OwnerCheck;
+  },
 ): Promise<void> {
   // Before the lease and the recovery of an interrupted writer, which
   // would meet the same checkout (swamp-club#3691).
@@ -674,25 +715,60 @@ async function takeV3WriterHold(
   // before the lease, still writing, could not open again.
   await refuseLiveV3LegacyWriter(config.path);
   const key = handleKey(repoDir, config);
-  const release = await acquireV3WriterLock(config.path, {
-    maxWaitMs: resolveLockTimeoutMs(),
-    // Records the lease's fence in commits.db, so a writer that loses the
-    // lease later can commit nothing (swamp-club#3359). While replicating,
-    // the copy is opened only once it is current, and the first fence is
-    // raised then (swamp-club#3482); a retake raises it here.
-    fenceStore: {
-      writerFence: () =>
-        !v3ReplicatesAt(config.path) || currentCopies.has(key)
-          ? v3DatastoreFor(repoDir, config).commitStore.writerFence()
-          : undefined,
-      raiseWriterFence: async (fence: number) => {
-        if (!v3ReplicatesAt(config.path) || currentCopies.has(key)) {
-          await v3DatastoreFor(repoDir, config).raiseWriterFence(fence);
-        }
+  // A claim this writer may not write under, as the file showed it before
+  // the lease: the writer does not wait for a lease serve holds to be told
+  // so (swamp-club#4063). Only the check under the lease below decides; a
+  // stale copy's claim costs a free lease nothing.
+  const claimHint = serveUpstreamAt(config.path) === undefined
+    ? claimRefusal(
+      peekDatastoreOwner(v3CommitsDbPath(config.path, repoDir)),
+      ownerCheckOf(config, options.ownerCheck),
+    )
+    : undefined;
+  let release: () => Promise<void>;
+  try {
+    release = await acquireV3WriterLock(config.path, {
+      maxWaitMs: claimHint === undefined ? resolveLockTimeoutMs() : 0,
+      // Records the lease's fence in commits.db, so a writer that loses the
+      // lease later can commit nothing (swamp-club#3359). While replicating,
+      // the copy is opened only once it is current, and the first fence is
+      // raised then (swamp-club#3482); a retake raises it here.
+      fenceStore: {
+        writerFence: () =>
+          !v3ReplicatesAt(config.path) || currentCopies.has(key)
+            ? v3DatastoreFor(repoDir, config).commitStore.writerFence()
+            : undefined,
+        raiseWriterFence: async (fence: number) => {
+          if (!v3ReplicatesAt(config.path) || currentCopies.has(key)) {
+            await v3DatastoreFor(repoDir, config).raiseWriterFence(fence);
+          }
+        },
       },
-    },
-    ...(options.retakeLost === true ? { retakeLost: true } : {}),
-  });
+      ...(options.retakeLost === true ? { retakeLost: true } : {}),
+    });
+  } catch (error) {
+    if (claimHint !== undefined && error instanceof V3WriterBusyError) {
+      // A replicated checkout read its last copy, which can predate a
+      // release: say so, so a stale claim is not taken for a live one.
+      if (!v3ReplicatesAt(config.path)) throw claimHint;
+      throw withStrandedOutbox(
+        new DatastoreClaimedError(
+          claimHint.owner,
+          [
+            "This checkout's last copy of the datastore shows the claim, and " +
+            "another process holds the writer lease, so the write was not " +
+            "tried. If the claim was released since, run the command again " +
+            "once that process is done.",
+            claimHint.detail,
+          ].filter((part) => part !== undefined).join(" "),
+          claimHint.wayOut,
+        ),
+        config,
+        repoDir,
+      );
+    }
+    throw error;
+  }
   if (v3ReplicatesAt(config.path)) {
     try {
       // The lease first, then the restore: every commit the previous writer
@@ -710,6 +786,18 @@ async function takeV3WriterHold(
           mark: handle.commitStore.highWaterMark().cursor,
         });
       }
+    } catch (error) {
+      await releaseAfterFailure(release, error);
+      throw error;
+    }
+  }
+  // Once the lease is held and the copy current, before the recovery below
+  // lands any commit: a claim written while this writer waited is seen,
+  // and a writer it refuses commits nothing (swamp-club#4063). A serve-mode
+  // checkout writes through serve, which is the owner.
+  if (serveUpstreamAt(config.path) === undefined) {
+    try {
+      refuseUnlessOwner(config, repoDir, options.ownerCheck);
     } catch (error) {
       await releaseAfterFailure(release, error);
       throw error;
@@ -786,6 +874,140 @@ async function takeV3WriterHold(
     await removeOwnWriterCheckout(config.path);
     await release();
   });
+}
+
+/**
+ * Refuses the hold `check` describes on a claimed datastore unless it may
+ * write it (swamp-club#4063). Serve's hold is remembered, so a later hold in
+ * the same process is serve's too and its commits check the claim again
+ * whenever the fence moves.
+ *
+ * @throws DatastoreClaimedError when the hold may not write
+ */
+function refuseUnlessOwner(
+  config: V3DatastoreConfig,
+  repoDir: string,
+  ownerCheck: V3OwnerCheck | undefined,
+): void {
+  const datastore = resolve(config.path);
+  const check = ownerCheckOf(config, ownerCheck);
+  // A claimer changes the claim whatever it says, so it never reads it: a
+  // row that cannot be read still lets `datastore release` remove it.
+  const refusal = check.as === "claimer" ? undefined : claimRefusal(
+    v3DatastoreFor(repoDir, config).commitStore.owner(),
+    check,
+  );
+  if (refusal !== undefined) throw withStrandedOutbox(refusal, config, repoDir);
+  if (check.as === "serve") {
+    serveHolds.set(datastore, {
+      address: check.address,
+      verifiedFence: v3WriterFence(config.path),
+    });
+  }
+}
+
+/**
+ * The check a hold meets: the one asked for, serve's once this process holds
+ * the datastore as serve, or a direct writer's.
+ */
+function ownerCheckOf(
+  config: V3DatastoreConfig,
+  ownerCheck: V3OwnerCheck | undefined,
+): V3OwnerCheck {
+  const serve = serveHolds.get(resolve(config.path));
+  return ownerCheck ??
+    (serve !== undefined
+      ? { as: "serve", address: serve.address }
+      : { as: "writer" });
+}
+
+/**
+ * Before each of serve's commits: refuses once the claim no longer names
+ * serve, checked again whenever the fence moved since it last named it
+ * (swamp-club#4063). A retake or a move of the lease is the only way a
+ * claim can change under serve's hold.
+ *
+ * @throws DatastoreClaimedError
+ */
+function assertServeStillOwner(datastorePath: string, key: string): void {
+  const serve = serveHolds.get(resolve(datastorePath));
+  if (serve === undefined) return;
+  const fence = v3WriterFence(datastorePath);
+  if (fence === undefined || fence === serve.verifiedFence) return;
+  const handle = opened.get(key);
+  if (handle === undefined) return;
+  const refusal = claimRefusal(handle.commitStore.owner(), {
+    as: "serve",
+    address: serve.address,
+  });
+  if (refusal !== undefined) {
+    logger
+      .error`The v3 datastore at ${datastorePath} is now claimed by ${refusal.owner.address}: this serve writes nothing to it until it is restarted with that --address, or the claim is released`;
+    throw refusal;
+  }
+  serve.verifiedFence = fence;
+}
+
+/**
+ * `refusal`, telling of the commits an earlier command on this checkout left
+ * in its outbox, which the claim strands (swamp-club#4063). Only a
+ * replicated checkout has an outbox of its own: on a shared filesystem
+ * datastore the claim's own hold lands them before the claim. The command
+ * itself still changed nothing.
+ */
+function withStrandedOutbox(
+  refusal: DatastoreClaimedError,
+  config: V3DatastoreConfig,
+  repoDir: string,
+): DatastoreClaimedError {
+  if (!v3ReplicatesAt(config.path)) return refusal;
+  const outbox = v3OutboxPath(v3CommitsDbPath(config.path, repoDir));
+  const pending = countPendingOutboxEntries(outbox);
+  if (pending === 0) return refusal;
+  const commits = pending === 1 ? "1 commit" : `${pending} commits`;
+  const stranded = `This checkout also holds ${commits} an earlier ` +
+    "command on it made that never reached the datastore. They stay in " +
+    `${outbox}: they land if the claim is released and a command runs in ` +
+    "this checkout directly, and they are not sent through serve. To keep " +
+    "them, release the claim with 'swamp datastore release', run a command " +
+    "in this checkout, then claim again; or redo the work through serve.";
+  return markErrorPaths(
+    new DatastoreClaimedError(
+      refusal.owner,
+      [refusal.detail, stranded].filter((part) => part !== undefined)
+        .join(" "),
+      refusal.wayOut,
+    ),
+    [outbox],
+  );
+}
+
+/** The refusal `check` meets on a datastore `owner` claims, if any. */
+function claimRefusal(
+  owner: DatastoreOwner | undefined,
+  check: V3OwnerCheck,
+): DatastoreClaimedError | undefined {
+  if (owner === undefined) return undefined;
+  switch (check.as) {
+    case "claimer":
+      return undefined;
+    case "writer":
+      return new DatastoreClaimedError(owner);
+    case "serve":
+      if (check.address !== undefined && owner.isAddress(check.address)) {
+        return undefined;
+      }
+      return new DatastoreClaimedError(
+        owner,
+        check.address === undefined
+          ? "This serve was started without --address, so it cannot write as the owner."
+          : `This serve's --address is ${
+            normalizeOwnerAddress(check.address)
+          }, not the owner's.`,
+        `Start the owner serve with --address ${owner.address}, or ` +
+          "release the claim with 'swamp datastore release'.",
+      );
+  }
 }
 
 /**
@@ -1501,6 +1723,7 @@ export async function closeV3Datastores(
   const pending = releases.splice(0);
   markedCheckouts.clear();
   commandStartMarks.clear();
+  serveHolds.clear();
   const entries = [...opened.entries()];
   const handles = entries.map(([, handle]) => handle);
   opened.clear();
@@ -1773,6 +1996,81 @@ export function v3CommitMark(datastorePath: string): number {
     resolve(h.datastorePath) === datastore
   );
   return handle?.commitStore.highWaterMark().cursor ?? -1;
+}
+
+/**
+ * The commit log of the v3 datastore `config` names, as `swamp datastore
+ * claim` and `release` and serve's requests for them change its claim
+ * (swamp-club#4063), under this process's writer lease. A claim moves no
+ * high-water mark, so the command counts it as a change for the closing
+ * sync's report, and serve confirms it replicated before it answers
+ * (`confirmReplicated`), which no commit mark would make it do.
+ *
+ * @throws Error when this process holds no writer lease on the datastore
+ */
+export function v3ClaimCommitLog(
+  repoDir: string,
+  config: V3DatastoreConfig,
+  options: { readonly confirmReplicated?: boolean } = {},
+): {
+  owner(): DatastoreOwner | undefined;
+  catchUp(signal: AbortSignal): Promise<void>;
+  highWaterCursor(): number;
+  claim(owner: DatastoreOwner): Promise<void>;
+  release(): Promise<void>;
+  confirm(): Promise<void>;
+} {
+  const handle = v3DatastoreFor(repoDir, config);
+  const fence = (): number => {
+    const held = v3WriterFence(config.path);
+    if (held === undefined) {
+      throw markErrorPaths(
+        new Error(
+          `Internal error: the claim on the v3 datastore at ${config.path} ` +
+            "was changed without its writer lease",
+        ),
+        [config.path],
+      );
+    }
+    // As before a commit: a hold that was lost, or a copy that is not
+    // current (serve's restore after a retake), writes no claim, which the
+    // restore would drop.
+    assertV3WriterCurrent(config.path);
+    if (
+      v3ReplicatesAt(config.path) &&
+      !currentCopies.has(handleKey(repoDir, config))
+    ) {
+      throw new WriterFencedError(held, undefined, "copy-restoring");
+    }
+    return held;
+  };
+  const confirm = async (): Promise<void> => {
+    if (options.confirmReplicated === true && v3ReplicatesAt(config.path)) {
+      await syncForRequests(resolve(config.path));
+    }
+  };
+  const changed = async (): Promise<void> => {
+    const datastore = resolve(config.path);
+    const start = commandStartMarks.get(datastore);
+    if (start !== undefined) {
+      commandStartMarks.set(datastore, { ...start, mark: -1 });
+    }
+    await confirm();
+  };
+  return {
+    owner: () => handle.commitStore.owner(),
+    catchUp: (signal) => handle.catchUp(signal),
+    highWaterCursor: () => handle.commitStore.highWaterMark().cursor,
+    async claim(owner) {
+      await handle.commitStore.claimOwner(fence(), owner);
+      await changed();
+    },
+    async release() {
+      await handle.commitStore.releaseOwner(fence());
+      await changed();
+    },
+    confirm,
+  };
 }
 
 /** One group commit's sync: the held sidecar's, at a request's deadline. */

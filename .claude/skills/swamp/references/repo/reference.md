@@ -306,6 +306,14 @@ swamp datastore setup filesystem --path /mnt/shared/swamp-v3 --format 3 --json
 - `swamp datastore gc --json` deletes content chunks no commit names; on a v2
   datastore it reports there is nothing to collect.
 - `swamp datastore status --json` shows `format: 3` and the commit log.
+- A refusal with `datastore_claimed` means `swamp datastore claim` made serve
+  the datastore's owner: write through serve by setting `serverAddress` (or
+  `SWAMP_SERVE_URL`) to the address the error names and running
+  `swamp auth server-login --server <url>`. Reads still work. An admin claims
+  with `swamp datastore claim --address <url>` (through the running serve with
+  `--server`, or in serve's checkout with serve stopped) and removes the claim
+  with `swamp datastore release`. Serve must run with `--address <url>` to write
+  a datastore claimed for that address.
 - A run cancelled by Ctrl+C or SIGTERM commits its `cancelled` record and the
   outputs it wrote. After a hard kill, a crash or a second Ctrl+C, the next
   command in that checkout removes the run's uncommitted files and logs a

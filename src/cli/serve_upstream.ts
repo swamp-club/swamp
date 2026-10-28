@@ -169,6 +169,14 @@ export const SERVE_UPSTREAM_COMMANDS: Readonly<
         applies: false,
         reason: "deletes unreferenced chunks from the storage",
       },
+      claim: {
+        applies: false,
+        reason: "writes serve's claim into the storage's commit log",
+      },
+      release: {
+        applies: false,
+        reason: "removes serve's claim from the storage's commit log",
+      },
       "migrate-index": {
         applies: false,
         reason: "migrates the storage's index format",

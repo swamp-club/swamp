@@ -98,6 +98,7 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   keyFile: "SWAMP_SERVE_KEY_FILE",
   oauthClientName: "SWAMP_OAUTH_CLIENT_NAME",
   grantsFile: "SWAMP_GRANTS_FILE",
+  address: "SWAMP_SERVE_ADDRESS",
   grantsDir: "SWAMP_GRANTS_DIR",
   wsIdleTimeout: "SWAMP_WS_IDLE_TIMEOUT",
   queueTimeout: "SWAMP_QUEUE_TIMEOUT",
@@ -183,6 +184,8 @@ export interface ServeConfigFile {
   "trusted-hosts"?: string[];
   "dispatch-env-allow"?: string[];
   "grants-file"?: string;
+  /** The address clients put in serverAddress (swamp-club#4063). */
+  address?: string;
   "grants-dir"?: string;
   "grant-reload"?: string;
   "ws-idle-timeout"?: string;
@@ -312,6 +315,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "grants-file",
   "grants-dir",
   "grant-reload",
+  "address",
   "ws-idle-timeout",
   "queue-timeout",
   "verify-on-enroll",
@@ -588,6 +592,7 @@ function validateConfigValues(
 
   const stringFields: [string, unknown][] = [
     ["grants-file", raw["grants-file"]],
+    ["address", raw["address"]],
     ["grants-dir", raw["grants-dir"]],
     ["grant-reload", raw["grant-reload"]],
     ["ws-idle-timeout", raw["ws-idle-timeout"]],
@@ -1008,6 +1013,8 @@ export interface MergedServeOptions {
   grantsFile?: string;
   grantsDir?: string;
   grantReload: string;
+  /** The address clients put in serverAddress (swamp-club#4063). */
+  address?: string;
   webhook?: string[];
   webhookConfigs?: WebhookConfigEntry[];
   authMode: string;
@@ -1228,6 +1235,13 @@ export function mergeServeOptions(
     "grants-file",
     cliOptions.grantsFile as string | undefined,
     config?.["grants-file"],
+    undefined,
+  );
+
+  const address = resolveString(
+    "address",
+    cliOptions.address as string | undefined,
+    config?.address,
     undefined,
   );
 
@@ -1555,6 +1569,7 @@ export function mergeServeOptions(
     grantsFile,
     grantsDir,
     grantReload,
+    ...(address !== undefined ? { address } : {}),
     webhook,
     webhookConfigs,
     authMode,

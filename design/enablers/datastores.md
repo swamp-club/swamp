@@ -6195,7 +6195,8 @@ In team mode a team writes a v3 datastore through `swamp serve`, which holds
 the writer lease. Laptops and CI hold a serve token, not storage credentials.
 swamp-club#3915 adds serve's side, `src/serve/datastore_api.ts`. It is the
 security boundary for the rest of team mode: the CLI's serve upstream and
-`swamp datastore claim`/`release` are later issues and build on it.
+`swamp datastore claim`/`release` build on it (see "Team mode: claiming a
+datastore").
 The lock routes are "Model locks" under "Team mode: the CLI's serve
 upstream" (swamp-club#3985).
 
@@ -6992,7 +6993,8 @@ than dropped as `head-moved`.
   `models/` to serve's checkout (git) first, until per-file config moves
   through serve (`p5-config`).
 - Per-file config and the live feed are `p5-config` and `p5-feed`.
-- `swamp datastore claim` and `release` are the next issue.
+- `swamp datastore claim` and `release` follow in "Team mode: claiming a
+  datastore".
 
 **Testing.**
 
@@ -7004,6 +7006,127 @@ than dropped as `head-moved`.
   serve with admin and member tokens, compares them with a solo checkout, and
   proves storage and its lease are never touched.
 - The error rules are each red-checked.
+
+### Team mode: claiming a datastore (datastore rework Phase 5)
+
+Before swamp-club#4063, a v3 datastore that serve wrote could still be written
+directly by any checkout holding storage credentials. The fenced writer lease
+kept the log consistent, but a direct write skipped serve's authorisation:
+grants, content checks and principal stamping. `swamp datastore claim` makes
+serve the datastore's owner, and direct writers refuse.
+
+**The owner record.** The owner is a one-row table in `commits.db`,
+`datastore_owner`: serve's address, normalized as clients compare it
+(`normalizeOwnerAddress` in `src/domain/datastore_v3/datastore_owner.ts`, no
+credentials, query or fragment), the time of the claim, and the log's
+high-water mark when it was written (the claim's log position, its
+checkpoint). No SQLite checkpoint is forced: a replicated `commits.db` leaves
+checkpoints to Litestream. The owner is serve's address, not one serve
+process, so every node behind that address writes as the owner and a
+failover is not a change of owner.
+
+The table came with schema 10 (a no-op migration), so every swamp older than
+this change refuses a datastore this binary has opened with
+`datastore_v3_schema_newer` rather than writing past a claim it cannot see.
+The upgrade is one-way: every checkout of the datastore upgrades together.
+The earlier design put the owner in `_meta.json` with a compare-and-swap.
+That needs a conditional write from every storage provider, and binaries
+between swamp-club#4049 and this change would ignore it.
+
+**Writing the claim.** `SqliteCommitStore.claimOwner(fence, owner)` and
+`releaseOwner(fence)` write in their own `BEGIN IMMEDIATE` transaction and
+check the writer fence inside it, as appends do: a writer that lost its lease
+can neither claim nor release. A serve-mode copy is never claimed.
+
+- With serve stopped, `swamp datastore claim --address <url>` (and
+  `release`) takes the writer lease itself, in serve's checkout or any
+  checkout bound to the storage. It catches the commit log up, then writes the
+  owner. The closing sync replicates the row before the lease is let go.
+- With serve running, the same commands go to serve (`--server`, or the
+  address the environment or `.swamp.yaml` names, as `datastore status`
+  routes) as `datastore.claim` and `datastore.release`. These are admin-only
+  control-plane requests (`admin` on `access:*`), audited with the claimed
+  address (normalized, so no credential reaches the audit log). Serve writes
+  under its own fence and confirms the row replicated before it answers
+  (`v3ClaimCommitLog` with `confirmReplicated`): the row is not a commit and
+  moves no high-water mark, so the per-request confirmation would skip it.
+- Claiming again for the owner's address writes nothing but confirms the
+  claim as it stands is replicated (so a retry after a claim that was written
+  but not confirmed is not acknowledged unconfirmed), and likewise a release
+  of an unclaimed datastore. Another address is refused with
+  `datastore_claimed` until the claim is released. A release removes a claim
+  row it cannot read, and a claimer's hold never reads it.
+- A serve records its own address, `serve --address` (`SWAMP_SERVE_ADDRESS`,
+  `address:` in `serve.yaml`), and refuses a claim naming another, or any
+  claim when it was started without one.
+
+**Refusing direct writers.** `takeV3WriterHold`
+(`src/infrastructure/datastore_v3/v3_repo_context.ts`) reads the owner after
+it holds the lease and, on a bucket, once the copy is current, and before
+outbox and interrupted-writer recovery lands anything. A claim that lands
+while a writer waits for the lease is therefore seen, and the claim itself
+needs the lease, so a writer that took it earlier commits before the claim,
+never after. A refused writer gets `DatastoreClaimedError`
+(`datastore_claimed`, a user error, exit 1). It names the owner and says to
+set `serverAddress` or `SWAMP_SERVE_URL` and run `swamp auth server-login`.
+
+- The hold's policy is `V3OwnerCheck`: a direct writer (the default) is
+  refused, `datastore claim` and `release` pass as `claimer`, and serve's
+  lifetime hold passes its `--address`. Serve writes a claimed datastore only
+  when its address is the owner's, so a second serve, such as one started on a
+  laptop holding credentials, is refused like any direct writer. An owner
+  serve started without `--address` refuses to start and says to pass it.
+- Serve checks the claim again before a commit whenever its fence moved since
+  the claim last named it (a retake after a lost lease, or a move of the
+  lease). A claim for another address written while serve's lease had lapsed
+  stops serve committing until it is restarted with that address or the claim
+  is released.
+- A writer does not wait for a lease serve holds to be told so: before the
+  lease it reads the claim from the file (the shared `commits.db`, or a
+  bucket checkout's last copy, `SqliteCommitStore.peekOwner`, read-only). When
+  that shows a claim it may not write under, it takes the lease without
+  waiting, and a busy lease is refused at once with `datastore_claimed`
+  instead of `datastore_v3_writer_busy` after the lock timeout. A free lease
+  goes on to the check under it, which decides. A bucket checkout's copy can
+  predate a release, so there the refusal says the claim was seen in this
+  checkout's last copy while another process held the lease, and to run the
+  command again once it is done.
+- Reads stay allowed: read-only opens take no writer hold.
+- Serve-mode checkouts are unaffected: they never write storage, and serve
+  writes as the owner.
+- A checkout's commits still in its outbox when the claim lands stay there:
+  its next direct write is refused before recovery lands them. Moving to serve
+  does not carry them over: a serve-mode checkout has a copy root of its own
+  and never reads the old copy's outbox. So on a replicated checkout the
+  refusal says how many such commits there are and the outbox they stay in
+  (`countPendingOutboxEntries`, read-only), that they land only after a
+  release and a direct command, and that they are not sent through serve. To
+  keep them, release, run a command directly, then claim again, or redo the
+  work through serve. The refused command itself still changed nothing. On a filesystem datastore the
+  outbox sits beside the shared `commits.db`, so the claim's own hold lands a
+  dead writer's prepared commits before the claim.
+
+**Releasing.** `swamp datastore release` removes the row, and direct
+writing works again. With the owner serve gone for good, a direct release
+with serve stopped is the way out: it needs only the writer lease, which the
+dead serve's lease expires into. To move the owner to a new address, release,
+then claim for the new one.
+
+**What a claim cannot do.** It makes direct writers refuse honestly. It
+cannot stop a modified client that holds storage credentials, and a direct
+release needs nothing a laptop with credentials lacks. Removing storage
+credentials from laptops and CI is the operator's step.
+
+**Testing.** `integration/datastore_v3_claim_test.ts` covers the refusal,
+reads, the owner and other serves, release, a claim through serve's handler
+while serve holds the lease, and serve stopping after a claim for another
+address under a moved fence. Its two race tests run the other writer in a
+Worker: one holds the lease when the claim is asked for and commits before it,
+and one waits for the lease while the claim lands and is refused, which fails
+when the check moves before the lease. `datastore_v3_litestream_restore_test.ts`
+checks that a claim reaches the next machine's restore, and
+`datastore_v3_outbox_test.ts` that a dead writer's prepared commit lands
+before the claim and nothing after it.
 
 ### Foreign Catalog Export/Pull (Phase 6)
 
@@ -8141,6 +8264,10 @@ datastore extensions, close it.
   types (`src/cli/commands/datastore_type_search.ts`).
 - `swamp datastore compact`: checkpoint the WAL and vacuum `_catalog.db`
   (`datastore_compact.ts`).
+- `swamp datastore claim --address <url>` and `swamp datastore release`: make
+  serve a v3 datastore's owner, so direct writers refuse, and remove the
+  claim (`datastore_claim.ts`, `datastore_release.ts`). See "Team mode:
+  claiming a datastore".
 - `swamp datastore config migrate`: copy definitions, vault configs, the
   extension lockfile and pulled extensions into the datastore `config/` tier and
   set `managedConfig: true` (`datastore_config_migrate.ts`). That flag alone
@@ -8512,12 +8639,16 @@ exclude patterns.
 | `src/cli/commands/datastore_migrate_index.ts` | `swamp datastore migrate-index` |
 | `src/cli/commands/datastore_type_search.ts` | `swamp datastore type search` |
 | `src/cli/commands/datastore_config_migrate.ts` | `swamp datastore config migrate` |
+| `src/cli/commands/datastore_claim.ts` | `swamp datastore claim` (direct or through serve) |
+| `src/cli/commands/datastore_release.ts` | `swamp datastore release` (direct or through serve) |
 | `src/cli/commands/doctor_datastores.ts` | `swamp doctor datastores` |
 | `src/presentation/renderers/datastore_status.ts` | `swamp datastore status` rendering |
 | `src/presentation/renderers/datastore_sync.ts` | `swamp datastore sync` rendering |
 | `src/presentation/renderers/datastore_lock.ts` | `swamp datastore lock` rendering |
 | `src/presentation/renderers/datastore_setup.ts` | `swamp datastore setup` rendering |
 | `src/presentation/renderers/datastore_compact.ts` | `swamp datastore compact` rendering |
+| `src/presentation/renderers/datastore_claim.ts` | `swamp datastore claim` rendering |
+| `src/presentation/renderers/datastore_release.ts` | `swamp datastore release` rendering |
 | `src/presentation/renderers/datastore_migrate_index.ts` | `swamp datastore migrate-index` rendering |
 | `src/presentation/renderers/datastore_namespace_set.ts` | `swamp datastore namespace set` rendering |
 | `src/presentation/renderers/datastore_namespace_unset.ts` | `swamp datastore namespace unset` rendering |

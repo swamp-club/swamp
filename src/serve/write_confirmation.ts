@@ -39,7 +39,9 @@ import { SYNC_GATED_REQUESTS } from "./sync_gate.ts";
  * writes is incidental), `vault.put` (secrets stay in the always-local
  * `.swamp/secrets`), and `workflow.signal`, `workflow.trigger.*` and
  * `workflow.schedule.*` (control-plane records and serve config, outside the
- * commit log). The integration tests
+ * commit log), and `datastore.claim` and `datastore.release`, whose owner row
+ * is no commit, so their handler confirms it replicated itself
+ * (swamp-club#4063). The integration tests
  * pin the dispatch: every request named here is wrapped, and no other.
  */
 export const CONFIRMED_WRITE_REQUESTS: ReadonlySet<string> = new Set([

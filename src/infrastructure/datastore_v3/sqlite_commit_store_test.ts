@@ -41,6 +41,8 @@ import {
 } from "../../domain/datastore_v3/partition_key.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
+import { DatastoreOwner } from "../../domain/datastore_v3/datastore_owner.ts";
+import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
 import {
   blobPut,
   deleteVersion,
@@ -1190,6 +1192,96 @@ Deno.test("SqliteCommitStore.logId: a store from before log ids gets one when it
     );
     // A swamp at schema 8 would serve this log without its id.
     assertGreater(COMMIT_STORE_SCHEMA_VERSION, 8);
+  });
+});
+
+// The datastore's owner (swamp-club#4063).
+
+function owner(address = "https://swamp.example.com"): DatastoreOwner {
+  return DatastoreOwner.create({
+    address,
+    claimedAt: "2026-10-28T00:00:00.000Z",
+    claimedAtCursor: 3,
+  });
+}
+
+Deno.test("SqliteCommitStore.claimOwner: a claim is read back from the file by another connection, and a release removes it (swamp-club#4063)", async () => {
+  await withStore(async (store, path) => {
+    assertEquals(store.owner(), undefined);
+    await store.raiseWriterFence(2);
+    await store.claimOwner(2, owner("HTTPS://Swamp.Example.com:443/"));
+
+    const other = SqliteCommitStore.open(path);
+    try {
+      const read = other.owner();
+      assertEquals(read?.address, "https://swamp.example.com");
+      assertEquals(read?.claimedAt, "2026-10-28T00:00:00.000Z");
+      assertEquals(read?.claimedAtCursor, 3);
+    } finally {
+      await other.close();
+    }
+
+    // A second claim replaces the first.
+    await store.claimOwner(2, owner("https://other.example.com"));
+    assertEquals(store.owner()?.address, "https://other.example.com");
+
+    await store.releaseOwner(2);
+    assertEquals(store.owner(), undefined);
+    // Releasing an unclaimed store is not an error.
+    await store.releaseOwner(2);
+  });
+});
+
+Deno.test("SqliteCommitStore.claimOwner: a writer below the store's fence can neither claim nor release (swamp-club#4063)", async () => {
+  await withStore(async (store) => {
+    await store.raiseWriterFence(5);
+    await assertRejects(
+      () => store.claimOwner(4, owner()),
+      WriterFencedError,
+    );
+    assertEquals(store.owner(), undefined);
+
+    await store.claimOwner(5, owner());
+    await assertRejects(() => store.releaseOwner(4), WriterFencedError);
+    assertEquals(store.owner()?.address, "https://swamp.example.com");
+  });
+});
+
+Deno.test("SqliteCommitStore.claimOwner: a serve-mode copy is never claimed or released (swamp-club#4063)", async () => {
+  await withStore(async (store) => {
+    await assertRejects(
+      () => store.claimOwner(1, owner()),
+      Error,
+      "serve-mode copy",
+    );
+    await assertRejects(() => store.releaseOwner(1), Error, "serve-mode copy");
+    assertEquals(store.owner(), undefined);
+  }, { follower: true });
+});
+
+Deno.test("SqliteCommitStore.owner: a store from before owners migrates with none, at a schema a schema-9 swamp refuses as newer (swamp-club#4063)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    await (SqliteCommitStore.open(path)).close();
+    // Take the file back to schema 9, as a swamp before owners left it.
+    const db = new DatabaseSync(path);
+    try {
+      db.exec("DROP TABLE datastore_owner; PRAGMA user_version=9");
+    } finally {
+      db.close();
+    }
+    const migrated = SqliteCommitStore.open(path);
+    try {
+      assertEquals(migrated.owner(), undefined);
+    } finally {
+      await migrated.close();
+    }
+    assertEquals(
+      rawRows(path, "PRAGMA user_version")[0].user_version,
+      COMMIT_STORE_SCHEMA_VERSION,
+    );
+    // A swamp at schema 9 would write past a claim it cannot see.
+    assertGreater(COMMIT_STORE_SCHEMA_VERSION, 9);
   });
 });
 

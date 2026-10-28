@@ -264,9 +264,21 @@ import {
   inspectV3ReplicaRestorable,
 } from "../../infrastructure/datastore_v3/v3_content_inspection.ts";
 import {
+  v3ClaimCommitLog,
   v3DatastoreConfigOf,
   v3DatastoreFor,
 } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
+import {
+  datastoreClaim,
+  type DatastoreClaimData,
+} from "../../libswamp/datastores/claim.ts";
+import {
+  datastoreRelease,
+  type DatastoreReleaseData,
+} from "../../libswamp/datastores/release.ts";
+import { normalizeOwnerAddress } from "../../domain/datastore_v3/datastore_owner.ts";
+import type { DatastoreClaimPayload } from "../protocol.ts";
+import { UserError } from "../../domain/errors.ts";
 
 /**
  * Derives the extension lockfile path from the connection context's
@@ -689,6 +701,161 @@ export async function handleDatastoreStatus(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "datastore_status_failed", message);
+  }
+}
+
+/**
+ * The claim log of serve's own v3 datastore, under serve's lifetime hold:
+ * a claim through serve commits under serve's fence and is confirmed
+ * replicated before the reply (swamp-club#4063). Undefined on v2.
+ */
+async function serveClaimCommitLog(ctx: ConnectionContext) {
+  if (resolverEngine(ctx.datastoreResolver) !== "v3") return undefined;
+  const config = await v3DatastoreConfigOf(
+    ctx.repoDir,
+    ctx.datastoreResolver.config(),
+  );
+  return v3ClaimCommitLog(ctx.repoDir, config, { confirmReplicated: true });
+}
+
+/** {@link serveClaimCommitLog} as the claim's and release's deps. */
+async function serveClaimDeps(ctx: ConnectionContext) {
+  const commitLog = await serveClaimCommitLog(ctx);
+  return commitLog === undefined ? {} : { commitLog };
+}
+
+/** The code a claim or release that failed is answered with. */
+function claimErrorCode(error: unknown, fallback: string): string {
+  return error instanceof UserError && error.code !== undefined
+    ? error.code
+    : fallback;
+}
+
+/**
+ * `swamp datastore claim --server` (swamp-club#4063): makes this serve the
+ * owner of its v3 datastore. Admin only. The owner is the address serve was
+ * started with (`--address`), so a claim naming another, or one to a serve
+ * started without it, is refused.
+ */
+export async function handleDatastoreClaim(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: DatastoreClaimPayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx).allowed
+  ) return;
+
+  try {
+    const address = normalizeOwnerAddress(payload.address);
+    if (ctx.ownerAddress === undefined) {
+      throw new UserError(
+        "This serve was started without --address, so it cannot own its " +
+          "datastore: restart it with --address " + address +
+          ", then claim again. Nothing was changed.",
+      );
+    }
+    if (address !== ctx.ownerAddress) {
+      throw new UserError(
+        `This serve's --address is ${ctx.ownerAddress}, not ${address}: ` +
+          "claim the datastore for the address serve was started with. " +
+          "Nothing was changed.",
+      );
+    }
+    let result: DatastoreClaimData | undefined;
+    await consumeStream(
+      datastoreClaim(
+        handlerLibSwampContext(ctx, { signal: controller.signal }),
+        await serveClaimDeps(ctx),
+        { address },
+      ),
+      {
+        catching_up: () => {},
+        completed: (e) => {
+          result = e.data;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+    send(socket, {
+      type: "datastore.claim",
+      id: requestId,
+      payload: { data: result! },
+    });
+  } catch (error) {
+    sendError(
+      socket,
+      requestId,
+      claimErrorCode(error, "datastore_claim_failed"),
+      sanitizeErrorForClient(error),
+    );
+  }
+}
+
+/**
+ * `swamp datastore release --server` (swamp-club#4063): removes the claim
+ * on serve's v3 datastore, so direct writers write it again. Admin only.
+ */
+export async function handleDatastoreRelease(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx).allowed
+  ) return;
+
+  try {
+    let result: DatastoreReleaseData | undefined;
+    await consumeStream(
+      datastoreRelease(
+        handlerLibSwampContext(ctx, { signal: controller.signal }),
+        await serveClaimDeps(ctx),
+      ),
+      {
+        completed: (e) => {
+          result = e.data;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+    send(socket, {
+      type: "datastore.release",
+      id: requestId,
+      payload: { data: result! },
+    });
+  } catch (error) {
+    sendError(
+      socket,
+      requestId,
+      claimErrorCode(error, "datastore_release_failed"),
+      sanitizeErrorForClient(error),
+    );
   }
 }
 

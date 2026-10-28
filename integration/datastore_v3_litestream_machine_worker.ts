@@ -39,6 +39,7 @@ import {
   ensureV3CopyCurrent,
   holdV3Writer,
   startV3ReplicationUpkeep,
+  v3ClaimCommitLog,
   v3DatastoreFor,
   type V3ReplicationUpkeep,
   v3RepositoryFactoryConfig,
@@ -47,11 +48,15 @@ import {
   acquireV3WriterLock,
   v3WriterFence,
 } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
-import { v3CommitsDbPath } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
+import {
+  v3CommitsDbPath,
+  v3OutboxPath,
+} from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 import { replicationPathsFor } from "../src/infrastructure/datastore_v3/litestream/replication_files.ts";
 import type { FilesystemDatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
 import { createNamespaceListDeps } from "../src/libswamp/datastores/namespace_list.ts";
 import { commitIn, TEST_TIMINGS } from "./datastore_v3_litestream_helpers.ts";
+import { DatastoreOwner } from "../src/domain/datastore_v3/datastore_owner.ts";
 
 /** What the test asks a machine to do. */
 export type MachineRequest =
@@ -90,6 +95,19 @@ export type MachineRequest =
     readonly close: boolean;
   }
   | { readonly kind: "close" }
+  /**
+   * `swamp datastore claim --address` with serve stopped, then the
+   * command's teardown (swamp-club#4063).
+   */
+  | { readonly kind: "claim"; readonly address: string }
+  /** `swamp datastore release` with serve stopped, then its teardown. */
+  | { readonly kind: "release" }
+  /**
+   * Leaves one pending entry in this checkout's own outbox, as a command
+   * that died before its commit landed does; resolves with the outbox's
+   * path (swamp-club#4063).
+   */
+  | { readonly kind: "plantOutboxEntry" }
   /**
    * Serve confirming a write request's commits before it answers
    * (swamp-club#3489).
@@ -299,6 +317,45 @@ async function handle(request: MachineRequest): Promise<unknown> {
       });
     case "confirm":
       return await inEnv(() => confirmV3Replicated(init!.datastorePath));
+    case "plantOutboxEntry":
+      return await inEnv(() => {
+        const path = v3OutboxPath(
+          v3CommitsDbPath(init!.datastorePath, init!.repoDir),
+        );
+        const db = new DatabaseSync(path);
+        try {
+          db.prepare(
+            "INSERT INTO outbox_entries (namespace, partition, txn_id, unit_id, base_seq, created_at, body) " +
+              "VALUES ('', 'planted', ?, 'unit', 0, 0, '{}')",
+          ).run(crypto.randomUUID());
+        } finally {
+          db.close();
+        }
+        return Promise.resolve(path);
+      });
+    case "claim":
+    case "release":
+      return await inEnv(async () => {
+        try {
+          await holdV3Writer(config(), init!.repoDir, {
+            ownerCheck: { as: "claimer" },
+          });
+          const log = v3ClaimCommitLog(init!.repoDir, config());
+          if (request.kind === "release") {
+            await log.release();
+            return undefined;
+          }
+          await log.catchUp(new AbortController().signal);
+          await log.claim(DatastoreOwner.create({
+            address: request.address,
+            claimedAt: new Date().toISOString(),
+            claimedAtCursor: log.highWaterCursor(),
+          }));
+          return undefined;
+        } finally {
+          await closeV3Datastores();
+        }
+      });
     case "close":
       return await inEnv(async () => {
         try {

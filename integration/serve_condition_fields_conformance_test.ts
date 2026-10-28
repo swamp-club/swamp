@@ -189,6 +189,8 @@ const CATEGORIES: Record<string, Category> = {
   "audit.unsubscribe": "access",
   "audit.verify": "access",
   "cluster.instances": "access",
+  "datastore.claim": "access",
+  "datastore.release": "access",
   "datastore.status": "access",
   "doctor.datastores": "access",
   "doctor.extensions": "access",

@@ -278,6 +278,7 @@ import {
   v3BucketNamespacedStoreAt,
   type V3DatastoreConfig,
   v3DatastoreConfigOf,
+  type V3OwnerCheck,
   v3RepositoryFactoryConfig,
 } from "../infrastructure/datastore_v3/v3_repo_context.ts";
 import { assertV3CheckoutJoinable } from "../infrastructure/datastore_v3/v3_checkout_join.ts";
@@ -500,6 +501,13 @@ export interface RequireRepoOptions {
    * instead (swamp-club#3359).
    */
   retakeLostV3Lease?: boolean;
+  /**
+   * On a v3 datastore, how the writer lease's hold meets a claim on it
+   * (swamp-club#4063): a direct writer's, refused once serve owns the
+   * datastore, unless set. Serve passes its address; `datastore claim` and
+   * `release` pass `claimer`.
+   */
+  v3OwnerCheck?: V3OwnerCheck;
   /**
    * Give up after this long, instead of the lock timeout, when the datastore
    * lock or a per-model lock another process holds is not free. The
@@ -1449,7 +1457,11 @@ export function requireInitializedRepo(
     // datastore's is at its local root (swamp-club#3534).
     const v3 = engine === "v3" ? await v3LocationOf(resolution) : undefined;
     if (v3 !== undefined) {
-      await holdV3Writer(v3, repoDir);
+      await holdV3Writer(v3, repoDir, {
+        ...(options.v3OwnerCheck !== undefined
+          ? { ownerCheck: options.v3OwnerCheck }
+          : {}),
+      });
     }
 
     const repoPath = RepoPath.create(repoDir);
@@ -1768,6 +1780,9 @@ export async function requireInitializedRepoUnlocked(
   if (v3 !== undefined) {
     await holdV3Writer(v3, repoDir, {
       ...(options.retakeLostV3Lease === true ? { retakeLost: true } : {}),
+      ...(options.v3OwnerCheck !== undefined
+        ? { ownerCheck: options.v3OwnerCheck }
+        : {}),
     });
   }
 

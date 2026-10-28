@@ -93,6 +93,7 @@ import {
   Partition,
 } from "../../domain/datastore_v3/partition.ts";
 import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
+import { DatastoreOwner } from "../../domain/datastore_v3/datastore_owner.ts";
 import { UserError } from "../../domain/errors.ts";
 import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import {
@@ -426,7 +427,57 @@ const MIGRATIONS: readonly SqliteMigration[] = [
   INSERT OR IGNORE INTO log_identity (id, log_id)
     VALUES (1, lower(hex(randomblob(16))));
   `,
+  // 9 → 10: the datastore's owner (swamp-club#4063), the serve address
+  // `swamp datastore claim` names, written under the writer fence. A direct
+  // writer that finds a row refuses; a swamp at schema 9 would not look, so
+  // it must refuse the store as newer.
+  `
+  CREATE TABLE IF NOT EXISTS datastore_owner (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    address TEXT NOT NULL,
+    claimed_at TEXT NOT NULL,
+    claimed_at_cursor INTEGER NOT NULL
+  ) STRICT;
+  `,
 ];
+
+/** The owner row of `db` (swamp-club#4063), undefined when it holds none. */
+function readOwner(db: DatabaseSync): DatastoreOwner | undefined {
+  const row = db.prepare(
+    "SELECT address, claimed_at, claimed_at_cursor FROM datastore_owner WHERE id = 1",
+  ).get() as
+    | { address: string; claimed_at: string; claimed_at_cursor: number }
+    | undefined;
+  if (row === undefined) return undefined;
+  return DatastoreOwner.create({
+    address: row.address,
+    claimedAt: row.claimed_at,
+    claimedAtCursor: row.claimed_at_cursor,
+  });
+}
+
+/**
+ * The owner the `commits.db` at `path` names, read without opening the
+ * store: no migration, no write, and undefined for a file that is absent,
+ * unreadable or from before owners (swamp-club#4063). A hint for a writer
+ * that does not hold the lease yet; only {@link SqliteCommitStore.owner},
+ * read under the lease, decides.
+ */
+export function peekDatastoreOwner(path: string): DatastoreOwner | undefined {
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(path, { readOnly: true });
+  } catch {
+    return undefined;
+  }
+  try {
+    return readOwner(db);
+  } catch {
+    return undefined;
+  } finally {
+    db.close();
+  }
+}
 
 /** Error code for a `commits.db` written by a newer swamp. */
 export const COMMIT_STORE_SCHEMA_NEWER_CODE = "datastore_v3_schema_newer";
@@ -779,6 +830,73 @@ export class SqliteCommitStore implements CommitStore {
     return (this.#db.prepare(
       "SELECT log_id FROM log_identity WHERE id = 1",
     ).get() as { log_id: string }).log_id;
+  }
+
+  /**
+   * The datastore's owner (swamp-club#4063), or undefined while no serve
+   * has claimed it. Read from the file, so a claim another connection wrote
+   * is seen.
+   */
+  owner(): DatastoreOwner | undefined {
+    this.#assertOpen();
+    return readOwner(this.#db);
+  }
+
+  /**
+   * Records `owner` as the datastore's owner, replacing any claim, for the
+   * writer holding `fence`: a writer that lost its lease cannot claim.
+   * Runs in its own write transaction, queued behind appends in flight.
+   *
+   * @throws WriterFencedError when the store has seen a higher fence
+   */
+  claimOwner(fence: number, owner: DatastoreOwner): Promise<void> {
+    return this.#writeOwner(fence, () => {
+      this.#db.prepare(
+        "INSERT INTO datastore_owner (id, address, claimed_at, claimed_at_cursor) VALUES (1, ?, ?, ?) " +
+          "ON CONFLICT (id) DO UPDATE SET address = excluded.address, " +
+          "claimed_at = excluded.claimed_at, claimed_at_cursor = excluded.claimed_at_cursor",
+      ).run(owner.address, owner.claimedAt, owner.claimedAtCursor);
+    });
+  }
+
+  /**
+   * Removes the datastore's claim, for the writer holding `fence`; nothing
+   * to remove is not an error.
+   *
+   * @throws WriterFencedError when the store has seen a higher fence
+   */
+  releaseOwner(fence: number): Promise<void> {
+    return this.#writeOwner(fence, () => {
+      this.#db.exec("DELETE FROM datastore_owner WHERE id = 1");
+    });
+  }
+
+  #writeOwner(fence: number, write: () => void): Promise<void> {
+    if (this.#closed) return Promise.reject(closedError());
+    if (this.#follower) {
+      // A serve-mode copy follows serve's log: serve writes the claim.
+      return Promise.reject(
+        new Error(
+          "Internal error: a serve-mode copy of a v3 datastore cannot be claimed or released",
+        ),
+      );
+    }
+    if (!Number.isSafeInteger(fence) || fence < 1) {
+      return Promise.reject(
+        new Error(`A writer fence must be an integer from 1: ${fence}`),
+      );
+    }
+    return this.#enqueue(() => {
+      this.#db.exec("BEGIN IMMEDIATE");
+      try {
+        this.#checkWriterFence(fence);
+        write();
+        this.#db.exec("COMMIT");
+      } catch (error) {
+        rollbackQuietly(this.#db);
+        throw error;
+      }
+    });
   }
 
   /**
