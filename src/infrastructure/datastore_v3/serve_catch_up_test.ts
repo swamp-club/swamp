@@ -37,6 +37,7 @@ import {
   BASE_LOAD_ATTEMPTS,
   OBSERVED_BASE_STAGING_PREFIX,
   SERVE_PARTITION_PAGE,
+  serveAccessCheck,
   ServeCatchUp,
   serveLogCheck,
 } from "./serve_catch_up.ts";
@@ -1164,5 +1165,51 @@ Deno.test("ServeCatchUp.catchUp: after a base load, the next page's anchor still
       ServeUpstreamDivergedError,
     );
     assertEquals(error.divergence.kind, "other-commit");
+  });
+});
+
+Deno.test("serveAccessCheck: records each access serve sends, warns once when it differs from the copy's, ignores what is not a fingerprint and never throws (swamp-club#4089)", async () => {
+  await withCheckout(async ({ state }) => {
+    const captured: LogRecord[] = [];
+    await configure({
+      sinks: { capture: (record: LogRecord) => captured.push(record) },
+      loggers: [
+        {
+          category: ["datastore", "v3", "serve"],
+          lowestLevel: "warning",
+          sinks: ["capture"],
+        },
+        { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+      ],
+      reset: true,
+    });
+    try {
+      const check = serveAccessCheck(state, SERVE_URL);
+      check("a1");
+      check("a1");
+      assertEquals(state.access(), { built: "a1", seen: "a1" });
+      assertEquals(captured.length, 0);
+      check("b2");
+      check("c3");
+      check("b2");
+      assertEquals(state.access(), { built: "a1", seen: "b2" });
+      assertEquals(captured.length, 1, "warned once");
+      assertStringIncludes(
+        captured[0].message.map((part) => String(part)).join(""),
+        "the next command rebuilds",
+      );
+      // Not a fingerprint: ignored.
+      check("Not A Fingerprint");
+      check("x".repeat(129));
+      assertEquals(state.access().seen, "b2");
+      // A state that cannot record is no reason to fail the reply.
+      serveAccessCheck({
+        recordAccessSeen: () => {
+          throw new Error("database is locked");
+        },
+      }, SERVE_URL)("d4");
+    } finally {
+      await reset();
+    }
   });
 });

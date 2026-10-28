@@ -30,7 +30,10 @@
  * view. The copy records a fingerprint of the token it was built with; a
  * command with another token resets it before anything reads it
  * ({@link resetCopyForCaller}), and the checkout's projection is rebuilt
- * from the new view when its context opens (`checkout_view.ts`).
+ * from the new view when its context opens (`checkout_view.ts`). It also
+ * records the fingerprint of the caller's read access serve sends
+ * (swamp-club#4089): when serve sends another, the next command resets the
+ * copy the same way, so a widened or narrowed grant refreshes it.
  *
  * @module
  */
@@ -44,14 +47,17 @@ import {
 import type { ServeUpstreamTarget } from "../../domain/datastore_v3/serve_upstream.ts";
 import { setV3BucketLockRoot } from "../persistence/datastore_lock_target.ts";
 import { swampPath } from "../persistence/paths.ts";
+import { getSwampLogger } from "../logging/logger.ts";
 import {
   assertServeCopySettled,
   serveCallerFingerprint,
+  ServeCopyHoldsUnlandedCommitsError,
 } from "./checkout_view.ts";
 import { ServeDatastoreClient } from "./serve_datastore_client.ts";
 import { registerServeUpstream } from "./serve_upstream_registry.ts";
 import {
   SERVE_UPSTREAM_STATE_FILE,
+  type ServeCopyAccess,
   ServeUpstreamState,
 } from "./serve_upstream_state.ts";
 import {
@@ -65,6 +71,41 @@ import {
   v3OutboxPath,
 } from "./v3_datastore.ts";
 import { acquireV3WriterLock } from "./v3_writer_lock.ts";
+
+const logger = getSwampLogger(["datastore", "v3", "serve"]);
+
+/**
+ * How long after a reset for a change of read access another change only
+ * warns (swamp-club#4089): serve replicas whose access data disagree send
+ * a caller two fingerprints in turn, which must not reset the copy on
+ * every command.
+ */
+export const ACCESS_RESET_COOLDOWN_MS = 10 * 60 * 1000;
+
+/**
+ * What a copy whose caller is current does about its read access at `now`
+ * (epoch ms): `"current"` when serve last sent the access the copy was
+ * built under (or a serve too old to send one sent none), `"reset"` when it
+ * sent another, and `"cooling"` when it sent another within
+ * {@link ACCESS_RESET_COOLDOWN_MS} of the last reset for access. A reset in
+ * the future (the clock moved back) does not hold one off.
+ */
+export function accessResetDue(
+  access: ServeCopyAccess,
+  now: number,
+): "current" | "reset" | "cooling" {
+  if (
+    access.built === undefined || access.seen === undefined ||
+    access.built === access.seen
+  ) {
+    return "current";
+  }
+  const since = access.resetAt === undefined ? undefined : now - access.resetAt;
+  return since !== undefined && since >= 0 &&
+      since < ACCESS_RESET_COOLDOWN_MS
+    ? "cooling"
+    : "reset";
+}
 
 /**
  * The local root of the datastore that serve at `serverUrl` writes, for the
@@ -144,28 +185,39 @@ const COPY_DATABASE_SUFFIXES = ["", "-wal", "-shm", "-journal"] as const;
 
 /**
  * Makes the copy at `root` hold the view of serve that `target`'s token is
- * given (swamp-club#3985). A copy with no caller recorded is stamped with
- * this one. A copy built with another token, or whose reset was cut short,
- * is reset under the copy's writer lease, which every writer of this
- * checkout holds for its whole command, so no writer uses the copy while
- * it is removed; a read-only command takes it too, waiting up to the lock
+ * given (swamp-club#3985), under the caller's current read access
+ * (swamp-club#4089). A copy with no caller recorded is stamped with this
+ * one. A copy built with another token, or whose reset was cut short, is
+ * reset under the copy's writer lease, which every writer of this checkout
+ * holds for its whole command, so no writer uses the copy while it is
+ * removed; a read-only command takes it too, waiting up to the lock
  * timeout:
  *
  * 1. A copy whose outbox holds entries is refused: they are the previous
  *    caller's writes, not yet settled with serve
  *    ({@link ServeCopyHoldsUnlandedCommitsError}).
- * 2. The serve-mode state forgets its feed cursor and serve's heads and is
- *    marked resetting, so a reset cut short from here runs again.
+ * 2. The serve-mode state forgets its feed cursor and serve's heads, takes
+ *    a new copy id and is marked resetting, so a reset cut short from here
+ *    runs again.
  * 3. `commits.db` and the outbox are removed.
  * 4. The new fingerprint is recorded and the reset marked done.
  *
+ * A copy built with this token whose read access serve last reported as
+ * different from the access it was built under is reset the same way
+ * ({@link accessResetDue}), with two differences: an outbox holding
+ * entries defers the reset with a warning instead of refusing, since the
+ * caller cannot return to the old access to settle them: a writing
+ * command lands them, as it would without the change, and the next
+ * command resets; and a reset within the cooldown of the last one only
+ * warns.
+ *
  * The checkout's projection, built from the old copy, is rebuilt when its
- * context opens: the checkout recorded the old caller's view
+ * context opens: the checkout recorded the old copy id and token
  * (`alignCheckoutView`). The command then catches the copy up from serve
- * under the new token as a fresh checkout does. The chunk cache (`_blobs/`)
- * stays: it is content-addressed, and the read model reads from it only the
- * chunks the new copy's commits name, which are chunks serve let this
- * caller reference.
+ * as a fresh checkout does. The chunk cache (`_blobs/`) stays: it is
+ * content-addressed, and the read model reads from it only the chunks the
+ * new copy's commits name, which are chunks serve let this caller
+ * reference.
  *
  * @throws ServeCopyHoldsUnlandedCommitsError
  * @throws V3WriterBusyError when another process writes the checkout past
@@ -178,7 +230,9 @@ async function resetCopyForCaller(
 ): Promise<void> {
   const fingerprint = serveCallerFingerprint(target.token);
   const statePath = join(root, SERVE_UPSTREAM_STATE_FILE);
-  if (callerIsCurrent(statePath, fingerprint)) return;
+  if (callerIsCurrent(statePath, fingerprint, target.serverUrl, Date.now())) {
+    return;
+  }
   const release = await acquireV3WriterLock(root, {
     maxWaitMs: resolveLockTimeoutMs(),
   });
@@ -188,13 +242,26 @@ async function resetCopyForCaller(
       // Looked at again under the lease: another process may have reset
       // the copy for this caller meanwhile.
       const caller = state.caller();
+      let accessResetAt: number | undefined;
       if (
         caller !== undefined && !caller.resetting &&
         caller.fingerprint === fingerprint
       ) {
-        return;
+        accessResetAt = Date.now();
+        if (accessResetDue(state.access(), accessResetAt) !== "reset") return;
+        try {
+          await assertServeCopySettled(root, target.serverUrl);
+        } catch (error) {
+          if (!(error instanceof ServeCopyHoldsUnlandedCommitsError)) {
+            throw error;
+          }
+          logger
+            .warn`Your access to the datastore at serve ${target.serverUrl} changed, but this checkout's copy of it still holds writes that have not finished landing there. Run a command that writes in this checkout (a method run, a data save) to land them; the next command after that rebuilds the copy to match your access.`;
+          return;
+        }
+      } else {
+        await assertServeCopySettled(root, target.serverUrl);
       }
-      await assertServeCopySettled(root, target.serverUrl);
       state.beginCallerReset();
       const commitsDb = v3CommitsDbPath(root, repoDir);
       for (const file of [commitsDb, v3OutboxPath(commitsDb)]) {
@@ -204,7 +271,7 @@ async function resetCopyForCaller(
           });
         }
       }
-      state.finishCallerReset(fingerprint);
+      state.finishCallerReset(fingerprint, accessResetAt);
     } finally {
       state.close();
     }
@@ -215,13 +282,28 @@ async function resetCopyForCaller(
 
 /**
  * Whether the copy whose serve-mode state is at `statePath` was built for
- * the caller `fingerprint` names, stamping a copy that records none.
+ * the caller `fingerprint` names under the read access serve last
+ * reported, stamping a copy that records no caller. A change of access
+ * within the cooldown counts as current, with a warning.
  */
-function callerIsCurrent(statePath: string, fingerprint: string): boolean {
+function callerIsCurrent(
+  statePath: string,
+  fingerprint: string,
+  serverUrl: string,
+  now: number,
+): boolean {
   const state = ServeUpstreamState.open(statePath);
   try {
     const caller = state.stampCaller(fingerprint);
-    return !caller.resetting && caller.fingerprint === fingerprint;
+    if (caller.resetting || caller.fingerprint !== fingerprint) return false;
+    const due = accessResetDue(state.access(), now);
+    if (due === "cooling") {
+      logger
+        .warn`Your access to the datastore at serve ${serverUrl} changed again within ${
+        ACCESS_RESET_COOLDOWN_MS / 60_000
+      } minutes of this checkout's copy being rebuilt for the last change. Serve's replicas may disagree on your access, so the copy is not rebuilt again yet; a command after that rebuilds it if your access still differs.`;
+    }
+    return due !== "reset";
   } finally {
     state.close();
   }

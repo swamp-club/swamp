@@ -34,6 +34,7 @@ import { runInRootUnitOfWork } from "../src/infrastructure/persistence/repo_unit
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
 import { withServer } from "./serve_datastore_api_harness.ts";
 import { grant } from "./serve_request_harness.ts";
+import { PolicySnapshot } from "../src/domain/access/policy_snapshot.ts";
 
 /** One grant, as the test spells it across the worker boundary. */
 export interface GrantSpec {
@@ -54,6 +55,11 @@ export type ServeWorkerRequest =
     readonly managedConfig?: boolean;
   }
   | { readonly kind: "log" }
+  /**
+   * Replaces the grants serve enforces, as a reload of its access data
+   * does (swamp-club#4089).
+   */
+  | { readonly kind: "grants"; readonly grants: readonly GrantSpec[] }
   /**
    * Compacts serve's whole log (swamp-club#4006), and with `claim` has
    * serve claim its datastore first, as `swamp datastore claim` does.
@@ -95,6 +101,7 @@ export type ServeWorkerMessage =
   }
   | { readonly kind: "log"; readonly entries: readonly ServeLogEntry[] }
   | { readonly kind: "compacted"; readonly point: number }
+  | { readonly kind: "granted" }
   | {
     readonly kind: "wrote";
     readonly versions: readonly number[];
@@ -111,6 +118,9 @@ const logging = initializeLogging({});
 
 let stop: (() => void) | undefined;
 let log: (() => Promise<void>) | undefined;
+let setGrants:
+  | ((request: Extract<ServeWorkerRequest, { kind: "grants" }>) => void)
+  | undefined;
 let compact:
   | ((
     request: Extract<ServeWorkerRequest, { kind: "compact" }>,
@@ -120,8 +130,19 @@ let write:
   | ((request: Extract<ServeWorkerRequest, { kind: "write" }>) => Promise<void>)
   | undefined;
 
+/**
+ * A grant's id, from its spec: the same spec is the same grant record in
+ * every snapshot, as a reload of serve's access data keeps record ids.
+ */
+function grantId(spec: GrantSpec): string {
+  return `grant-${
+    JSON.stringify([spec.user ?? "", spec.actions, spec.kind, spec.pattern])
+  }`;
+}
+
 function toGrant(spec: GrantSpec): Grant {
   return grant({
+    id: grantId(spec),
     ...(spec.user !== undefined
       ? { subject: { kind: "user", name: spec.user } }
       : {}),
@@ -168,6 +189,11 @@ async function start(
             })),
           } satisfies ServeWorkerMessage,
         );
+      };
+      setGrants = ({ grants }) => {
+        server.ctx.policySnapshotLoader!.decisionService.snapshot =
+          new PolicySnapshot(grants.map(toGrant), []);
+        self.postMessage({ kind: "granted" } satisfies ServeWorkerMessage);
       };
       compact = async ({ claim }) => {
         const store = server.v3.commitStore;
@@ -283,6 +309,13 @@ self.onmessage = (event: MessageEvent<ServeWorkerRequest>) => {
     (compact ?? (() => Promise.reject(new Error("serve is not started"))))(
       request,
     ).catch(fail);
+  } else if (request.kind === "grants") {
+    try {
+      if (setGrants === undefined) throw new Error("serve is not started");
+      setGrants(request);
+    } catch (error) {
+      fail(error);
+    }
   } else if (request.kind === "log") {
     (log ?? (() => Promise.reject(new Error("serve is not started"))))()
       .catch(fail);

@@ -136,6 +136,13 @@ export const COMMIT_CONTENT_TYPE = "application/vnd.swamp.commit+v1";
 export const SERVE_DATASTORE_LOG_HEADER = "x-swamp-datastore-log";
 
 /**
+ * The header every datastore API reply to an authenticated caller carries
+ * with a fingerprint of what that caller may read (swamp-club#4089): a
+ * checkout's copy is rebuilt when it changes.
+ */
+export const SERVE_DATASTORE_ACCESS_HEADER = "x-swamp-datastore-access";
+
+/**
  * The per-request timeout `SWAMP_SERVE_TIMEOUT_MS` sets (a positive
  * integer of milliseconds), as the remote-run client reads it, else
  * {@link DEFAULT_SERVE_TIMEOUT_MS}.
@@ -282,6 +289,7 @@ export class ServeDatastoreClient {
   readonly #maxAttempts: number;
   readonly #maxRetryDelayMs: number;
   #logCheck: ((logId: string | undefined) => void) | undefined;
+  #accessCheck: ((fingerprint: string) => void) | undefined;
 
   constructor(options: ServeDatastoreClientOptions) {
     this.baseUrl = normalizeServerUrl(options.baseUrl);
@@ -682,6 +690,17 @@ export class ServeDatastoreClient {
   }
 
   /**
+   * Has every reply that names the caller's read access
+   * ({@link SERVE_DATASTORE_ACCESS_HEADER}) reported to `check`, once the
+   * log check passed (swamp-club#4089). A reply that names none (a serve
+   * too old to send it) is not reported. It never refuses a reply: serve
+   * filters every reply under the caller's current access.
+   */
+  checkAccess(check: (fingerprint: string) => void): void {
+    this.#accessCheck = check;
+  }
+
+  /**
    * A request whose success is a JSON object of at most `maxBytes`
    * ({@link SERVE_REPLY_MAX_BYTES} by default).
    */
@@ -753,6 +772,10 @@ export class ServeDatastoreClient {
           await response.body?.cancel();
           throw error;
         }
+      }
+      const access = response.headers.get(SERVE_DATASTORE_ACCESS_HEADER);
+      if (this.#accessCheck !== undefined && access !== null) {
+        this.#accessCheck(access);
       }
       try {
         return await read(response);

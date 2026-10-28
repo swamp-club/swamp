@@ -115,6 +115,46 @@ export function serveLogCheck(
   };
 }
 
+/** The shape of a read-access fingerprint serve sends: a short token. */
+const ACCESS_FINGERPRINT = /^[0-9a-z]{1,128}$/;
+
+/**
+ * The check a copy's serve client runs on every reply that names the
+ * caller's read access (`ServeDatastoreClient.checkAccess`,
+ * swamp-club#4089). A fingerprint it has not seen in this process is
+ * recorded as the one serve last sent; the first a copy sees is also the
+ * one it was built under. When it differs from that, a warning says once
+ * that the next command rebuilds the copy: this command goes on, since
+ * serve filters its replies under the new access. It never throws: a
+ * value not shaped like a fingerprint is ignored, and a failure to record
+ * one only delays the rebuild.
+ */
+export function serveAccessCheck(
+  state: Pick<ServeUpstreamState, "recordAccessSeen">,
+  serveUrl: string,
+): (fingerprint: string) => void {
+  let last: string | undefined;
+  let warned = false;
+  return (fingerprint) => {
+    if (fingerprint === last || !ACCESS_FINGERPRINT.test(fingerprint)) {
+      return;
+    }
+    let built: string | undefined;
+    try {
+      built = state.recordAccessSeen(fingerprint).built;
+    } catch (error) {
+      logger.debug`Could not record the read access serve sent: ${error}`;
+      return;
+    }
+    last = fingerprint;
+    if (built !== undefined && built !== fingerprint && !warned) {
+      warned = true;
+      logger
+        .warn`Your access to the datastore at serve ${serveUrl} changed. This command reads it under your new access; the next command rebuilds this checkout's copy of it to match.`;
+    }
+  };
+}
+
 /**
  * The most commits one page of a partition read or the changes feed asks
  * serve for. A reply too large to read is asked again at half the limit,

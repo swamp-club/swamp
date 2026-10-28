@@ -21,8 +21,9 @@
  * The serve-mode state of a checkout whose v3 datastore's upstream is serve
  * (swamp-club#3985): the changes-feed cursor its copy has applied up to and
  * the commit it ended at (swamp-club#4049), the
- * head serve last reported for each partition, and a fingerprint of the
- * serve token the copy was built with (never the token). A file of its own beside
+ * head serve last reported for each partition, a fingerprint of the
+ * serve token the copy was built with (never the token), and the
+ * fingerprints of the caller's read access serve sent (swamp-club#4089). A file of its own beside
  * the checkout's copy of serve's commit log, so a solo checkout never opens
  * it and the commit store's schema is unchanged.
  *
@@ -80,6 +81,13 @@ const MIGRATIONS: readonly string[] = [
   // when it loaded none. A partition compacted past the copy's head reads
   // on from its compacted seq only when this base covers serve's point.
   `ALTER TABLE copy ADD COLUMN base_point INTEGER NOT NULL DEFAULT 0;`,
+  // The caller's read access (swamp-club#4089): the fingerprint serve sent
+  // when the copy was first read after it was made or reset, the last one
+  // serve sent, and when (epoch ms) the copy was last reset because they
+  // differed.
+  `ALTER TABLE copy ADD COLUMN access_built TEXT;
+   ALTER TABLE copy ADD COLUMN access_seen TEXT;
+   ALTER TABLE copy ADD COLUMN access_reset_at INTEGER;`,
 ];
 
 /**
@@ -100,6 +108,18 @@ export interface ServeFeedAnchor {
 export interface ServeCopyCaller {
   readonly fingerprint: string;
   readonly resetting: boolean;
+}
+
+/**
+ * The caller's read access as serve reported it (swamp-club#4089): the
+ * fingerprint the copy was built under, the last one serve sent, and when
+ * the copy was last reset because they differed. Each is undefined until
+ * known: a serve too old to send the fingerprint leaves both undefined.
+ */
+export interface ServeCopyAccess {
+  readonly built?: string;
+  readonly seen?: string;
+  readonly resetAt?: number;
 }
 
 /** The schema version this swamp writes. */
@@ -344,19 +364,55 @@ export class ServeUpstreamState {
     return this.caller()!;
   }
 
+  /** The caller's read access as serve reported it. */
+  access(): ServeCopyAccess {
+    this.#assertOpen();
+    const row = this.#db.prepare(
+      "SELECT access_built, access_seen, access_reset_at FROM copy WHERE id = 1",
+    ).get() as {
+      access_built: string | null;
+      access_seen: string | null;
+      access_reset_at: number | null;
+    } | undefined;
+    return {
+      ...(row?.access_built != null ? { built: row.access_built } : {}),
+      ...(row?.access_seen != null ? { seen: row.access_seen } : {}),
+      ...(row?.access_reset_at != null ? { resetAt: row.access_reset_at } : {}),
+    };
+  }
+
   /**
-   * Starts a reset to another caller: forgets the feed cursor, its anchor,
-   * serve's heads and the log the copy follows, which describe the old
-   * caller's copy of serve, and marks the reset unfinished, so a reset cut
-   * short is run again whatever the fingerprint says. The recorded
-   * fingerprint stays the old caller's.
+   * Records `fingerprint` as the read access serve last sent, and as the
+   * access the copy was built under when none is recorded: the first
+   * fingerprint a copy sees is the one it was read under. Returns the
+   * access recorded.
+   */
+  recordAccessSeen(fingerprint: string): ServeCopyAccess {
+    this.#assertOpen();
+    this.#db.prepare(
+      `UPDATE copy SET access_seen = ?,
+         access_built = COALESCE(access_built, ?) WHERE id = 1`,
+    ).run(fingerprint, fingerprint);
+    return this.access();
+  }
+
+  /**
+   * Starts a reset to another caller, or to the same caller's changed read
+   * access: forgets the feed cursor, its anchor, serve's heads, the log the
+   * copy follows and the access serve reported, which describe the old
+   * view of serve, gives the copy a new id, so the checkout's projection is
+   * rebuilt from the new copy (swamp-club#4089), and marks the reset
+   * unfinished, so a reset cut short is run again whatever the fingerprint
+   * says. The recorded fingerprint stays the old caller's.
    */
   beginCallerReset(): void {
     this.#assertOpen();
     this.#transaction(() => {
       this.#db.exec(
         "DELETE FROM feed; DELETE FROM serve_heads; " +
-          "UPDATE copy SET log_id = NULL, base_point = 0;",
+          "UPDATE copy SET log_id = NULL, base_point = 0, " +
+          "copy_id = lower(hex(randomblob(16))), " +
+          "access_built = NULL, access_seen = NULL;",
       );
       this.#db.prepare(
         `INSERT INTO caller (id, fingerprint, resetting) VALUES (1, '', 1)
@@ -365,14 +421,24 @@ export class ServeUpstreamState {
     });
   }
 
-  /** Ends a reset: the copy is now `fingerprint`'s. */
-  finishCallerReset(fingerprint: string): void {
+  /**
+   * Ends a reset: the copy is now `fingerprint`'s. With `accessResetAt`,
+   * the reset was for a change of read access, made at that time (epoch
+   * ms).
+   */
+  finishCallerReset(fingerprint: string, accessResetAt?: number): void {
     this.#assertOpen();
-    this.#db.prepare(
-      `INSERT INTO caller (id, fingerprint, resetting) VALUES (1, ?, 0)
-       ON CONFLICT (id) DO UPDATE SET fingerprint = excluded.fingerprint,
-         resetting = 0`,
-    ).run(fingerprint);
+    this.#transaction(() => {
+      this.#db.prepare(
+        `INSERT INTO caller (id, fingerprint, resetting) VALUES (1, ?, 0)
+         ON CONFLICT (id) DO UPDATE SET fingerprint = excluded.fingerprint,
+           resetting = 0`,
+      ).run(fingerprint);
+      if (accessResetAt !== undefined) {
+        this.#db.prepare("UPDATE copy SET access_reset_at = ? WHERE id = 1")
+          .run(accessResetAt);
+      }
+    });
   }
 
   close(): void {

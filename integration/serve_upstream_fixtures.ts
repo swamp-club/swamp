@@ -89,6 +89,11 @@ export interface Serve {
    */
   compact(options?: { claim?: boolean }): Promise<number>;
   /**
+   * Replaces the grants serve enforces, as a reload of its access data
+   * does (swamp-club#4089).
+   */
+  setGrants(grants: readonly GrantSpec[]): Promise<void>;
+  /**
    * Serve's own work: `count` saves of `dataName` on `web`, each under
    * serve's lock on it, as serve's method runs take it.
    */
@@ -205,6 +210,7 @@ async function startServe(options: ServeOptions): Promise<Serve> {
   let stopped = false;
   let logReply: readonly ServeLogEntry[] | undefined;
   let compactedPoint: number | undefined;
+  let granted = false;
   let wroteReply:
     | { versions: readonly number[]; errors: readonly string[] }
     | undefined;
@@ -216,6 +222,7 @@ async function startServe(options: ServeOptions): Promise<Serve> {
     else if (message.kind === "stopped") stopped = true;
     else if (message.kind === "wrote") wroteReply = message;
     else if (message.kind === "compacted") compactedPoint = message.point;
+    else if (message.kind === "granted") granted = true;
     else logReply = message.entries;
   };
   worker.onerror = (event) => {
@@ -295,6 +302,17 @@ async function startServe(options: ServeOptions): Promise<Serve> {
         throw new Error(`serve failed: ${failed}`);
       }
       return compactedPoint;
+    },
+    async setGrants(grants) {
+      granted = false;
+      worker.postMessage(
+        { kind: "grants", grants } satisfies ServeWorkerRequest,
+      );
+      await waitFor(
+        () => granted || failed !== undefined,
+        "serve's grants",
+      );
+      if (!granted) throw new Error(`serve failed: ${failed}`);
     },
     async write(dataName, dataId, count) {
       wroteReply = undefined;

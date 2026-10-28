@@ -340,3 +340,72 @@ Deno.test("ServeUpstreamState.recordBaseLoaded: the feed reads on from exactly t
     }
   });
 });
+
+Deno.test("ServeUpstreamState.recordAccessSeen: the first access seen is the one the copy was built under (swamp-club#4089)", async () => {
+  await withTempDir((dir) => {
+    const state = ServeUpstreamState.open(join(dir, "serve_upstream.db"));
+    try {
+      assertEquals(state.access(), {});
+      assertEquals(state.recordAccessSeen("a1"), { built: "a1", seen: "a1" });
+      assertEquals(state.recordAccessSeen("b2"), { built: "a1", seen: "b2" });
+      assertEquals(state.access(), { built: "a1", seen: "b2" });
+    } finally {
+      state.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState: a reset forgets the access, takes a new copy id, and an access reset records its time (swamp-club#4089)", async () => {
+  await withTempDir((dir) => {
+    const state = ServeUpstreamState.open(join(dir, "serve_upstream.db"));
+    try {
+      state.stampCaller("token-a");
+      state.recordAccessSeen("a1");
+      state.recordAccessSeen("b2");
+      const id = state.copyId();
+      state.beginCallerReset();
+      assertEquals(state.access(), {});
+      assert(state.copyId() !== id, "a reset copy is another view");
+      state.finishCallerReset("token-a", 1_000);
+      assertEquals(state.caller(), {
+        fingerprint: "token-a",
+        resetting: false,
+      });
+      assertEquals(state.access(), { resetAt: 1_000 });
+      assertEquals(state.recordAccessSeen("b2"), {
+        built: "b2",
+        seen: "b2",
+        resetAt: 1_000,
+      });
+      // A token reset keeps the time of the last access reset.
+      state.beginCallerReset();
+      state.finishCallerReset("token-b");
+      assertEquals(state.access(), { resetAt: 1_000 });
+    } finally {
+      state.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState: a file at schema version 3 upgrades with no access recorded (swamp-club#4089)", async () => {
+  await withTempDir((dir) => {
+    const path = join(dir, "serve_upstream.db");
+    const made = ServeUpstreamState.open(path);
+    const id = made.copyId();
+    made.close();
+    const db = new DatabaseSync(path);
+    db.exec(`ALTER TABLE copy DROP COLUMN access_built;
+       ALTER TABLE copy DROP COLUMN access_seen;
+       ALTER TABLE copy DROP COLUMN access_reset_at;
+       PRAGMA user_version=3;`);
+    db.close();
+    const state = ServeUpstreamState.open(path);
+    try {
+      assertEquals(state.copyId(), id);
+      assertEquals(state.access(), {});
+      assertEquals(state.recordAccessSeen("a1"), { built: "a1", seen: "a1" });
+    } finally {
+      state.close();
+    }
+  });
+});

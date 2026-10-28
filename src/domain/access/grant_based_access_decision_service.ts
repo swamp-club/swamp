@@ -30,6 +30,7 @@ import type { ConditionOutcome, PolicySnapshot } from "./policy_snapshot.ts";
 import { principalToString } from "./principal.ts";
 import { isControlPlaneRecordResource } from "./control_plane_records.ts";
 import type { PrincipalContext } from "./principal_context.ts";
+import { readAccessFingerprint } from "./read_access_fingerprint.ts";
 import type { Subject } from "./subject.ts";
 import {
   canonicalTypePattern,
@@ -292,9 +293,17 @@ function budgetExceededSubject(accessPrincipal: AccessPrincipal): Subject {
   };
 }
 
+/**
+ * The most callers whose read-access fingerprint one snapshot keeps; past
+ * it the snapshot's cache starts again.
+ */
+const MAX_CACHED_FINGERPRINTS = 4096;
+
 export class GrantBasedAccessDecisionService implements AccessDecisionService {
   #snapshot: PolicySnapshot;
   readonly #implications: Implications;
+  /** Read-access fingerprints by snapshot, then by caller. */
+  readonly #fingerprints = new WeakMap<PolicySnapshot, Map<string, string>>();
 
   constructor(
     snapshot: PolicySnapshot,
@@ -344,6 +353,38 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
 
   set snapshot(snapshot: PolicySnapshot) {
     this.#snapshot = snapshot;
+  }
+
+  /**
+   * A fingerprint of everything `principal` may read under the current
+   * snapshot (swamp-club#4089; see `read_access_fingerprint.ts`): it
+   * changes whenever a read decision for the principal could, and a reload
+   * that leaves the principal's groups and grants alone keeps it.
+   */
+  readAccessFingerprint(principal: AccessPrincipal): string {
+    const snapshot = this.#snapshot;
+    let cache = this.#fingerprints.get(snapshot);
+    if (cache === undefined) {
+      cache = new Map();
+      this.#fingerprints.set(snapshot, cache);
+    }
+    const principalKey = principalToString(principal.principal);
+    const key = JSON.stringify([
+      principalKey,
+      principal.collectives,
+      principal.groups,
+    ]);
+    const cached = cache.get(key);
+    if (cached !== undefined) return cached;
+    const localGroups = snapshot.groupsForPrincipal(principalKey);
+    const fingerprint = readAccessFingerprint(
+      principal,
+      localGroups,
+      snapshot.grantsForSubjects(resolveSubjects(principal, localGroups)),
+    );
+    if (cache.size >= MAX_CACHED_FINGERPRINTS) cache.clear();
+    cache.set(key, fingerprint);
+    return fingerprint;
   }
 
   decide(
