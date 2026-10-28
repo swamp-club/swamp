@@ -279,6 +279,23 @@ read under `until` alone. A search with neither reads every output.
 | `stats`, `skipped_by_mtime`, `stat_work_ms`      | Files stat'ed because their name is not in the output form, and those skipped   |
 | `files_read`, `bytes_read`                       | Records read                                                                    |
 | `read_work_ms`, `parse_work_ms`                  | Reading and parsing them                                                        |
+| `scans_joined`                                   | 1 when the request shared a scan whose reads another request on it counted      |
+
+Identical searches running at once share one scan (lab #4074): searches for
+the same model, `since` searches, and searches with neither. Both requests
+share them, so a `model.method.history.search` and a `model.output.search`
+with neither filter read once between them. A request joins only a scan that
+has not started yet, so it never gets a result older than itself; one arriving
+while a scan runs waits for it and shares the next one with every request that
+arrives meanwhile. Joining widens that scan's window to cover the request's own
+(the earliest `since`, the latest `until`), so one request's wide window
+enlarges what the others wait on, by at most a full read; each keeps only its
+own window. The scan runs outside every request's async context, so no
+request's vault scope, unit of work or held locks reach the others' results.
+Exactly one request on a scan counts its directories and reads in its
+`candidate_scan`: the one that started it, or, if that one was cancelled, the
+earliest still waiting when the scan ends. The others count `scans_joined` and
+none of them.
 
 Both a `since` search and a search for one model list directories and read
 files concurrently, with at most 16 listings and reads in flight across every
@@ -286,13 +303,15 @@ scan in the process (lab #4058), so their `*_work_ms` values are cumulative
 across concurrent operations and can exceed the phase's duration. Their
 duration is mostly the listing, the turns the event loop gave the scan, and
 waiting for one of the 16 while other requests scan; compare it with the
-request's event-loop lag. A cancelled request stops its scan (lab #4070): it
+request's event-loop lag. A cancelled request replies `cancelled` at once, and
+its `candidate_scan` ends with outcome `cancelled`. It stops the scan
+(lab #4070) only when it is the last request on it (lab #4074): the scan then
 leaves the queue for the 16, starts no further listing or read, and gives back
-each one it holds as that listing or read settles. `candidate_scan` then ends
-with outcome `cancelled`, its counters hold what the scan reached, and the
-request replies `cancelled`. Counters are exported only when counted: a scan
-that stat'ed nothing has no `stats`. They are counts and durations only: no
-path, definition id or model name.
+each one it holds as that listing or read settles, and that request's counters
+hold what the scan reached. A cancelled request that shared the scan with
+others leaves it running for them and counts none of its reads. Counters are
+exported only when counted: a scan that stat'ed nothing has no `stats`. They are
+counts and durations only: no path, definition id or model name.
 
 ## Worker deletion
 

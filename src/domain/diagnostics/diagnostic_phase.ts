@@ -195,6 +195,18 @@ export class PhaseTally {
     return { frame, finish };
   }
 
+  /**
+   * Adds `other`'s counts and work to this tally's: work counted apart (a
+   * scan shared between requests) reported into the phase that owns it.
+   */
+  merge(other: PhaseTally): void {
+    if (!this.recording) return;
+    for (const [key, count] of other.#counts) this.add(key, count);
+    for (const [key, ms] of other.#work) {
+      this.#work.set(key, (this.#work.get(key) ?? 0) + ms);
+    }
+  }
+
   attributes(): Record<string, number> {
     const values: Record<string, number> = {};
     for (const [key, count] of this.#counts) {
@@ -281,6 +293,21 @@ export function diagnosticSpanAttributes(
  */
 export function currentDiagnosticTally(): PhaseTally {
   return scope.getStore()?.tally ?? silentTally;
+}
+
+/**
+ * Runs `fn` with `tally` as the current phase's tally in `area`, so code
+ * that counts into the current phase (through
+ * {@link currentDiagnosticTally}) counts into `tally` instead. For work
+ * counted apart from any one phase, then {@link PhaseTally.merge}d into the
+ * phase it is reported to.
+ */
+export function withDiagnosticTally<T>(
+  area: DiagnosticArea,
+  tally: PhaseTally,
+  fn: () => T,
+): T {
+  return scope.run({ area, tally }, fn);
 }
 
 /**

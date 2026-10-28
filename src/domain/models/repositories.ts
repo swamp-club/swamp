@@ -92,6 +92,11 @@ export interface OutputRepository {
   /**
    * Finds all outputs across all types.
    *
+   * The array is the caller's own, but implementations may share the
+   * outputs in it with concurrent callers (swamp-club#4074), so they are
+   * read-only. They are not filtered for any principal: authorize and
+   * redact on values derived from them, never on the outputs themselves.
+   *
    * @returns Array of all outputs with their types and methods
    */
   findAllGlobal(): Promise<
@@ -102,7 +107,8 @@ export interface OutputRepository {
    * Finds all outputs across all types whose `startedAt` is at or after the
    * given cutoff. Prefer this over `findAllGlobal()` when the caller has a
    * time bound; implementations may short-circuit the underlying scan and skip
-   * work that `findAllGlobal()` would do unconditionally.
+   * work that `findAllGlobal()` would do unconditionally. Its outputs are
+   * read-only and shared as `findAllGlobal()`'s are.
    *
    * @param cutoff - Earliest `startedAt` to include (inclusive)
    * @returns Array of outputs whose `startedAt >= cutoff`

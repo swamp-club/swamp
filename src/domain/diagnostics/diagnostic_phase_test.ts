@@ -30,6 +30,7 @@ import {
   utf8ByteLength,
   withDiagnosticArea,
   withDiagnosticAttributes,
+  withDiagnosticTally,
   withGeneratorDiagnosticPhase,
 } from "./diagnostic_phase.ts";
 import {
@@ -590,4 +591,31 @@ Deno.test("withGeneratorDiagnosticPhase: an outcome the body set first is kept",
       "error",
     );
   });
+});
+
+Deno.test("PhaseTally.merge: adds another tally's counts and work, and does nothing when not recording", async () => {
+  const counted = new PhaseTally(true);
+  counted.add("files_read", 2);
+  await counted.measure("read", () => Promise.resolve());
+
+  const into = new PhaseTally(true);
+  into.add("files_read", 1);
+  into.merge(counted);
+  const values = into.attributes();
+  assertEquals(values["swamp.diagnostic.files_read"], 3);
+  assertEquals(typeof values["swamp.diagnostic.read_work_ms"], "number");
+
+  const silent = new PhaseTally(false);
+  silent.merge(counted);
+  assertEquals(silent.attributes(), {});
+});
+
+Deno.test("withDiagnosticTally: counts into the given tally, in the given area", () => {
+  const tally = new PhaseTally(true);
+  withDiagnosticTally("output_search", tally, () => {
+    assertEquals(currentDiagnosticArea(), "output_search");
+    currentDiagnosticTally().add("files_read");
+  });
+  assertEquals(tally.attributes()["swamp.diagnostic.files_read"], 1);
+  assertEquals(currentDiagnosticArea(), undefined);
 });
