@@ -47,7 +47,8 @@ import {
   type WorkflowId,
 } from "../../domain/workflows/workflow_id.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
-import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
+import { createRepositoryContext } from "./repository_factory.ts";
+import type { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
 
 const SIZES = (Deno.args[0] ?? "2000,10000").split(",").map(Number);
 const WORKFLOWS = 50;
@@ -83,7 +84,8 @@ async function seed(
   fresh: boolean,
 ): Promise<YamlWorkflowRunRepository> {
   const repoDir = join(root, `${size}-${fresh ? "fresh" : "settled"}`);
-  const repo = new YamlWorkflowRunRepository(repoDir);
+  const repo = createRepositoryContext({ repoDir, enableIndexing: false })
+    .workflowRunRepo;
   const workflowIds: WorkflowId[] = Array.from(
     { length: WORKFLOWS },
     () => createWorkflowId(crypto.randomUUID()),
