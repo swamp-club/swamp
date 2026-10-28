@@ -49,6 +49,7 @@ import {
   checkRows,
   type Composition,
   type PinnedRow,
+  READ_RUN_PUBLISH_MARKS,
   row,
   type RowRepos,
   runCli,
@@ -417,18 +418,6 @@ function workflowDeleteRow(managedConfig: boolean): AnyRow {
   });
 }
 
-/**
- * The marks a read run's publish lock makes outside the use case: its push
- * stages each report version and its latest marker again before uploading
- * (swamp-club#3146, swamp-club#3934).
- */
-const PUBLISH_RESTAGE_MARKS = [
-  "markDirty data/<type>/<id>/report-swamp-method-summary-json/1",
-  "markDirty data/<type>/<id>/report-swamp-method-summary-json/latest",
-  "markDirty data/<type>/<id>/report-swamp-method-summary/1",
-  "markDirty data/<type>/<id>/report-swamp-method-summary/latest",
-];
-
 const ROWS: AnyRow[] = [
   modelCreateRow(false),
   modelCreateRow(true),
@@ -574,8 +563,8 @@ const ROWS: AnyRow[] = [
     // its own, after the run's root has ended, as a lock's push does.
     rootUnits: { cli: 2, serve: 2 },
     outsideUseCase: {
-      cli: PUBLISH_RESTAGE_MARKS,
-      serve: PUBLISH_RESTAGE_MARKS,
+      cli: READ_RUN_PUBLISH_MARKS,
+      serve: READ_RUN_PUBLISH_MARKS,
     },
     // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
     // adopted a root unit, when a read run neither pulled nor pushed. Since

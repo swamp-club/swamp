@@ -110,9 +110,11 @@ import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datas
 import { parseTimerDuration } from "../duration_parser.ts";
 import { resolveCliInitiatedBy } from "../auth_context.ts";
 import {
+  DataVersionConflictError,
   isUnpublishedDataError,
   type WrittenVersion,
 } from "../../domain/datastore/datastore_sync_service.ts";
+import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import {
   DEFAULT_STALE_TTL_MS,
   RunTrackerStore,
@@ -648,6 +650,9 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           };
           const locks = modelLocks;
           const publishTo = publishModel;
+          // Why a read or list run's publish failed, other than a refusal,
+          // which the root throws itself (swamp-club#3934).
+          let publishFailure: { error: unknown } | undefined;
           const finished = await runCommandInRootUnit(
             repoContext,
             {
@@ -656,34 +661,43 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               output: ctx.outputMode === "log" ? "live-until-outcome" : "held",
               push: locks ? () => pushWritten(locks) : publishTo
                 ? async () => {
-                  // No pull: it would overwrite what the run wrote wherever
-                  // another clone wrote the same version (swamp-club#3934).
-                  const publishLocks = await acquireModelLocks(
-                    datastoreConfig,
-                    [publishTo],
-                    repoDir,
-                    syncService,
-                    repoContext.catalogStore,
-                    undefined,
-                    { repoContext, pull: false, refuseForeignVersions: true },
-                  );
                   try {
-                    await pushWritten(publishLocks);
-                  } finally {
+                    // No pull: it would overwrite what the run wrote wherever
+                    // another clone wrote the same version (swamp-club#3934).
+                    const publishLocks = await acquireModelLocks(
+                      datastoreConfig,
+                      [publishTo],
+                      repoDir,
+                      syncService,
+                      repoContext.catalogStore,
+                      undefined,
+                      { repoContext, pull: false, refuseForeignVersions: true },
+                    );
                     try {
-                      await publishLocks.release();
-                    } catch (releaseError) {
-                      ctx.logger.warn("Failed to release locks: {error}", {
-                        error: releaseError instanceof Error
-                          ? releaseError.message
-                          : String(releaseError),
-                      });
+                      await pushWritten(publishLocks);
+                    } finally {
+                      try {
+                        await publishLocks.release();
+                      } catch (releaseError) {
+                        ctx.logger.warn("Failed to release locks: {error}", {
+                          error: releaseError instanceof Error
+                            ? releaseError.message
+                            : String(releaseError),
+                        });
+                      }
                     }
+                  } catch (error) {
+                    if (!(error instanceof DataVersionConflictError)) {
+                      publishFailure = { error };
+                    }
+                    throw error;
                   }
                 }
                 : undefined,
               release: modelLocks?.release,
               onCleanupError: (releaseError) => {
+                // A failed publish fails the command below instead.
+                if (releaseError === publishFailure?.error) return;
                 ctx.logger.warn(
                   "Failed to release locks during cleanup: {error}",
                   {
@@ -792,6 +806,25 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               : error;
           });
           if (!finished) return;
+          if (publishFailure !== undefined) {
+            const { error } = publishFailure;
+            // A lock timeout keeps its own code and exit status.
+            if (error instanceof LockTimeoutError) {
+              ctx.logger.error(
+                "This run's data was not published to the datastore",
+              );
+              throw error;
+            }
+            const message = error instanceof Error
+              ? error.message
+              : String(error);
+            throw new UserError(
+              `This run's data was not published to the datastore: ` +
+                `${message}. It is on this host only; run the method again ` +
+                `to write and publish it.`,
+              "datastore_publish_failed",
+            );
+          }
 
           ctx.logger.debug("Method run command completed");
         } finally {

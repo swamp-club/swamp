@@ -27,7 +27,12 @@
 // of one in-memory remote.
 
 import "../src/domain/models/models.ts";
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { Command } from "@cliffy/command";
 import { join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
@@ -50,6 +55,7 @@ import type {
   LockOptions,
 } from "../src/domain/datastore/distributed_lock.ts";
 import { DataVersionConflictError } from "../src/domain/datastore/datastore_sync_service.ts";
+import { UserError } from "../src/domain/errors.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { RepoPath } from "../src/domain/repo/repo_path.ts";
@@ -406,6 +412,26 @@ Deno.test("model method run: a read method's version already uploaded by another
   });
 });
 
+Deno.test("model method run: a read method whose publish cannot check the remote fails the command, naming the unpublished data (swamp-club#3934)", async () => {
+  await withClones(async (c) => {
+    hooks = {
+      afterWrite: () => {
+        c.remote.failNext("fetch", new Error("injected fetch failure"));
+        return Promise.resolve();
+      },
+    };
+
+    const error = await assertRejects(
+      () => runMethod(c.repoA, "observe", "from-a"),
+      UserError,
+    );
+    assertEquals(error.code, "datastore_publish_failed");
+    assertStringIncludes(error.message, "injected fetch failure");
+    assertEquals(remoteValue(c, 1), undefined, "nothing was published");
+    assertEquals(c.locks.held.size, 0, "the publish lock was released");
+  });
+});
+
 Deno.test("model method run: a read method runs while a writer holds the model lock and publishes after it releases (swamp-club#3934)", async () => {
   await withClones(async (c) => {
     const holder = await requireInitializedRepoUnlocked({
@@ -419,34 +445,35 @@ Deno.test("model method run: a read method runs while a writer holds the model l
         return Promise.resolve();
       },
     };
+    const writerLock = await acquireModelLocks(
+      holder.datastoreConfig,
+      [{
+        modelType: c.type.normalized,
+        modelId: c.definition.id,
+      }],
+      c.repoB,
+      holder.syncService,
+      holder.repoContext.catalogStore,
+      undefined,
+      { repoContext: holder.repoContext },
+    );
+    let aRun: Promise<void> | undefined;
     try {
-      const writerLock = await acquireModelLocks(
-        holder.datastoreConfig,
-        [{
-          modelType: c.type.normalized,
-          modelId: c.definition.id,
-        }],
-        c.repoB,
-        holder.syncService,
-        holder.repoContext.catalogStore,
-        undefined,
-        { repoContext: holder.repoContext },
-      );
       let finished = false;
-      const aRun = runMethod(c.repoA, "observe", "from-a").finally(() => {
+      aRun = runMethod(c.repoA, "observe", "from-a").finally(() => {
         finished = true;
       });
       // The method runs although the writer holds the lock (swamp-club#1992)
       await waitFor(() => executed, "the read method to run");
       assertEquals(finished, false, "the publish waits for the lock");
       assertEquals(remoteValue(c, 1), undefined);
-
+    } finally {
+      // Released on every outcome, so the read run's publish can settle.
       await writerLock.flush();
       await aRun;
-      assertEquals(remoteValue(c, 1), "from-a");
-    } finally {
       await flushDatastoreSync();
       holder.repoContext.catalogStore.close();
     }
+    assertEquals(remoteValue(c, 1), "from-a");
   });
 });

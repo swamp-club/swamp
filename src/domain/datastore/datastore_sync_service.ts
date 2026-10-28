@@ -890,8 +890,9 @@ export class DataVersionConflictError extends UserError {
       `${v.modelType}/${v.modelId} ${v.dataName} version ${v.version}`
     ).join(", ");
     super(
-      `Another clone of this repository wrote ${names} while this run ` +
-        `was running, so this run's data with the same version was not ` +
+      `Another swamp process, most likely another clone of this ` +
+        `repository, wrote ${names} while this run was running, so this ` +
+        `run's data with the same version was not ` +
         `published: it was discarded from this host, which now holds the ` +
         `datastore's copy. Run the method again to write and publish it.`,
       "datastore_data_version_conflict",

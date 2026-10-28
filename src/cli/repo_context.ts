@@ -3409,8 +3409,7 @@ async function foreignVersions(
   cachePath: string,
   namespace: string | undefined,
 ): Promise<WrittenVersion[]> {
-  const foreign: WrittenVersion[] = [];
-  for (const w of written) {
+  const isForeign = async (w: WrittenVersion): Promise<boolean> => {
     const metadataPath = join(
       repo.getPath(
         ModelType.create(w.modelType),
@@ -3421,19 +3420,18 @@ async function foreignVersions(
       "metadata.yaml",
     );
     const rel = cacheRelativePath(cachePath, metadataPath);
-    if (rel === undefined) continue;
+    if (rel === undefined) return false;
     const remote = await fetchContent(rel, {
       namespace,
       signal: AbortSignal.timeout(PUBLISH_CHECK_FETCH_TIMEOUT_MS),
     });
-    if (remote === null) continue;
+    if (remote === null) return false;
     if (w.dataId !== undefined) {
       const parsed = parseYaml(new TextDecoder().decode(remote));
       const remoteId = typeof parsed === "object" && parsed !== null
         ? (parsed as { id?: unknown }).id
         : undefined;
-      if (remoteId !== w.dataId) foreign.push(w);
-      continue;
+      return remoteId !== w.dataId;
     }
     let local: Uint8Array | undefined;
     try {
@@ -3441,7 +3439,15 @@ async function foreignVersions(
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) throw error;
     }
-    if (local === undefined || !bytesEqual(local, remote)) foreign.push(w);
+    return local === undefined || !bytesEqual(local, remote);
+  };
+  const foreign: WrittenVersion[] = [];
+  for (let i = 0; i < written.length; i += PUBLISH_CHECK_CONCURRENCY) {
+    const batch = written.slice(i, i + PUBLISH_CHECK_CONCURRENCY);
+    const results = await Promise.all(batch.map(isForeign));
+    batch.forEach((w, j) => {
+      if (results[j]) foreign.push(w);
+    });
   }
   return foreign;
 }
@@ -3575,6 +3581,8 @@ async function waitForGlobalLockRelease(
   globalLock: DistributedLock,
   config: DatastoreConfig,
   write: LockProgressWriter,
+  /** What the caller does next, for the progress line. */
+  next: string,
 ): Promise<void> {
   const globalInfo = await globalLock.inspect();
   if (globalInfo) {
@@ -3624,7 +3632,7 @@ async function waitForGlobalLockRelease(
       },
     );
     write(
-      dim("Global lock released, proceeding with per-model locks"),
+      dim(`Global lock released, proceeding with ${next}`),
     );
   }
 }
@@ -3666,6 +3674,7 @@ export async function pullModelsUnlocked(
     }),
     config,
     write,
+    "the pull",
   );
   let caps: SyncCapabilities | undefined;
   try {
@@ -3754,7 +3763,7 @@ export async function acquireModelLocks(
       },
     )
     : await createDatastoreLock(config);
-  await waitForGlobalLockRelease(globalLock, config, write);
+  await waitForGlobalLockRelease(globalLock, config, write, "per-model locks");
 
   // Sort models for deterministic lock ordering (deadlock prevention)
   const sorted = [...models].sort((a, b) => {
@@ -4167,7 +4176,14 @@ export async function acquireModelLocks(
       }
       throw new UnpublishedDataVersionError(pending, PUBLISH_ATTEMPTS);
     };
-    await publish();
+    try {
+      await publish();
+    } catch (error) {
+      if (conflict === undefined) throw error;
+      // The refusal is the error to act on; what else failed is logged.
+      logger
+        .warn`Publishing the versions left after a refusal failed: ${error}`;
+    }
     if (conflict !== undefined) throw conflict;
   };
 
