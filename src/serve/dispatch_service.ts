@@ -58,10 +58,12 @@ import {
 } from "../domain/remote/environment_snapshot.ts";
 import { markErrorPaths, UserError } from "../domain/errors.ts";
 import {
+  ARGUMENTS_VALIDATED_EVENT,
   type DispatchParams,
   type DispatchResult,
   REMOTE_PROTOCOL_VERSION,
   type RpcStreamEvent,
+  shipsReferencesOnly,
 } from "../domain/remote/protocol.ts";
 import { ChannelClosedError, RpcError } from "../domain/remote/rpc_channel.ts";
 import {
@@ -149,6 +151,41 @@ export interface DispatchGateway {
       onRegistered?: () => void;
     },
   ): Promise<DispatchResult>;
+}
+
+/**
+ * What one attempt's dispatch frame carries, for the protocol version of the
+ * worker it goes to (design/enablers/typed-secrets.md Section 9). A version 6
+ * frame carries the arguments with their sentinels and the reference behind
+ * each; a version 5 frame carries today's resolved arguments and values.
+ */
+interface DispatchFrame {
+  protocolVersion: number;
+  globalArgs: Record<string, unknown>;
+  methodArgs: Record<string, unknown>;
+  /** The secret fields of the frame, by version; see DispatchParams. */
+  secrets: Pick<
+    DispatchParams,
+    "referenceBag" | "secretValues" | "unresolvedMethodArgs" | "secretBag"
+  >;
+  /** What serve's dispatch redactor starts out masking. */
+  redactorSeeds: string[] | undefined;
+}
+
+/**
+ * `event` with the text of an output line passed through `redactor`, as the
+ * worker scrubs it: only the line is text the method wrote, and its type,
+ * stream and level stay as sent so the run log reads it as the worker meant.
+ */
+function scrubbedOutputEvent(
+  event: RpcStreamEvent,
+  redactor: SecretRedactor,
+): RpcStreamEvent {
+  const inner = event.event;
+  if (typeof inner !== "object" || inner === null) return event;
+  const { type, line } = inner as Record<string, unknown>;
+  if (type !== "output" || typeof line !== "string") return event;
+  return { ...event, event: { ...inner, line: redactor.redact(line) } };
 }
 
 export interface DispatchServiceOptions {
@@ -516,9 +553,15 @@ export class DispatchService {
           }
         };
         try {
+          // Built for the chosen worker before anything is acquired for the
+          // attempt: a version 5 frame loads and validates here, and its
+          // failure fails the step with nothing to unwind but the
+          // reservation, never as a lost worker.
+          const frame = await this.#frameFor(workerName, request);
           const result = await this.#dispatchOnce(
             workerName,
             request,
+            frame,
             releaseReservation,
           );
           lastDispatchId = result.dispatchId;
@@ -582,10 +625,12 @@ export class DispatchService {
             assertPinHeld();
             if (
               refusal === "not_in_pool" || refusal === "disconnected" ||
-              refusal === "draining"
+              refusal === "draining" || refusal === "version_changed"
             ) {
               // The scheduler no longer offers this worker, so the step goes
-              // straight back to it instead of waiting on a pool change.
+              // straight back to it instead of waiting on a pool change. A
+              // worker that re-enrolled at another protocol version is
+              // offered again, and the next attempt's frame is built for it.
               logger.warn(
                 "Worker {worker} was {code} on dispatch; re-scheduling step",
                 { worker: workerName, code: refusal },
@@ -662,17 +707,62 @@ export class DispatchService {
   async #dispatchOnce(
     workerName: string,
     request: RemoteStepRequest,
+    frame: DispatchFrame,
     onRegistered: () => void,
   ): Promise<RemoteStepResult & { dispatchId: string }> {
     return await observeExecutionWork("dispatch.attempt", {
       "swamp.attempt.id": crypto.randomUUID(),
       "swamp.worker.id": workerName,
-    }, () => this.#dispatchObserved(workerName, request, onRegistered));
+    }, () => this.#dispatchObserved(workerName, request, frame, onRegistered));
+  }
+
+  /**
+   * The frame `request` is dispatched with to `workerName`, by the protocol
+   * version the worker enrolled at. A version 6 worker receives the
+   * arguments with their sentinels and the references behind them, and
+   * nothing is loaded here. A version 5 worker receives the plaintext frame
+   * the request's legacy delivery builds, the documented exception of the
+   * deprecation window typed-secrets 5.3 ends.
+   */
+  async #frameFor(
+    workerName: string,
+    request: RemoteStepRequest,
+  ): Promise<DispatchFrame> {
+    const protocolVersion =
+      this.#gateway!.worker(workerName)?.protocolVersion ??
+        REMOTE_PROTOCOL_VERSION;
+    if (shipsReferencesOnly(protocolVersion)) {
+      return {
+        protocolVersion,
+        globalArgs: request.globalArgs,
+        methodArgs: request.methodArgs,
+        secrets: request.referenceBag
+          ? { referenceBag: request.referenceBag }
+          : {},
+        redactorSeeds: request.redactorSeeds,
+      };
+    }
+    const legacy = await request.legacyDelivery?.();
+    return {
+      protocolVersion,
+      globalArgs: legacy?.globalArgs ?? request.globalArgs,
+      methodArgs: legacy?.methodArgs ?? request.methodArgs,
+      secrets: {
+        ...(legacy?.secretValues ? { secretValues: legacy.secretValues } : {}),
+        ...(legacy?.unresolvedMethodArgs
+          ? { unresolvedMethodArgs: legacy.unresolvedMethodArgs }
+          : {}),
+        ...(legacy?.secretBag ? { secretBag: legacy.secretBag } : {}),
+      },
+      // The values the frame ships cover the request's own literals.
+      redactorSeeds: legacy?.secretValues ?? request.redactorSeeds,
+    };
   }
 
   async #dispatchObserved(
     workerName: string,
     request: RemoteStepRequest,
+    frame: DispatchFrame,
     onRegistered: () => void,
   ): Promise<RemoteStepResult & { dispatchId: string }> {
     const handOff = await observeExecutionWork(
@@ -689,6 +779,7 @@ export class DispatchService {
         result: await this.#dispatchLent(
           workerName,
           request,
+          frame,
           handOff?.lent,
           onRegistered,
         ),
@@ -743,6 +834,7 @@ export class DispatchService {
   async #dispatchLent(
     workerName: string,
     request: RemoteStepRequest,
+    frame: DispatchFrame,
     lockHolder: RemoteLockHolder | undefined,
     onRegistered: () => void,
   ): Promise<RemoteStepResult & { dispatchId: string }> {
@@ -798,14 +890,15 @@ export class DispatchService {
       // references come from its secret bag; a direct caller's literal
       // expressions are still read from the arguments (swamp-club#3529).
       allowedSecrets: withVaultReferences(
-        extractVaultReferences(request.globalArgs, request.methodArgs),
+        extractVaultReferences(frame.globalArgs, frame.methodArgs),
         request.secretReferences,
       ),
       // The step's bag, the only references the protected load route
       // answers for this dispatch (design/enablers/typed-secrets.md
       // Section 9).
       bagReferences: bagReferenceSet(request.secretReferences),
-      redactor: this.#buildDispatchRedactor(request.secretValues),
+      redactor: this.#buildDispatchRedactor(frame.redactorSeeds),
+      protocolVersion: frame.protocolVersion,
       traceHeaders: request.traceHeaders,
       // The dispatching run's vault scope, so the worker's secret reads and
       // sensitive writes are held to it (swamp-club#2676).
@@ -816,12 +909,12 @@ export class DispatchService {
       dispatchId,
       leaseId,
       execution: {
-        protocolVersion: REMOTE_PROTOCOL_VERSION,
+        protocolVersion: frame.protocolVersion,
         modelType: request.modelType.normalized,
         modelId: request.modelId,
         methodName: request.methodName,
-        globalArgs: request.globalArgs,
-        methodArgs: request.methodArgs,
+        globalArgs: frame.globalArgs,
+        methodArgs: frame.methodArgs,
         definitionMeta: request.definitionMeta,
         resourceSpecs: request.resourceSpecs,
         fileSpecs: request.fileSpecs,
@@ -836,13 +929,63 @@ export class DispatchService {
         stepName: request.stepName,
       },
       probeMarker: request.probeMarker,
-      secretValues: request.secretValues,
-      unresolvedMethodArgs: request.unresolvedMethodArgs,
-      secretBag: request.secretBag,
+      ...frame.secrets,
       // Copied only to drop `readonly` for the schema's inferred type.
       lockHolder: lockHolder
         ? { ...lockHolder, lockIds: [...lockHolder.lockIds] }
         : undefined,
+    };
+
+    // A version 6 worker reports its parse of the arguments with an event of
+    // its own, which stands for the parse serve makes for a version 5
+    // worker: it calls the caller's hook, at most once and only before the
+    // result, and is never forwarded as a run event (swamp-club#3681).
+    // The method runs while the hook does, so a hook that fails cannot stop
+    // it and leaves the step the outcome the method reported: failing a step
+    // whose method ran would invite a retry that runs it again. The failure
+    // is caught from the moment the hook starts, so it is never an unhandled
+    // rejection.
+    let validation: Promise<void> | undefined;
+    let resultArrived = false;
+    const referencesOnly = shipsReferencesOnly(frame.protocolVersion);
+    // What the method writes on the worker reaches the run log through the
+    // dispatch's redactor, read when each line arrives so it holds every
+    // value the load route and resolveSecret have served the dispatch so
+    // far: a version 6 run's own redactor never sees those values, so this
+    // is the scrub after the worker's own.
+    const dispatchRedactor = () => {
+      const redactor = this.#options.dispatches.forDispatch(
+        workerName,
+        dispatchId,
+      )?.redactor;
+      return redactor?.hasSecrets ? redactor : undefined;
+    };
+    const onEvent = (event: RpcStreamEvent) => {
+      if (event.kind === ARGUMENTS_VALIDATED_EVENT) {
+        if (referencesOnly && !resultArrived && validation === undefined) {
+          validation = Promise.resolve()
+            .then(() => request.onArgumentsValidated?.())
+            .catch((error: unknown) => {
+              const message = error instanceof Error
+                ? error.message
+                : String(error);
+              logger.warn(
+                "Recording the validated arguments of {dispatchId} failed: {error}",
+                {
+                  dispatchId,
+                  error: dispatchRedactor()?.redact(message) ?? message,
+                },
+              );
+            });
+        }
+        return;
+      }
+      const redactor = dispatchRedactor();
+      request.onEvent?.(
+        redactor && event.kind === "method_event"
+          ? scrubbedOutputEvent(event, redactor)
+          : event,
+      );
     };
 
     try {
@@ -862,10 +1005,12 @@ export class DispatchService {
         if (registration) registration.traceHeaders = traceHeaders;
         return gateway.dispatch(workerName, params, {
           signal: request.signal,
-          onEvent: request.onEvent,
+          onEvent,
           onRegistered,
         });
       });
+      resultArrived = true;
+      await validation;
       // What the method wrote to the console on the worker travels in the
       // result, not the stream. Forward it as output so it reaches the run
       // log whether the dispatch succeeded or failed (swamp-club#3080). The
@@ -877,7 +1022,12 @@ export class DispatchService {
         try {
           request.onEvent?.({
             kind: "method_event",
-            event: { type: "output", line, stream: "stdout", level: "info" },
+            event: {
+              type: "output",
+              line: dispatchRedactor()?.redact(line) ?? line,
+              stream: "stdout",
+              level: "info",
+            },
           });
         } catch (error) {
           logger.warn(
@@ -936,6 +1086,8 @@ export class DispatchService {
         dispatchId,
       };
     } catch (dispatchError) {
+      resultArrived = true;
+      await validation;
       // Every way out of here throws; the versions the dispatch wrote go
       // with the error, read before the finally releases the dispatch.
       let failure: unknown;

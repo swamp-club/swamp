@@ -41,6 +41,7 @@ import {
   type DispatchExecution,
   type DispatchOutput,
   type DispatchResult,
+  plaintextFieldsOf,
 } from "../domain/remote/protocol.ts";
 import { RpcChannel } from "../domain/remote/rpc_channel.ts";
 import {
@@ -53,8 +54,11 @@ import {
   createRemoteMethodContext,
   dispatchMethodArgs,
   dispatchRedactor,
+  dispatchSecretLoader,
+  loadsOwnSecrets,
 } from "./remote_method_context.ts";
 import {
+  RUNNER_ARGUMENTS_VALIDATED,
   type RunnerBootstrapParams,
   RunnerBootstrapParamsSchema,
 } from "./runner_protocol.ts";
@@ -104,6 +108,26 @@ export function definitionFromExecution(
     methods: { [execution.methodName]: { arguments: methodArgs } },
     inputs: undefined,
   });
+}
+
+/**
+ * Tells the supervisor, and through it serve, that the step's arguments
+ * passed their schema. It is sent as `runner.event` is, without waiting on
+ * the supervisor's answer: the frame leaves ahead of the result frame on the
+ * same ordered pipe, so serve sees it first. A failed report is logged, not
+ * fatal: it only keeps serve from recording the evaluation.
+ */
+function reportArgumentsValidated(
+  channel: RpcChannel,
+  signal: AbortSignal,
+): Promise<void> {
+  channel.call(RUNNER_ARGUMENTS_VALIDATED, {}, { timeoutMs: null, signal })
+    .catch((error: unknown) => {
+      logger.warn("Could not report the validated arguments: {error}", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  return Promise.resolve();
 }
 
 /**
@@ -188,6 +212,17 @@ export async function runDispatchRunner(
   const redactorHandle = runFileSink.registerRedactor(redactor);
 
   try {
+    // A version 6 dispatch loads its own secrets and carries none; one that
+    // does is refused before anything reads it.
+    const referencesOnly = loadsOwnSecrets(dispatch);
+    const plaintext = referencesOnly ? plaintextFieldsOf(dispatch) : [];
+    if (plaintext.length > 0) {
+      throw new Error(
+        `Refusing a protocol version ${execution.protocolVersion} dispatch that carries ${
+          plaintext.join(", ")
+        }: such a dispatch carries vault references only`,
+      );
+    }
     // Built inside the try so a TLS client failure fails this dispatch
     // instead of crashing the runner before it reports a result.
     const client = new DataPlaneClient({
@@ -244,16 +279,30 @@ export async function runDispatchRunner(
     getHandles = remote.getHandles;
 
     const executor = new DefaultMethodExecutionService();
+    // A version 6 dispatch is delivered here as a local run is: its
+    // references load once through the protected route, then the global and
+    // method arguments are validated, once, on this worker. Serve learns the
+    // parse passed from the runner itself, never from a method's events.
+    const run = referencesOnly
+      ? () =>
+        executor.executeDispatched(
+          definition,
+          modelDef,
+          execution.methodName,
+          remote.context,
+          {
+            secretLoader: dispatchSecretLoader(client, redactor, signal),
+            onArgumentsValidated: () =>
+              reportArgumentsValidated(channel, signal),
+          },
+        )
+      : () => executor.execute(definition, method, remote.context);
     const methodResult = await observeExecutionWork("worker.execute", {
       "swamp.dispatch.id": dispatch.dispatchId,
       "swamp.lease.id": dispatch.leaseId,
     }, (observation) => {
       completionTrace = observation.carrier;
-      return withConsoleGuard(
-        () => executor.execute(definition, method, remote.context),
-        logs,
-        { jsonMode: true },
-      );
+      return withConsoleGuard(run, logs, { jsonMode: true });
     });
 
     const handles = methodResult.dataHandles?.length

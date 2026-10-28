@@ -33,7 +33,11 @@ import {
   withWrittenVersions,
   WorkerAffinityLostError,
 } from "./dispatch_service.ts";
-import { DispatchRegistry } from "./dispatch_registry.ts";
+import {
+  type ActiveDispatch,
+  bagReferenceId,
+  DispatchRegistry,
+} from "./dispatch_registry.ts";
 import { SecretRedactor } from "../domain/secrets/secret_redactor.ts";
 import { BundleRegistry, hashAssetBytes } from "./bundle_registry.ts";
 import { join } from "@std/path";
@@ -49,11 +53,14 @@ import type { ModelDefinition } from "../domain/models/model.ts";
 import type { WrittenVersion } from "../domain/datastore/datastore_sync_service.ts";
 import { writtenVersionsOf } from "../domain/models/method_execution_service.ts";
 import {
+  ARGUMENTS_VALIDATED_EVENT,
   type DispatchParams,
   type DispatchResult,
   type EnrollResult,
+  plaintextFieldsOf,
   REMOTE_PROTOCOL_VERSION,
   RemoteMethod,
+  type RpcStreamEvent,
   WorkerMethod,
 } from "../domain/remote/protocol.ts";
 import {
@@ -61,7 +68,10 @@ import {
   RpcChannel,
   RpcError,
 } from "../domain/remote/rpc_channel.ts";
-import type { RemoteStepRequest } from "../domain/remote/remote_dispatch.ts";
+import type {
+  LegacyStepDelivery,
+  RemoteStepRequest,
+} from "../domain/remote/remote_dispatch.ts";
 
 const MODEL_TYPE = ModelType.create("swamp/dispatch-test");
 
@@ -88,6 +98,7 @@ function snapshot(
     platform: "linux",
     arch: "x86_64",
     swampVersion: "1.0.0",
+    protocolVersion: REMOTE_PROTOCOL_VERSION,
     status: "idle",
     connected: true,
     capacity: 1,
@@ -99,6 +110,7 @@ function snapshot(
 type DispatchBehavior = (
   name: string,
   params: DispatchParams,
+  options?: { onEvent?: (event: RpcStreamEvent) => void },
 ) => Promise<DispatchResult>;
 
 function createHarness(options?: {
@@ -138,11 +150,11 @@ function createHarness(options?: {
   const gateway: DispatchGateway = {
     workers: () => [...pool.values()],
     worker: (name) => pool.get(name) ?? null,
-    dispatch: (name, params) => {
+    dispatch: (name, params, options) => {
       dispatchCalls.push({ name, params });
       const entry = pool.get(name);
       if (entry) pool.set(name, { ...entry, status: "busy" });
-      return behavior(name, params).finally(() => {
+      return behavior(name, params, options).finally(() => {
         const after = pool.get(name);
         if (after) pool.set(name, { ...after, status: "idle" });
       });
@@ -515,7 +527,7 @@ Deno.test("DispatchService: a remote method error is scrubbed with the dispatch 
     })
   );
   const error = await assertRejects(
-    () => h.service.executeRemote(stepRequest({ secretValues: [secret] })),
+    () => h.service.executeRemote(stepRequest({ redactorSeeds: [secret] })),
     Error,
     "method failed holding ***",
   );
@@ -585,7 +597,7 @@ Deno.test("DispatchService: a remote method error code is scrubbed with the disp
     })
   );
   const error = await assertRejects(
-    () => h.service.executeRemote(stepRequest({ secretValues: [secret] })),
+    () => h.service.executeRemote(stepRequest({ redactorSeeds: [secret] })),
     UserError,
     "method failed holding ***",
   );
@@ -1984,8 +1996,10 @@ Deno.test("DispatchService: revoking the worker's token mid-dispatch fails the s
   gateway.dispose();
 });
 
-Deno.test("DispatchService: forwards the unresolved args and secret bag to the worker (swamp-club#2760)", async () => {
-  const h = createHarness();
+Deno.test("DispatchService: a version 5 worker receives the frame the legacy delivery builds, with its plaintext (swamp-club#2760)", async () => {
+  const h = createHarness({
+    workers: [snapshot({ name: "w1", protocolVersion: 5 })],
+  });
   const sentinel = `__SWAMP_VSEC_${"0a1b2c3d".repeat(4)}_0__`;
   const registered: Array<Record<string, unknown>> = [];
   h.setBehavior((name) => {
@@ -2001,13 +2015,19 @@ Deno.test("DispatchService: forwards the unresolved args and secret bag to the w
   });
 
   await h.service.executeRemote(stepRequest({
-    methodArgs: { run: "echo s3cret" },
-    unresolvedMethodArgs: { run: `echo ${sentinel}` },
-    secretBag: [{ sentinel, value: "s3cret", dataOrigin: false }],
-    secretValues: ["s3cret"],
+    methodArgs: { run: `echo ${sentinel}` },
+    legacyDelivery: () =>
+      Promise.resolve({
+        globalArgs: {},
+        methodArgs: { run: "echo s3cret" },
+        unresolvedMethodArgs: { run: `echo ${sentinel}` },
+        secretBag: [{ sentinel, value: "s3cret", dataOrigin: false }],
+        secretValues: ["s3cret"],
+      }),
   }));
 
   const params = h.dispatchCalls[0].params;
+  assertEquals(params.execution.protocolVersion, 5);
   assertEquals(params.execution.methodArgs, { run: "echo s3cret" });
   assertEquals(params.unresolvedMethodArgs, { run: `echo ${sentinel}` });
   assertEquals(params.secretBag, [{
@@ -2015,10 +2035,328 @@ Deno.test("DispatchService: forwards the unresolved args and secret bag to the w
     value: "s3cret",
     dataOrigin: false,
   }]);
+  assertEquals(params.secretValues, ["s3cret"]);
+  assertEquals(params.referenceBag, undefined);
   // The bag goes to the worker only; the dispatch registry never holds it.
   assertEquals(registered.length, 1);
   assertEquals("secretBag" in registered[0], false);
   assertEquals("unresolvedMethodArgs" in registered[0], false);
+  assertEquals(registered[0].protocolVersion, 5);
+});
+
+Deno.test("DispatchService: a version 6 worker receives the arguments with their sentinels and the references behind them, and nothing is loaded (typed-secrets 5.2)", async () => {
+  const h = createHarness();
+  const sentinel = `__SWAMP_VSEC_${"0a1b2c3d".repeat(4)}_0__`;
+  const referenceBag = [{
+    sentinel,
+    reference: { vaultName: "v", key: "token" },
+    encoding: "raw" as const,
+    dataOrigin: false,
+    location: "methods.run.arguments.run",
+  }];
+  const registered: ActiveDispatch[] = [];
+  h.setBehavior((name) => {
+    registered.push(...h.dispatches.forWorker(name));
+    return Promise.resolve<DispatchResult>({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+  let legacyCalls = 0;
+  await h.service.executeRemote(stepRequest({
+    globalArgs: { region: "us-east" },
+    methodArgs: { run: `echo ${sentinel}` },
+    referenceBag,
+    secretReferences: [{ vaultName: "v", key: "token" }],
+    redactorSeeds: ["literal-sensitive"],
+    legacyDelivery: () => {
+      legacyCalls++;
+      return Promise.reject(new Error("a version 6 frame loads nothing"));
+    },
+  }));
+
+  assertEquals(legacyCalls, 0);
+  const params = h.dispatchCalls[0].params;
+  assertEquals(params.execution.protocolVersion, REMOTE_PROTOCOL_VERSION);
+  assertEquals(params.execution.globalArgs, { region: "us-east" });
+  assertEquals(params.execution.methodArgs, { run: `echo ${sentinel}` });
+  assertEquals(params.referenceBag, referenceBag);
+  assertEquals(plaintextFieldsOf(params), []);
+  for (const field of ["secretValues", "secretBag", "unresolvedMethodArgs"]) {
+    assertEquals(field in params, false);
+  }
+  assertEquals(registered[0].protocolVersion, REMOTE_PROTOCOL_VERSION);
+  assertEquals([...registered[0].bagReferences ?? []], [
+    bagReferenceId("v", "token"),
+  ]);
+  assertEquals(
+    registered[0].redactor?.redact("x literal-sensitive y"),
+    "x *** y",
+  );
+});
+
+Deno.test("DispatchService: a step re-dispatched across versions sends each worker its own frame, and the legacy delivery runs at most once (typed-secrets 5.2)", async () => {
+  const h = createHarness({
+    workers: [
+      snapshot({ name: "old-1", protocolVersion: 5 }),
+      snapshot({ name: "old-2", protocolVersion: 5 }),
+      snapshot({ name: "new", protocolVersion: 6 }),
+    ],
+  });
+  const sentinel = `__SWAMP_VSEC_${"0a1b2c3d".repeat(4)}_0__`;
+  let legacyCalls = 0;
+  let legacy: Promise<LegacyStepDelivery> | undefined;
+  h.setBehavior((name) => {
+    // The first two workers chosen leave the pool as they refuse, so the
+    // step reaches all three.
+    if (h.dispatchCalls.length < 3) {
+      h.pool.delete(name);
+      return Promise.reject(new WorkerNotDispatchableError(name, "draining"));
+    }
+    return Promise.resolve<DispatchResult>({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+  await h.service.executeRemote(stepRequest({
+    methodArgs: { run: `echo ${sentinel}` },
+    legacyDelivery: () =>
+      legacy ??= (legacyCalls++,
+        Promise.resolve({
+          globalArgs: {},
+          methodArgs: { run: "echo s3cret" },
+          secretValues: ["s3cret"],
+        })),
+  }));
+  assertEquals(h.dispatchCalls.length, 3);
+  for (const { name, params } of h.dispatchCalls) {
+    if (name.startsWith("old")) {
+      assertEquals(params.execution.protocolVersion, 5);
+      assertEquals(params.execution.methodArgs, { run: "echo s3cret" });
+    } else {
+      assertEquals(params.execution.protocolVersion, 6);
+      assertEquals(params.execution.methodArgs, { run: `echo ${sentinel}` });
+      assertEquals(plaintextFieldsOf(params), []);
+    }
+  }
+  assertEquals(legacyCalls, 1);
+});
+
+Deno.test("DispatchService: a worker that re-enrolled at another version before the send gets a frame built for its new version (typed-secrets 5.2)", async () => {
+  const h = createHarness({
+    workers: [snapshot({ name: "w1", protocolVersion: 5 })],
+  });
+  let legacyCalls = 0;
+  h.setBehavior((name, params) => {
+    if (params.execution.protocolVersion === 5) {
+      // A new process enrolled under the name at version 6 meanwhile.
+      h.pool.set(name, snapshot({ name, protocolVersion: 6 }));
+      return Promise.reject(
+        new WorkerNotDispatchableError(name, "version_changed"),
+      );
+    }
+    return Promise.resolve<DispatchResult>({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+  await h.service.executeRemote(stepRequest({
+    legacyDelivery: () => {
+      legacyCalls++;
+      return Promise.resolve({
+        globalArgs: {},
+        methodArgs: { value: 1 },
+        secretValues: ["s3cret"],
+      });
+    },
+  }));
+  assertEquals(
+    h.dispatchCalls.map((call) => call.params.execution.protocolVersion),
+    [5, 6],
+  );
+  assertEquals(plaintextFieldsOf(h.dispatchCalls[1].params), []);
+  assertEquals(legacyCalls, 1);
+});
+
+Deno.test("DispatchService: a version 5 frame that cannot be built fails the step before any lease, registration or send, and frees the worker (typed-secrets 5.2)", async () => {
+  const h = createHarness({
+    workers: [snapshot({ name: "w1", protocolVersion: 5 })],
+  });
+  await assertRejects(
+    () =>
+      h.service.executeRemote(stepRequest({
+        legacyDelivery: () =>
+          Promise.reject(
+            new Error("Method arguments validation failed: bad"),
+          ),
+      })),
+    Error,
+    "Method arguments validation failed: bad",
+  );
+  assertEquals(h.dispatchCalls.length, 0);
+  assertEquals(
+    h.transitions.filter((t) => t.methodName === "acquire").length,
+    0,
+  );
+  assertEquals(h.dispatches.forWorker("w1"), []);
+  // The worker is offered to the next step at once.
+  await h.service.executeRemote(stepRequest());
+  assertEquals(h.dispatchCalls.length, 1);
+});
+
+Deno.test("DispatchService: a version 6 worker's arguments_validated event calls the hook once before the result, and is never forwarded (swamp-club#3681)", async () => {
+  const h = createHarness();
+  const order: string[] = [];
+  const forwarded: RpcStreamEvent[] = [];
+  h.setBehavior((_name, _params, options) => {
+    options?.onEvent?.({ kind: ARGUMENTS_VALIDATED_EVENT });
+    options?.onEvent?.({ kind: ARGUMENTS_VALIDATED_EVENT });
+    options?.onEvent?.({ kind: "method_event", event: { type: "output" } });
+    order.push("result");
+    return Promise.resolve<DispatchResult>({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+  await h.service.executeRemote(stepRequest({
+    onEvent: (event) => forwarded.push(event),
+    onArgumentsValidated: () => {
+      order.push("validated");
+      return Promise.resolve();
+    },
+  }));
+  assertEquals(order, ["result", "validated"]);
+  assertEquals(forwarded.map((event) => event.kind), ["method_event"]);
+
+  // A version 5 worker's event stands for nothing: its frame's builder
+  // already called the hook.
+  const v5 = createHarness({
+    workers: [snapshot({ name: "w1", protocolVersion: 5 })],
+  });
+  let v5Calls = 0;
+  v5.setBehavior((_name, _params, options) => {
+    options?.onEvent?.({ kind: ARGUMENTS_VALIDATED_EVENT });
+    return Promise.resolve<DispatchResult>({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+  await v5.service.executeRemote(stepRequest({
+    onArgumentsValidated: () => {
+      v5Calls++;
+      return Promise.resolve();
+    },
+  }));
+  assertEquals(v5Calls, 0);
+});
+
+Deno.test("DispatchService: a hook that fails after a version 6 worker validated leaves the step the method's outcome, its console output forwarded, and a method's own failure is reported", async () => {
+  const h = createHarness();
+  h.setBehavior((_name, _params, options) => {
+    options?.onEvent?.({ kind: ARGUMENTS_VALIDATED_EVENT });
+    return Promise.resolve<DispatchResult>({
+      status: "success",
+      outputs: [],
+      logs: ["created the bucket"],
+      durationMs: 1,
+    });
+  });
+  const lines: unknown[] = [];
+  let hookCalls = 0;
+  const request = stepRequest({
+    onArgumentsValidated: () => {
+      hookCalls++;
+      return Promise.reject(new Error("record not saved"));
+    },
+    onEvent: (event) => {
+      lines.push((event.event as { line?: unknown } | undefined)?.line);
+    },
+  });
+  const result = await h.service.executeRemote(request);
+  assertEquals(result.workerName, "w1");
+  assertEquals(hookCalls, 1);
+  assertEquals(lines, ["created the bucket"]);
+  // The lease records the method's outcome, not the hook's.
+  assertEquals(
+    h.transitions.map((t) => t.methodName).filter((name) => name !== "acquire"),
+    ["complete"],
+  );
+  h.setBehavior((_name, _params, options) => {
+    options?.onEvent?.({ kind: ARGUMENTS_VALIDATED_EVENT });
+    return Promise.resolve<DispatchResult>({
+      status: "error",
+      error: "method failed",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+  await assertRejects(
+    () => h.service.executeRemote(request),
+    Error,
+    "method failed",
+  );
+});
+
+Deno.test("DispatchService: a worker's output lines and console output reach the run through the dispatch's redactor, with the values served mid-dispatch, and an event's type, stream and level stay as sent (typed-secrets 5.2)", async () => {
+  const h = createHarness();
+  h.setBehavior((name, params, options) => {
+    // As the load route adds each value it serves to the registration.
+    const registration = h.dispatches.forDispatch(name, params.dispatchId)!;
+    (registration.redactor ??= new SecretRedactor()).addSecret("s3cret-loaded");
+    // A value that is also text of the event's structure.
+    registration.redactor.addSecret("out");
+    options?.onEvent?.({
+      kind: "method_event",
+      event: {
+        type: "output",
+        line: "token=s3cret-loaded seed=literal-seed",
+        stream: "stdout",
+        level: "info",
+      },
+    });
+    // Only an output line is text the method wrote.
+    options?.onEvent?.({
+      kind: "method_event",
+      event: { type: "progress", label: "s3cret-loaded" },
+    });
+    return Promise.resolve<DispatchResult>({
+      status: "success",
+      outputs: [],
+      logs: ["console s3cret-loaded out"],
+      durationMs: 1,
+    });
+  });
+  const forwarded: RpcStreamEvent[] = [];
+  await h.service.executeRemote(stepRequest({
+    redactorSeeds: ["literal-seed"],
+    onEvent: (event) => forwarded.push(event),
+  }));
+  assertEquals(forwarded.map((event) => event.event), [
+    {
+      type: "output",
+      line: "token=*** seed=***",
+      stream: "stdout",
+      level: "info",
+    },
+    { type: "progress", label: "s3cret-loaded" },
+    {
+      type: "output",
+      line: "console *** ***",
+      stream: "stdout",
+      level: "info",
+    },
+  ]);
 });
 
 Deno.test("DispatchService: dispatch-env-allow limits the shipped snapshot (swamp-club#2791)", async () => {

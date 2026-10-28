@@ -58,3 +58,10 @@ export type RunnerBootstrapParams = z.infer<
 
 /** Grace period before the supervisor kills an unresponsive runner child. */
 export const RUNNER_CANCEL_GRACE_MS = 10_000;
+
+/**
+ * The supervisor call a protocol version 6 runner reports its passed parse of
+ * the step's arguments by. The supervisor streams it to serve as the
+ * `arguments_validated` event, outside any `method_event`.
+ */
+export const RUNNER_ARGUMENTS_VALIDATED = "runner.argumentsValidated";

@@ -151,12 +151,12 @@ const PINNED: readonly { site: string; row: string }[] = [
   },
   {
     "site":
-      "src/domain/models/method_execution_service.ts: DefaultMethodExecutionService.#executeRemotely -> secretBag.resolveDeep (x3)",
+      "src/domain/models/method_execution_service.ts: DefaultMethodExecutionService.#legacyDelivery -> secretBag.resolveDeep (x3)",
     "row": "delivery",
   },
   {
     "site":
-      "src/domain/models/method_execution_service.ts: DefaultMethodExecutionService.executeWorkflow -> secretBag.resolveDeep",
+      "src/domain/models/method_execution_service.ts: DefaultMethodExecutionService.#prepareDelivery -> secretBag.resolveDeep",
     "row": "delivery",
   },
   {

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   overlayEnvironment,
   stripWorkerCredentials,
@@ -542,4 +542,43 @@ Deno.test("scrubRunnerStderr: masks a secret that spans lines, as a PEM key writ
     scrubRunnerStderr(`error: leaked ${key}\nnext line\n`, redactor),
     ["error: leaked ***", "next line"],
   );
+});
+
+Deno.test("registerDispatchHandler: a version 6 dispatch that carries a plaintext field is refused before a runner is spawned (typed-secrets 5.2)", async () => {
+  const { worker, orchestrator } = channelPair();
+  const events: WorkerDispatchEvent[] = [];
+  registerDispatchHandler({
+    channel: worker,
+    sessionCredential: () => "test-cred",
+    dataPlaneUrl: "http://localhost:0",
+    cacheDirPath: "/tmp/test-cache",
+    capacity: 1,
+    runnerCommand: { cmd: "swamp-runner", args: [] },
+    onDispatch: (event) => events.push(event),
+  });
+  let spawned = 0;
+  const { result: error } = await withMockedCommand(
+    () => {
+      spawned++;
+      return { stdout: "", code: 0 };
+    },
+    async () => {
+      try {
+        await orchestrator.call(WorkerMethod.dispatch, {
+          ...dispatchParams(),
+          secretValues: ["s3cret"],
+        }, { timeoutMs: 5_000 });
+        return undefined;
+      } catch (error) {
+        return error as Error;
+      }
+    },
+  );
+  assertStringIncludes(
+    error?.message ?? "",
+    "Refusing a protocol version 6 dispatch that carries secretValues",
+  );
+  assertEquals(error?.message.includes("s3cret"), false);
+  assertEquals(spawned, 0);
+  assertEquals(events, []);
 });

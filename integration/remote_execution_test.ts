@@ -68,9 +68,6 @@ await initializeLogging({});
 
 import { IT_DEFINITION_ID, IT_TYPE } from "./remote_execution_test_model.ts";
 
-/** The reference every secret of these tests stands for. */
-const REF = { vaultName: "v", key: "k" };
-
 const MODULE_DIR = dirname(fromFileUrl(import.meta.url));
 const RUNNER_ENTRY = join(
   MODULE_DIR,
@@ -745,25 +742,36 @@ function checkValue(word: string, secret: string, label: string): string {
     `case "$v" in ${secret.slice(0, 5)}*) echo ${label}_OK;; esac`;
 }
 
+/** Where the shell step's secrets live in the orchestrator's vault. */
+const VAULT_REF = { vaultName: "local", key: "shell-vault-secret" };
+const DATA_REF = { vaultName: "local", key: "shell-data-secret" };
+const QUOTED_REF = { vaultName: "local", key: "shell-quoted-secret" };
+
+/** Stores the shell step's secrets in the orchestrator's vault. */
+async function storeShellSecrets(repoDir: string): Promise<void> {
+  const vault = await VaultService.fromRepository(repoDir);
+  await vault.put(VAULT_REF.vaultName, VAULT_REF.key, VAULT_SECRET);
+  await vault.put(DATA_REF.vaultName, DATA_REF.key, DATA_SECRET);
+  await vault.put(QUOTED_REF.vaultName, QUOTED_REF.key, "quoted-s3cret-value");
+}
+
 /**
- * A command/shell dispatch built the way #executeRemotely builds it, from
- * the bag its load filled: the resolved args always, and with `shipBag` the
- * unresolved args and the step's bag beside them.
+ * A command/shell dispatch built the way #executeRemotely builds it for a
+ * protocol version 6 worker: the arguments with their sentinels, and the
+ * reference behind each, which the worker loads through the protected route.
  */
-function shellStepRequest(
-  shipBag: boolean,
-  onEvent?: (event: RpcStreamEvent) => void,
-) {
+function shellStepRequest(onEvent?: (event: RpcStreamEvent) => void) {
   const step = new VaultSecretBag(new SecretBagRegistry());
-  const vaultSentinel = step.addSecret(REF, "methods.execute.arguments.run");
-  const dataSentinel = step.addDataSecret(DATA_SECRET, REF);
+  const vaultSentinel = step.addSecret(
+    VAULT_REF,
+    "methods.execute.arguments.run",
+  );
+  // A data entry holds its value on serve and still ships by reference.
+  const dataSentinel = step.addDataSecret(DATA_SECRET, DATA_REF);
   // Kept separate so only this secret's single-quoted use raises the warning.
-  const quotedSentinel = step.addSecret(REF, "methods.execute.arguments.run");
-  const bag = step.withLoaded(
-    new Map([
-      [vaultSentinel, VAULT_SECRET],
-      [quotedSentinel, "quoted-s3cret-value"],
-    ]),
+  const quotedSentinel = step.addSecret(
+    QUOTED_REF,
+    "methods.execute.arguments.run",
   );
   const unresolved = {
     run: `echo STEP=secrets; ` +
@@ -772,6 +780,7 @@ function shellStepRequest(
       `: '${quotedSentinel}'; ` +
       SHOW_ARGV,
   };
+  const args = { methodArgs: unresolved, globalArgs: {} };
   return {
     placement: { labels: { tier: "it" } },
     modelDef: modelRegistry.get(SHELL_TYPE)!,
@@ -787,11 +796,9 @@ function shellStepRequest(
       tags: {},
     },
     globalArgs: {},
-    methodArgs: bag.resolveDeep(unresolved) as Record<string, unknown>,
-    secretValues: bag.rawValues,
-    ...(shipBag
-      ? { unresolvedMethodArgs: unresolved, secretBag: bag.toEntries() }
-      : {}),
+    methodArgs: unresolved as Record<string, unknown>,
+    referenceBag: step.referenceEntriesFor(args),
+    secretReferences: step.referencesFor(args),
     workflowName: "it-workflow",
     stepName: "it-shell-step",
     onEvent,
@@ -838,10 +845,12 @@ Deno.test({
           "worker enrollment",
         );
 
-        // With the bag: the worker's command line carries env references.
+        // The worker loads the references itself, through the protected
+        // route, and its command line carries env references.
+        await storeShellSecrets(dir);
         const events: RpcStreamEvent[] = [];
         const result = await orchestrator.dispatchService.executeRemote(
-          shellStepRequest(true, (event) => events.push(event)),
+          shellStepRequest((event) => events.push(event)),
         );
         const stdout = await shellStdout(orchestrator, result.outputs);
         assertStringIncludes(stdout, "VAULT_OK");
@@ -863,24 +872,6 @@ Deno.test({
           true,
           JSON.stringify(events),
         );
-
-        // Without the bag (a serve that predates it): the step still runs,
-        // with the resolved args in the command line as before.
-        await waitFor(
-          () => orchestrator.gateway.worker("secret-worker")?.status === "idle",
-          "worker to return to idle",
-        );
-        const fallback = await orchestrator.dispatchService.executeRemote(
-          shellStepRequest(false),
-        );
-        const fallbackOut = await shellStdout(orchestrator, fallback.outputs);
-        assertStringIncludes(fallbackOut, "VAULT_OK");
-        assertStringIncludes(fallbackOut, "DATA_OK");
-        const fallbackArgv = fallbackOut.split("\n").find((line) =>
-          line.includes("echo STEP=")
-        );
-        assertEquals(fallbackArgv !== undefined, true, fallbackOut);
-        assertStringIncludes(fallbackArgv!, "***");
       } finally {
         workerStop.abort();
         if (workerDone) await workerDone.catch(() => {});
@@ -936,13 +927,12 @@ Deno.test({
         // A step on drain-a that runs until the test releases it.
         let firstSettled = false;
         const first = orchestrator.dispatchService.executeRemote({
-          ...shellStepRequest(false),
+          ...shellStepRequest(),
           placement: { target: "drain-a" },
           methodArgs: {
             run: `touch '${started}'; ` +
               `while [ ! -f '${release}' ]; do sleep 0.05; done`,
           },
-          secretValues: [],
         }).finally(() => {
           firstSettled = true;
         });
