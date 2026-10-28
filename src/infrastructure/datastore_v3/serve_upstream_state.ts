@@ -20,12 +20,12 @@
 /**
  * The serve-mode state of a checkout whose v3 datastore's upstream is serve
  * (swamp-club#3985): the changes-feed cursor its copy has applied up to and
- * the commit it ended at (swamp-club#4049), the
- * head serve last reported for each partition, a fingerprint of the
- * serve token the copy was built with (never the token), and the
- * fingerprints of the caller's read access serve sent (swamp-club#4089). A file of its own beside
- * the checkout's copy of serve's commit log, so a solo checkout never opens
- * it and the commit store's schema is unchanged.
+ * the commit it ended at (swamp-club#4049), the head serve last reported
+ * for each partition, a fingerprint of the serve token the copy was built
+ * with (never the token), and the fingerprints of the caller's read access
+ * serve sent (swamp-club#4089). A file of its own beside the checkout's
+ * copy of serve's commit log, so a solo checkout never opens it and the
+ * commit store's schema is unchanged.
  *
  * A serve head can be above the copy's own: serve filters single commits a
  * caller may not read, so the copy's last commit of a partition is not

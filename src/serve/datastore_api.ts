@@ -217,15 +217,19 @@ export async function handleDatastoreRequest(
 ): Promise<Response> {
   const authenticated = await authenticateCaller(req, sourceIp, deps);
   if (authenticated instanceof Response) return authenticated;
+  // Taken before the reply is answered: a reload while it is answered then
+  // shows as a change on the next reply, which rebuilds the copy, never as
+  // the access a copy filtered under the old grants was built with.
+  const access = callerReadAccess(authenticated, deps.ctx);
   const response = await answerDatastoreRequest(
     req,
     route,
     authenticated,
     deps,
   );
-  const headers: [string, string][] = [
-    [SERVE_DATASTORE_ACCESS_HEADER, callerReadAccess(authenticated, deps.ctx)],
-  ];
+  const headers: [string, string][] = access === undefined
+    ? []
+    : [[SERVE_DATASTORE_ACCESS_HEADER, access]];
   const logId = logIdOf(deps.v3);
   if (logId !== undefined) headers.push([SERVE_DATASTORE_LOG_HEADER, logId]);
   return withHeaders(response, headers);
@@ -241,21 +245,28 @@ export const NO_READ_ACCESS = "none";
  * The fingerprint of what `caller` may read, as the read filter decides it
  * (`callerResourceDecider`): everything when authorization is off, nothing
  * without a principal or a policy, else the decision service's
- * fingerprint of the caller's grants.
+ * fingerprint of the caller's grants. Undefined, so the reply names none,
+ * when it cannot be taken: it is freshness, never a reason to fail a reply.
  */
 function callerReadAccess(
   caller: ApiCaller,
   ctx: Pick<ConnectionContext, "authConfig" | "policySnapshotLoader">,
-): string {
+): string | undefined {
   if (ctx.authConfig.mode === "none") return UNRESTRICTED_READ_ACCESS;
   const loader = ctx.policySnapshotLoader;
   const { principal, collectives, groups } = caller.access;
   if (!loader || !principal) return NO_READ_ACCESS;
-  return loader.decisionService.readAccessFingerprint({
-    principal,
-    collectives,
-    groups,
-  });
+  try {
+    return loader.decisionService.readAccessFingerprint({
+      principal,
+      collectives,
+      groups,
+    });
+  } catch (error) {
+    logger
+      .warn`Could not fingerprint a datastore caller's read access: ${error}`;
+    return undefined;
+  }
 }
 
 /** The log's id; undefined when there is no v3 log, or it is closing. */

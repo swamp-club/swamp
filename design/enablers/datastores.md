@@ -6704,7 +6704,10 @@ included, in the `x-swamp-datastore-access` header:
   effect, actions, selector, methods, condition) and sorted. Other subjects'
   grants, timestamps, authorship and the snapshot's version are left out, so
   a reload that does not touch the caller keeps it. It is cached per caller
-  for each snapshot.
+  for each snapshot. Serve takes it before it answers the request, so a
+  reload while it answers shows as a change on the next reply (which resets
+  the copy), never as the access of a copy filtered under the old grants.
+  When it cannot be taken, the reply names none rather than failing.
 - With `--auth-mode none` it is the constant `unrestricted`; a caller with no
   principal or policy gets `none`.
 

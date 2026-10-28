@@ -1271,3 +1271,47 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "datastore API: a reply names the read access serve held when it began answering, so a reload while it answers rebuilds the copy rather than hiding the change (swamp-club#4089)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const grants = member();
+    await withServer(grants, async (server) => {
+      const get = async () => {
+        const response = await fetch(`${server.url}/changes?cursor=0`, {
+          headers: { authorization: "Bearer alice-token" },
+        });
+        await response.body?.cancel();
+        assertEquals(response.status, 200);
+        return response.headers.get(SERVE_DATASTORE_ACCESS_HEADER);
+      };
+      const before = await get();
+      const service = server.ctx.policySnapshotLoader!.decisionService;
+      const narrowed = new PolicySnapshot(grants.slice(0, 1), []);
+      // A reload lands while serve answers: as it reads the log.
+      const store = server.v3.commitStore;
+      const changesSince = store.changesSince.bind(store);
+      let swapped = false;
+      (store as { changesSince: typeof store.changesSince }).changesSince = (
+        ...args
+      ) => {
+        if (!swapped) {
+          swapped = true;
+          service.snapshot = narrowed;
+        }
+        return changesSince(...args);
+      };
+      try {
+        const during = await get();
+        assert(swapped, "the reload landed while serve answered");
+        assertEquals(during, before, "the access it began answering under");
+        assert(await get() !== before, "the next reply names the new access");
+      } finally {
+        delete (store as { changesSince?: unknown }).changesSince;
+      }
+    });
+  },
+});
