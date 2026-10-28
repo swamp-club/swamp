@@ -49,7 +49,11 @@ import {
 } from "../domain/auth/server_url.ts";
 import { FileServerCredentialRepository } from "../infrastructure/persistence/server_credential_repository.ts";
 import { resolveExtraHeaders } from "../domain/auth/extra_headers.ts";
-import { serverLoginHint } from "../domain/auth/server_login_hint.ts";
+import {
+  recordWithheldTokenFile,
+  serverLoginHint,
+  withheldTokenFileMessage,
+} from "../domain/auth/server_login_hint.ts";
 import { quoteShellWord } from "../domain/shell_word.ts";
 import { processLockHolderMarker } from "../domain/datastore/lock_holder_marker.ts";
 import {
@@ -287,6 +291,17 @@ export function tokenFileBoundTo(
 }
 
 /**
+ * Warns, once per address, that `SWAMP_SERVER_TOKEN_FILE` was not sent to
+ * `key`, and records it so a 401 from that address says why. Names the
+ * normalized address only, never the file's path or contents.
+ */
+export function warnWithheldTokenFile(key: string): void {
+  if (recordWithheldTokenFile(key)) {
+    logger.warn(withheldTokenFileMessage(key));
+  }
+}
+
+/**
  * Resolves the server token for authentication. Precedence:
  * 1. Explicit token value (from `--token` flag or `--token-file` read)
  * 2. `SWAMP_SERVER_TOKEN_FILE` env var (read from file), only when
@@ -323,8 +338,7 @@ export async function resolveServerToken(
       Deno.env.get("SWAMP_SERVER_URL"),
     ]);
     if (bound) return readTokenFile(envTokenFile, "SWAMP_SERVER_TOKEN_FILE");
-    logger
-      .debug`SWAMP_SERVER_TOKEN_FILE not used for ${key}: no --server, SWAMP_SERVE_URL or SWAMP_SERVER_URL names it`;
+    warnWithheldTokenFile(key);
   }
   const repo = credentialRepo ?? new FileServerCredentialRepository();
   const credential = await repo.get(serverUrl);

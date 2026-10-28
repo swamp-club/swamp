@@ -58,6 +58,8 @@ import { gzipSync } from "node:zlib";
 import type { ServerCredential } from "../domain/auth/server_credential.ts";
 import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
 import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { resetWithheldTokenFiles } from "../domain/auth/server_login_hint.ts";
 import {
   MAX_FORWARDED_LOCK_TOKENS_LENGTH,
   SWAMP_LOCK_HOLDER_TOKENS,
@@ -1192,6 +1194,7 @@ async function withTokenFileEnv(
   fn: () => Promise<void>,
 ): Promise<void> {
   const tmpFile = await Deno.makeTempFile({ prefix: "swamp-token-test-" });
+  resetWithheldTokenFiles();
   try {
     await Deno.writeTextFile(tmpFile, `${token}\n`);
     await withMockedEnv({
@@ -1200,8 +1203,34 @@ async function withTokenFileEnv(
       SWAMP_SERVER_TOKEN_FILE: tmpFile,
     }, fn);
   } finally {
+    resetWithheldTokenFiles();
     await Deno.remove(tmpFile).catch(() => {});
   }
+}
+
+/** The warnings the remote-run logger emits while `fn` runs. */
+async function captureRemoteRunWarnings(
+  fn: () => Promise<void>,
+): Promise<string[]> {
+  const captured: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => captured.push(record) },
+    loggers: [
+      {
+        category: ["swamp", "cli", "remote-run"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await reset();
+  }
+  return captured.map((r) => r.message.map((p) => String(p)).join(""));
 }
 
 Deno.test("resolveServerTokenFromOptions: a .swamp.yaml-only address does not receive the token file", async () => {
@@ -1315,6 +1344,94 @@ Deno.test("resolveServerTokenFromOptions: --token still wins over a bound token 
     );
     assertEquals(result, "explicit.token");
   });
+});
+
+Deno.test("resolveServerTokenFromOptions: an unbound token file warns once, naming the address and not the file", async () => {
+  await withTokenFileEnv("file.secret", {}, async () => {
+    const path = Deno.env.get("SWAMP_SERVER_TOKEN_FILE")!;
+    const warnings = await captureRemoteRunWarnings(async () => {
+      await resolveServerTokenFromOptions(
+        "wss://marker.test",
+        {},
+        NO_CREDENTIALS,
+      );
+      await resolveServerTokenFromOptions(
+        "https://marker.test/",
+        {},
+        NO_CREDENTIALS,
+      );
+    });
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0], "SWAMP_SERVER_TOKEN_FILE was not sent");
+    assertStringIncludes(warnings[0], "https://marker.test");
+    assertStringIncludes(warnings[0], "SWAMP_SERVE_URL");
+    assertStringIncludes(warnings[0], "--server");
+    assertEquals(warnings[0].includes(path), false);
+    assertEquals(warnings[0].includes("file.secret"), false);
+  });
+});
+
+Deno.test("resolveServerTokenFromOptions: a bound or unset token file does not warn", async () => {
+  await withTokenFileEnv("file.secret", {}, async () => {
+    const warnings = await captureRemoteRunWarnings(async () => {
+      await resolveServerTokenFromOptions(
+        "https://serve.test",
+        { server: "https://serve.test" },
+        NO_CREDENTIALS,
+      );
+    });
+    assertEquals(warnings, []);
+  });
+  await withMockedEnv({
+    ...UNSET_SERVE_URL_ENV,
+    SWAMP_SERVER_TOKEN_FILE: undefined,
+  }, async () => {
+    const warnings = await captureRemoteRunWarnings(async () => {
+      await resolveServerTokenFromOptions(
+        "https://marker.test",
+        {},
+        NO_CREDENTIALS,
+      );
+    });
+    assertEquals(warnings, []);
+  });
+});
+
+Deno.test({
+  name:
+    "remote run: a 401 after the token file was withheld says why before the login hint",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = authRejectingServer();
+    try {
+      await withTokenFileEnv("file.secret", {}, async () => {
+        const token = await resolveServerTokenFromOptions(
+          server.url,
+          {},
+          NO_CREDENTIALS,
+        );
+        assertEquals(token, undefined);
+        const error = await assertRejects(async () => {
+          for await (
+            const _ of runWorkflowOverServer({
+              server: server.url,
+              token,
+              payload: { workflowIdOrName: "wf" },
+            })
+            // deno-lint-ignore no-empty
+          ) {}
+        }, UserError);
+        assertStringIncludes(
+          error.message,
+          "SWAMP_SERVER_TOKEN_FILE was not sent",
+        );
+        assertStringIncludes(error.message, "swamp auth server-login");
+      });
+    } finally {
+      await server.shutdown();
+    }
+  },
 });
 
 /** A credential repository that fails the test if it is ever read. */

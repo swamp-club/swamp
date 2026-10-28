@@ -27,6 +27,7 @@ import {
   implicitServeUrl,
   readTokenFile,
   tokenFileBoundTo,
+  warnWithheldTokenFile,
 } from "./remote_run.ts";
 
 /** Whether serve is a command's datastore upstream, and why. */
@@ -292,7 +293,8 @@ export interface ResolveServeUpstreamOptions {
  *
  * 1. `SWAMP_SERVER_TOKEN_FILE`, only when `SWAMP_SERVE_URL` or
  *    `SWAMP_SERVER_URL` is set and normalizes to the resolved address.
- *    A marker-only address never reads it.
+ *    A marker-only address never reads it, and warns once that it was
+ *    not sent ({@link warnWithheldTokenFile}).
  * 2. The credential repository: `SWAMP_SERVER_TOKEN` when
  *    `SWAMP_SERVER_URL` normalizes to the address, else the stored
  *    credential for the address in servers.json.
@@ -343,6 +345,9 @@ async function boundTokenFileToken(key: string): Promise<string | undefined> {
     Deno.env.get("SWAMP_SERVE_URL"),
     Deno.env.get("SWAMP_SERVER_URL"),
   ]);
-  if (!bound) return undefined;
+  if (!bound) {
+    warnWithheldTokenFile(key);
+    return undefined;
+  }
   return await readTokenFile(tokenFile, "SWAMP_SERVER_TOKEN_FILE");
 }

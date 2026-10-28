@@ -21,6 +21,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { Command } from "@cliffy/command";
 import { registerCompletionTypes } from "../completion_types.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import { upgradeAuthorizationHeaders } from "./remote_token_test_helpers.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
@@ -125,5 +126,39 @@ Deno.test({
         "Direct type execution requires a definition name",
       );
     }
+  },
+});
+
+// ── SWAMP_SERVER_TOKEN_FILE binding (swamp-club#4012) ──────────────────
+
+/** Parses `model method run my-model echo <args>` through a root with --json. */
+async function parseModelMethodRun(args: string[]): Promise<void> {
+  const { modelMethodRunCommand } = await import("./model_method_run.ts");
+  const root = registerCompletionTypes(new Command())
+    .globalOption("--json", "JSON output")
+    .command("run", modelMethodRunCommand);
+  await root.parse(["run", "my-model", "echo", "--json", ...args]);
+}
+
+Deno.test({
+  name:
+    "modelMethodRunCommand: a .swamp.yaml-only address never receives SWAMP_SERVER_TOKEN_FILE; --server does",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    assertEquals(
+      await upgradeAuthorizationHeaders(
+        "file.secret",
+        () => parseModelMethodRun([]),
+      ),
+      [null],
+    );
+    assertEquals(
+      await upgradeAuthorizationHeaders(
+        "file.secret",
+        (url) => parseModelMethodRun(["--server", url]),
+      ),
+      ["Bearer file.secret"],
+    );
   },
 });

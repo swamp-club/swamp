@@ -6570,7 +6570,8 @@ is unchanged.
 `servers.json`'s entry for it, `SWAMP_SERVER_TOKEN` when `SWAMP_SERVER_URL`
 names it, and `SWAMP_SERVER_TOKEN_FILE` only when an environment address names
 it. A `serverAddress` in a cloned repository's `.swamp.yaml` never receives a
-token that was meant for another server. A missing token sends no header, so
+token that was meant for another server; when `SWAMP_SERVER_TOKEN_FILE` is set
+but withheld, the CLI warns once and serve's 401 says why. A missing token sends no header, so
 serve's 401 gives the `swamp auth server-login` hint, and `--auth-mode none`
 works without one.
 
