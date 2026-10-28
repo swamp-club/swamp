@@ -26,7 +26,7 @@ import { dataNamePortability } from "../src/domain/data/data.ts";
 // real filesystem: every printable ASCII and control character the rule
 // refuses also makes Deno.mkdir fail, so the refusal never stops a write
 // that works today. `/` and `\` are path separators that DataMetadataSchema
-// already rejects. Runs in the post-merge Windows Compatibility workflow.
+// already rejects. Runs in the scheduled Windows Compatibility workflow.
 Deno.test({
   name:
     "dataNamePortability: every name refused on windows also fails Deno.mkdir there",

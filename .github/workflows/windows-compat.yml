@@ -1,13 +1,13 @@
 name: Windows Compatibility
 
+# Scheduled rather than per-merge: a run takes 40-50 minutes, so a push trigger
+# stacked several concurrent runs on busy days. Scheduled runs check out the
+# head of main.
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'integration/**'
-      - 'deno.json'
-      - 'deno.lock'
+  schedule:
+    # Every 4 hours
+    - cron: "0 */4 * * *"
+  workflow_dispatch:
 
 jobs:
   windows-test:
