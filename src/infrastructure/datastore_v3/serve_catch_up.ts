@@ -150,7 +150,7 @@ export function serveAccessCheck(
     if (built !== undefined && built !== fingerprint && !warned) {
       warned = true;
       logger
-        .warn`Your access to the datastore at serve ${serveUrl} changed. This command reads it under your new access; the next command rebuilds this checkout's copy of it to match.`;
+        .warn`Your access to the datastore at serve ${serveUrl} changed. This command reads it under your new access; the next command rebuilds this checkout's copy of it to match, or says why it waits.`;
     }
   };
 }

@@ -382,15 +382,20 @@ export class ServeUpstreamState {
   }
 
   /**
-   * Records `fingerprint` as the read access serve last sent, and as the
-   * access the copy was built under when none is recorded: the first
-   * fingerprint a copy sees is the one it was read under. Returns the
-   * access recorded.
+   * Records `fingerprint` as read access serve sent, and as the access the
+   * copy was built under when none is recorded: the first fingerprint a
+   * copy sees is the one it was read under. A fingerprint other than the
+   * built one sticks until the copy is reset: the copy took that reply, so
+   * a later reply under the built access, as serve replicas that disagree
+   * send, does not make it current again. Returns the access recorded.
    */
   recordAccessSeen(fingerprint: string): ServeCopyAccess {
     this.#assertOpen();
     this.#db.prepare(
-      `UPDATE copy SET access_seen = ?,
+      `UPDATE copy SET
+         access_seen = CASE
+           WHEN access_seen IS NULL OR access_seen = access_built THEN ?
+           ELSE access_seen END,
          access_built = COALESCE(access_built, ?) WHERE id = 1`,
     ).run(fingerprint, fingerprint);
     return this.access();

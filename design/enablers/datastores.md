@@ -6714,8 +6714,11 @@ included, in the `x-swamp-datastore-access` header:
 The client reads it on every reply after the log id check
 (`ServeDatastoreClient.checkAccess`, `serveAccessCheck`), and
 `serve_upstream.db` records two values: the access the copy was built under
-(the first one a copy sees after it is made or reset) and the last one serve
-sent. A value not shaped like a fingerprint is ignored. A different one does
+(the first one a copy sees after it is made or reset) and the access serve
+sent. Once serve sends one other than the built one, that mismatch sticks
+until the copy is reset: the copy took that reply, so a later reply under the
+built access (replicas that disagree, in turn) does not make it current again.
+A value not shaped like a fingerprint is ignored. A different one does
 not interrupt the command that sees it, since serve already filters its
 replies: the command warns once that the next command rebuilds the copy.
 The next command's binding then resets the copy as a token switch does

@@ -409,3 +409,27 @@ Deno.test("ServeUpstreamState: a file at schema version 3 upgrades with no acces
     }
   });
 });
+
+Deno.test("ServeUpstreamState.recordAccessSeen: a mismatch sticks until a reset, so replies that alternate never hide it (swamp-club#4089)", async () => {
+  await withTempDir((dir) => {
+    const state = ServeUpstreamState.open(join(dir, "serve_upstream.db"));
+    try {
+      state.stampCaller("token-a");
+      state.recordAccessSeen("a1");
+      // Replicas that disagree: one reply under other access, then the
+      // copy's own again. The copy took the other reply's page.
+      assertEquals(state.recordAccessSeen("b2").seen, "b2");
+      assertEquals(state.recordAccessSeen("a1"), { built: "a1", seen: "b2" });
+      assertEquals(state.recordAccessSeen("c3").seen, "b2");
+      state.beginCallerReset();
+      state.finishCallerReset("token-a", 1_000);
+      assertEquals(state.recordAccessSeen("a1"), {
+        built: "a1",
+        seen: "a1",
+        resetAt: 1_000,
+      });
+    } finally {
+      state.close();
+    }
+  });
+});
