@@ -19,7 +19,13 @@
 
 import { assertEquals } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
+import {
+  LockHolderMarker,
+  SWAMP_LOCK_ANCESTOR_PIDS,
+  SWAMP_LOCK_HOLDER_PID,
+} from "../domain/datastore/lock_holder_marker.ts";
 import type { InboxNotice } from "../domain/inbox/inbox_policy.ts";
+import { NESTED_SWAMP_ENV_VARS } from "../domain/remote/environment_snapshot.ts";
 import type { InboxPoll } from "../libswamp/inbox/notice.ts";
 import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
 import { rewriteDirectTypeArgs } from "./arg_rewriter.ts";
@@ -249,4 +255,36 @@ Deno.test("finishInboxNotice: a failing poll or notice read never escapes", asyn
     show: () => Promise.reject(new Error("boom")),
     write: () => {},
   });
+});
+
+/** An env store a marker can read and write, seeded with `initial`. */
+function envStore(initial: Record<string, string>) {
+  const values = new Map(Object.entries(initial));
+  return {
+    get: (name: string) => values.get(name),
+    set: (name: string, value: string) => void values.set(name, value),
+    delete: (name: string) => void values.delete(name),
+  };
+}
+
+Deno.test("nested runs: a swamp under another swamp is nested, but an agent swamp start launches is not", () => {
+  // What a swamp that a running swamp (pid 4242) started inherits.
+  const inherited = {
+    [SWAMP_LOCK_HOLDER_PID]: "4242",
+    [SWAMP_LOCK_ANCESTOR_PIDS]: "4242",
+  };
+
+  const nested = new LockHolderMarker(envStore(inherited), 5000);
+  nested.publish();
+  assertEquals(nested.ancestorPids().size > 0, true);
+
+  // swamp start's launcher scripts unset NESTED_SWAMP_ENV_VARS before they
+  // start the agent (terminal_launcher.ts), so the agent's swamp runs are
+  // outermost and show the notice. Both lock variables must stay in that
+  // list, or the agent would never see it.
+  const launched = envStore(inherited);
+  for (const name of NESTED_SWAMP_ENV_VARS) launched.delete(name);
+  const agent = new LockHolderMarker(launched, 5000);
+  agent.publish();
+  assertEquals(agent.ancestorPids().size, 0);
 });

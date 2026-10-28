@@ -46,6 +46,10 @@ if (!flags.branch || !flags.main || !flags.repo || !flags.behavior) {
   Deno.exit(2);
 }
 const runs = Number(flags.runs ?? "30");
+if (!Number.isInteger(runs) || runs < 1) {
+  console.error(`--runs must be a whole number of 1 or more: ${flags.runs}`);
+  Deno.exit(2);
+}
 const binaries = { branch: flags.branch, main: flags.main };
 
 async function timeOnce(binary: string): Promise<number> {

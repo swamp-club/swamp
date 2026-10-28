@@ -28,6 +28,7 @@ import type {
 } from "../../domain/inbox/inbox_state.ts";
 import type { InboxSummaryResult } from "../../infrastructure/http/inbox_schemas.ts";
 import { InboxCacheFileRepository } from "../../infrastructure/inbox/inbox_cache_file_repository.ts";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import {
   createInboxNoticeDeps,
   INBOX_POLL_GRACE_MS,
@@ -139,7 +140,9 @@ async function withHarness(
     };
     await fn({ deps, rec, cache, fingerprint });
   } finally {
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
+    await Deno.remove(dir, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
   }
 }
 
@@ -422,4 +425,35 @@ Deno.test("createInboxNoticeDeps: the wait ends when aborted and leaves no timer
   await waiting;
   // An already-aborted signal resolves at once.
   await wait(60_000, controller.signal);
+});
+
+/** Every variable the config dir resolves from, unset. */
+const NO_HOME = {
+  SWAMP_CONFIG_DIR: undefined,
+  SWAMP_HOME: undefined,
+  XDG_CONFIG_HOME: undefined,
+  HOME: undefined,
+  USERPROFILE: undefined,
+};
+
+Deno.test("createInboxNoticeDeps: with no home directory the deps build, and the poll and notice fail safe", async () => {
+  for (const key of [undefined, "swamp_test_key"]) {
+    await withMockedEnv(
+      { ...NO_HOME, SWAMP_API_KEY: key, SWAMP_API_KEY_FILE: undefined },
+      async () => {
+        let summaries = 0;
+        const deps = {
+          ...createInboxNoticeDeps(),
+          inboxSummary: () => {
+            summaries++;
+            return Promise.resolve(okSummary);
+          },
+          ownsConfigDir: () => true,
+        };
+        assertStrictEquals(await startInboxPoll(deps), null);
+        assertStrictEquals(await showInboxNotice(deps), null);
+        assertEquals(summaries, 0);
+      },
+    );
+  }
 });

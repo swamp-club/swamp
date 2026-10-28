@@ -53,7 +53,8 @@ Deno.test("renderInboxNotice: the second line never changes and matches the expo
   assertEquals(rendered(42)[2], INBOX_NOTICE_READ_LINE);
 });
 
-Deno.test("inboxNoticeFirstLine: one or fewer reads as the singular line", () => {
+Deno.test("inboxNoticeFirstLine: one or fewer reads as the singular line, two or more as the plural", () => {
+  assertEquals(inboxNoticeFirstLine(0), INBOX_NOTICE_SINGLE_LINE);
   assertEquals(inboxNoticeFirstLine(1), INBOX_NOTICE_SINGLE_LINE);
   assertEquals(
     inboxNoticeFirstLine(2),

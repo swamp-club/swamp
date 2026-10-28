@@ -243,6 +243,7 @@ import {
 } from "./inbox_notice_gate.ts";
 import {
   createInboxNoticeDeps,
+  type InboxNoticeDeps,
   type InboxPoll,
   showInboxNotice,
   startInboxPoll,
@@ -2943,13 +2944,18 @@ async function runInvocation(
   bootstrapSpan.end();
 
   // Started inside the try, so both teardown paths settle it: startup code
-  // above can throw outside it.
+  // above can throw outside it. One set of deps serves the poll and the
+  // notice; the poll alone needs the client identity.
+  let inboxDeps: InboxNoticeDeps | null = null;
   let inboxPoll: InboxPoll | null = null;
   try {
-    if (inbox.poll) {
-      inboxPoll = await startInboxPoll(
-        createInboxNoticeDeps({ identity: await loadIdentity() }),
-      );
+    if (inbox.poll || inbox.notice) {
+      inboxDeps = createInboxNoticeDeps({
+        identity: inbox.poll ? await loadIdentity() : undefined,
+      });
+    }
+    if (inbox.poll && inboxDeps) {
+      inboxPoll = await startInboxPoll(inboxDeps);
     }
 
     // Cliffy would take the token after an empty `--title=` as its value
@@ -3055,7 +3061,8 @@ async function runInvocation(
         outputMode: getOutputModeFromArgs(args),
         quiet: quietRequested,
         succeeded: true,
-        show: () => showInboxNotice(createInboxNoticeDeps()),
+        show: () =>
+          inboxDeps ? showInboxNotice(inboxDeps) : Promise.resolve(null),
       });
 
       // Proactive update notification (after telemetry, before exit)

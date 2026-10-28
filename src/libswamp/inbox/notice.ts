@@ -94,7 +94,11 @@ export function createInboxNoticeDeps(
   options: CreateInboxNoticeDepsOptions = {},
 ): InboxNoticeDeps {
   const auth = new AuthRepository();
-  const cache = new InboxCacheFileRepository();
+  // Built on first use: resolving the config dir throws when no home
+  // directory is set, and only the calls below may fail without failing the
+  // command.
+  let cacheRepository: InboxCacheFileRepository | undefined;
+  const cache = () => cacheRepository ??= new InboxCacheFileRepository();
   return {
     loadCredentials: () => auth.load(),
     inboxSummary: (serverUrl, apiKey, etag, signal) =>
@@ -103,8 +107,8 @@ export function createInboxNoticeDeps(
         etag,
         signal,
       ),
-    loadInboxState: (fingerprint) => cache.load(fingerprint),
-    saveInboxState: (fingerprint, state) => cache.save(fingerprint, state),
+    loadInboxState: (fingerprint) => cache().load(fingerprint),
+    saveInboxState: (fingerprint, state) => cache().save(fingerprint, state),
     ownsConfigDir: processOwnsConfigDir,
     now: () => Date.now(),
     wait: waitOrAbort,
