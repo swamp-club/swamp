@@ -30,6 +30,7 @@ import { ensureDir } from "@std/fs";
 import { dirname, isAbsolute, join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
+import { SCAN_CONCURRENCY, SEARCH_SCAN_SHARE } from "./scan_permits.ts";
 import {
   getIndexPath,
   INDEX_SCHEMA_VERSION,
@@ -4938,5 +4939,168 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: with records in another da
     assertEquals(result.deletedRunIds, [old.id]);
     assertEquals(await pathExists(legacy), false);
     assertEquals(await indexIds(indexDir), [kept.id]);
+  });
+});
+
+/** Saves `count` suspended runs of `workflow`, returned in save order. */
+async function saveSuspendedRuns(
+  repo: YamlWorkflowRunRepository,
+  workflow: Workflow,
+  count: number,
+): Promise<WorkflowRun[]> {
+  const runs: WorkflowRun[] = [];
+  for (let i = 0; i < count; i++) {
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    run.suspend();
+    await repo.save(workflow.id, run);
+    runs.push(run);
+  }
+  return runs;
+}
+
+Deno.test(
+  "findByStatus: requests running at once keep at most the search share of directories and files open between them, with findGlobalByStatus (swamp-club#4077)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlWorkflowRunRepository(dir);
+      const workflow = createTestWorkflow();
+      const runs = await saveSuspendedRuns(
+        repo,
+        workflow,
+        SCAN_CONCURRENCY * 3,
+      );
+
+      // One request alone reads more than one record at a time.
+      const alone = await trackScanOpens(
+        dir,
+        () => repo.findByStatus(workflow.id, "suspended"),
+      );
+      assertEquals(alone.result.length, runs.length);
+      assert(alone.peak > 1, `${alone.peak} open at once`);
+
+      const { result, peak, open } = await trackScanOpens(
+        dir,
+        () =>
+          Promise.all([
+            ...Array.from(
+              { length: 8 },
+              () => repo.findByStatus(workflow.id, "suspended"),
+            ),
+            repo.findGlobalByStatus("suspended"),
+          ]),
+      );
+      for (const found of result) assertEquals(found.length, runs.length);
+      assertEquals(open, 0);
+      // Unbounded, eight requests of 48 runs each open up to 384.
+      assert(peak <= SEARCH_SCAN_SHARE, `${peak} open at once`);
+      assert(peak > 1, `${peak} open at once`);
+    });
+  },
+);
+
+Deno.test("findByStatus: returns only runs with the status, in the order the index lists them", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    await saveSuspendedRuns(repo, workflow, 5);
+    const running = WorkflowRun.create(workflow);
+    running.start();
+    await repo.save(workflow.id, running);
+
+    const listed = await repo.findSummariesByStatus(workflow.id, "suspended");
+    const { result } = await trackScanOpens(
+      dir,
+      () => repo.findByStatus(workflow.id, "suspended"),
+    );
+
+    assertEquals(result.map((r) => r.id), listed.map((s) => s.id));
+    assert(result.every((r) => r.status === "suspended"));
+  });
+});
+
+Deno.test("findByStatus: leaves out a run whose record is gone when it is read", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const runs = await saveSuspendedRuns(repo, workflow, 3);
+    const gone = repo.getPath(workflow.id, runs[1].id);
+
+    // Removed after the index lists it, so the read finds no record.
+    const original = Deno.readTextFile;
+    Deno.readTextFile = ((...args: Parameters<typeof original>) => {
+      if (String(args[0]) === gone) {
+        return Deno.remove(gone).then(() => original(...args));
+      }
+      return original(...args);
+    }) as typeof original;
+    let found: WorkflowRun[];
+    try {
+      found = await repo.findByStatus(workflow.id, "suspended");
+    } finally {
+      Deno.readTextFile = original;
+    }
+
+    assertEquals(
+      found.map((r) => r.id).sort(),
+      [runs[0].id, runs[2].id].sort(),
+    );
+  });
+});
+
+Deno.test("findByStatus: a record that cannot be read rejects with its error", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const runs = await saveSuspendedRuns(repo, workflow, 3);
+    const unreadable = repo.getPath(workflow.id, runs[0].id);
+
+    const original = Deno.readTextFile;
+    Deno.readTextFile = ((...args: Parameters<typeof original>) => {
+      if (String(args[0]) === unreadable) {
+        return Promise.reject(new Deno.errors.PermissionDenied("denied"));
+      }
+      return original(...args);
+    }) as typeof original;
+    try {
+      await assertRejects(
+        () => repo.findByStatus(workflow.id, "suspended"),
+        Deno.errors.PermissionDenied,
+        "denied",
+      );
+    } finally {
+      Deno.readTextFile = original;
+    }
+  });
+});
+
+Deno.test("findByStatus: an aborted signal stops reading records and rejects with its reason", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const runs = await saveSuspendedRuns(repo, workflow, SCAN_CONCURRENCY * 3);
+    const abort = new AbortController();
+
+    // Aborted as the first record is read.
+    const original = Deno.readTextFile;
+    let recordReads = 0;
+    Deno.readTextFile = ((...args: Parameters<typeof original>) => {
+      if (/workflow-run-[^/\\]*\.yaml$/.test(String(args[0]))) {
+        recordReads++;
+        abort.abort(new DOMException("shutting down", "AbortError"));
+      }
+      return original(...args);
+    }) as typeof original;
+    try {
+      await assertRejects(
+        () => repo.findByStatus(workflow.id, "suspended", abort.signal),
+        DOMException,
+        "shutting down",
+      );
+    } finally {
+      Deno.readTextFile = original;
+    }
+
+    assert(recordReads < runs.length, `${recordReads} records read`);
   });
 });

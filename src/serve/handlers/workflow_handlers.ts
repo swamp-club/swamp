@@ -156,11 +156,7 @@ import {
   resolveResumableRun,
   resolveSuspendedRun,
 } from "../../domain/workflows/suspended_run_resolver.ts";
-import {
-  createWorkflowId,
-  type WorkflowRunId,
-} from "../../domain/workflows/workflow_id.ts";
-import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { unclaimedRuns } from "../../domain/workflows/run_claim.ts";
 import {
   NestedRunPendingError,
@@ -777,16 +773,7 @@ export async function handleWorkflowApprovals(
     const deps = createWorkflowApprovalsDeps(
       ctx.repoContext.workflowRepo,
       runRepo,
-      async (workflowId) => {
-        const suspended = await runRepo
-          .findSummariesByStatus(workflowId, "suspended");
-        const runs = await Promise.all(
-          suspended.map((s) =>
-            runRepo.findById(workflowId, s.id as WorkflowRunId)
-          ),
-        );
-        return runs.filter((r): r is WorkflowRun => r !== null);
-      },
+      (workflowId) => runRepo.findByStatus(workflowId, "suspended"),
       (workflowId) => evaluatedRepo.findById(workflowId),
     );
 

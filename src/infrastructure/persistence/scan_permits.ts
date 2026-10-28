@@ -123,27 +123,26 @@ export class ScanPermits {
  * How many directories the output repository's findAllGlobalSince
  * (swamp-club#4056) and per-type listings (swamp-club#4058) and the
  * workflow-run repository's findAllGlobalSince and findGlobalByStatus
- * (swamp-club#4076) list, or files they and the catalog report reads
- * (swamp-club#4075) stat or read, at once, between all of those scans in the
- * process. An async listing of a large directory
- * takes dozens of event-loop turns, and a read one more, so awaiting them one
- * at a time made a busy serve's scan as slow as its turns added up. The bound
- * is shared, not per scan, because concurrent requests for different scans
- * each scan: 16 per scan ran a serve under a low hard open-file limit out of
+ * (swamp-club#4076) and findByStatus (swamp-club#4077) list, or files they and
+ * the catalog report reads (swamp-club#4075) stat or read, at once, between all
+ * of those scans in the process. An async listing of a large directory takes
+ * dozens of event-loop turns, and a read one more, so awaiting them one at a
+ * time made a busy serve's scan as slow as its turns added up. The bound is
+ * shared, not per scan, because concurrent requests for different scans each
+ * scan: 16 per scan ran a serve under a low hard open-file limit out of
  * descriptors. Identical requests share one scan (swamp-club#4074), so the
- * bound caps descriptors and sharing caps memory.
- * Lookups that open one file at a time (findById, findByIds and the like) do
- * not take a permit, so the process holds at most 16 scan descriptors plus
- * one or two per such lookup, beside the definition index's 32. A
- * workflow-run status scan that finds a workflow's run index out of line
- * with its records repairs it outside the permits, one record at a time, so
- * it adds at most one descriptor per repair under way, and it validates at
- * most {@link SCAN_CONCURRENCY} workflows at once; a since scan never
- * repairs. Every repository in the process shares the permits, so scans of a slow
- * filesystem can delay scans of another. A scan given an AbortSignal (a serve
- * request's) stops waiting for permits once it aborts, starts no further
- * listing or read, and gives back each permit it holds as that listing or
- * read settles (swamp-club#4070).
+ * bound caps descriptors and sharing caps memory. Lookups that open one file at
+ * a time (findById, findByIds and the like) do not take a permit, so the
+ * process holds at most 16 scan descriptors plus one or two per such lookup,
+ * beside the definition index's 32. A workflow-run status scan that finds a
+ * workflow's run index out of line with its records repairs it outside the
+ * permits, one record at a time, so it adds at most one descriptor per repair
+ * under way, and it validates at most {@link SCAN_CONCURRENCY} workflows at
+ * once; a since scan never repairs. Every repository in the process shares the
+ * permits, so scans of a slow filesystem can delay scans of another. A scan
+ * given an AbortSignal (a serve request's) stops waiting for permits once it
+ * aborts, starts no further listing or read, and gives back each permit it
+ * holds as that listing or read settles (swamp-club#4070).
  *
  * A listing holds its permit for its whole `Deno.readDir` iteration, and its
  * directory stays open throughout, so the permit cannot be given back
@@ -155,7 +154,7 @@ export class ScanPermits {
  * however many large listings are under way (swamp-club#4073). The share
  * follows the method, not its caller: serve's model output get reads
  * through findLatestByDefinition and findByDefinition, so it draws on the
- * lookups' permits as a method run does. Report search and get, and both
+ * lookups' permits as a method run does. Report search and get, and the
  * workflow-run scans, read through the search share: they are listings serve
  * requests run. The boot reconciliation and shutdown passes over running
  * runs go through findGlobalByStatus, so they wait behind searches for each
