@@ -28,17 +28,19 @@
 
 import { Commit, type CommitJSON } from "../../domain/datastore_v3/commit.ts";
 import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
-import type {
-  ChangesPage,
-  CommitChunk,
-  CommitEnvelope,
-  CommitReply,
-  PartitionCommitsPage,
-  ServeDatastoreClient,
+import {
+  type ChangesPage,
+  type CommitChunk,
+  type CommitEnvelope,
+  type CommitReply,
+  type PartitionCommitsPage,
+  SERVE_PAGE_MAX_BYTES,
+  type ServeDatastoreClient,
 } from "./serve_datastore_client.ts";
 import {
   ServeChunksMissingError,
   ServeCommitsCompactedError,
+  ServeReplyTooLargeError,
   ServeStaleSeqError,
   ServeUnreachableError,
   ServeUpstreamError,
@@ -116,6 +118,14 @@ export class FakeServe implements Client {
   readonly uploads: { sha256: string; partition: string | undefined }[] = [];
   readonly hasAsked: string[][] = [];
   readonly partitionReads: { after: number; limit: number | undefined }[] = [];
+  readonly changesReads: { cursor: number; limit: number | undefined }[] = [];
+  /**
+   * Answers a page read as too large for the client to read while it
+   * returns true for the read's route and limit.
+   */
+  tooLarge:
+    | ((route: "changes" | "partition", limit: number | undefined) => boolean)
+    | undefined;
   readonly postFaults: PostFault[] = [];
   /** Runs before each commit request is acted on: another writer, say. */
   beforePost: (() => Promise<void>) | undefined;
@@ -181,9 +191,13 @@ export class FakeServe implements Client {
     limit?: number,
   ): Promise<ChangesPage> {
     this.requests.changes++;
+    this.changesReads.push({ cursor, limit });
     if (this.changesGate !== undefined) await this.changesGate;
     signal.throwIfAborted();
     if (this.changesFault !== undefined) throw this.changesFault;
+    if (this.tooLarge?.("changes", limit) === true) {
+      throw new ServeReplyTooLargeError(200, "changes", SERVE_PAGE_MAX_BYTES);
+    }
     const max = Math.min(limit ?? this.feedPageSize, this.feedPageSize);
     const changes: { cursor: number; commit: unknown }[] = [];
     let next = cursor;
@@ -206,6 +220,15 @@ export class FakeServe implements Client {
     this.requests.partitionCommits++;
     this.partitionReads.push({ after, limit });
     signal.throwIfAborted();
+    if (this.tooLarge?.("partition", limit) === true) {
+      return Promise.reject(
+        new ServeReplyTooLargeError(
+          200,
+          "partitions/{p}/commits",
+          SERVE_PAGE_MAX_BYTES,
+        ),
+      );
+    }
     if (this.partitionFaults > 0) {
       this.partitionFaults--;
       return Promise.reject(this.#unreachable("maybe"));

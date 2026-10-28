@@ -941,6 +941,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       commitStore,
       state: serveState,
       copyDir: dirname(commitsDbPath),
+      namespace,
     })
     : undefined;
   const serveSink = serveClient !== undefined && serveCatchUp !== undefined

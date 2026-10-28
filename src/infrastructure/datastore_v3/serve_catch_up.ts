@@ -39,17 +39,25 @@
  * caller, a partition it may no longer read, and an anchor serve has
  * compacted cannot be checked, and are not refused.
  *
+ * Serve's replies are untrusted (swamp-club#4062): its address can come
+ * from a committed `.swamp.yaml`. A commit outside the copy's namespace,
+ * in a feed page or a partition read, refuses the page before any of it
+ * is applied, and a page too large for the client to read is asked again
+ * at half the limit, down to one commit.
+ *
  * @module
  */
 
 import { Commit } from "../../domain/datastore_v3/commit.ts";
 import type { HeadIdentity } from "../../domain/datastore_v3/commit_outbox.ts";
 import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
+import { getSwampLogger } from "../logging/logger.ts";
 import type { ServeDatastoreClient } from "./serve_datastore_client.ts";
 import {
   ServeCommitsCompactedError,
   type ServeDivergedCommit,
   type ServeDivergence,
+  ServeReplyTooLargeError,
   ServeUpstreamDivergedError,
   ServeUpstreamError,
   ServeUpstreamUpgradeRequiredError,
@@ -59,6 +67,8 @@ import type {
   ServeUpstreamState,
 } from "./serve_upstream_state.ts";
 import type { SqliteCommitStore } from "./sqlite_commit_store.ts";
+
+const logger = getSwampLogger(["datastore", "v3", "serve"]);
 
 /**
  * The check a copy's serve client runs on every reply
@@ -88,7 +98,11 @@ export function serveLogCheck(
   };
 }
 
-/** The most commits one page of a partition read asks serve for. */
+/**
+ * The most commits one page of a partition read or the changes feed asks
+ * serve for. A reply too large to read is asked again at half the limit,
+ * down to one commit (swamp-club#4062).
+ */
 export const SERVE_PARTITION_PAGE = 1000;
 
 /** What {@link ServeCatchUp} reads from and writes to. */
@@ -111,6 +125,12 @@ export interface ServeCatchUpOptions {
   >;
   /** The copy's directory, which a refused divergence names. */
   readonly copyDir: string;
+  /**
+   * The namespace the copy's commits are in: the v3 datastore's, empty for
+   * a solo one. Not the client's storage namespace, which reads
+   * `_default` for an empty one.
+   */
+  readonly namespace: string;
 }
 
 /** What one catch-up applied. */
@@ -125,6 +145,7 @@ export class ServeCatchUp {
   readonly #commitStore: ServeCatchUpOptions["commitStore"];
   readonly #state: ServeCatchUpOptions["state"];
   readonly #copyDir: string;
+  readonly #namespace: string;
   /** One feed catch-up at a time per handle; later callers share it. */
   #feed: Promise<ServeCatchUpReport> | undefined;
 
@@ -133,6 +154,7 @@ export class ServeCatchUp {
     this.#commitStore = options.commitStore;
     this.#state = options.state;
     this.#copyDir = options.copyDir;
+    this.#namespace = options.namespace;
   }
 
   /**
@@ -150,12 +172,30 @@ export class ServeCatchUp {
   async #catchUpFeed(signal: AbortSignal): Promise<ServeCatchUpReport> {
     await this.#checkAnchor(signal);
     let applied = 0;
+    let limit = SERVE_PARTITION_PAGE;
     for (;;) {
       signal.throwIfAborted();
-      const page = await this.#client.changes(this.#state.feedCursor(), signal);
-      let last: Commit | undefined;
+      const cursor = this.#state.feedCursor();
+      const read = await pageAtMost(
+        "changes",
+        cursor,
+        limit,
+        (at) => this.#client.changes(cursor, signal, at),
+      );
+      limit = read.limit;
+      const page = read.page;
+      // Every commit is checked before any is applied: a page holding one
+      // from another namespace is refused whole.
+      const commits: Commit[] = [];
       for (const change of page.changes) {
         const commit = await Commit.fromJSON(change.commit);
+        if (commit.namespace !== this.#namespace) {
+          throw foreignCommit("the changes feed", commit);
+        }
+        commits.push(commit);
+      }
+      let last: Commit | undefined;
+      for (const commit of commits) {
         applied += await this.#applyInOrder(commit, signal);
         last = commit;
       }
@@ -176,12 +216,18 @@ export class ServeCatchUp {
     if (anchor === undefined) return;
     let page;
     try {
-      page = await this.#client.partitionCommits(
-        PartitionKey.parse(anchor.partition),
+      page = (await pageAtMost(
+        `partition ${anchor.partition}`,
         anchor.seq - 1,
-        signal,
         1,
-      );
+        (at) =>
+          this.#client.partitionCommits(
+            PartitionKey.parse(anchor.partition),
+            anchor.seq - 1,
+            signal,
+            at,
+          ),
+      )).page;
     } catch (error) {
       // Serve compacted the partition through the anchor, or this caller
       // may no longer read the partition: the anchor cannot be checked,
@@ -297,14 +343,18 @@ export class ServeCatchUp {
   ): Promise<number> {
     let cursor = after;
     let head = after;
+    let limit = SERVE_PARTITION_PAGE;
     for (;;) {
       signal.throwIfAborted();
-      const page = await this.#client.partitionCommits(
-        partition,
-        cursor,
-        signal,
-        SERVE_PARTITION_PAGE,
+      const at = cursor;
+      const read = await pageAtMost(
+        `partition ${partition}`,
+        at,
+        limit,
+        (size) => this.#client.partitionCommits(partition, at, signal, size),
       );
+      limit = read.limit;
+      const page = read.page;
       head = page.head;
       if (expect !== undefined) {
         await this.#checkHead(namespace, partition, expect, page);
@@ -317,17 +367,16 @@ export class ServeCatchUp {
         if (
           commit.namespace !== namespace || !commit.partition.equals(partition)
         ) {
-          throw new Error(
-            `Serve answered a read of partition ${partition} with a commit ` +
-              `of ${commit.partition} in namespace ${commit.namespace}`,
-          );
+          throw foreignCommit(`a read of partition ${partition}`, commit);
         }
         if (through !== undefined && commit.seq > through) break;
         await this.#append(commit);
         last = Math.max(last, commit.seq);
       }
       const end = through === undefined ? head : Math.min(head, through);
-      const next = Math.max(last, Math.min(cursor + SERVE_PARTITION_PAGE, end));
+      // A filtered page moves the read on by the limit it was read at,
+      // which a retry may have halved.
+      const next = Math.max(last, Math.min(cursor + limit, end));
       if (next >= end || next <= cursor) return head;
       cursor = next;
     }
@@ -396,4 +445,38 @@ function anchorOf(commit: Commit): ServeFeedAnchor {
     seq: commit.seq,
     txnId: commit.txnId,
   };
+}
+
+/**
+ * Reads a page of at most `limit` commits, asking again at half the limit
+ * while serve's reply is too large to read, down to one commit, where the
+ * refusal stands. Resolves with the limit the page was read at.
+ */
+async function pageAtMost<T>(
+  route: string,
+  cursor: number,
+  limit: number,
+  read: (limit: number) => Promise<T>,
+): Promise<{ readonly page: T; readonly limit: number }> {
+  for (;;) {
+    try {
+      return { page: await read(limit), limit };
+    } catch (error) {
+      if (!(error instanceof ServeReplyTooLargeError) || limit <= 1) {
+        throw error;
+      }
+      const next = Math.ceil(limit / 2);
+      logger
+        .debug`Serve's reply to ${route} after ${cursor} passed ${error.maxBytes} bytes at limit ${limit}; asking for ${next}`;
+      limit = next;
+    }
+  }
+}
+
+/** The refusal of a commit outside the read that asked for it. */
+function foreignCommit(read: string, commit: Commit): Error {
+  return new Error(
+    `Serve answered ${read} with a commit of ${commit.partition} in ` +
+      `namespace ${commit.namespace}`,
+  );
 }

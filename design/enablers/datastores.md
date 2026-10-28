@@ -6797,8 +6797,8 @@ a page is in the copy, so a crash between the two re-reads a page, whose
 commits are then duplicates. When a commit arrives past the copy's head + 1,
 the partition is read from serve first (`partitions/{p}/commits?after=`). That
 brings back commits hidden from the caller before a grant changed, and records
-serve's head. A page that is filtered to nothing still moves on by its size,
-because serve's own log has no holes.
+serve's head. A page that is filtered to nothing still moves on by the limit
+it was read at, because serve's own log has no holes.
 
 **One serve's log.** The copy is keyed only by address and namespace. Its
 cursor is a position in one serve's log, so swamp-club#4049 checks that
@@ -6874,6 +6874,40 @@ that happens.
   changes no data, and the command's first catch-up or write is refused.
   Restoring a log from a backup taken before its schema-9 migration mints a
   new id, so that restore is refused as another log.
+
+**Serve's replies are untrusted.** The address can come from a committed
+`.swamp.yaml` `serverAddress` that the person running the command never
+chose, so swamp-club#4062 treats what serve answers as input to check, not as
+the copy's truth.
+
+- **Namespace.** A feed page holding a commit outside the copy's namespace
+  (the v3 datastore's, empty for a solo one) is refused whole, before any of
+  it is applied and before the cursor moves. A partition read already refused
+  a commit of another namespace or partition, with the same error.
+- **Size.** Every reply is read under a byte limit, counted as the body
+  arrives and never taken from `Content-Length`. Past it the body is
+  cancelled and the read fails with `reply_too_large`.
+
+  | Reply                         | Limit                                            |
+  | ----------------------------- | ------------------------------------------------ |
+  | Chunk                         | `CHUNK_BYTES` (16 MiB), or the range for a 206   |
+  | Error body                    | 64 KiB, then the status alone maps               |
+  | Other small JSON (has, locks) | 1 MiB                                            |
+  | Page of more than one commit  | 64 MiB                                           |
+  | Page of one commit            | `MAX_WRITTEN_COMMIT_REPLY_BYTES` (about 350 MiB) |
+
+  No byte limit both bounds memory and fits every real page of 1000
+  commits, so a page too large is asked again at half the limit, logged at
+  debug, down to one commit: at most ten retries from 1000. The smaller
+  limit carries over to the rest of that read. The one-commit limit is the
+  largest commit serve writes: its own runs commit through the commit-log
+  unit of work, which splits only at `MAX_COMMIT_OPS`, so that commit is
+  larger than any a client can post (an envelope of at most 4 MiB). It is
+  computed from the most inline content, the longest key and the longest
+  intent strings. Blob part lists, data-version tag values and
+  control-character keys have no length limit, so a pathological commit can
+  still pass it and is refused rather than read. A byte bound in serve's
+  unit of work would close that.
 
 **Run index.** The read model's catch-up rewrites run records directly, and
 the run index trusted itself while its count matched. So a run another

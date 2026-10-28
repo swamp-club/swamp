@@ -22,9 +22,11 @@ import {
   assertEquals,
   assertInstanceOf,
   assertRejects,
+  assertStringIncludes,
 } from "@std/assert";
 import { join } from "@std/path";
-import type { Commit } from "../../domain/datastore_v3/commit.ts";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { Commit } from "../../domain/datastore_v3/commit.ts";
 import {
   modelPartition,
   savePut,
@@ -38,6 +40,7 @@ import {
 import {
   SERVE_UPSTREAM_DIVERGED_CODE,
   ServeCommitsCompactedError,
+  ServeReplyTooLargeError,
   ServeUpstreamDivergedError,
   ServeUpstreamUpgradeRequiredError,
 } from "./serve_upstream_errors.ts";
@@ -88,6 +91,7 @@ async function withCheckout(fn: (c: Checkout) => Promise<void>) {
         commitStore: store,
         state,
         copyDir: dir,
+        namespace: "",
       }),
       appends,
     });
@@ -121,13 +125,27 @@ async function another(seq: number, partition = MODEL): Promise<Commit> {
 function through(
   serve: FakeServe,
   { dir, store, state }: Pick<Checkout, "dir" | "store" | "state">,
+  namespace = "",
 ): ServeCatchUp {
   return new ServeCatchUp({
     client: serve,
     commitStore: store,
     state,
     copyDir: dir,
+    namespace,
   });
+}
+
+/** `commit` as serve would stamp it in namespace `namespace`. */
+async function inNamespace(commit: Commit, namespace: string) {
+  return await Commit.fromJSON({ ...commit.toJSON(), namespace });
+}
+
+/** The halving a refused page goes through, from a full page down to one. */
+function halvings(): number[] {
+  const limits = [SERVE_PARTITION_PAGE];
+  while (limits.at(-1)! > 1) limits.push(Math.ceil(limits.at(-1)! / 2));
+  return limits;
 }
 
 /** The seqs the copy holds of `partition`. */
@@ -195,6 +213,7 @@ Deno.test("ServeCatchUp.catchUp: replaying pages already applied appends nothing
         commitStore: store,
         state: first,
         copyDir: dir,
+        namespace: "",
       })
         .catchUp(signal());
     } finally {
@@ -211,6 +230,7 @@ Deno.test("ServeCatchUp.catchUp: replaying pages already applied appends nothing
         commitStore: store,
         state: fresh,
         copyDir: dir,
+        namespace: "",
       }).catchUp(signal());
       assertEquals(report, { applied: 0 });
       assertEquals(fresh.feedCursor(), 3);
@@ -621,5 +641,149 @@ Deno.test("serveLogCheck: records the first log serve names, passes it again, an
     assertInstanceOf(missing, ServeUpstreamUpgradeRequiredError);
     assert(missing.message.includes("Upgrade swamp on serve"));
     return Promise.resolve();
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a feed page holding a commit of another namespace is refused whole, and nothing of it is applied", async () => {
+  await withCheckout(async ({ store, state, serve, catchUp, appends }) => {
+    serve.land(await other(1));
+    serve.land(await inNamespace(await other(1, OTHER), "team-b"));
+    serve.land(await other(2));
+
+    await assertRejects(
+      () => catchUp.catchUp(signal()),
+      Error,
+      "Serve answered the changes feed with a commit of",
+    );
+    assertEquals(appends, [], "the copy's own commits before it too");
+    assertEquals(await copySeqs(store), []);
+    assertEquals(state.feedCursor(), 0);
+    assertEquals(state.feedAnchor(), undefined);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a copy of a named namespace refuses the feed's commits of the solo one", async () => {
+  await withCheckout(async (checkout) => {
+    const { serve, appends } = checkout;
+    serve.land(await other(1));
+
+    await assertRejects(
+      () => through(serve, checkout, "team-a").catchUp(signal()),
+      Error,
+      "in namespace ",
+    );
+    assertEquals(appends, []);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUpPartition: a page retried at half the limit and filtered moves the read on by that limit, leaving no gap", async () => {
+  await withCheckout(async ({ store, serve, catchUp }) => {
+    serve.landUnreadable(MODEL, 600);
+    const end = 1100;
+    for (let seq = 601; seq <= end; seq++) serve.land(await other(seq));
+    serve.tooLarge = (route, limit) =>
+      route === "partition" && limit === SERVE_PARTITION_PAGE;
+    const half = SERVE_PARTITION_PAGE / 2;
+
+    assertEquals(await catchUp.catchUpPartition("", MODEL, signal()), end);
+
+    const seqs = await copySeqs(store);
+    assertEquals(seqs.length, end - 600);
+    assertEquals(seqs[0], 601);
+    assertEquals(seqs.at(-1), end);
+    // The first retried page held only filtered commits: the next read
+    // starts half a page on, not a whole one, and keeps the half limit.
+    assertEquals(serve.partitionReads, [
+      { after: 0, limit: SERVE_PARTITION_PAGE },
+      { after: 0, limit: half },
+      { after: half, limit: half },
+      { after: 2 * half, limit: half },
+    ]);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUpPartition: a retried first page is still checked against the copy's head", async () => {
+  await withCheckout(async (checkout) => {
+    const { serve, catchUp, appends } = checkout;
+    for (let seq = 1; seq <= 2; seq++) serve.land(await other(seq));
+    await catchUp.catchUp(signal());
+
+    const swapped = new FakeServe();
+    for (let seq = 1; seq <= 3; seq++) swapped.land(await another(seq));
+    swapped.tooLarge = (_route, limit) => limit === SERVE_PARTITION_PAGE;
+    const error = await assertRejects(
+      () => through(swapped, checkout).catchUpPartition("", MODEL, signal()),
+      ServeUpstreamDivergedError,
+    );
+    assertEquals(error.divergence, {
+      kind: "other-commit",
+      serveTxnId: "another-2",
+    });
+    assertEquals(swapped.partitionReads.map((read) => read.limit), [
+      SERVE_PARTITION_PAGE,
+      SERVE_PARTITION_PAGE / 2,
+    ]);
+    assertEquals(appends, [1, 2]);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a feed page too large is asked again at half the limit, applies every commit once in order, and logs each retry", async () => {
+  await withCheckout(async ({ state, serve, catchUp, appends }) => {
+    serve.feedPageSize = 2;
+    for (let seq = 1; seq <= 5; seq++) serve.land(await other(seq));
+    serve.tooLarge = (route, limit) =>
+      route === "changes" && (limit === undefined || limit > 2);
+    const captured: LogRecord[] = [];
+    await configure({
+      sinks: { capture: (record: LogRecord) => captured.push(record) },
+      loggers: [
+        {
+          category: ["datastore", "v3", "serve"],
+          lowestLevel: "debug",
+          sinks: ["capture"],
+        },
+        { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+      ],
+      reset: true,
+    });
+    try {
+      assertEquals(await catchUp.catchUp(signal()), { applied: 5 });
+    } finally {
+      await reset();
+    }
+
+    assertEquals(appends, [1, 2, 3, 4, 5]);
+    assertEquals(state.feedCursor(), 5);
+    const refused = halvings().filter((limit) => limit > 2);
+    assertEquals(
+      serve.changesReads.map((read) => read.limit),
+      [...refused, 2, 2, 2],
+      "the halved limit carries over to the next pages",
+    );
+    assertEquals(
+      serve.changesReads.map((read) => read.cursor),
+      [...refused.map(() => 0), 0, 2, 4],
+    );
+    const retries = captured.map((r) =>
+      r.message.map((p) => String(p)).join("")
+    );
+    assertEquals(retries.length, refused.length);
+    assertStringIncludes(retries[0], "changes");
+    assertStringIncludes(retries[0], "asking for 500");
+  });
+});
+
+Deno.test("ServeCatchUp.catchUpPartition: a serve whose every page is too large is refused at one commit, after one read per halving", async () => {
+  await withCheckout(async ({ serve, catchUp, appends }) => {
+    serve.land(await other(1));
+    serve.tooLarge = () => true;
+
+    await assertRejects(
+      () => catchUp.catchUpPartition("", MODEL, signal()),
+      ServeReplyTooLargeError,
+    );
+    assertEquals(serve.partitionReads.map((read) => read.limit), halvings());
+    assertEquals(halvings().length, 11, "ten retries after the first read");
+    assertEquals(appends, []);
   });
 });
