@@ -1725,3 +1725,81 @@ Deno.test("handleModelOutputSearch: names workflows through the repository's per
     assertEquals(rawListings, 0);
   });
 });
+
+Deno.test("handleModelOutputSearch: a model's search skips its outputs named outside since and until without reading them (swamp-club#4058)", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const watched = await saveEditModel(definitionRepo, "watched");
+    const other = await saveEditModel(definitionRepo, "other");
+    const save = (definition: Definition, startedAt: string) =>
+      outputRepo.save(
+        EDIT_TEST_TYPE,
+        "execute",
+        ModelOutput.create({
+          definitionId: definition.id,
+          methodName: "execute",
+          status: "succeeded",
+          startedAt: new Date(startedAt),
+          provenance: {
+            definitionHash: "h",
+            modelVersion: "1",
+            triggeredBy: "manual",
+          },
+        }),
+      );
+    await save(watched, "2026-01-01T00:00:00Z");
+    await save(watched, "2026-01-02T00:00:00Z");
+    await save(watched, "2026-01-03T00:00:00Z");
+    await save(other, "2026-01-02T12:00:00Z");
+    const ctx = {
+      ...createEditCtx(dir, definitionRepo),
+      repoContext: {
+        definitionRepo,
+        outputRepo,
+        workflowRepo: new YamlWorkflowRepository(dir),
+      } as unknown as ConnectionContext["repoContext"],
+    };
+
+    for (
+      const [window, expected, read] of [
+        [
+          { since: "2026-01-02T00:00:00Z" },
+          ["2026-01-03T00:00:00.000Z", "2026-01-02T00:00:00.000Z"],
+          2,
+        ],
+        [
+          { since: "2026-01-02T00:00:00Z", until: "2026-01-03T00:00:00Z" },
+          ["2026-01-02T00:00:00.000Z"],
+          1,
+        ],
+      ] as const
+    ) {
+      await withObservedSpans(async (spans) => {
+        const socket = createMockSocket();
+        await handleModelOutputSearch(
+          socket,
+          ctx,
+          "req-1",
+          new AbortController(),
+          null,
+          { model: "watched", ...window },
+        );
+
+        const [response] = frames(socket);
+        assertEquals(response.type, "model.output.search");
+        assertEquals(
+          response.payload.data.results.map((r: { startedAt: string }) =>
+            r.startedAt
+          ),
+          [...expected],
+        );
+        const scan = findSpan(spans, "swamp.diagnostic.candidate_scan")
+          .attributes;
+        // files_read also counts the definition lookup's reads.
+        assertEquals(scan["swamp.diagnostic.candidates"], read);
+        assertEquals(scan["swamp.diagnostic.skipped_by_name"], 4 - read);
+      });
+    }
+  });
+});

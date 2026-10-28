@@ -1975,10 +1975,11 @@ export async function handleModelOutputSearch(
         for (const { definition, type } of byId) add(definition, type);
         return [...found.values()];
       },
-      findOutputsByDefinition: (type, definitionId) =>
+      findOutputsByDefinition: (type, definitionId, window) =>
         outputRepo.findHistoryByDefinition(
           ModelType.create(type.normalized),
           createDefinitionId(definitionId),
+          window,
         ),
       resolveWorkflowNames: async (ids) => {
         const names = new Map<string, string>();

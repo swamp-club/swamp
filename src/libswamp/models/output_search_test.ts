@@ -242,6 +242,62 @@ Deno.test("modelOutputSearch: reads only the named model's outputs when it can l
   ]]);
 });
 
+Deno.test("modelOutputSearch: passes since and until to the model's output lookup, and still filters what it returns (swamp-club#4058)", async () => {
+  const windows: Array<{ since?: Date; until?: Date } | undefined> = [];
+  const deps = makeDeps({
+    resolveModel: () =>
+      Promise.resolve([{
+        definitionId: "def-1",
+        name: "my-ec2",
+        type: { normalized: "aws/ec2-instance" },
+      }]),
+    // Ignores the window, so the search's own check is what filters.
+    findOutputsByDefinition: (_type, _definitionId, window) => {
+      windows.push(window);
+      return Promise.resolve(
+        ["2026-01-15T09:00:00Z", "2026-01-15T10:00:00Z", "2026-01-15T11:00:00Z"]
+          .map((startedAt, i) => ({
+            id: `out-${i}`,
+            definitionId: "def-1",
+            methodName: "start",
+            status: "succeeded",
+            startedAt: new Date(startedAt),
+          })),
+      );
+    },
+  });
+  const run = async (input: { since?: string; until?: string }) =>
+    completedOf(
+      await collect(
+        modelOutputSearch(createLibSwampContext(), deps, {
+          model: "my-ec2",
+          ...input,
+        }),
+      ),
+    ).results.map((r) => r.id);
+
+  assertEquals(
+    await run({
+      since: "2026-01-15T10:00:00Z",
+      until: "2026-01-15T11:00:00Z",
+    }),
+    ["out-1"],
+  );
+  assertEquals(await run({ since: "2026-01-15T10:00:00Z" }), [
+    "out-2",
+    "out-1",
+  ]);
+  assertEquals(await run({}), ["out-2", "out-1", "out-0"]);
+  assertEquals(windows, [
+    {
+      since: new Date("2026-01-15T10:00:00Z"),
+      until: new Date("2026-01-15T11:00:00Z"),
+    },
+    { since: new Date("2026-01-15T10:00:00Z"), until: undefined },
+    undefined,
+  ]);
+});
+
 Deno.test("modelOutputSearch: filters by since (inclusive) and until (exclusive)", async () => {
   const run = async (input: { since?: string; until?: string }) =>
     completedOf(

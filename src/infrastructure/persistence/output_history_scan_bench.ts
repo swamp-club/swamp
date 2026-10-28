@@ -24,22 +24,29 @@
  * read with the records' mtimes at their completion, with every mtime fresh
  * (as after a v3 read-model replay), and fresh under event-loop contention
  * from four tasks that each await a stat and then hold the loop for 0.25 ms.
- * Run with:
+ * One model's history with the same `since` (swamp-club#4058),
+ * `findHistoryByDefinition`, is read the same ways, from that repository
+ * ("spread": 200 models over 20 types) and from one where a single type holds
+ * two models ("busy"). Run with:
  *
  *   deno bench --allow-all src/infrastructure/persistence/output_history_scan_bench.ts
  *   deno bench --allow-all src/infrastructure/persistence/output_history_scan_bench.ts -- 10000,50000,200000
  *
  * Files stat'ed and read per iteration are printed when the run ends: they
- * should stay at zero stats and the in-window count of reads whatever the
- * repository size.
+ * should stay at zero stats and the in-window count of reads (of the model's
+ * outputs, for a model's history) whatever the repository size.
  */
 
 import { dirname, join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
-import { createDefinitionId } from "../../domain/definitions/definition.ts";
+import {
+  createDefinitionId,
+  type DefinitionId,
+} from "../../domain/definitions/definition.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ModelOutput } from "../../domain/models/model_output.ts";
+import type { ModelType } from "../../domain/models/model_type.ts";
 import { createRepositoryContext } from "./repository_factory.ts";
 import type { YamlOutputRepository } from "./yaml_output_repository.ts";
 import "../../domain/models/models.ts";
@@ -56,16 +63,27 @@ const now = Date.now();
 const cutoff = new Date(now - 7 * DAY_MS);
 const root = await Deno.makeTempDir({ prefix: "swamp_history_scan_bench_" });
 
-/** A repository of `size` outputs, their mtimes at completion or now. */
+/**
+ * A repository of `size` outputs of `models` models over the first
+ * `typeCount` types, their mtimes at completion or now, with the first model
+ * and its type.
+ */
 async function seed(
   size: number,
   fresh: boolean,
-): Promise<YamlOutputRepository> {
-  const repoDir = join(root, `${size}-${fresh ? "fresh" : "settled"}`);
+  models = 200,
+  typeCount = types.length,
+): Promise<
+  { repo: YamlOutputRepository; definitionId: DefinitionId; type: ModelType }
+> {
+  const repoDir = join(
+    root,
+    `${size}-${models}-${fresh ? "fresh" : "settled"}`,
+  );
   const repo = createRepositoryContext({ repoDir, enableIndexing: false })
     .outputRepo;
   const definitions = Array.from(
-    { length: 200 },
+    { length: models },
     () => createDefinitionId(crypto.randomUUID()),
   );
   const dirs = new Set<string>();
@@ -92,7 +110,7 @@ async function seed(
         stepName: "step",
       },
     });
-    const path = repo.getPath(types[i % types.length], method, output);
+    const path = repo.getPath(types[i % typeCount], method, output);
     if (!dirs.has(dirname(path))) {
       await ensureDir(dirname(path));
       dirs.add(dirname(path));
@@ -104,7 +122,9 @@ async function seed(
     const mtime = fresh ? new Date(now) : new Date(startedAt.getTime() + 1500);
     await Deno.utime(path, mtime, mtime);
   }
-  return repo;
+  // The first model's outputs are every one at an index `models` divides,
+  // so all of its type `typeCount` divides too: the first.
+  return { repo, definitionId: definitions[0], type: types[0] };
 }
 
 const ops = new Map<string, { stats: number; reads: number; runs: number }>();
@@ -143,7 +163,7 @@ function contend(): () => Promise<void> {
 
 async function scan(
   label: string,
-  repo: YamlOutputRepository,
+  read: () => Promise<unknown>,
   contended: boolean,
 ): Promise<void> {
   counting = ops.get(label) ?? { stats: 0, reads: 0, runs: 0 };
@@ -151,7 +171,7 @@ async function scan(
   counting.runs++;
   const stop = contended ? contend() : undefined;
   try {
-    await repo.findAllGlobalSince(cutoff);
+    await read();
   } finally {
     counting = undefined;
     await stop?.();
@@ -161,9 +181,10 @@ async function scan(
 for (const size of SIZES) {
   const settled = await seed(size, false);
   const fresh = await seed(size, true);
+  const busy = await seed(size, false, 2, 1);
   const group = `${size} outputs`;
   for (
-    const [name, repo, contended, n] of [
+    const [name, { repo }, contended, n] of [
       ["mtimes at completion", settled, false, 10],
       ["every mtime fresh", fresh, false, 10],
       ["every mtime fresh, contended loop", fresh, true, 3],
@@ -173,11 +194,37 @@ for (const size of SIZES) {
     Deno.bench({
       name: label,
       group,
-      baseline: !contended && repo === settled,
+      baseline: !contended && repo === settled.repo,
       n,
       warmup: 1,
       async fn() {
-        await scan(label, repo, contended);
+        await scan(label, () => repo.findAllGlobalSince(cutoff), contended);
+      },
+    });
+  }
+  const historyGroup = `${size} outputs, one model's history`;
+  for (
+    const [name, { repo, definitionId, type }, contended, n] of [
+      ["spread", settled, false, 10],
+      ["spread, contended loop", settled, true, 3],
+      ["busy", busy, false, 10],
+      ["busy, contended loop", busy, true, 3],
+    ] as const
+  ) {
+    const label = `${historyGroup}: ${name}`;
+    Deno.bench({
+      name: label,
+      group: historyGroup,
+      baseline: !contended && repo === settled.repo,
+      n,
+      warmup: 1,
+      async fn() {
+        await scan(
+          label,
+          () =>
+            repo.findHistoryByDefinition(type, definitionId, { since: cutoff }),
+          contended,
+        );
       },
     });
   }

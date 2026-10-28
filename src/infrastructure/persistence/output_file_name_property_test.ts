@@ -18,9 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 // An output file's name carries its startedAt, and findAllGlobalSince skips
-// a name stamped before the cutoff without reading it (swamp-club#4056). The
+// a name stamped before the cutoff without reading it (swamp-club#4056), as
+// findHistoryByDefinition skips one stamped outside its since and until
+// (swamp-club#4058). The
 // skip is safe only if comparing stamps orders records as comparing their
-// instants does: then no record started at or after the cutoff is skipped.
+// instants does: then no record started inside the window is skipped.
 
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
@@ -75,6 +77,52 @@ Deno.test("findAllGlobalSince: returns a record exactly when it started at or af
           startedMs >= cutoffMs ? [output.id] : [],
         );
       }),
+      { numRuns: 100 },
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("findHistoryByDefinition: returns a record exactly when it started in its since or until window", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-output-stamp-" });
+  try {
+    await fc.assert(
+      fc.asyncProperty(
+        startAndCutoff,
+        fc.boolean(),
+        async ([startedMs, boundMs], isUntil) => {
+          const repoDir = await Deno.makeTempDir({ dir });
+          const repo = new YamlOutputRepository(repoDir);
+          const definitionId = createDefinitionId(crypto.randomUUID());
+          const output = ModelOutput.create({
+            definitionId,
+            methodName: "run",
+            status: "succeeded",
+            startedAt: new Date(startedMs),
+            provenance: {
+              definitionHash: "abc123",
+              modelVersion: "2026.02.09.1",
+              triggeredBy: "manual",
+            },
+          });
+          await repo.save(TYPE, "run", output);
+          const bound = new Date(boundMs);
+
+          const found = await repo.findHistoryByDefinition(
+            TYPE,
+            definitionId,
+            isUntil ? { until: bound } : { since: bound },
+          );
+
+          const inWindow = isUntil ? startedMs < boundMs : startedMs >= boundMs;
+          assertEquals(found.map((o) => o.id), inWindow ? [output.id] : []);
+        },
+      ),
       { numRuns: 100 },
     );
   } finally {
