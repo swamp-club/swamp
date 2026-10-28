@@ -2073,6 +2073,42 @@ Deno.test("workflowRun: a --last-evaluated cache that cannot be read is reported
   assertEquals(captured.options, undefined);
 });
 
+Deno.test("workflowRun: a run cancelled while its suspended runs are read for superseding supersedes none and still goes to the execution service with its signal (swamp-club#4088)", async () => {
+  const workflow = createTestWorkflow();
+  const captured: { options?: Record<string, unknown> } = {};
+  const controller = new AbortController();
+  const signals: Array<AbortSignal | undefined> = [];
+  const deps = {
+    ...createTestDepsWithCapture(workflow, [], captured),
+    supersede: {
+      // Cancelled with a reason that is not an AbortError, as a serve
+      // shutdown may be, while the read waits for scan permits.
+      findSuspendedRuns: (_id: WorkflowId, signal?: AbortSignal) => {
+        signals.push(signal);
+        controller.abort(new Error("serve is shutting down"));
+        return Promise.reject(signal?.reason);
+      },
+      findEvaluatedWorkflow: () => Promise.resolve(null),
+      runClaims: unclaimedRuns,
+      evaluatedCache: () => Promise.resolve(null),
+    },
+  };
+
+  const events = await collect(workflowRun(
+    createLibSwampContext({ signal: controller.signal }),
+    deps,
+    { workflowIdOrName: workflow.name },
+  ));
+
+  assertEquals(signals, [controller.signal]);
+  const kinds = events.map((e) => e.kind);
+  assertEquals(kinds.includes("superseded_runs"), false);
+  assertEquals(kinds.includes("error"), false);
+  // The execution service records a run cancelled before its first step as
+  // cancelled; it is handed the aborted signal to do so.
+  assertEquals(captured.options?.signal, controller.signal);
+});
+
 Deno.test("toRunData: inputs, a step error and assert text are shown through the run's mask, recorded values and a typed run's sentinels alike (typed-secrets 4.4)", () => {
   const workflow = Workflow.create({
     name: "masked-view",

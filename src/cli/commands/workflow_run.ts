@@ -584,8 +584,8 @@ export const workflowRunCommand = new Command()
               definitionRepo: repoContext.definitionRepo,
               telemetrySink,
               supersede: {
-                findSuspendedRuns: (workflowId) =>
-                  runRepo.findByStatus(workflowId, "suspended"),
+                findSuspendedRuns: (workflowId, signal) =>
+                  runRepo.findByStatus(workflowId, "suspended", signal),
                 findEvaluatedWorkflow: (runId) =>
                   evaluatedWorkflowRepo.findByRunId(runId),
                 evaluatedCache: (name) =>

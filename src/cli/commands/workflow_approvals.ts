@@ -324,7 +324,8 @@ export const workflowApprovalsCommand = withRemoteOptions(
   const deps = createWorkflowApprovalsDeps(
     repoContext.workflowRepo,
     runRepo,
-    (workflowId) => runRepo.findByStatus(workflowId, "suspended"),
+    (workflowId, signal) =>
+      runRepo.findByStatus(workflowId, "suspended", signal),
     (workflowId) => evaluatedRepo.findById(workflowId),
   );
 
