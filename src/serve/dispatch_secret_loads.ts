@@ -49,6 +49,7 @@ import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
 import type { AuditOutcome } from "../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
 import { SecretRedactor } from "../domain/secrets/secret_redactor.ts";
+import { parseUntrusted } from "../domain/untrusted_parse.ts";
 import {
   runWithVaultAccess,
   VaultAccessDeniedError,
@@ -294,7 +295,9 @@ export class DispatchSecretLoads {
     } catch {
       return refusal(400, "malformed_request", "The body is not JSON", 0);
     }
-    const parsed = DispatchSecretLoadRequestSchema.safeParse(raw);
+    // Untrusted input: a refusal costs the same however large it is
+    // (swamp-club#3862).
+    const parsed = parseUntrusted(DispatchSecretLoadRequestSchema, raw);
     if (!parsed.success) {
       return refusal(
         400,

@@ -23,6 +23,7 @@ import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 import { parseRunTimeBound } from "../workflows/run_search.ts";
 
+import { observeDiagnosticPhase } from "../../domain/diagnostics/diagnostic_phase.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * A single model output search result item.
@@ -122,10 +123,15 @@ export interface ModelOutputSearchDeps {
    * instead of every output.
    */
   resolveModel?(idOrName: string): Promise<ModelOutputSearchModel[]>;
-  /** The outputs of one definition. */
+  /**
+   * The outputs of one definition. With a `window` (the search's `since`
+   * and `until`) it may leave out outputs started outside it without
+   * reading them; the search checks every output against them anyway.
+   */
   findOutputsByDefinition?(
     type: { normalized: string },
     definitionId: string,
+    window?: { since?: Date; until?: Date },
   ): Promise<ModelOutputSearchOutput[]>;
   /**
    * The current names of the given workflow ids, looked up together. An id
@@ -226,7 +232,17 @@ export async function* modelOutputSearch(
         return;
       }
 
-      const candidates = await findCandidates(deps, input.model, since);
+      // Exported as the output_search diagnostic area's phases when the
+      // caller runs this in it (swamp-club#4056); silent otherwise.
+      const candidates = await observeDiagnosticPhase(
+        "candidate_scan",
+        {},
+        async (phase) => {
+          const found = await findCandidates(deps, input.model, since, until);
+          phase.tally.add("candidates", found.length);
+          return found;
+        },
+      );
 
       // One scan of every definition, only once an output needs a name. The
       // first definition per type and id wins, so a primary definition names
@@ -236,17 +252,23 @@ export async function* modelOutputSearch(
         type: { normalized: string },
         definitionId: string,
       ): Promise<string | undefined> => {
-        names ??= deps.findAllDefinitions().then((all) => {
-          const index = new Map<string, string>();
-          for (const entry of all) {
-            const key = JSON.stringify([
-              entry.type.normalized,
-              entry.definition.id,
-            ]);
-            if (!index.has(key)) index.set(key, entry.definition.name);
-          }
-          return index;
-        });
+        names ??= observeDiagnosticPhase(
+          "definition_names",
+          {},
+          (phase) =>
+            deps.findAllDefinitions().then((all) => {
+              phase.tally.add("definitions", all.length);
+              const index = new Map<string, string>();
+              for (const entry of all) {
+                const key = JSON.stringify([
+                  entry.type.normalized,
+                  entry.definition.id,
+                ]);
+                if (!index.has(key)) index.set(key, entry.definition.name);
+              }
+              return index;
+            }),
+        );
         return (await names).get(
           JSON.stringify([type.normalized, definitionId]),
         );
@@ -306,7 +328,15 @@ export async function* modelOutputSearch(
         if (item.workflowId !== undefined) workflowIds.add(item.workflowId);
       }
       if (workflowIds.size > 0 && deps.resolveWorkflowNames) {
-        const workflowNames = await deps.resolveWorkflowNames(workflowIds);
+        const resolveWorkflowNames = deps.resolveWorkflowNames;
+        const workflowNames = await observeDiagnosticPhase(
+          "workflow_names",
+          {},
+          (phase) => {
+            phase.tally.add("workflow_ids", workflowIds.size);
+            return resolveWorkflowNames(workflowIds);
+          },
+        );
         for (const item of results) {
           if (item.workflowId === undefined) continue;
           const workflowName = workflowNames.get(item.workflowId);
@@ -327,13 +357,15 @@ export async function* modelOutputSearch(
 
 /**
  * The outputs worth considering: only the named model's when the
- * repository can look them up by definition, otherwise every output (since
- * the `since` cutoff when the repository can skip older ones).
+ * repository can look them up by definition (within `since` and `until`
+ * when it can skip the rest), otherwise every output (since the `since`
+ * cutoff when the repository can skip older ones).
  */
 async function findCandidates(
   deps: ModelOutputSearchDeps,
   model: string | undefined,
   since: Date | undefined,
+  until: Date | undefined,
 ): Promise<
   Array<{
     output: ModelOutputSearchOutput;
@@ -353,6 +385,9 @@ async function findCandidates(
       const outputs = await deps.findOutputsByDefinition(
         definition.type,
         definition.definitionId,
+        since === undefined && until === undefined
+          ? undefined
+          : { since, until },
       );
       for (const output of outputs) {
         found.push({

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
 /**
  * Calculates visible window for a scrollable list.
@@ -115,18 +115,28 @@ export function useScrollableList<T>(
   items: T[],
   maxVisible: number = 10,
   resetDeps: unknown[] = [],
+  initialIndex: number = 0,
 ): UseScrollableListResult<T> {
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [selectedIndex, setSelectedIndex] = useState(() =>
+    Math.max(0, Math.min(initialIndex, items.length - 1))
+  );
   // Use ref to track scroll offset for "sticky" scrolling behavior
   // (viewport only moves when selected item would go off-screen)
   const scrollOffsetRef = useRef(0);
+  const [prevResetDeps, setPrevResetDeps] = useState(resetDeps);
 
-  // Reset selection and scroll when dependencies change (e.g., query)
-  useEffect(() => {
+  // Reset selection and scroll when dependencies change (e.g., query). This
+  // runs during render, not in an effect, so no frame is drawn with the new
+  // dependencies and the old selection. The first render keeps the initial
+  // index.
+  if (
+    resetDeps.length !== prevResetDeps.length ||
+    resetDeps.some((dep, i) => !Object.is(dep, prevResetDeps[i]))
+  ) {
+    setPrevResetDeps(resetDeps);
     setSelectedIndex(0);
     scrollOffsetRef.current = 0;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, resetDeps);
+  }
 
   // Compute effective scroll offset synchronously during render
   // This ensures the selected item is always visible without render lag

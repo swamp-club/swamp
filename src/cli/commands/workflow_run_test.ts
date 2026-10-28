@@ -23,6 +23,7 @@ import { withMockedEnv } from "../../infrastructure/persistence/path_test_helper
 import { Command } from "@cliffy/command";
 import { WorkflowNameType } from "../completion_types.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import { upgradeAuthorizationHeaders } from "./remote_token_test_helpers.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
@@ -244,5 +245,32 @@ Deno.test({
     } finally {
       await server.shutdown();
     }
+  },
+});
+
+// ── SWAMP_SERVER_TOKEN_FILE binding (swamp-club#4012) ──────────────────
+
+Deno.test({
+  name:
+    "workflowRunCommand: a .swamp.yaml-only address never receives SWAMP_SERVER_TOKEN_FILE; --server does",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    assertEquals(
+      await upgradeAuthorizationHeaders(
+        "file.secret",
+        () => parseWorkflowRun(["--json"]),
+        withMockedEnv,
+      ),
+      [null],
+    );
+    assertEquals(
+      await upgradeAuthorizationHeaders(
+        "file.secret",
+        (url) => parseWorkflowRun(["--json", "--server", url]),
+        withMockedEnv,
+      ),
+      ["Bearer file.secret"],
+    );
   },
 });

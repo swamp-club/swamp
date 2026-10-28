@@ -33,6 +33,7 @@
  */
 
 import type { Command } from "@cliffy/command";
+import { getLogger } from "@logtape/logtape";
 import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
 import type {
   ModelMethodRunPayload,
@@ -48,13 +49,20 @@ import {
 } from "../domain/auth/server_url.ts";
 import { FileServerCredentialRepository } from "../infrastructure/persistence/server_credential_repository.ts";
 import { resolveExtraHeaders } from "../domain/auth/extra_headers.ts";
-import { serverLoginHint } from "../domain/auth/server_login_hint.ts";
+import {
+  recordWithheldTokenFile,
+  serverLoginHint,
+  withheldTokenFileMessage,
+  type WithheldTokenFileRemedy,
+} from "../domain/auth/server_login_hint.ts";
 import { quoteShellWord } from "../domain/shell_word.ts";
 import { processLockHolderMarker } from "../domain/datastore/lock_holder_marker.ts";
 import {
   gutterLine,
   STATUS_COLORS,
 } from "../presentation/output/console_writer.ts";
+
+const logger = getLogger(["swamp", "cli", "remote-run"]);
 
 let _cachedMarkerServerAddress: string | undefined;
 
@@ -263,11 +271,54 @@ export async function readTokenFile(
 }
 
 /**
+ * Whether `SWAMP_SERVER_TOKEN_FILE` is bound to `key`: one of the addresses
+ * the user named (the `--server` flag, `SWAMP_SERVE_URL`,
+ * `SWAMP_SERVER_URL`) normalizes to it. An unset, empty or unparseable
+ * address names nothing, so a `.swamp.yaml` serverAddress alone never binds
+ * it.
+ */
+export function tokenFileBoundTo(
+  key: string,
+  addresses: readonly (string | undefined)[],
+): boolean {
+  return addresses.some((value) => {
+    if (!value) return false;
+    try {
+      return normalizeServerUrlForCredentials(value) === key;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * Warns, once per address, that `SWAMP_SERVER_TOKEN_FILE` was not sent to
+ * `key` and no other source supplied a token, and records it so a 401 from
+ * that address says why. Names the normalized address only, never the
+ * file's path or contents. Callers call it only when no token was found, so
+ * a stored credential that authenticates raises no warning.
+ */
+export function warnWithheldTokenFile(
+  key: string,
+  remedy: WithheldTokenFileRemedy,
+): void {
+  if (recordWithheldTokenFile(key, remedy)) {
+    logger.warn(withheldTokenFileMessage(key, remedy));
+  }
+}
+
+/**
  * Resolves the server token for authentication. Precedence:
  * 1. Explicit token value (from `--token` flag or `--token-file` read)
- * 2. `SWAMP_SERVER_TOKEN_FILE` env var (read from file)
+ * 2. `SWAMP_SERVER_TOKEN_FILE` env var (read from file), only when
+ *    `serverFlag`, `SWAMP_SERVE_URL` or `SWAMP_SERVER_URL` normalizes to
+ *    `serverUrl`
  * 3. `SWAMP_SERVER_TOKEN` env var (via ServerCredentialRepository)
  * 4. Stored credential in `~/.config/swamp/servers.json`
+ *
+ * `serverFlag` is the raw `--server` value as the user typed it, never the
+ * resolved URL: a `.swamp.yaml` serverAddress passed there would receive a
+ * token file meant for another server (swamp-club#4012).
  *
  * The server URL is validated first, whichever source supplies the token,
  * so an unsupported scheme or unparseable value fails with a UserError
@@ -281,15 +332,25 @@ export async function resolveServerToken(
   serverUrl: string,
   explicitToken?: string,
   credentialRepo?: ServerCredentialRepository,
+  serverFlag?: string,
 ): Promise<string | undefined> {
-  parseServerFlag(serverUrl);
+  const key = parseServerFlag(serverUrl);
   if (explicitToken) return explicitToken;
   const envTokenFile = Deno.env.get("SWAMP_SERVER_TOKEN_FILE");
   if (envTokenFile) {
-    return readTokenFile(envTokenFile, "SWAMP_SERVER_TOKEN_FILE");
+    const bound = tokenFileBoundTo(key, [
+      serverFlag,
+      Deno.env.get("SWAMP_SERVE_URL"),
+      Deno.env.get("SWAMP_SERVER_URL"),
+    ]);
+    if (bound) return readTokenFile(envTokenFile, "SWAMP_SERVER_TOKEN_FILE");
   }
   const repo = credentialRepo ?? new FileServerCredentialRepository();
   const credential = await repo.get(serverUrl);
+  // A set token file that reached here was not bound to the address.
+  if (!credential?.token && envTokenFile) {
+    warnWithheldTokenFile(key, "flag-or-env");
+  }
   return credential?.token;
 }
 
@@ -298,10 +359,12 @@ export async function resolveServerToken(
  * Handles `--token` / `--token-file` mutual exclusivity and reads the
  * token from file when `--token-file` is provided, then delegates to
  * `resolveServerToken()` for env var and stored credential fallbacks.
+ * `options.server` must be the `--server` flag as parsed, not overwritten
+ * with the resolved URL: it is what binds `SWAMP_SERVER_TOKEN_FILE`.
  */
 export async function resolveServerTokenFromOptions(
   serverUrl: string,
-  options: { token?: unknown; tokenFile?: unknown },
+  options: { server?: unknown; token?: unknown; tokenFile?: unknown },
   credentialRepo?: ServerCredentialRepository,
 ): Promise<string | undefined> {
   const token = options.token as string | undefined;
@@ -314,7 +377,12 @@ export async function resolveServerTokenFromOptions(
   const explicitToken = tokenFile
     ? await readTokenFile(tokenFile, "--token-file")
     : token;
-  return resolveServerToken(serverUrl, explicitToken, credentialRepo);
+  return resolveServerToken(
+    serverUrl,
+    explicitToken,
+    credentialRepo,
+    options.server as string | undefined,
+  );
 }
 
 /**
@@ -905,6 +973,9 @@ type AnyCommand = Command<any, any, any, any, any, any, any, any>;
  * (swamp-club#2360).
  */
 export const CA_CERT_FLAG = "--ca-cert <path:string>";
+/** `--token-file` help, shared by every command that resolves a server token. */
+export const TOKEN_FILE_DESCRIPTION =
+  "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE, used only for the server named by --server, SWAMP_SERVE_URL or SWAMP_SERVER_URL)";
 export const CA_CERT_DESCRIPTION =
   "Path to PEM-encoded CA certificate to trust for TLS connections to the server (env: SWAMP_CA_CERT)";
 
@@ -926,7 +997,7 @@ export function withRemoteOptions<T extends AnyCommand>(command: T): T {
     )
     .option(
       "--token-file <path:string>",
-      "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
+      TOKEN_FILE_DESCRIPTION,
     )
     .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION) as T;
 }

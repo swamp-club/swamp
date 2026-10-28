@@ -257,6 +257,28 @@ swamp datastore setup filesystem --path /mnt/shared/swamp-data --json
 Migrates existing `.swamp/` runtime data to the new path and updates
 `.swamp.yaml`. Use `--skip-migration` to skip the data copy.
 
+### Durable Writes
+
+By default a v2 data write is atomic (it survives a process crash) but is not
+synced to disk, so a power cut can lose it or publish an empty version. To sync
+every write before it is published, set `durable: true` in the datastore block,
+or `SWAMP_DATASTORE_DURABLE=1` when the block does not set it. This costs
+several fsyncs per write, roughly doubling write time on a local SSD and more on
+macOS or network disks, so enable it where data must survive a power cut:
+
+```yaml
+datastore:
+  type: filesystem
+  path: .swamp
+  durable: true
+```
+
+With it on, a write whose sync fails exits with
+`Could not sync <path> to disk: <reason>`. A version whose own files could not
+be synced is not published; when only the final sync of its `latest` marker
+fails, the version is already latest and the marker may not survive a power cut.
+Treat `EIO` or `ENOSPC` as a disk problem, not a reason to turn syncing off.
+
 ### Setting Up a v3 Filesystem Datastore
 
 `--format 3` creates a v3 datastore: every change is committed to a commit log

@@ -48,6 +48,7 @@ import type { GarbageCollectionPolicy, Lifetime } from "../data/mod.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 import type { SecretReference } from "../vaults/secret_bag_registry.ts";
 import { isReservedVaultName } from "../vaults/vault_name.ts";
+import { markErrorPaths } from "../errors.ts";
 import {
   type BehaviorWords,
   wordedError,
@@ -91,8 +92,18 @@ export class DefaultDataWriter implements DataWriter {
   private readonly callbacks: DataWriterCallbacks;
 
   private allocated:
-    | { version: number; contentPath: string; priorVersions: number[] }
+    | {
+      version: number;
+      contentPath: string;
+      priorVersions: number[];
+      durable?: boolean;
+    }
     | null = null;
+  /**
+   * Whether writeStream synced the content on its own handle, so finalize
+   * need not have the repository sync it (swamp-club#4017).
+   */
+  private contentSynced = false;
   private data: Data | null = null;
   private lineBuffer: string[] | null = null;
   private finalized = false;
@@ -276,6 +287,25 @@ export class DefaultDataWriter implements DataWriter {
         options?.onLine?.(buffer);
         this.callbacks.onLine?.(this.name, buffer);
       }
+
+      // Synced on the handle that wrote it: Linux reports a write-back
+      // error reliably only to handles open when it happened. Not in the
+      // finally, so a sync error never hides a stream error.
+      if (this.allocated.durable) {
+        try {
+          await file.sync();
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          throw markErrorPaths(
+            new Error(
+              `Could not sync ${this.allocated.contentPath} to disk: ${reason}.`,
+              { cause: error },
+            ),
+            [this.allocated.contentPath],
+          );
+        }
+        this.contentSynced = true;
+      }
     } finally {
       file.close();
     }
@@ -317,6 +347,7 @@ export class DefaultDataWriter implements DataWriter {
         this.data,
         this.allocated.version,
         this.allocated.priorVersions,
+        { contentSynced: this.contentSynced },
       );
       this.deferredReceipt = receipt;
       this.finalized = true;
@@ -329,6 +360,7 @@ export class DefaultDataWriter implements DataWriter {
       this.data,
       this.allocated.version,
       this.allocated.priorVersions,
+      { contentSynced: this.contentSynced },
     );
 
     this.finalized = true;

@@ -43,6 +43,7 @@ import {
   parseMaxSignalWaitTimeout,
   parseShutdownDrainTimeout,
   parseTokenGcSettings,
+  readBulkCancelBody,
   readCancelRequestReason,
   readTlsFile,
   resolveServeStartupSettings,
@@ -1395,6 +1396,42 @@ Deno.test("cancelExecution: a persisted cancel reports its own nested runs and i
     executionId: "run-left",
     cancelledNestedRuns: [child],
   });
+});
+
+// --- readBulkCancelBody ---
+
+function bulkCancelRequest(body?: string): Request {
+  return new Request("http://localhost/api/v1/cancel", {
+    method: "POST",
+    body,
+  });
+}
+
+Deno.test("readBulkCancelBody: returns the JSON object, or no filter when the body is not one", async () => {
+  assertEquals(
+    await readBulkCancelBody(
+      bulkCancelRequest(JSON.stringify({ executionType: "method-run" })),
+    ),
+    { ok: true, body: { executionType: "method-run" } },
+  );
+  assertEquals(await readBulkCancelBody(bulkCancelRequest()), {
+    ok: true,
+    body: {},
+  });
+  for (const body of ["not json", "null", "5", '"text"', '["method-run"]']) {
+    assertEquals(await readBulkCancelBody(bulkCancelRequest(body)), {
+      ok: true,
+      body: {},
+    }, body);
+  }
+});
+
+Deno.test("readBulkCancelBody: refuses a body over the cap with 413", async () => {
+  const result = await readBulkCancelBody(
+    bulkCancelRequest("x".repeat(MAX_CANCEL_BODY_BYTES + 1)),
+  );
+  assertEquals(result.ok, false);
+  assertEquals(!result.ok && result.status, 413);
 });
 
 // --- readCancelRequestReason ---

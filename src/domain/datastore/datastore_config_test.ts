@@ -29,6 +29,7 @@ import {
   DEFAULT_DATASTORE_SUBDIRS,
   DEFAULT_LOCK_TIMEOUT_MS,
   DEFAULT_SYNC_TIMEOUT_MS,
+  DURABLE_WRITES_ENV_VAR,
   externalFilesystemDatastoreRoot,
   type FilesystemDatastoreConfig,
   getDatastoreDirectories,
@@ -43,6 +44,7 @@ import {
   planConfigTierMerge,
   PULLED_EXTENSIONS_SUBDIR,
   REPO_LOCAL_STREAM_SUBDIRS,
+  resolveDurableWrites,
   resolveLockTimeoutMs,
   resolveSyncTimeoutMs,
   SYNC_TIMEOUT_ENV_VAR,
@@ -577,4 +579,62 @@ Deno.test("mayHoldRunLogs: true for outputs and workflow-runs only", () => {
   assertEquals(mayHoldRunLogs("workflow-runs"), true);
   assertEquals(mayHoldRunLogs("data"), false);
   assertEquals(mayHoldRunLogs("audit"), false);
+});
+
+Deno.test("resolveDurableWrites: off by default, with no config and no env", () => {
+  withMockedEnv({ [DURABLE_WRITES_ENV_VAR]: undefined }, () => {
+    assertEquals(resolveDurableWrites(), false);
+    assertEquals(resolveDurableWrites(filesystemConfig), false);
+    assertEquals(resolveDurableWrites(customConfig), false);
+  });
+});
+
+Deno.test("resolveDurableWrites: the datastore config wins over the env", () => {
+  withMockedEnv({ [DURABLE_WRITES_ENV_VAR]: "1" }, () => {
+    assertEquals(
+      resolveDurableWrites({ ...filesystemConfig, durable: false }),
+      false,
+    );
+    assertEquals(
+      resolveDurableWrites({ ...customConfig, durable: false }),
+      false,
+    );
+  });
+  withMockedEnv({ [DURABLE_WRITES_ENV_VAR]: "0" }, () => {
+    assertEquals(
+      resolveDurableWrites({ ...filesystemConfig, durable: true }),
+      true,
+    );
+  });
+});
+
+Deno.test("resolveDurableWrites: the env decides when the config does not say", () => {
+  for (const value of ["0", "false", "FALSE", "no", "off", " Off "]) {
+    withMockedEnv({ [DURABLE_WRITES_ENV_VAR]: value }, () => {
+      assertEquals(resolveDurableWrites(filesystemConfig), false, value);
+    });
+  }
+  for (const value of ["1", "true", "yes", "ON"]) {
+    withMockedEnv({ [DURABLE_WRITES_ENV_VAR]: value }, () => {
+      assertEquals(resolveDurableWrites(filesystemConfig), true, value);
+    });
+  }
+});
+
+Deno.test("resolveDurableWrites: an env value that is neither on nor off leaves writes unsynced", () => {
+  for (const value of ["", "maybe", "2"]) {
+    withMockedEnv({ [DURABLE_WRITES_ENV_VAR]: value }, () => {
+      assertEquals(resolveDurableWrites(filesystemConfig), false, value);
+    });
+  }
+});
+
+Deno.test("mergeSetupDatastoreBlock: keeps the durable setting across a setup re-run", () => {
+  assertEquals(
+    mergeSetupDatastoreBlock(
+      { type: "filesystem", path: "/old", durable: false },
+      { type: "filesystem", path: "/new" },
+    ),
+    { type: "filesystem", path: "/new", durable: false },
+  );
 });

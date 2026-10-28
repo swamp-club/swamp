@@ -84,6 +84,7 @@ import {
   isHiddenFromWorker,
   workerHiddenStoredTypes,
 } from "./worker_control_plane_visibility.ts";
+import { parseUntrustedOrThrow } from "../domain/untrusted_parse.ts";
 import {
   assertSecretKeyNotDenied,
   assertVaultNotDenied,
@@ -747,7 +748,7 @@ export class CapabilityService {
       RemoteMethod.getData,
       safe(RemoteMethod.getData, (params) =>
         this.getData(workerName, {
-          ...GetDataParamsSchema.parse(params),
+          ...parseUntrustedOrThrow(GetDataParamsSchema, params),
           dispatchId: extractDispatchId(params),
         })),
     );
@@ -755,7 +756,7 @@ export class CapabilityService {
       RemoteMethod.queryData,
       safe(RemoteMethod.queryData, (params) =>
         this.queryData(workerName, {
-          ...QueryDataParamsSchema.parse(params),
+          ...parseUntrustedOrThrow(QueryDataParamsSchema, params),
           dispatchId: extractDispatchId(params),
         })),
     );
@@ -765,7 +766,7 @@ export class CapabilityService {
         RemoteMethod.listVersions,
         (params) =>
           this.listVersions(workerName, {
-            ...ListVersionsParamsSchema.parse(params),
+            ...parseUntrustedOrThrow(ListVersionsParamsSchema, params),
             dispatchId: extractDispatchId(params),
           }),
       ),
@@ -774,7 +775,7 @@ export class CapabilityService {
       RemoteMethod.deleteData,
       safe(RemoteMethod.deleteData, (params) =>
         this.deleteData(workerName, {
-          ...DeleteDataParamsSchema.parse(params),
+          ...parseUntrustedOrThrow(DeleteDataParamsSchema, params),
           dispatchId: extractDispatchId(params),
         })),
     );
@@ -784,7 +785,7 @@ export class CapabilityService {
         RemoteMethod.resolveSecret,
         (params) =>
           this.resolveSecret(workerName, {
-            ...ResolveSecretParamsSchema.parse(params),
+            ...parseUntrustedOrThrow(ResolveSecretParamsSchema, params),
             dispatchId: extractDispatchId(params),
           }),
       ),
@@ -793,7 +794,7 @@ export class CapabilityService {
       RemoteMethod.putSecret,
       safe(RemoteMethod.putSecret, (params) =>
         this.putSecret(workerName, {
-          ...PutSecretParamsSchema.parse(params),
+          ...parseUntrustedOrThrow(PutSecretParamsSchema, params),
           dispatchId: extractDispatchId(params),
         })),
     );
@@ -803,7 +804,7 @@ export class CapabilityService {
         RemoteMethod.readDefinition,
         (params) =>
           this.readDefinition(workerName, {
-            ...ReadDefinitionParamsSchema.parse(params),
+            ...parseUntrustedOrThrow(ReadDefinitionParamsSchema, params),
             dispatchId: extractDispatchId(params),
           }),
       ),
@@ -814,7 +815,7 @@ export class CapabilityService {
         RemoteMethod.readOutput,
         (params) =>
           this.readOutput(workerName, {
-            ...ReadOutputParamsSchema.parse(params),
+            ...parseUntrustedOrThrow(ReadOutputParamsSchema, params),
             dispatchId: extractDispatchId(params),
           }),
       ),
@@ -825,7 +826,7 @@ export class CapabilityService {
         RemoteMethod.resolveModel,
         (params) =>
           this.resolveModel(workerName, {
-            ...ResolveModelParamsSchema.parse(params),
+            ...parseUntrustedOrThrow(ResolveModelParamsSchema, params),
             dispatchId: extractDispatchId(params),
           }),
       ),

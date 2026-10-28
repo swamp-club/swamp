@@ -17,7 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertGreater, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertGreater,
+  assertStringIncludes,
+} from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { z } from "zod";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { join } from "@std/path";
@@ -36,6 +42,7 @@ import {
 import {
   findSpan,
   withCapturedSpans,
+  withObservedSpans,
 } from "../../infrastructure/tracing/span_test_helpers.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
@@ -1567,4 +1574,372 @@ Deno.test("handleModelMethodHistoryLogs: reads a workflow step's log from its wo
       assertEquals(logs.payload.data.log.lines, ["hello from the workflow"]);
     })
   );
+});
+
+// --- bounded behavior history search (swamp-club#4056) ---
+
+Deno.test("handleModelOutputSearch: limits only after authorization, and exports output_search phases", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const readable = await saveEditModel(definitionRepo, "readable");
+    const hidden = await saveEditModel(definitionRepo, "hidden");
+    const save = (definition: Definition, startedAt: string) =>
+      outputRepo.save(
+        EDIT_TEST_TYPE,
+        "execute",
+        ModelOutput.create({
+          definitionId: definition.id,
+          methodName: "execute",
+          status: "succeeded",
+          startedAt: new Date(startedAt),
+          provenance: {
+            definitionHash: "h",
+            modelVersion: "1",
+            triggeredBy: "manual",
+          },
+        }),
+      );
+    await save(readable, "2026-01-01T00:00:00Z");
+    await save(readable, "2026-01-02T00:00:00Z");
+    // The newest outputs belong to a model the principal may not read.
+    await save(hidden, "2026-01-03T00:00:00Z");
+    await save(hidden, "2026-01-04T00:00:00Z");
+    await save(hidden, "2026-01-05T00:00:00Z");
+
+    const base = createPolicyEditCtx(dir, definitionRepo, [
+      grant({
+        actions: ["read"],
+        resource: { kind: "model", pattern: "readable" },
+      }),
+    ]);
+    const ctx = {
+      ...base,
+      repoContext: {
+        definitionRepo,
+        outputRepo,
+        workflowRepo: new YamlWorkflowRepository(dir),
+      } as unknown as ConnectionContext["repoContext"],
+    };
+    // The global scan enumerates registered types.
+    modelRegistry.register({
+      type: EDIT_TEST_TYPE,
+      version: "2026.01.01.1",
+      methods: {},
+    });
+    try {
+      await withObservedSpans(async (spans) => {
+        const socket = createMockSocket();
+        await handleModelOutputSearch(
+          socket,
+          ctx,
+          "req-1",
+          new AbortController(),
+          EDITOR,
+          { limit: 2 },
+        );
+
+        const [response] = frames(socket);
+        assertEquals(response.type, "model.output.search");
+        assertEquals(
+          response.payload.data.results.map((r: { startedAt: string }) =>
+            r.startedAt
+          ),
+          ["2026-01-02T00:00:00.000Z", "2026-01-01T00:00:00.000Z"],
+        );
+        const phase = (name: string) =>
+          findSpan(spans, `swamp.diagnostic.${name}`).attributes;
+        assertEquals(
+          phase("candidate_scan")["swamp.diagnostic.area"],
+          "output_search",
+        );
+        assertEquals(phase("candidate_scan")["swamp.diagnostic.candidates"], 5);
+        assertEquals(phase("authorization")["swamp.diagnostic.items"], 5);
+        assertEquals(phase("authorization")["swamp.diagnostic.readable"], 2);
+        assertEquals(phase("response")["swamp.diagnostic.results"], 2);
+      });
+    } finally {
+      modelRegistry.invalidateType(EDIT_TEST_TYPE);
+    }
+  });
+});
+
+Deno.test("handleModelOutputSearch: names workflows through the repository's per-request view", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const workflowRepo = new YamlWorkflowRepository(dir);
+    const definition = await saveEditModel(definitionRepo, "watched");
+    const workflow = linkedWorkflow("nightly");
+    await workflowRepo.save(workflow);
+    await outputRepo.save(
+      EDIT_TEST_TYPE,
+      "execute",
+      ModelOutput.create({
+        definitionId: definition.id,
+        methodName: "execute",
+        status: "succeeded",
+        startedAt: new Date("2026-01-01T00:00:00Z"),
+        provenance: {
+          definitionHash: "h",
+          modelVersion: "1",
+          triggeredBy: "workflow",
+          workflowId: workflow.id,
+          workflowRunId: "run-1",
+          stepName: "gate",
+        },
+      }),
+    );
+    let views = 0;
+    let rawListings = 0;
+    const counted = Object.assign(
+      Object.create(workflowRepo) as YamlWorkflowRepository,
+      {
+        memoizedView: () => {
+          views++;
+          return workflowRepo;
+        },
+        findAll: () => {
+          rawListings++;
+          return workflowRepo.findAll();
+        },
+      },
+    );
+    const ctx = {
+      ...createEditCtx(dir, definitionRepo),
+      repoContext: {
+        definitionRepo,
+        outputRepo,
+        workflowRepo: counted,
+      } as unknown as ConnectionContext["repoContext"],
+    };
+
+    const socket = createMockSocket();
+    await handleModelOutputSearch(
+      socket,
+      ctx,
+      "req-1",
+      new AbortController(),
+      null,
+      { model: "watched" },
+    );
+
+    const [response] = frames(socket);
+    assertEquals(response.payload.data.results[0].workflowName, "nightly");
+    // Authorization takes a view of its own; neither lists the live repository.
+    assertGreater(views, 0);
+    assertEquals(rawListings, 0);
+  });
+});
+
+Deno.test("handleModelOutputSearch: a model's search skips its outputs named outside since and until without reading them (swamp-club#4058)", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const watched = await saveEditModel(definitionRepo, "watched");
+    const other = await saveEditModel(definitionRepo, "other");
+    const save = (definition: Definition, startedAt: string) =>
+      outputRepo.save(
+        EDIT_TEST_TYPE,
+        "execute",
+        ModelOutput.create({
+          definitionId: definition.id,
+          methodName: "execute",
+          status: "succeeded",
+          startedAt: new Date(startedAt),
+          provenance: {
+            definitionHash: "h",
+            modelVersion: "1",
+            triggeredBy: "manual",
+          },
+        }),
+      );
+    await save(watched, "2026-01-01T00:00:00Z");
+    await save(watched, "2026-01-02T00:00:00Z");
+    await save(watched, "2026-01-03T00:00:00Z");
+    await save(other, "2026-01-02T12:00:00Z");
+    const ctx = {
+      ...createEditCtx(dir, definitionRepo),
+      repoContext: {
+        definitionRepo,
+        outputRepo,
+        workflowRepo: new YamlWorkflowRepository(dir),
+      } as unknown as ConnectionContext["repoContext"],
+    };
+
+    for (
+      const [window, expected, read] of [
+        [
+          { since: "2026-01-02T00:00:00Z" },
+          ["2026-01-03T00:00:00.000Z", "2026-01-02T00:00:00.000Z"],
+          2,
+        ],
+        [
+          { since: "2026-01-02T00:00:00Z", until: "2026-01-03T00:00:00Z" },
+          ["2026-01-02T00:00:00.000Z"],
+          1,
+        ],
+      ] as const
+    ) {
+      await withObservedSpans(async (spans) => {
+        const socket = createMockSocket();
+        await handleModelOutputSearch(
+          socket,
+          ctx,
+          "req-1",
+          new AbortController(),
+          null,
+          { model: "watched", ...window },
+        );
+
+        const [response] = frames(socket);
+        assertEquals(response.type, "model.output.search");
+        assertEquals(
+          response.payload.data.results.map((r: { startedAt: string }) =>
+            r.startedAt
+          ),
+          [...expected],
+        );
+        const scan = findSpan(spans, "swamp.diagnostic.candidate_scan")
+          .attributes;
+        // Asserts candidates rather than files_read, which also counts the
+        // definition lookup's reads.
+        assertEquals(scan["swamp.diagnostic.candidates"], read);
+        assertEquals(scan["swamp.diagnostic.skipped_by_name"], 4 - read);
+      });
+    }
+  });
+});
+
+Deno.test("handleModelMethodHistorySearch: a search cancelled before its scan replies cancelled (swamp-club#4070)", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const watched = await saveEditModel(definitionRepo, "watched");
+    await outputRepo.save(
+      EDIT_TEST_TYPE,
+      "execute",
+      ModelOutput.create({
+        definitionId: watched.id,
+        methodName: "execute",
+        status: "succeeded",
+        provenance: {
+          definitionHash: "h",
+          modelVersion: "1",
+          triggeredBy: "manual",
+        },
+      }),
+    );
+    const ctx = {
+      ...createEditCtx(dir, definitionRepo),
+      repoContext: {
+        definitionRepo,
+        outputRepo,
+        workflowRepo: new YamlWorkflowRepository(dir),
+      } as unknown as ConnectionContext["repoContext"],
+    };
+    const socket = createMockSocket();
+    const controller = new AbortController();
+    controller.abort();
+
+    await handleModelMethodHistorySearch(
+      socket,
+      ctx,
+      "req-1",
+      controller,
+      null,
+      {},
+    );
+
+    const [response] = frames(socket);
+    assertEquals(response.type, "error");
+    assertEquals(response.error.code, "cancelled");
+  });
+});
+
+Deno.test("handleModelOutputSearch: a search cancelled during its scan stops reading and replies cancelled (swamp-club#4070)", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const watched = await saveEditModel(definitionRepo, "watched");
+    for (let day = 1; day <= 20; day++) {
+      await outputRepo.save(
+        EDIT_TEST_TYPE,
+        "execute",
+        ModelOutput.create({
+          definitionId: watched.id,
+          methodName: "execute",
+          status: "succeeded",
+          startedAt: new Date(Date.UTC(2026, 0, day)),
+          provenance: {
+            definitionHash: "h",
+            modelVersion: "1",
+            triggeredBy: "manual",
+          },
+        }),
+      );
+    }
+    const ctx = {
+      ...createEditCtx(dir, definitionRepo),
+      repoContext: {
+        definitionRepo,
+        outputRepo,
+        workflowRepo: new YamlWorkflowRepository(dir),
+      } as unknown as ConnectionContext["repoContext"],
+    };
+
+    // Output reads are held open until released, so the cancel lands while
+    // the scan holds permits and has reads still to start.
+    const outputsDir = join(dir, ".swamp", "outputs");
+    const readTextFile = Deno.readTextFile;
+    const gate = Promise.withResolvers<void>();
+    let outputReads = 0;
+    (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile = async (
+      path,
+      options,
+    ) => {
+      if (String(path).startsWith(outputsDir)) {
+        outputReads++;
+        await gate.promise;
+      }
+      return await readTextFile(path, options);
+    };
+    try {
+      await withObservedSpans(async (spans) => {
+        const socket = createMockSocket();
+        const controller = new AbortController();
+        const search = handleModelOutputSearch(
+          socket,
+          ctx,
+          "req-1",
+          controller,
+          null,
+          { model: "watched" },
+        );
+        let readsAtAbort = 0;
+        try {
+          await waitFor(() => outputReads > 0, "the scan's first read");
+        } finally {
+          readsAtAbort = outputReads;
+          controller.abort();
+          gate.resolve();
+          await search;
+        }
+
+        const [response] = frames(socket);
+        assertEquals(response.type, "error");
+        assertEquals(response.error.code, "cancelled");
+        // 20 records, at most 16 read at once: the rest were never started.
+        assertEquals(outputReads, readsAtAbort);
+        assert(outputReads < 20, `${outputReads} reads`);
+        const scan = findSpan(spans, "swamp.diagnostic.candidate_scan")
+          .attributes;
+        assertEquals(scan["swamp.outcome"], "cancelled");
+        assertEquals(scan["swamp.diagnostic.cancel_observed"], true);
+      });
+    } finally {
+      (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile =
+        readTextFile;
+    }
+  });
 });

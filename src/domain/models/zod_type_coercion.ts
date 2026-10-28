@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
+import { argumentParseContext } from "../untrusted_parse.ts";
 
 /**
  * Internal Zod definition structure for schema introspection.
@@ -363,6 +364,10 @@ function objectRefinementIssues(
   );
   let result;
   try {
+    // Every issue, never argumentParseContext(): issues rooted at a missing
+    // key are dropped below, so stopping at the first failing key could hide
+    // a failing present one. This runs only once every field has passed its
+    // own parse, so a full parse cannot grow with the input (swamp-club#3862).
     result = schema.safeParse(raw, { reportInput: true });
   } catch (error) {
     if (error instanceof z.core.$ZodAsyncError) return [];
@@ -417,9 +422,10 @@ export function parseGlobalArgumentsLeniently(
     for (const [key, fieldSchema] of Object.entries(shape)) {
       if (skipKeys.has(key)) continue;
       const present = Object.hasOwn(input, key);
-      const result = fieldSchema.safeParse(present ? input[key] : undefined, {
-        reportInput: true,
-      });
+      const result = fieldSchema.safeParse(
+        present ? input[key] : undefined,
+        argumentParseContext(),
+      );
       if (result.success) {
         if (present || result.data !== undefined) data[key] = result.data;
       } else if (present) {
@@ -448,7 +454,7 @@ export function parseGlobalArgumentsLeniently(
   }
   const result = (typeof partial === "string" ? schema : partial).safeParse(
     input,
-    { reportInput: true },
+    argumentParseContext(),
   );
   if (!result.success) {
     return { success: false, issues: result.error.issues };

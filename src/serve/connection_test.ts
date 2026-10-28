@@ -33,6 +33,7 @@ import {
   sanitizeErrorForClient,
   validateServerRequest,
 } from "./connection.ts";
+import { MAX_UNTRUSTED_RECORD_ENTRIES } from "../domain/untrusted_parse.ts";
 import {
   closeSession,
   setConnectionCollectives,
@@ -197,6 +198,54 @@ Deno.test("validateServerRequest keeps allowRename on model.edit and workflow.ed
   if (typeof workflow === "object" && workflow.type === "workflow.edit") {
     assertEquals(workflow.payload.allowRename, true);
   }
+});
+
+Deno.test("validateServerRequest refuses an oversized array with one issue", () => {
+  const result = validateServerRequest({
+    type: "workflow.run",
+    id: "req-big-array",
+    payload: {
+      workflowIdOrName: "wf",
+      skipReportNames: Array(100_000).fill(0),
+    },
+  });
+  assertEquals(typeof result, "string");
+  assertEquals(
+    result,
+    "Invalid request: payload.skipReportNames.0: Invalid input: expected string, received number",
+  );
+});
+
+Deno.test("validateServerRequest refuses an oversized string record before its entries", () => {
+  const runtimeTags: Record<string, unknown> = {};
+  for (let i = 0; i < 100_000; i++) runtimeTags[`k${i}`] = 0;
+  const result = validateServerRequest({
+    type: "model.method.run",
+    id: "req-big-record",
+    payload: { modelIdOrName: "m", methodName: "start", runtimeTags },
+  });
+  assertEquals(
+    result,
+    `Invalid request: payload.runtimeTags: Too many entries (max ${MAX_UNTRUSTED_RECORD_ENTRIES})`,
+  );
+});
+
+Deno.test("validateServerRequest accepts runtimeTags within the bound", () => {
+  const result = validateServerRequest({
+    type: "model.method.run",
+    id: "req-tags",
+    payload: {
+      modelIdOrName: "m",
+      methodName: "start",
+      runtimeTags: { env: "prod" },
+    },
+  });
+  assertEquals(typeof result, "object");
+  assertEquals(
+    (result as { payload: { runtimeTags?: Record<string, string> } }).payload
+      .runtimeTags,
+    { env: "prod" },
+  );
 });
 
 Deno.test("validateServerRequest accepts a valid model.method.run request", () => {
@@ -5396,6 +5445,9 @@ for (
   const type of [
     "workflow.approvals",
     "workflow.run.summary",
+    // Behavior history reads (swamp-club#4056).
+    "model.output.search",
+    "model.method.history.search",
   ]
 ) {
   Deno.test(`handleMessage: a ${type} request runs inside a swamp.serve.request span`, async () => {

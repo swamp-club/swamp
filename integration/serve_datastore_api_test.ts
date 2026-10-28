@@ -33,6 +33,7 @@ import { runInRootUnitOfWork } from "../src/infrastructure/persistence/repo_unit
 import { partitionOf } from "../src/domain/datastore_v3/partition_key.ts";
 import type { Commit } from "../src/domain/datastore_v3/commit.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
+import { SERVE_DATASTORE_LOG_HEADER } from "../src/infrastructure/datastore_v3/serve_datastore_client.ts";
 import { UploadLedger } from "../src/infrastructure/datastore_v3/upload_ledger.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import { grant } from "./serve_request_harness.ts";
@@ -1129,5 +1130,51 @@ Deno.test({
       );
       assertEquals(named.status, 200, JSON.stringify(named.json));
     }, ledger);
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: every reply to an authenticated caller names the log's id, a refusal too; an unauthenticated one does not (swamp-club#4049)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      const logId = server.v3.commitStore.logId();
+      const get = async (url: string, token?: string) => {
+        const response = await fetch(url, {
+          headers: token === undefined
+            ? {}
+            : { authorization: `Bearer ${token}` },
+        });
+        await response.body?.cancel();
+        return {
+          status: response.status,
+          log: response.headers.get(SERVE_DATASTORE_LOG_HEADER),
+        };
+      };
+
+      assertEquals(await get(`${server.url}/changes?cursor=0`, "alice-token"), {
+        status: 200,
+        log: logId,
+      });
+      assertEquals(
+        await get(`${partitionPath(server)}?after=0`, "alice-token"),
+        { status: 200, log: logId },
+      );
+      // A refusal, here another namespace, names it too.
+      assertEquals(
+        await get(
+          `${server.url.replace(/_default$/, "other")}/changes?cursor=0`,
+          "alice-token",
+        ),
+        { status: 404, log: logId },
+      );
+      // A caller serve does not know learns nothing.
+      assertEquals(await get(`${server.url}/changes?cursor=0`), {
+        status: 401,
+        log: null,
+      });
+    });
   },
 });

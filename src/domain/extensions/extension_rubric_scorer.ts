@@ -73,9 +73,11 @@ import { plainDenoEnv } from "../runtime/deno_plain_env.ts";
  * well (swamp-club#3781). This module is the CLI's I/O around it: extract
  * the archive, strip its config files, run `deno doc`, read the README and
  * LICENSE, then compose the score with what only the CLI knows before
- * publish. `repository-verified` is provisional here because only the
- * registry can award it, so its points count as not earned yet and the
- * percentage is the registry's for the case where it does not.
+ * publish. `repository-verified` is provisional here for a public
+ * repository URL because only the registry calls the host's API, so its
+ * points count as not earned yet and the percentage is the registry's for
+ * the case where it does not; an attested private source is earned, as the
+ * registry awards it on the attestation alone.
  *
  * Distinct from `extension_quality_checker.ts` in this directory — that
  * module runs `deno fmt` / `deno lint` / dynamic-import checks as part of

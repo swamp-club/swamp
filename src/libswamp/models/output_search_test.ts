@@ -18,6 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { withDiagnosticArea } from "../../domain/diagnostics/diagnostic_phase.ts";
+import {
+  diagnosticPhases,
+  findSpan,
+  withObservedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -234,6 +240,62 @@ Deno.test("modelOutputSearch: reads only the named model's outputs when it can l
     "out-1",
     "my-ec2",
   ]]);
+});
+
+Deno.test("modelOutputSearch: passes since and until to the model's output lookup, and still filters what it returns (swamp-club#4058)", async () => {
+  const windows: Array<{ since?: Date; until?: Date } | undefined> = [];
+  const deps = makeDeps({
+    resolveModel: () =>
+      Promise.resolve([{
+        definitionId: "def-1",
+        name: "my-ec2",
+        type: { normalized: "aws/ec2-instance" },
+      }]),
+    // Ignores the window, so the search's own check is what filters.
+    findOutputsByDefinition: (_type, _definitionId, window) => {
+      windows.push(window);
+      return Promise.resolve(
+        ["2026-01-15T09:00:00Z", "2026-01-15T10:00:00Z", "2026-01-15T11:00:00Z"]
+          .map((startedAt, i) => ({
+            id: `out-${i}`,
+            definitionId: "def-1",
+            methodName: "start",
+            status: "succeeded",
+            startedAt: new Date(startedAt),
+          })),
+      );
+    },
+  });
+  const run = async (input: { since?: string; until?: string }) =>
+    completedOf(
+      await collect(
+        modelOutputSearch(createLibSwampContext(), deps, {
+          model: "my-ec2",
+          ...input,
+        }),
+      ),
+    ).results.map((r) => r.id);
+
+  assertEquals(
+    await run({
+      since: "2026-01-15T10:00:00Z",
+      until: "2026-01-15T11:00:00Z",
+    }),
+    ["out-1"],
+  );
+  assertEquals(await run({ since: "2026-01-15T10:00:00Z" }), [
+    "out-2",
+    "out-1",
+  ]);
+  assertEquals(await run({}), ["out-2", "out-1", "out-0"]);
+  assertEquals(windows, [
+    {
+      since: new Date("2026-01-15T10:00:00Z"),
+      until: new Date("2026-01-15T11:00:00Z"),
+    },
+    { since: new Date("2026-01-15T10:00:00Z"), until: undefined },
+    undefined,
+  ]);
 });
 
 Deno.test("modelOutputSearch: filters by since (inclusive) and until (exclusive)", async () => {
@@ -473,4 +535,52 @@ Deno.test("modelOutputSearch: scans no definitions when no output needs a name",
     ),
   );
   assertEquals(empty.results, []);
+});
+
+Deno.test("modelOutputSearch: exports its phases only inside the output_search area (swamp-club#4056)", async () => {
+  await withObservedSpans(async (spans) => {
+    const deps = makeDeps({
+      resolveWorkflowNames: () =>
+        Promise.resolve(new Map([["wf-1", "nightly"]])),
+    });
+    const input = { includeProvenance: true };
+
+    await collect(modelOutputSearch(createLibSwampContext(), deps, input));
+    for (
+      const phase of [
+        "candidate_scan",
+        "definition_names",
+        "workflow_names",
+      ] as const
+    ) {
+      assertEquals(diagnosticPhases(spans, phase).length, 0, phase);
+    }
+
+    const data = completedOf(
+      await withDiagnosticArea(
+        "output_search",
+        () => collect(modelOutputSearch(createLibSwampContext(), deps, input)),
+      ),
+    );
+
+    assertEquals(data.results.length, 2);
+    const attributes = (phase: string) =>
+      findSpan(spans, `swamp.diagnostic.${phase}`).attributes;
+    assertEquals(
+      attributes("candidate_scan")["swamp.diagnostic.candidates"],
+      2,
+    );
+    assertEquals(
+      attributes("definition_names")["swamp.diagnostic.definitions"],
+      2,
+    );
+    assertEquals(
+      attributes("workflow_names")["swamp.diagnostic.workflow_ids"],
+      1,
+    );
+    assertEquals(
+      attributes("candidate_scan")["swamp.diagnostic.area"],
+      "output_search",
+    );
+  });
 });

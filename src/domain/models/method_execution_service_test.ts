@@ -60,6 +60,7 @@ import type {
 } from "./model.ts";
 import { modelRegistry } from "./model.ts";
 import { z } from "zod";
+import { setProcessArgumentParsePolicy } from "../untrusted_parse.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { SOLO_NAMESPACE } from "../data/namespace.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
@@ -7330,4 +7331,141 @@ Deno.test("executeWorkflow - a remote-placed step with no worker dispatcher name
   );
   assertStringIncludes(error.message, "no worker dispatcher is active");
   assertStringIncludes(error.message, "pass --server <url>");
+});
+
+// ── Serve's untrusted argument policy (swamp-club#3862) ─────────────────
+
+async function withUntrustedArguments(fn: () => Promise<void>): Promise<void> {
+  const restore = setProcessArgumentParsePolicy("untrusted");
+  try {
+    await fn();
+  } finally {
+    restore();
+  }
+}
+
+function listMethod(): MethodDefinition {
+  return {
+    description: "Takes a list of names",
+    arguments: z.object({ names: z.array(z.string()) }),
+    execute: () => Promise.resolve({ dataHandles: [] }),
+  };
+}
+
+function listDefinition(count: number): Definition {
+  return Definition.create({
+    name: "names",
+    methods: { run: { arguments: { names: Array(count).fill({}) } } },
+  });
+}
+
+Deno.test("execute: a method argument refusal names every failing element under the trusted policy", async () => {
+  const service = new DefaultMethodExecutionService();
+  const { context } = createTestContext({ methodName: "run" });
+  const error = await assertRejects(
+    () => service.execute(listDefinition(3), listMethod(), context),
+    Error,
+  );
+  assertStringIncludes(error.message, "names.0");
+  assertStringIncludes(error.message, "names.2");
+});
+
+Deno.test("execute: under the untrusted policy a method argument refusal names only the first failing element", async () => {
+  await withUntrustedArguments(async () => {
+    const service = new DefaultMethodExecutionService();
+    const { context } = createTestContext({ methodName: "run" });
+    const error = await assertRejects(
+      () => service.execute(listDefinition(100_000), listMethod(), context),
+      Error,
+    );
+    assertStringIncludes(error.message, "names.0");
+    assertEquals(error.message.includes("names.1"), false);
+  });
+});
+
+// A refusing check that echoes its input at a sensitive position, in each
+// shape a schema can deliver: a record, an array, a scalar.
+function refusingShapes(): Record<string, z.ZodTypeAny> {
+  const refusing = z.string().meta({ sensitive: true }).refine(() => false, {
+    error: (issue) => `credential rejected: ${String(issue.input)}`,
+  });
+  return {
+    record: z.object({ token: refusing }),
+    array: z.object({ raw: z.string() }).transform((x) => [x.raw]).pipe(
+      z.array(refusing),
+    ),
+    scalar: z.object({ raw: z.string() }).transform((x) => x.raw).pipe(
+      refusing,
+    ),
+  };
+}
+
+function shapeArgs(shape: string): Record<string, unknown> {
+  return shape === "record"
+    ? { token: "hunter2-long" }
+    : { raw: "hunter2-long" };
+}
+
+Deno.test("execute: under the untrusted policy a sensitive method argument refusal shows nothing of the value, for a record, an array and a scalar", async () => {
+  await withUntrustedArguments(async () => {
+    const service = new DefaultMethodExecutionService();
+    for (const [shape, schema] of Object.entries(refusingShapes())) {
+      const { context } = createTestContext({ methodName: shape });
+      const error = await assertRejects(
+        () =>
+          service.execute(
+            Definition.create({
+              name: "refused",
+              methods: { [shape]: { arguments: shapeArgs(shape) } },
+            }),
+            {
+              description: "Refuses a sensitive value",
+              arguments: schema,
+              execute: () => Promise.resolve({ dataHandles: [] }),
+            },
+            context,
+          ),
+        Error,
+      );
+      assertEquals(error.message.includes("hunter2-long"), false, shape);
+      assertEquals(error.message.includes("credential rejected"), false, shape);
+      assertStringIncludes(error.message, "Method arguments validation failed");
+    }
+  });
+});
+
+Deno.test("executeWorkflow: under the untrusted policy a sensitive global argument refusal shows nothing of the value, for a record, an array and a scalar", async () => {
+  await withUntrustedArguments(async () => {
+    const service = new DefaultMethodExecutionService();
+    for (const [shape, schema] of Object.entries(refusingShapes())) {
+      const model: ModelDefinition = {
+        type: ModelType.create(`test/untrusted-global-${shape}`),
+        version: "1",
+        globalArguments: schema,
+        methods: {
+          run: {
+            description: "Test method",
+            arguments: z.object({}),
+            execute: () => Promise.resolve({ dataHandles: [] }),
+          },
+        },
+      };
+      const error = await assertRejects(
+        () =>
+          service.executeWorkflow(
+            Definition.create({
+              name: "refused-global",
+              globalArguments: shapeArgs(shape),
+            }),
+            model,
+            "run",
+            createTestContext({ modelType: model.type }).context,
+          ),
+        Error,
+      );
+      assertEquals(error.message.includes("hunter2-long"), false, shape);
+      assertEquals(error.message.includes("credential rejected"), false, shape);
+      assertStringIncludes(error.message, "Global arguments validation failed");
+    }
+  });
 });

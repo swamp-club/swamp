@@ -37,6 +37,7 @@ export const DIAGNOSTIC_AREAS = [
   "worker_delete",
   "output_retention",
   "access_poll",
+  "output_search",
 ] as const;
 export type DiagnosticArea = typeof DIAGNOSTIC_AREAS[number];
 
@@ -96,6 +97,13 @@ const AREA_PHASES = {
     "catalog_invalidate",
     "snapshot_queue_wait",
     "snapshot_build",
+  ],
+  output_search: [
+    "candidate_scan",
+    "definition_names",
+    "workflow_names",
+    "authorization",
+    "response",
   ],
 } as const satisfies Record<DiagnosticArea, readonly string[]>;
 

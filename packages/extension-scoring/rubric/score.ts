@@ -452,8 +452,9 @@ function dependencyTrustRow(input: DependencyTrustInput | null): RubricFactor {
   }
   const { blockerCount, notAuditedCount, notAuditedFixes, looseCount } = input;
   const looseText = `${looseCount} loose dependency specifier(s) ` +
-    `(loose-specifier) cost 1 of 2 points. Pin an exact, published ` +
-    `version to earn the second point.`;
+    `(loose-specifier) cost 1 of 2 points. Commit a valid lock (deno.lock, ` +
+    `or a package-lock.json that matches node_modules) or pin exact ` +
+    `versions to earn the second point.`;
   const remediation = blockerCount > 0
     ? `${blockerCount} dependency blocker(s) found (deprecated packages, ` +
       `pinned deprecated versions or yanked JSR versions, HIGH/CRITICAL ` +
@@ -534,12 +535,13 @@ function repositoryVerifiedRow(evidence: RepositoryEvidence): RubricFactor {
       remediation: PUBLIC_REPOSITORY_REMEDIATION,
     };
   }
+  // the registry awards an attested private source on the attestation alone, with no outside check
   if (evidence.privateSource.kind === "attested") {
     return {
       ...base,
       label: ATTESTED_LABEL,
-      earnedPoints: 0,
-      status: "provisional",
+      earnedPoints: 2,
+      status: "earned",
     };
   }
   if (

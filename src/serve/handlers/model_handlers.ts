@@ -74,6 +74,10 @@ import {
 import { isSwampError } from "../../libswamp/errors.ts";
 import { modelMethodRun } from "../../libswamp/models/run.ts";
 import {
+  observeDiagnosticPhase,
+  withDiagnosticArea,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
+import {
   modelOutputSearch,
   type ModelOutputSearchData,
   type ModelOutputSearchDeps,
@@ -1941,12 +1945,17 @@ export async function handleModelOutputSearch(
     const libCtx = handlerLibSwampContext(ctx);
     const outputRepo = ctx.repoContext.outputRepo;
     const definitionRepo = ctx.repoContext.definitionRepo;
-    const workflowRepo = ctx.repoContext.workflowRepo;
+    // One read of the extension workflows per request, as
+    // canonicalResources reads them (swamp-club#3779).
+    const workflowRepo = ctx.repoContext.workflowRepo.memoizedView?.() ??
+      ctx.repoContext.workflowRepo;
 
+    // The scans stop when the request is cancelled, so it gives up its
+    // place among the shared scan permits (swamp-club#4070).
     const deps: ModelOutputSearchDeps = {
-      findAllOutputsGlobal: () => outputRepo.findAllGlobal(),
+      findAllOutputsGlobal: () => outputRepo.findAllGlobal(controller.signal),
       findAllOutputsGlobalSince: (cutoff) =>
-        outputRepo.findAllGlobalSince(cutoff),
+        outputRepo.findAllGlobalSince(cutoff, controller.signal),
       findAllDefinitions: () => definitionRepo.findAllIncludingAutoGlobal(),
       resolveModel: async (idOrName) => {
         const found = new Map<string, ModelOutputSearchModel>();
@@ -1968,10 +1977,12 @@ export async function handleModelOutputSearch(
         for (const { definition, type } of byId) add(definition, type);
         return [...found.values()];
       },
-      findOutputsByDefinition: (type, definitionId) =>
-        outputRepo.findByDefinition(
+      findOutputsByDefinition: (type, definitionId, window) =>
+        outputRepo.findHistoryByDefinition(
           ModelType.create(type.normalized),
           createDefinitionId(definitionId),
+          window,
+          controller.signal,
         ),
       resolveWorkflowNames: async (ids) => {
         const names = new Map<string, string>();
@@ -1984,56 +1995,79 @@ export async function handleModelOutputSearch(
       },
     };
 
-    let result: ModelOutputSearchData | undefined;
-    await consumeStream(
-      // Limit only after model authorization, then redact unreadable run links.
-      modelOutputSearch(libCtx, deps, {
-        ...payload,
-        limit: undefined,
-        includeProvenance: true,
-      }),
-      {
-        resolving: () => {},
-        completed: (e) => {
-          result = e.data;
+    // Exported as the output_search diagnostic area's phases
+    // (swamp-club#4056): the search's own, then authorization and response.
+    await withDiagnosticArea("output_search", async () => {
+      let result: ModelOutputSearchData | undefined;
+      await consumeStream(
+        // Limit only after model authorization, then redact unreadable run links.
+        modelOutputSearch(libCtx, deps, {
+          ...payload,
+          limit: undefined,
+          includeProvenance: true,
+        }),
+        {
+          resolving: () => {},
+          completed: (e) => {
+            result = e.data;
+          },
+          error: (e) => {
+            throw new LibSwampStreamError(e.error);
+          },
         },
-        error: (e) => {
-          throw new LibSwampStreamError(e.error);
-        },
-      },
-    );
+      );
 
+      if (controller.signal.aborted) {
+        sendError(socket, requestId, "cancelled", "Operation was cancelled");
+        return;
+      }
+
+      const data = (result ?? {}) as {
+        results?: ModelOutputSearchItem[];
+      };
+      const results = data.results;
+      if (results) {
+        data.results = await observeDiagnosticPhase(
+          "authorization",
+          {},
+          async (phase) => {
+            phase.tally.add("items", results.length);
+            const readable = await filterOutputItems(
+              results,
+              socket,
+              principal,
+              ctx,
+            );
+            phase.tally.add("readable", readable.length);
+            return readable;
+          },
+        );
+      }
+      await observeDiagnosticPhase("response", {}, async (phase) => {
+        if (data.results) {
+          if (payload?.limit !== undefined) {
+            data.results = data.results.slice(0, payload.limit);
+          }
+          await redactWorkflowLinks(
+            data.results,
+            ctx.authConfig.mode === "none",
+            nestedRunReadDecider(ctx, socket, principal),
+          );
+          phase.tally.add("results", data.results.length);
+        }
+        send(socket, {
+          type: "model.output.search",
+          id: requestId,
+          payload: { data },
+        });
+      });
+    }, controller.signal);
+  } catch (error) {
+    // A scan stopped by the cancel answers as one that ran to the end does.
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
       return;
     }
-
-    const data = (result ?? {}) as {
-      results?: ModelOutputSearchItem[];
-    };
-    if (data.results) {
-      data.results = await filterOutputItems(
-        data.results,
-        socket,
-        principal,
-        ctx,
-      );
-      if (payload?.limit !== undefined) {
-        data.results = data.results.slice(0, payload.limit);
-      }
-      await redactWorkflowLinks(
-        data.results,
-        ctx.authConfig.mode === "none",
-        nestedRunReadDecider(ctx, socket, principal),
-      );
-    }
-
-    send(socket, {
-      type: "model.output.search",
-      id: requestId,
-      payload: { data },
-    });
-  } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(
       socket,
@@ -2254,48 +2288,71 @@ export async function handleModelMethodHistorySearch(
     const outputRepo = ctx.repoContext.outputRepo;
     const definitionRepo = ctx.repoContext.definitionRepo;
 
+    // The scan stops when the request is cancelled (swamp-club#4070).
     const deps: ModelOutputSearchDeps = {
-      findAllOutputsGlobal: () => outputRepo.findAllGlobal(),
+      findAllOutputsGlobal: () => outputRepo.findAllGlobal(controller.signal),
       findAllDefinitions: () => definitionRepo.findAllIncludingAutoGlobal(),
     };
 
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      modelOutputSearch(libCtx, deps, { query: payload?.query }),
-      {
-        resolving: () => {},
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
+    // Exported as the output_search diagnostic area's phases
+    // (swamp-club#4056).
+    await withDiagnosticArea("output_search", async () => {
+      let result: Record<string, unknown> | undefined;
+      await consumeStream(
+        modelOutputSearch(libCtx, deps, { query: payload?.query }),
+        {
+          resolving: () => {},
+          completed: (e) => {
+            result = e.data as unknown as Record<string, unknown>;
+          },
+          error: (e) => {
+            throw new Error(e.error.message);
+          },
         },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
-    );
+      );
 
+      if (controller.signal.aborted) {
+        sendError(socket, requestId, "cancelled", "Operation was cancelled");
+        return;
+      }
+
+      const data = (result ?? {}) as {
+        results?: ModelOutputSearchItem[];
+      };
+      const results = data.results;
+      if (results) {
+        data.results = await observeDiagnosticPhase(
+          "authorization",
+          {},
+          async (phase) => {
+            phase.tally.add("items", results.length);
+            const readable = await filterOutputItems(
+              results,
+              socket,
+              principal,
+              ctx,
+            );
+            phase.tally.add("readable", readable.length);
+            return readable;
+          },
+        );
+      }
+      await observeDiagnosticPhase("response", {}, (phase) => {
+        phase.tally.add("results", data.results?.length ?? 0);
+        send(socket, {
+          type: "model.method.history.search",
+          id: requestId,
+          payload: { data },
+        });
+        return Promise.resolve();
+      });
+    }, controller.signal);
+  } catch (error) {
+    // A scan stopped by the cancel answers as one that ran to the end does.
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
       return;
     }
-
-    const data = (result ?? {}) as {
-      results?: ModelOutputSearchItem[];
-    };
-    if (data.results) {
-      data.results = await filterOutputItems(
-        data.results,
-        socket,
-        principal,
-        ctx,
-      );
-    }
-
-    send(socket, {
-      type: "model.method.history.search",
-      id: requestId,
-      payload: { data },
-    });
-  } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(
       socket,

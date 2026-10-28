@@ -73,6 +73,29 @@ The shortcut and the equivalent query run through the same catalog and return
 the same `DataRecord` shape. See [references/fields.md](references/fields.md)
 for the full list of queryable fields and predicate operators.
 
+## Output visible during a run but absent afterward
+
+Check the effective output lifetime, including definition and step overrides.
+`ephemeral` output lives in memory for that run, so a later `data query` cannot
+retrieve it. Built-in summaries label it `availability: ephemeral` and omit its
+retrieval command. An older persistent version with the same name may still be
+queryable; it is not the new run's output.
+
+When later retrieval is needed, set a durable lifetime before running. For
+example, a workflow step running `@swamp/git.log` can retain its `logResult`
+spec:
+
+```yaml
+dataOutputOverrides:
+  - specName: logResult
+    lifetime: infinite
+```
+
+The override names the output **spec**, which may differ from the data name
+(`log` here). Inspect the behavior type and existing overrides first. With a
+durable lifetime, query the recorded version or workflow run to read that
+output.
+
 ## Quick Reference
 
 | Task                     | Command                                               |

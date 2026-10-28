@@ -24,6 +24,7 @@ import {
   type OrphanReclamationResult,
 } from "../../domain/data/data_lifecycle_service.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { resolveDurableWrites } from "../../domain/datastore/datastore_config.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -117,6 +118,11 @@ export function createDataPruneDeps(
       undefined,
       undefined,
       namespaceFromResolver(datastoreResolver),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      resolveDurableWrites(datastoreResolver?.config()),
     );
   const workflowRunRepo = new YamlWorkflowRunRepository(
     repoDir,

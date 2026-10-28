@@ -111,6 +111,24 @@ async function resolveDatastoreFields(
   return resolved as ResolvedDatastoreFields;
 }
 
+/**
+ * The datastore block's `durable` setting (swamp-club#4017), as the
+ * resolved config carries it: absent when the block does not set it.
+ * Anything but a boolean is refused.
+ */
+function durableField(
+  ds: { durable?: unknown },
+): { durable?: boolean } {
+  if (ds.durable === undefined) return {};
+  if (typeof ds.durable !== "boolean") {
+    throw new UserError(
+      `Invalid 'durable' in the datastore block of .swamp.yaml: expected ` +
+        `true or false, got ${JSON.stringify(ds.durable)}.`,
+    );
+  }
+  return { durable: ds.durable };
+}
+
 export function datastoreBasePath(config: DatastoreConfig): string {
   return isCustomDatastoreConfig(config) ? config.datastorePath : config.path;
 }
@@ -441,6 +459,7 @@ export async function resolveDatastoreConfig(
           exclude: dsFields.exclude ?? ds.exclude,
           hydrationStrategy: dsFields.hydrationStrategy ?? ds.hydrationStrategy,
           namespace: dsFields.namespace ?? ds.namespace,
+          ...durableField(ds),
           ...(format === 3 ? { format: 3 as const } : {}),
         };
       }
@@ -472,6 +491,7 @@ export async function resolveDatastoreConfig(
         directories: fsFields.directories ?? ds.directories,
         exclude: fsFields.exclude ?? ds.exclude,
         namespace: fsFields.namespace ?? ds.namespace,
+        ...durableField(ds),
         ...(format !== undefined ? { format } : {}),
       };
     }
@@ -540,6 +560,7 @@ export async function resolveDatastoreConfig(
       exclude: dsFields.exclude ?? ds.exclude,
       hydrationStrategy: dsFields.hydrationStrategy ?? ds.hydrationStrategy,
       namespace: dsFields.namespace ?? ds.namespace,
+      ...durableField(ds),
       ...(format === 3 ? { format: 3 as const } : {}),
     };
   }

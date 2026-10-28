@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 // deno-lint-ignore verbatim-module-syntax
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import { Box, render, Text, useApp, useInput } from "ink";
 import { Fzf, type FzfResultItem } from "fzf";
 import { suppressInkTtyErrors } from "../../output/ink_lifecycle.ts";
@@ -73,6 +73,8 @@ export interface SearchPickerProps<T, D = T> {
   emptyHint?: (query: string) => React.ReactElement | undefined;
   /** Domain-specific action keys. */
   actions?: ActionDef[];
+  /** The row highlighted at first, before any query is typed. Defaults to 0. */
+  initialIndex?: number;
   /** Called when the user selects an item. Receives the scrollback text. */
   onSelect: (item: T, scrollback: string, action?: string) => void;
   /** Called when the user cancels. */
@@ -103,6 +105,7 @@ export function SearchPicker<T, D = T>(
     commandName,
     emptyHint,
     actions,
+    initialIndex,
     onSelect,
     onCancel,
   } = props;
@@ -129,7 +132,7 @@ export function SearchPicker<T, D = T>(
     setSelectedIndex,
     visibleItems: visibleResults,
     scrollMetrics,
-  } = useScrollableList(results, layout.resultsHeight, [query]);
+  } = useScrollableList(results, layout.resultsHeight, [query], initialIndex);
 
   // Currently highlighted item
   const highlightedItem = results.length > 0 && selectedIndex < results.length
@@ -159,8 +162,15 @@ export function SearchPicker<T, D = T>(
     highlightedItem,
   );
 
+  // The state this render draws. Ink re-binds the useInput handler in an
+  // effect after the frame is written, so a key can reach the handler of an
+  // earlier render; reading from here makes it act on what the frame shows.
+  const latest = useRef({ results, selectedIndex, detail });
+  latest.current = { results, selectedIndex, detail };
+
   const handleSelect = useCallback(
     (action?: string) => {
+      const { results, selectedIndex, detail } = latest.current;
       if (results.length > 0 && selectedIndex < results.length) {
         const selected = results[selectedIndex].item;
         const scrollbackText = renderScrollback(selected, detail);
@@ -168,7 +178,7 @@ export function SearchPicker<T, D = T>(
         onSelect(selected, scrollbackText, action);
       }
     },
-    [results, selectedIndex, exit, onSelect, renderScrollback, detail],
+    [exit, onSelect, renderScrollback],
   );
 
   const handleCancel = useCallback(() => {
@@ -193,7 +203,9 @@ export function SearchPicker<T, D = T>(
     }
 
     if (key.downArrow) {
-      setSelectedIndex((i) => Math.min(results.length - 1, i + 1));
+      setSelectedIndex((i) =>
+        Math.min(latest.current.results.length - 1, i + 1)
+      );
       return;
     }
 
@@ -421,6 +433,7 @@ export async function renderInteractivePicker<T, D = T>(
     commandName?: string;
     emptyHint?: (query: string) => React.ReactElement | undefined;
     actions?: ActionDef[];
+    initialIndex?: number;
   },
 ): Promise<PickerResult<T> | undefined> {
   let pendingScrollback: string | undefined;
@@ -449,6 +462,7 @@ export async function renderInteractivePicker<T, D = T>(
         commandName={options?.commandName}
         emptyHint={options?.emptyHint}
         actions={options?.actions}
+        initialIndex={options?.initialIndex}
         onSelect={(item, scrollback, action) => {
           // Only print scrollback for default select (Enter), not action keys
           if (!action) {

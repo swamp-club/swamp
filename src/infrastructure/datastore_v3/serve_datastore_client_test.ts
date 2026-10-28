@@ -39,6 +39,7 @@ import {
   COMMIT_CONTENT_TYPE,
   DEFAULT_SERVE_TIMEOUT_MS,
   MAX_HAS_HASHES,
+  SERVE_DATASTORE_LOG_HEADER,
   ServeDatastoreClient,
   type ServeDatastoreClientOptions,
   serveRequestTimeoutMs,
@@ -700,4 +701,37 @@ Deno.test("ServeDatastoreClient.renewLock and releaseLock: a lease serve no long
   assertEquals(requests[0].url, `${PREFIX}/locks/${LEASE.leaseId}`);
   assertEquals(await requests[0].json(), { ttlMs: 30_000 });
   assertEquals(requests[2].method, "DELETE");
+});
+
+Deno.test("ServeDatastoreClient.checkLog: every reply's log id is checked before it is read, a success naming none too; a refusal naming none is not", async () => {
+  const replies: Response[] = [
+    Response.json({ held: [] }, {
+      headers: { [SERVE_DATASTORE_LOG_HEADER]: "log-a" },
+    }),
+    Response.json({ held: [] }),
+    Response.json({ code: "not_found", message: "No such" }, { status: 404 }),
+    Response.json({ code: "not_found", message: "No such" }, {
+      status: 404,
+      headers: { [SERVE_DATASTORE_LOG_HEADER]: "log-b" },
+    }),
+  ];
+  const { client } = clientWith((_req, call) => replies[call - 1]);
+  const seen: (string | undefined)[] = [];
+  client.checkLog((logId) => {
+    seen.push(logId);
+    if (logId === "log-b") throw new Error("another log");
+  });
+  const hash = ["a".repeat(64)];
+
+  await client.hasChunks(hash, signal());
+  await client.hasChunks(hash, signal());
+  const refused = await assertRejects(() => client.hasChunks(hash, signal()));
+  assertInstanceOf(refused, ServeUpstreamError);
+  await assertRejects(
+    () => client.hasChunks(hash, signal()),
+    Error,
+    "another log",
+  );
+
+  assertEquals(seen, ["log-a", undefined, "log-b"]);
 });

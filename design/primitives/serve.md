@@ -238,6 +238,22 @@ pins the allowed exceptions: client `groups` on
 `access.check`/`access.can-i`, which handlers take from the authenticated
 connection.
 
+Anything a token holder sends is parsed as untrusted (swamp-club#3862), so a
+refusal costs the same however much they sent. Request, worker-frame,
+capability, data-plane and commit-envelope parses go through `parseUntrusted`
+(`src/domain/untrusted_parse.ts`), which stops each array, object and union at
+its first failing element. A record whose values can fail is a `boundedRecord`
+of at most `MAX_UNTRUSTED_RECORD_ENTRIES` (1000) entries, or `MAX_DATA_TAGS`
+(10,000) for data tags, because zod records ignore `abortEarly`.
+`invalid_request` names at most `MAX_REPORTED_REQUEST_ISSUES` (10) issues.
+Serve also sets the process's argument parse policy to `"untrusted"`, so run
+arguments and inputs, including webhook-triggered and resumed runs, are
+refused at their first failing element. The local CLI and dashboard keep
+listing every one. `integration/untrusted_parse_rules_test.ts` holds all of
+this in place. The unauthenticated sign-in routes read at most
+`MAX_AUTH_BODY_BYTES` (16 KiB), and bulk cancel at most
+`MAX_CANCEL_BODY_BYTES` (8 KiB).
+
 Over WebSocket, `cluster.instances` and `serve.config` need `admin` on
 `access:*`, like their REST routes.
 
@@ -1091,8 +1107,10 @@ control characters), who paused it, when, and an optional `until`: a duration
 or an ISO-8601 time with `Z` or an offset (a zone-less time would be read in
 whichever process parses it, the server's with `--server`), up to year 9999.
 
-Before each fire, and before a replayed cron run starts, the service reads the
-workflow's pause; while it is in force the fire is skipped with a
+Before each fire, and again before any queued cron run starts (a fire that
+waited for a slot or one replayed after a restart), the service reads the
+workflow's pause, so a fire queued before the pause does not run; while it is
+in force the fire is skipped with a
 `schedule_skipped` event carrying `paused`, logged as
 `Skipped scheduled workflow "<name>": paused ("<reason>")`. Manual and webhook
 runs never read it. `until` is enforced at the fire: a lapsed pause is ignored

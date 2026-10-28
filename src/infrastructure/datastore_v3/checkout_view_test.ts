@@ -18,7 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
-import { alignCheckoutView, type CheckoutView } from "./checkout_view.ts";
+import { join } from "@std/path";
+import {
+  alignCheckoutView,
+  CHECKOUT_VIEW_FILE,
+  type CheckoutView,
+} from "./checkout_view.ts";
+import { readModelStateDir } from "./record_path_guard.ts";
 import type { V3Datastore } from "./v3_datastore.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -55,9 +61,10 @@ const SOLO: CheckoutView = {
   datastore: "/data/store",
   namespace: "",
 };
-const SERVE: CheckoutView = {
+const SERVE: Extract<CheckoutView, { kind: "serve" }> = {
   kind: "serve",
   root: "/repo/.swamp/_datastore_v3_copies/serve-1",
+  copy: "c".repeat(32),
   caller: "a".repeat(64),
   serverUrl: "http://serve.example.com",
 };
@@ -90,6 +97,12 @@ Deno.test("alignCheckoutView: another caller, root or datastore rebuilds; switch
       SERVE,
       { ...SERVE, caller: "b".repeat(64) },
       { ...SERVE, root: "/repo/.swamp/_datastore_v3_copies/serve-2" },
+      // The copy at that root moved aside and started afresh.
+      {
+        ...SERVE,
+        root: "/repo/.swamp/_datastore_v3_copies/serve-2",
+        copy: "d".repeat(32),
+      },
       SOLO,
       { ...SOLO, namespace: "team" },
       SERVE,
@@ -106,6 +119,21 @@ Deno.test("alignCheckoutView: another caller, root or datastore rebuilds; switch
       { holdsWriterLock: true },
     );
     assertEquals(handle.rebuilds, views.length);
+  });
+});
+
+Deno.test("alignCheckoutView: a serve view recorded before copies had ids rebuilds once (swamp-club#4049)", async () => {
+  await withTempDir(async (repoDir) => {
+    const handle = countingHandle();
+    const { copy: _copy, ...withoutCopy } = SERVE;
+    await Deno.mkdir(readModelStateDir(repoDir), { recursive: true });
+    await Deno.writeTextFile(
+      join(readModelStateDir(repoDir), CHECKOUT_VIEW_FILE),
+      JSON.stringify({ view: withoutCopy }),
+    );
+    await alignCheckoutView(repoDir, handle, SERVE, { holdsWriterLock: true });
+    await alignCheckoutView(repoDir, handle, SERVE, { holdsWriterLock: true });
+    assertEquals(handle.rebuilds, 1);
   });
 });
 

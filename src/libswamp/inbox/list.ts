@@ -21,6 +21,7 @@ import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import {
   type InboxListOptions,
+  type InboxMessage,
   type InboxMessagePage,
   type InboxReadStatus,
   isInboxMessageId,
@@ -143,20 +144,28 @@ function toView(
   };
 }
 
+/** The events every inbox page fetch yields before its result. */
+type InboxPageFetchEvent =
+  | { kind: "loading_credentials" }
+  | { kind: "contacting_server"; serverUrl: string }
+  | { kind: "error"; error: SwampError };
+
 /**
- * Lists the signed-in user's inbox, newest first: unread messages unless
- * `all` is set. Refused input never reaches the network. A client failure
- * propagates as the UserError the client threw, as it does from whoami.
+ * Fetches one page for the list and the picker alike. Returns the page, or
+ * undefined after yielding the error that ended the fetch. Refused input
+ * never reaches the network. A client failure propagates as the UserError
+ * the client threw, as it does from whoami.
  */
-export async function* inboxList(
+async function* fetchPage(
   ctx: LibSwampContext,
   deps: InboxListDeps,
-  input: InboxListInput = {},
-): AsyncIterable<InboxListEvent> {
+  input: InboxListInput,
+  status: InboxReadStatus,
+): AsyncGenerator<InboxPageFetchEvent, InboxMessagePage | undefined> {
   const refused = refusal(input);
   if (refused) {
     yield { kind: "error", error: refused };
-    return;
+    return undefined;
   }
 
   yield { kind: "loading_credentials" };
@@ -166,15 +175,14 @@ export async function* inboxList(
   // no credential, not a revoked one.
   if (!credentials?.apiKey) {
     yield { kind: "error", error: notAuthenticated() };
-    return;
+    return undefined;
   }
 
   const serverUrl = deps.serverUrlOverride ?? credentials.serverUrl;
   yield { kind: "contacting_server", serverUrl };
 
-  const status: InboxReadStatus = input.all ? "all" : "unread";
   try {
-    const page = await deps.listMessages(
+    return await deps.listMessages(
       serverUrl,
       credentials.apiKey,
       {
@@ -187,12 +195,95 @@ export async function* inboxList(
       },
       ctx.signal,
     );
-    yield { kind: "completed", view: toView(status, page) };
   } catch (error: unknown) {
     if (error instanceof DOMException && error.name === "AbortError") {
       yield { kind: "error", error: cancelled(error) };
-      return;
+      return undefined;
     }
     throw error;
   }
+}
+
+/**
+ * Lists the signed-in user's inbox, newest first: unread messages unless
+ * `all` is set.
+ */
+export async function* inboxList(
+  ctx: LibSwampContext,
+  deps: InboxListDeps,
+  input: InboxListInput = {},
+): AsyncIterable<InboxListEvent> {
+  const status: InboxReadStatus = input.all ? "all" : "unread";
+  const page = yield* fetchPage(ctx, deps, input, status);
+  if (page) yield { kind: "completed", view: toView(status, page) };
+}
+
+/**
+ * One message whole, for reading: what the list shows plus the body, link
+ * and suggested command.
+ */
+export interface InboxMessageView {
+  id: string;
+  kind: string;
+  title: string;
+  /** Markdown written by Swamp Club. */
+  body: string;
+  createdAt: string;
+  readAt: string | null;
+  /** An `https:` URL. */
+  link?: string;
+  /** A `swamp` command the message suggests; shown, never run. */
+  action?: { label: string; command: string };
+}
+
+export interface InboxBrowseView {
+  messages: InboxMessageView[];
+  /** The id to pass as `before` for the next page; null on the last page. */
+  nextCursor: string | null;
+  /** Entries Swamp Club sent that broke the inbox contract and were left out. */
+  dropped: number;
+}
+
+export type InboxBrowseEvent =
+  | { kind: "loading_credentials" }
+  | { kind: "contacting_server"; serverUrl: string }
+  | { kind: "completed"; view: InboxBrowseView }
+  | { kind: "error"; error: SwampError };
+
+/** The whole message, built key by key from the client's parsed message. */
+export function toMessageView(m: InboxMessage): InboxMessageView {
+  return {
+    id: m.id,
+    kind: m.kind,
+    title: m.title,
+    body: m.body,
+    createdAt: m.createdAt,
+    readAt: m.readAt,
+    ...(m.link !== undefined ? { link: m.link } : {}),
+    ...(m.action !== undefined
+      ? { action: { label: m.action.label, command: m.action.command } }
+      : {}),
+  };
+}
+
+/**
+ * Loads one page of whole messages, read and unread, newest first, for the
+ * picker. `all` has no further effect: read messages are always included so
+ * they can be opened again. Marks nothing read.
+ */
+export async function* inboxBrowse(
+  ctx: LibSwampContext,
+  deps: InboxListDeps,
+  input: InboxListInput = {},
+): AsyncIterable<InboxBrowseEvent> {
+  const page = yield* fetchPage(ctx, deps, input, "all");
+  if (!page) return;
+  yield {
+    kind: "completed",
+    view: {
+      messages: page.messages.map(toMessageView),
+      nextCursor: page.nextCursor,
+      dropped: page.dropped,
+    },
+  };
 }

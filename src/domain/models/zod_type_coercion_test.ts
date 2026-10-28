@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import { z } from "zod";
+import { setProcessArgumentParsePolicy } from "../untrusted_parse.ts";
 import {
   acceptsMethodArgumentKey,
   coerceMethodArgs,
@@ -798,4 +799,29 @@ Deno.test("parseGlobalArgumentsLeniently: refuses a parse that delivers anything
     ),
     { success: true, data: { key: "k" } },
   );
+});
+
+Deno.test("parseGlobalArgumentsLeniently: under the untrusted policy a refinement issue at a present key is still reported behind absent required keys (swamp-club#3862)", () => {
+  // Parsed whole with abortEarly, the object would stop at absent `a`, whose
+  // issue the lenient check drops, and the refinement at `c` would never run.
+  const schema = z.object({ a: z.string(), b: z.string(), c: z.string() })
+    .superRefine((value, ctx) => {
+      if (value.c === "bad") {
+        ctx.addIssue({ code: "custom", path: ["c"], message: "c is bad" });
+      }
+    }, { when: () => true });
+  for (const policy of ["trusted", "untrusted"] as const) {
+    const restore = setProcessArgumentParsePolicy(policy);
+    try {
+      const result = parseGlobalArgumentsLeniently(schema, { c: "bad" });
+      assertEquals(result.success, false, policy);
+      assertEquals(
+        !result.success && result.issues.map((i) => i.message),
+        ["c is bad"],
+        policy,
+      );
+    } finally {
+      restore();
+    }
+  }
 });

@@ -30,6 +30,7 @@ import {
   tombstoneOp,
 } from "./op.ts";
 import type { RecordKey } from "./record_key.ts";
+import { MAX_DATA_TAGS } from "../data/data_metadata.ts";
 import {
   base64,
   dataKey,
@@ -133,6 +134,20 @@ Deno.test("dataVersionOp: keeps the parsed metadata and rejects invalid metadata
   );
   assertThrows(() =>
     dataVersionOp({ key: KEY, metadata: { ...metadata("a/b", 3) as object } })
+  );
+});
+
+Deno.test("dataVersionOp: refuses oversized tags with one issue", () => {
+  const tags: Record<string, unknown> = { type: "resource" };
+  for (let i = 0; i < 100_000; i++) tags[`k${i}`] = 0;
+  assertThrows(
+    () =>
+      dataVersionOp({
+        key: KEY,
+        metadata: { ...metadata("vpc", 3) as object, tags },
+      }),
+    Error,
+    `tags: Too many entries (max ${MAX_DATA_TAGS})`,
   );
 });
 

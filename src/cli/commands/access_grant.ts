@@ -68,6 +68,7 @@ import {
   resolveServerTokenFromOptions,
   resolveServeUrl,
   runModelMethodOverServer,
+  TOKEN_FILE_DESCRIPTION,
 } from "../../cli/remote_run.ts";
 import type { AccessGrantListResponse } from "../../serve/protocol.ts";
 
@@ -142,7 +143,7 @@ const accessGrantCreateCommand = new Command()
   )
   .option(
     "--token-file <path:string>",
-    "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
+    TOKEN_FILE_DESCRIPTION,
   )
   .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
   .action(async function (options: AnyOptions) {
@@ -399,7 +400,7 @@ const accessGrantListCommand = new Command()
   )
   .option(
     "--token-file <path:string>",
-    "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
+    TOKEN_FILE_DESCRIPTION,
   )
   .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
   .action(async function (options: AnyOptions) {
@@ -505,7 +506,7 @@ const accessGrantRevokeCommand = new Command()
   )
   .option(
     "--token-file <path:string>",
-    "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
+    TOKEN_FILE_DESCRIPTION,
   )
   .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
   .action(async function (options: AnyOptions, grantId: string) {

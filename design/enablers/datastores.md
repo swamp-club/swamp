@@ -33,6 +33,89 @@ datastore:
 
 An external path suits shared NFS mounts, or keeps runtime data out of git.
 
+**Durable v2 writes** (swamp-club#4017). On a v2 datastore (this backend, and
+the local cache of a v2 extension datastore) whose `durable` setting is on (it
+is off by default, below), a data version is synced before anything publishes
+it. `FileSystemUnifiedDataRepository` writes `metadata.yaml` and `raw` through
+the synced atomic write (`atomic_write.ts`: the temp file synced, renamed, the
+directory synced), syncs the version directory once, then the data-name and
+model directories, and only then moves the `latest` marker,
+itself written synced, and writes the catalog row. A writer that creates
+directories syncs the parent of each one (`make_directories.ts`). The per-model
+lock creates a new model's directories before the repository writes under
+them, so on a filesystem datastore `createModelLock` has its `FileLock` create
+them the same way (`syncCreatedDirectories`). Every sync is a full one
+(`FsFile.sync()`: fsync on Linux, `F_FULLFSYNC` on macOS, `FlushFileBuffers` on
+Windows, which cannot sync a directory). swamp-club#4032 tracks using the macOS
+ordering barrier for the default datastore instead, as v3 chunk storage does
+(below). On v3 the repository does not sync: the commit is durable and replay
+rewrites the checkout. See [data.md](../primitives/data.md#writing-data) for
+what durable means.
+
+A failed sync fails the write before anything publishes the version, with a
+`SyncFailedError` naming the file or directory (`Could not sync <path> to
+disk: <reason>`), its path marked for telemetry. Directory syncs go through
+`syncDirectoryStrict`, which skips only a directory that cannot be synced at
+all (Windows; `EACCES`, `EPERM` or `ENOENT` on open; `EINVAL`, `ENOTSUP` or
+`EBADF` on fsync, as PostgreSQL's `fsync_fname` does) and reports anything else,
+such as `EIO` or `ENOSPC`. The lenient `syncDirectory`, which swallows every
+failure, stays with the v3 read model and chunk storage. A file sync refused as
+unsupported adds a hint to turn durable writes off.
+
+One sync runs after publishing starts: the data-name directory's, which makes
+the renamed `latest` marker durable. The version's own files are already
+synced by then. If that sync fails, the marker already names the version, so
+`advanceLatestMarker` has the caller write the catalog row before the failure
+is rethrown. The write still fails, but the marker and the catalog agree on the
+latest version.
+
+The **`durable`** datastore setting turns the syncing on:
+
+```yaml
+# .swamp.yaml
+datastore:
+  type: filesystem
+  path: /mnt/shared/swamp-data
+  durable: true
+```
+
+`resolveDurableWrites` (`datastore_config.ts`) decides it: the block's
+`durable` when set (a non-boolean is refused when the config is resolved), else
+`SWAMP_DATASTORE_DURABLE` (`1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off`; any
+other value is ignored), else off. Durable writes are opt-in because each write
+then costs several fsyncs: about twice the write time on a local NVMe disk, and
+far more where a full sync is slow (macOS `F_FULLFSYNC`, network and spinning
+disks). It applies to the filesystem backend and to an extension datastore's
+local cache, and `datastore setup` keeps it across a re-run
+(`SETUP_PRESERVED_DATASTORE_KEYS`). Off, writes are as before swamp-club#4017:
+atomic, so they survive a process crash, but a power cut can publish an empty
+version (swamp-club#3955). The writing construction sites of
+`FileSystemUnifiedDataRepository` (the repository factory, the workflow
+execution service, and `data delete`, `rename`, `gc`, `prune` and
+`model delete`) pass the resolved setting; any other site keeps the
+constructor's default, off.
+
+A push refused because its model lock was lost (swamp-club#3485) deletes the
+refused versions, then puts back the datastore's copy of each removed file
+and `latest` marker (`discardRefusedVersions` in `repo_context.ts`). It writes
+in the same order as the repository (swamp-club#4033). It reads the markers
+first. A marker that names a version the cache does not hold, such as the new
+lock holder's next version, has that version's `metadata.yaml` restored with
+the content, plus its `raw` unless the cache hydrates lazily. All content is
+written next, then each restored version directory and every directory above
+it up to `data/` is synced once, then the markers are written. Syncing follows
+the `durable` setting; with it off the order holds but nothing is synced.
+
+Every marker that was read is written, even one naming a version the cache
+still lacks (the datastore holds no such version, or restoring it failed). A
+marker left removed stays marked dirty, and the next push would delete the
+datastore's copy. A local marker naming a missing version reads as no data
+until the next pull replaces it. So no single failure stops the markers: a
+marker that cannot be read is skipped, and a failed content restore or
+directory sync is logged before the markers are written. Only a clean restore
+keeps the promise that a durable marker never names content a power cut could
+lose.
+
 ### S3 (via `@swamp/s3-datastore` extension)
 
 Stores runtime data in an S3 bucket. All reads and writes use a local cache at
@@ -6508,9 +6591,11 @@ is unchanged.
 `servers.json`'s entry for it, `SWAMP_SERVER_TOKEN` when `SWAMP_SERVER_URL`
 names it, and `SWAMP_SERVER_TOKEN_FILE` only when an environment address names
 it. A `serverAddress` in a cloned repository's `.swamp.yaml` never receives a
-token that was meant for another server. A missing token sends no header, so
-serve's 401 gives the `swamp auth server-login` hint, and `--auth-mode none`
-works without one.
+token that was meant for another server; when `SWAMP_SERVER_TOKEN_FILE` is set
+but withheld and no other source has a token, the CLI warns once and serve's 401
+says why, naming `SWAMP_SERVE_URL` as the way to send it. A missing token sends
+no header, so serve's 401 gives the `swamp auth server-login` hint, and
+`--auth-mode none` works without one.
 
 **The binding.** Serve mode is decided from `.swamp.yaml` before the config
 resolves, so an extension datastore's type is never resolved or installed and
@@ -6544,8 +6629,8 @@ writer-busy:
    (`datastore_v3_serve_copy_holds_unlanded`): they are the previous caller's
    writes, not yet settled with serve. A writing command with the previous
    token settles them.
-2. The serve-mode state forgets its cursor and serve's heads and is marked
-   resetting, so a reset cut short runs again on the next bind.
+2. The serve-mode state forgets its cursor, the feed anchor and serve's heads
+   and is marked resetting, so a reset cut short runs again on the next bind.
 3. `commits.db` and the outbox are removed, and the new fingerprint recorded.
 
 The chunk cache stays: it is content-addressed, and only chunks the new copy's
@@ -6558,8 +6643,11 @@ switch between serve mode and the solo datastore. Built from one log and
 caught up from another, a projection shows records the new view does not
 hold, and its cursor is the other log's, so the new log's commits may never
 apply. So the checkout records the view its projection was built from in
-`checkout_view.json` in its read-model state directory: a serve root and the
-token fingerprint, or the solo datastore's path and namespace.
+`checkout_view.json` in its read-model state directory: a serve root, the
+copy's id and the token fingerprint, or the solo datastore's path and
+namespace. The copy's id is random, made with the copy's `serve_upstream.db`
+(swamp-club#4049), so a copy moved aside and started afresh at the same root
+is another view. A view recorded before copies had ids is rebuilt once.
 `v3RepositoryFactoryConfig` opens the handle (after the copy is current) and,
 before any recovery or catch-up, rebuilds the projection when the recorded
 view differs or a rebuild did not finish (`alignCheckoutView`):
@@ -6711,6 +6799,81 @@ the partition is read from serve first (`partitions/{p}/commits?after=`). That
 brings back commits hidden from the caller before a grant changed, and records
 serve's head. A page that is filtered to nothing still moves on by its size,
 because serve's own log has no holes.
+
+**One serve's log.** The copy is keyed only by address and namespace. Its
+cursor is a position in one serve's log, so swamp-club#4049 checks that
+whatever answers at the address still serves that log. Without the check, a
+serve re-pointed at another bucket, a fresh deployment, or one restored from
+an older backup mixed silently into the copy. Two checks cover the two ways
+that happens.
+
+- **The log id: another log.** `commits.db` holds a random id for its log,
+  minted when the log is created (schema 9, minted by the migration for an
+  existing log). It moves with the log, so a failover, a Litestream restore
+  and a restore from backup keep it, while a fresh deployment or another
+  bucket has another. Serve sends it on every datastore API reply to an
+  authenticated caller, refusals included, in the `x-swamp-datastore-log`
+  header. It says nothing of the log's content, so it goes to every caller,
+  whatever its grants.
+  - The copy records the first id serve names in `serve_upstream.db`.
+  - Every later reply is checked before it is read (`serveLogCheck`, on the
+    copy's serve client). Another id is refused, before anything is applied
+    or sent on.
+  - A success that names no id comes from a serve too old to send one. It is
+    refused with `serve_upstream_upgrade_required`, never left unchecked.
+  - A copy from before log ids records the first id it sees, and the anchor
+    checks below guard that first contact.
+  - A reset to another token clears the recorded id with the rest of the
+    copy.
+  - Only a log id can tell a moved serve from a revoked grant. Serve answers
+    404 both for a partition the caller may no longer read and for one it
+    has never heard of, and after a move, every partition of the old log is
+    one the new serve has never heard of.
+- **The feed anchor and partition head: the same log rolled back.** A
+  restore of the log to an earlier point keeps its id, so these checks catch
+  it.
+  - Each applied page records its last commit's identity (namespace,
+    partition, seq, `txnId`) beside the cursor in `serve_upstream.db`.
+    Before every feed catch-up, serve is asked for the commit at that
+    position (`partitions/{p}/commits?after=seq-1`, limit 1).
+  - A partition catch-up, on a write's stale seq or when a recovery looks
+    for a commit, reads from the copy's head commit (`after=head-1`) in its
+    first request and compares that commit's `txnId`. This catches a log
+    restored behind the copy in one partition, where the feed anchor's
+    partition is still intact.
+- **Refused.** Another log id, a head below the commit's seq, or another
+  `txnId` at that seq fails the command with `serve_upstream_diverged`.
+  - It is a user error, not exit 75.
+  - The message names the address and the copy's directory, and says to
+    start a fresh copy by moving the directory aside, so commits not yet sent
+    stay in the moved copy's outbox. The fresh copy has a new copy id, so
+    the checkout's projection is rebuilt from it before anything is read.
+  - The copy is never re-synced on its own: one that holds commits serve
+    lost may be what a restore needs.
+  - A commit that met the refusal after a stale seq never landed, so its
+    unit fails with the refusal rather than as a commit that may land.
+  - A commit serve accepted, whose catch-up then finds the divergence, has
+    landed, so the command succeeds and warns, and the next command is
+    refused.
+- **Not checked by the anchor and head checks.** Within one log, some cases
+  cannot be told from a rollback, so they are not refused. Another log is
+  still refused by its id.
+  - a commit serve now withholds from the caller;
+  - a partition the caller may no longer read (404);
+  - an anchor serve has compacted (410), where the next page applied records
+    another anchor;
+  - a head whose `txnId` the copy has compacted, where only the seq is
+    compared;
+  - a copy whose feed has never carried a commit, which has no anchor and
+    nothing to mix.
+
+  A 410 at exactly the copy's head on a partition catch-up reads on from the
+  head without the check, so the check adds no 410 to the write path.
+- **Not checked at all.** Lock requests (`serve_lock.ts`) use a client of
+  their own, so their replies are not checked. A lock taken on another serve
+  changes no data, and the command's first catch-up or write is refused.
+  Restoring a log from a backup taken before its schema-9 migration mints a
+  new id, so that restore is refused as another log.
 
 **Run index.** The read model's catch-up rewrites run records directly, and
 the run index trusted itself while its count matched. So a run another

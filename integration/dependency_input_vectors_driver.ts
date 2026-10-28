@@ -30,7 +30,7 @@
  *   <repository> <manifest> <registry origin> <output path>
  */
 
-import { dirname, join, relative, SEPARATOR } from "@std/path";
+import { dirname, join, relative, SEPARATOR, toFileUrl } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import { stripAnsiCode } from "@std/fmt/colors";
 import { resolveExtensionFiles } from "../src/cli/resolve_extension_files.ts";
@@ -77,9 +77,14 @@ interface DriverRegistry {
 /** Everything a vector pins, with paths relative to the tree root. */
 export type Outcome = Record<string, unknown>;
 
-/** `text` with the tree root written `<root>` and separators as `/`. */
+/**
+ * `text` with the tree root written `<root>` and separators as `/`. The
+ * root's file URL is written `file://<root>` on every OS: Windows spells it
+ * `file:///D:/...`, POSIX `file:///tmp/...`.
+ */
 function relativize(text: string, root: string): string {
   return stripAnsiCode(text)
+    .replaceAll(toFileUrl(root).href, "file://<root>")
     .replaceAll(root, "<root>")
     .replaceAll(root.replaceAll(SEPARATOR, "/"), "<root>")
     .replaceAll("\\", "/");

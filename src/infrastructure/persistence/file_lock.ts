@@ -39,6 +39,8 @@ import {
   MAX_LOCK_SKIPPING,
 } from "../../domain/datastore/distributed_lock.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
+import { makeDirectories } from "./make_directories.ts";
+import { syncDirectoryStrict } from "./sync_directory.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { isProcessGone } from "../runtime/process.ts";
 import { currentRunProgress } from "../../domain/remote/run_progress.ts";
@@ -75,6 +77,13 @@ export interface FileLockOptions extends LockOptions {
    * wait and hold phases (default: `file`). Never the lock path.
    */
   diagnosticKind?: "auto_definition" | "file";
+  /**
+   * Create the lock's directory one level at a time and sync the parent of
+   * each directory created, so its entry is durable (swamp-club#4017). The
+   * per-model lock sets it on a durable v2 datastore: it creates a new
+   * model's data directories before the data repository writes under them.
+   */
+  syncCreatedDirectories?: boolean;
 }
 
 /**
@@ -232,6 +241,9 @@ export class FileLock implements DistributedLock {
   private readonly maxWaitMs: number;
   private readonly sameHostPidCheck: boolean;
   private readonly diagnosticKind: "auto_definition" | "file";
+  /** See {@link FileLockOptions.syncCreatedDirectories}. Readable so the
+   * per-model lock's policy can be asserted. */
+  readonly syncCreatedDirectories: boolean;
   private heartbeatId: ReturnType<typeof setInterval> | undefined;
   private held = false;
   private releasing = false;
@@ -253,6 +265,17 @@ export class FileLock implements DistributedLock {
     this.maxWaitMs = options?.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
     this.sameHostPidCheck = options?.sameHostPidCheck ?? false;
     this.diagnosticKind = options?.diagnosticKind ?? "file";
+    this.syncCreatedDirectories = options?.syncCreatedDirectories ?? false;
+  }
+
+  /** Creates the directory the lock file goes in. */
+  private async ensureLockDir(): Promise<void> {
+    const dir = dirname(this.lockPath);
+    if (this.syncCreatedDirectories) {
+      await makeDirectories(dir, syncDirectoryStrict);
+    } else {
+      await ensureDir(dir);
+    }
   }
 
   async acquire(): Promise<void> {
@@ -293,7 +316,7 @@ export class FileLock implements DistributedLock {
     const startTime = Date.now();
     this.releasing = false;
 
-    await ensureDir(dirname(this.lockPath));
+    await this.ensureLockDir();
 
     const nonce = crypto.randomUUID();
     let contentionLogged = false;
@@ -362,7 +385,7 @@ export class FileLock implements DistributedLock {
    */
   async tryAcquire(): Promise<boolean> {
     this.releasing = false;
-    await ensureDir(dirname(this.lockPath));
+    await this.ensureLockDir();
     const nonce = crypto.randomUUID();
     if (await this.tryCreate(nonce)) return true;
     if (await this.clearStaleHolder() !== "cleared") return false;

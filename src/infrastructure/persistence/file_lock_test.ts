@@ -81,6 +81,24 @@ Deno.test("FileLock - acquire and release", async () => {
   });
 });
 
+Deno.test("FileLock: with syncCreatedDirectories, creates a nested lock directory for acquire and tryAcquire", async () => {
+  await withTempDir(async (dir) => {
+    for (const take of ["acquire", "tryAcquire"] as const) {
+      const lock = new FileLock(dir, {
+        lockKey: `data/@e2e/${take}/m1/.lock`,
+        ttlMs: 5000,
+        syncCreatedDirectories: true,
+      });
+      assertEquals(lock.syncCreatedDirectories, true);
+      if (take === "acquire") await lock.acquire();
+      else assertEquals(await lock.tryAcquire(), true);
+      assertEquals((await lock.inspect())?.pid, Deno.pid);
+      await lock.release();
+    }
+    assertEquals(new FileLock(dir).syncCreatedDirectories, false);
+  });
+});
+
 Deno.test("FileLock.heldNonce: names the lock file's nonce only while held", async () => {
   await withTempDir(async (dir) => {
     const lock = new FileLock(dir, { ttlMs: 5000 });

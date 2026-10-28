@@ -40,6 +40,8 @@ import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
 import type { Data } from "../domain/data/data.ts";
 import { generateDataId } from "../domain/data/data_id.ts";
 import { SOLO_NAMESPACE } from "../domain/data/namespace.ts";
+import { CompositeUnifiedDataRepository } from "../domain/data/composite_data_repository.ts";
+import { createEphemeralStore } from "../infrastructure/persistence/ephemeral_store.ts";
 import {
   signalChange,
   type UnscopedChange,
@@ -209,6 +211,7 @@ function activeDispatch(workerName = "w1"): ActiveDispatch {
 
 interface Harness {
   plane: DataPlane;
+  repo: UnifiedDataRepository;
   stored: Map<string, StoredEntry>;
   dispatches: DispatchRegistry;
   bundles: BundleRegistry;
@@ -267,6 +270,7 @@ async function withHarness(
     });
     await fn({
       plane,
+      repo,
       stored,
       dispatches,
       bundles,
@@ -635,6 +639,14 @@ Deno.test("DataPlane: malformed resource overrides are refused before anything i
   for (
     const [overrides, field] of [
       [{ tags: { exitCode: 0 } }, "overrides.tags.exitCode"],
+      [
+        {
+          tags: Object.fromEntries(
+            Array.from({ length: 100_000 }, (_, i) => [`k${i}`, 0]),
+          ),
+        },
+        "overrides.tags: Too many entries",
+      ],
       [{ lifetime: "forever" }, "overrides.lifetime"],
       [{ garbageCollection: -1 }, "overrides.garbageCollection"],
       ["7d", "overrides"],
@@ -1150,38 +1162,116 @@ Deno.test("DataPlane: dataOutputOverrides on dispatch override resource lifetime
     },
     methods: {},
   };
-  await withHarness(async (h) => {
-    const d: ActiveDispatch = {
-      workerName: "w1",
-      dispatchId: "d-1",
-      leaseId: "l-1",
-      modelDef: ephemeralModelDef,
-      modelType: MODEL_TYPE,
-      modelId: "m-1",
-      methodName: "status",
-      definitionName: "test-def",
-      definitionTags: {},
-      dataOutputOverrides: [
-        { specName: "statusResult", lifetime: "infinite" },
-      ],
-    };
-    h.dispatches.register(d);
+  for (const lifetime of ["ephemeral", "infinite"] as const) {
+    await withHarness(async (h) => {
+      const d: ActiveDispatch = {
+        workerName: "w1",
+        dispatchId: "d-1",
+        leaseId: "l-1",
+        modelDef: ephemeralModelDef,
+        modelType: MODEL_TYPE,
+        modelId: "m-1",
+        methodName: "status",
+        definitionName: "test-def",
+        definitionTags: {},
+        dataOutputOverrides: [
+          { specName: "statusResult", lifetime },
+        ],
+      };
+      h.dispatches.register(d);
 
-    const resp = await h.plane.handle(
-      request("/data/resource", {
-        method: "POST",
-        body: JSON.stringify({
-          specName: "statusResult",
-          name: "status",
-          data: { clean: true },
+      const resp = await h.plane.handle(
+        request("/data/resource", {
+          method: "POST",
+          body: JSON.stringify({
+            specName: "statusResult",
+            name: "status",
+            data: { clean: true },
+          }),
         }),
-      }),
-    );
-    assertEquals(resp?.status, 200);
+      );
+      assertEquals(resp?.status, 200);
 
-    const key = `${MODEL_TYPE.normalized}/m-1/status`;
-    const entry = h.stored.get(key);
-    assertEquals(entry?.lifetime, "infinite");
+      const key = `${MODEL_TYPE.normalized}/m-1/status`;
+      const entry = h.stored.get(key);
+      assertEquals(entry?.lifetime, lifetime);
+      assertEquals(
+        (await h.plane.writtenVersions("d-1", 1000)).length,
+        lifetime === "ephemeral" ? 0 : 1,
+      );
+    });
+  }
+});
+
+Deno.test("DataPlane: a dispatch's run repository keeps ephemeral writes out of persistent storage", async () => {
+  const mixedModelDef: ModelDefinition = {
+    type: MODEL_TYPE,
+    version: "2026.06.09.1",
+    resources: {
+      "transient": {
+        description: "ephemeral output",
+        schema: z.object({ clean: z.boolean() }),
+        lifetime: "ephemeral",
+        garbageCollection: 5,
+      },
+      "durable": {
+        description: "durable output",
+        schema: z.object({ clean: z.boolean() }),
+        lifetime: "infinite",
+        garbageCollection: 5,
+      },
+    },
+    methods: {},
+  };
+  await withHarness(async (h) => {
+    // As a run hands its ephemeral-wrapped repository to a remote dispatch.
+    const ephemeral = createEphemeralStore(h.repo.namespace);
+    try {
+      h.dispatches.register({
+        workerName: "w1",
+        dispatchId: "d-1",
+        leaseId: "l-1",
+        modelDef: mixedModelDef,
+        modelType: MODEL_TYPE,
+        modelId: "m-1",
+        methodName: "status",
+        definitionName: "test-def",
+        definitionTags: {},
+        dataRepo: new CompositeUnifiedDataRepository(h.repo, ephemeral.repo),
+      });
+
+      for (const specName of ["transient", "durable"]) {
+        const resp = await h.plane.handle(
+          request("/data/resource", {
+            method: "POST",
+            body: JSON.stringify({
+              specName,
+              name: specName,
+              data: { clean: true },
+            }),
+          }),
+        );
+        assertEquals(resp?.status, 200);
+      }
+
+      assertEquals(
+        h.stored.has(`${MODEL_TYPE.normalized}/m-1/transient`),
+        false,
+      );
+      assert(h.stored.has(`${MODEL_TYPE.normalized}/m-1/durable`));
+      const transient = await ephemeral.repo.findByName(
+        MODEL_TYPE,
+        "m-1",
+        "transient",
+      );
+      assertEquals(transient?.lifetime, "ephemeral");
+      assertEquals(
+        (await h.plane.writtenVersions("d-1", 1000)).map((v) => v.dataName),
+        ["durable"],
+      );
+    } finally {
+      ephemeral.dispose();
+    }
   });
 });
 
