@@ -5445,6 +5445,9 @@ for (
   const type of [
     "workflow.approvals",
     "workflow.run.summary",
+    // Behavior history reads (swamp-club#4056).
+    "model.output.search",
+    "model.method.history.search",
   ]
 ) {
   Deno.test(`handleMessage: a ${type} request runs inside a swamp.serve.request span`, async () => {

@@ -94,7 +94,7 @@ import {
 import { datastoreExtensionCandidates } from "../domain/datastore/datastore_extension_candidates.ts";
 import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
-import { ensureDir, walk } from "@std/fs";
+import { ensureDir, exists, walk } from "@std/fs";
 import {
   flushDatastoreSyncNamed,
   registerDatastoreSync,
@@ -186,7 +186,11 @@ import type {
 import type { ForeignContentFetcher } from "../domain/data/repositories.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
-import { atomicWriteFile } from "../infrastructure/persistence/atomic_write.ts";
+import {
+  atomicWriteFile,
+  type AtomicWriteSync,
+  syncWrittenDirectory,
+} from "../infrastructure/persistence/atomic_write.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { pushModelLockScope } from "../infrastructure/persistence/push_paths.ts";
 import {
@@ -3000,6 +3004,12 @@ export interface AcquireModelLocksOptions {
     RepositoryContext,
     "markDirty" | "commitLog" | "unifiedDataRepo"
   >;
+  /**
+   * How a refusal's restore syncs on a durable v2 datastore
+   * (swamp-club#4033), so tests can observe the order. Production passes
+   * nothing: the defaults sync each file and directory to disk.
+   */
+  restoreWriteHooks?: AtomicWriteSync;
 }
 
 /** Pushes made to publish a step's written versions before giving up. */
@@ -3093,6 +3103,30 @@ async function stageVersionsForPublish(
  */
 export const DISCARD_RESTORE_TIMEOUT_MS = 10_000;
 
+/** How a refused push's restore writes what it fetches (swamp-club#4033). */
+interface DiscardRestoreOptions {
+  /**
+   * Set when the datastore's writes are durable: every restored file is
+   * synced, and its directories before any latest marker names it.
+   */
+  readonly sync: AtomicWriteSync | undefined;
+  /**
+   * Whether the cache hydrates lazily. A version a fetched marker names is
+   * then restored as a lazy pull leaves it, metadata only; otherwise with
+   * its content, since only a lazy cache can hydrate a missing `raw`.
+   */
+  readonly lazy: boolean;
+}
+
+/** A latest marker read from the datastore, and the version it names. */
+interface FetchedMarker {
+  readonly rel: string;
+  readonly nameDir: string;
+  readonly bytes: Uint8Array;
+  /** Undefined for the no-version sentinel `0` or an unreadable marker. */
+  readonly version: number | undefined;
+}
+
 /**
  * Discards the data versions a push refused because a model lock was lost
  * (swamp-club#3485), so they reach no clone whether or not the refresh pull
@@ -3104,8 +3138,20 @@ export const DISCARD_RESTORE_TIMEOUT_MS = 10_000;
  * delete of the remote copy: after a breakglass, the new holder's version
  * of the same number. So each removed file, and the latest marker, is then
  * put back as the datastore holds it, read with `fetchContent`; a file the
- * datastore lacks stays removed. The first read that fails ends the
- * restore. Best effort: the refusal stands whatever this does.
+ * datastore lacks stays removed.
+ *
+ * The markers are read first, so that a version one names which the cache
+ * does not hold (the new holder's next version) is restored with the
+ * content. Every content file is written before any directory is synced,
+ * and the directories before any marker (swamp-club#4033), so a marker
+ * written after a clean restore never names content a power cut could
+ * lose. Every marker read is written, even one naming a version the cache
+ * still lacks: a marker left removed stays dirty, and the next push would
+ * delete the datastore's copy, while a marker naming a missing version is
+ * replaced by the next pull. So no single failure stops the markers: a
+ * marker that cannot be read is skipped, and a failed content restore or
+ * directory sync is logged before the markers are written. Best effort:
+ * the refusal stands whatever this does.
  */
 async function discardRefusedVersions(
   refused: readonly WrittenVersion[],
@@ -3116,10 +3162,13 @@ async function discardRefusedVersions(
   syncService: DatastoreSyncService,
   cachePath: string,
   namespace: string | undefined,
+  restore: DiscardRestoreOptions,
 ): Promise<void> {
   const logger = getSwampLogger(["datastore", "lock"]);
   const repo = repoContext.unifiedDataRepo;
-  const removed = new Set<string>();
+  const content = new Set<string>();
+  // Each removed marker's cache path, and its data-name directory.
+  const markers = new Map<string, string>();
   try {
     await runInRootUnitOfWork(repoContext, { flush: undefined }, async () => {
       for (const w of refused) {
@@ -3128,37 +3177,108 @@ async function discardRefusedVersions(
         try {
           for await (const entry of walk(versionDir, { includeDirs: false })) {
             const rel = cacheRelativePath(cachePath, entry.path);
-            if (rel !== undefined) removed.add(rel);
+            if (rel !== undefined) content.add(rel);
           }
         } catch (error) {
           if (!(error instanceof Deno.errors.NotFound)) throw error;
         }
-        const latestRel = cacheRelativePath(
-          cachePath,
-          join(repo.getDataNameDir(type, w.modelId, w.dataName), "latest"),
-        );
-        if (latestRel !== undefined) removed.add(latestRel);
+        const nameDir = repo.getDataNameDir(type, w.modelId, w.dataName);
+        const latestRel = cacheRelativePath(cachePath, join(nameDir, "latest"));
+        if (latestRel !== undefined) markers.set(latestRel, nameDir);
         await repo.delete(type, w.modelId, w.dataName, w.version);
       }
     });
   } catch (error) {
     logger.debug`Discarding the refused data versions failed: ${error}`;
   }
-  if (!syncService.fetchContent || removed.size === 0) return;
+  const fetchContent = syncService.fetchContent;
+  if (!fetchContent || (content.size === 0 && markers.size === 0)) return;
   const signal = AbortSignal.timeout(DISCARD_RESTORE_TIMEOUT_MS);
-  const pending = [...removed];
+  const hasMetadata = (nameDir: string, version: number) =>
+    exists(join(nameDir, String(version), "metadata.yaml"));
+  const write = async (rel: string, bytes: Uint8Array, syncParent: boolean) => {
+    const absPath = join(cachePath, ...rel.split("/"));
+    await ensureDir(dirname(absPath));
+    await atomicWriteFile(
+      absPath,
+      bytes,
+      restore.sync ? { sync: { ...restore.sync, syncParent } } : undefined,
+    );
+    return absPath;
+  };
+
+  const fetched: FetchedMarker[] = [];
+  for (const [rel, nameDir] of markers) {
+    let bytes: Uint8Array | null;
+    try {
+      bytes = await fetchContent(rel, { namespace, signal });
+    } catch (error) {
+      logger
+        .debug`Restoring from the datastore after a refused push failed reading ${rel}: ${error}`;
+      continue;
+    }
+    if (bytes === null) continue;
+    const named = parseInt(new TextDecoder().decode(bytes).trim(), 10);
+    const version = Number.isInteger(named) && named > 0 ? named : undefined;
+    fetched.push({ rel, nameDir, bytes, version });
+    if (version === undefined || await hasMetadata(nameDir, version)) continue;
+    const dirRel = cacheRelativePath(cachePath, join(nameDir, String(version)));
+    if (dirRel === undefined) continue;
+    content.add(`${dirRel}/metadata.yaml`);
+    if (!restore.lazy) content.add(`${dirRel}/raw`);
+  }
+
+  const versionDirs = new Set<string>();
+  const pending = [...content];
   for (const [i, rel] of pending.entries()) {
     try {
-      const bytes = await syncService.fetchContent(rel, { namespace, signal });
+      const bytes = await fetchContent(rel, { namespace, signal });
       if (bytes === null) continue;
-      const absPath = join(cachePath, ...rel.split("/"));
-      await ensureDir(dirname(absPath));
-      await atomicWriteFile(absPath, bytes);
+      versionDirs.add(dirname(await write(rel, bytes, false)));
     } catch (error) {
       logger.debug`Restoring ${
         pending.length - i
       } file(s) from the datastore after a refused push failed at ${rel}: ${error}`;
-      return;
+      break;
+    }
+  }
+
+  if (restore.sync) {
+    const dataRoot = join(cachePath, "data");
+    const dirs = new Set<string>();
+    for (const versionDir of versionDirs) {
+      for (let dir = versionDir;; dir = dirname(dir)) {
+        dirs.add(dir);
+        if (dir === dataRoot || dir === cachePath || dirname(dir) === dir) {
+          break;
+        }
+      }
+    }
+    // Deepest first, so each entry is durable before its parent's sync.
+    const ordered = [...dirs].sort((a, b) =>
+      b.split(SEPARATOR).length - a.split(SEPARATOR).length
+    );
+    try {
+      for (const dir of ordered) await syncWrittenDirectory(dir, restore.sync);
+    } catch (error) {
+      logger
+        .debug`Syncing the data restored after a refused push failed: ${error}`;
+    }
+  }
+
+  for (const marker of fetched) {
+    if (
+      marker.version !== undefined &&
+      !(await hasMetadata(marker.nameDir, marker.version))
+    ) {
+      logger
+        .debug`Restoring ${marker.rel} naming version ${marker.version}, which is not in the cache; the next pull fetches it`;
+    }
+    try {
+      await write(marker.rel, marker.bytes, true);
+    } catch (error) {
+      logger
+        .debug`Restoring ${marker.rel} after a refused push failed: ${error}`;
     }
   }
 }
@@ -3615,6 +3735,12 @@ export async function acquireModelLocks(
             customSyncService,
             config.cachePath,
             config.namespace,
+            {
+              sync: isV2CustomDatastore(config) && resolveDurableWrites(config)
+                ? { ...options?.restoreWriteHooks }
+                : undefined,
+              lazy: config.hydrationStrategy === "lazy",
+            },
           );
         }
         for (const { modelType, modelId } of lost) {

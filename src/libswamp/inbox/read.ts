@@ -1,0 +1,289 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 Elder Swamp Club, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import {
+  type AuthCredentials,
+  keyFingerprint,
+} from "../../domain/auth/auth_credentials.ts";
+import { applyPollOutcome } from "../../domain/inbox/inbox_policy.ts";
+import type { InboxState } from "../../domain/inbox/inbox_state.ts";
+import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
+import type { InboxSummaryResult } from "../../infrastructure/http/inbox_schemas.ts";
+import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
+import { InboxCacheFileRepository } from "../../infrastructure/inbox/inbox_cache_file_repository.ts";
+import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
+import { processOwnsConfigDir } from "../../infrastructure/persistence/config_dir_ownership.ts";
+import type { LibSwampContext } from "../context.ts";
+import { cancelled, notAuthenticated, type SwampError } from "../errors.ts";
+import {
+  type InboxListDeps,
+  type InboxMessageView,
+  toMessageView,
+} from "./list.ts";
+import { toPollOutcome } from "./poll_outcome.ts";
+
+/**
+ * How long the summary call that follows marking read may take. The marking
+ * already succeeded, so this only bounds how long the command waits to stop
+ * the notice early.
+ */
+export const INBOX_REFRESH_TIMEOUT_MS = 5_000;
+
+/** Dependencies for reading and marking inbox messages, injected for tests. */
+export interface InboxReadDeps {
+  loadCredentials: () => Promise<AuthCredentials | null>;
+  listMessages: InboxListDeps["listMessages"];
+  /** The requested ids swamp-club confirmed as read. */
+  markInboxRead: (
+    serverUrl: string,
+    apiKey: string,
+    ids: readonly string[],
+    signal: AbortSignal,
+  ) => Promise<string[]>;
+  inboxSummary: (
+    serverUrl: string,
+    apiKey: string,
+    signal: AbortSignal,
+  ) => Promise<InboxSummaryResult>;
+  loadInboxState: (fingerprint: string) => Promise<InboxState>;
+  saveInboxState: (fingerprint: string, state: InboxState) => Promise<void>;
+  /** Whether this process may write the swamp config directory. */
+  ownsConfigDir: () => boolean;
+  now: () => number;
+  serverUrlOverride?: string;
+}
+
+export interface CreateInboxReadDepsOptions {
+  serverUrlOverride?: string;
+  identity?: ClientIdentity;
+}
+
+/** Wires real infrastructure into InboxReadDeps. */
+export function createInboxReadDeps(
+  options: CreateInboxReadDepsOptions = {},
+): InboxReadDeps {
+  const auth = new AuthRepository();
+  const cache = new InboxCacheFileRepository();
+  const client = (serverUrl: string) =>
+    new SwampClubClient(serverUrl, options.identity);
+  return {
+    loadCredentials: () => auth.load(),
+    listMessages: (serverUrl, apiKey, listOptions, signal) =>
+      client(serverUrl).listInboxMessages(apiKey, listOptions, signal),
+    markInboxRead: (serverUrl, apiKey, ids, signal) =>
+      client(serverUrl).markInboxRead(apiKey, ids, signal),
+    // No etag: a 304 would keep the unread count from before the marking.
+    inboxSummary: (serverUrl, apiKey, signal) =>
+      client(serverUrl).inboxSummary(apiKey, null, signal),
+    loadInboxState: (fingerprint) => cache.load(fingerprint),
+    saveInboxState: (fingerprint, state) => cache.save(fingerprint, state),
+    ownsConfigDir: processOwnsConfigDir,
+    now: () => Date.now(),
+    serverUrlOverride: options.serverUrlOverride,
+  };
+}
+
+export type MarkReadEvent =
+  | { kind: "loading_credentials" }
+  | { kind: "contacting_server"; serverUrl: string }
+  | { kind: "completed"; marked: string[] }
+  | { kind: "error"; error: SwampError };
+
+export interface InboxReadNextView {
+  /** The newest unread message, now read; null when nothing was unread. */
+  message: InboxMessageView | null;
+  /** Whether swamp-club confirmed the message as read. */
+  marked: boolean;
+  /** Whether more unread messages are waiting after this one. */
+  moreUnread: boolean;
+  /** Entries Swamp Club sent that broke the inbox contract and were left out. */
+  dropped: number;
+}
+
+export type InboxReadNextEvent =
+  | { kind: "loading_credentials" }
+  | { kind: "contacting_server"; serverUrl: string }
+  | { kind: "completed"; view: InboxReadNextView }
+  | { kind: "error"; error: SwampError };
+
+interface Session {
+  serverUrl: string;
+  apiKey: string;
+}
+
+async function* openSession(
+  deps: InboxReadDeps,
+): AsyncGenerator<
+  | { kind: "loading_credentials" }
+  | { kind: "contacting_server"; serverUrl: string }
+  | { kind: "error"; error: SwampError },
+  Session | undefined
+> {
+  yield { kind: "loading_credentials" };
+  const credentials = await deps.loadCredentials();
+  // An empty key is the identity cache an env-key run leaves in auth.json:
+  // no credential, not a revoked one.
+  if (!credentials?.apiKey) {
+    yield { kind: "error", error: notAuthenticated() };
+    return undefined;
+  }
+  const serverUrl = deps.serverUrlOverride ?? credentials.serverUrl;
+  yield { kind: "contacting_server", serverUrl };
+  return { serverUrl, apiKey: credentials.apiKey };
+}
+
+function isAbort(error: unknown): error is DOMException {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+/**
+ * Asks for the unread count once more and stores it in the key's inbox
+ * cache, so the notice stops now rather than at the next poll. Never throws:
+ * the messages are already read, and the next poll corrects the cache.
+ */
+async function refreshInboxCache(
+  ctx: LibSwampContext,
+  deps: InboxReadDeps,
+  session: Session,
+): Promise<void> {
+  if (!deps.ownsConfigDir()) return;
+  try {
+    const result = await deps.inboxSummary(
+      session.serverUrl,
+      session.apiKey,
+      ctx.withTimeout(INBOX_REFRESH_TIMEOUT_MS).signal,
+    );
+    // A failed refresh is not a poll: recording it would put the next real
+    // poll off, and leave the notice up for longer.
+    if (result.kind === "failed") {
+      ctx.logger.debug`Inbox summary refresh failed: ${result.reason}`;
+      return;
+    }
+    const fingerprint = await keyFingerprint(session.apiKey);
+    const state = await deps.loadInboxState(fingerprint);
+    await deps.saveInboxState(
+      fingerprint,
+      applyPollOutcome(state, toPollOutcome(result), deps.now()),
+    );
+  } catch (error: unknown) {
+    ctx.logger.debug`Could not refresh the inbox cache: ${error}`;
+  }
+}
+
+async function markAndRefresh(
+  ctx: LibSwampContext,
+  deps: InboxReadDeps,
+  session: Session,
+  ids: readonly string[],
+): Promise<string[]> {
+  const marked = await deps.markInboxRead(
+    session.serverUrl,
+    session.apiKey,
+    ids,
+    ctx.signal,
+  );
+  await refreshInboxCache(ctx, deps, session);
+  return marked;
+}
+
+/**
+ * Marks exactly these messages read, then refreshes the inbox cache. With no
+ * ids it completes at once, with no request. A client failure propagates as
+ * the UserError the client threw.
+ */
+export async function* markRead(
+  ctx: LibSwampContext,
+  deps: InboxReadDeps,
+  ids: readonly string[],
+): AsyncIterable<MarkReadEvent> {
+  if (ids.length === 0) {
+    yield { kind: "completed", marked: [] };
+    return;
+  }
+  const session = yield* openSession(deps);
+  if (!session) return;
+  try {
+    const marked = await markAndRefresh(ctx, deps, session, ids);
+    yield { kind: "completed", marked };
+  } catch (error: unknown) {
+    if (isAbort(error)) {
+      yield { kind: "error", error: cancelled(error) };
+      return;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Reads the newest unread message: fetches it and marks it read. The message
+ * is marked before it is shown, so a run killed in between leaves it read but
+ * unseen; `swamp inbox --all` and the picker still reach it.
+ */
+export async function* inboxReadNext(
+  ctx: LibSwampContext,
+  deps: InboxReadDeps,
+): AsyncIterable<InboxReadNextEvent> {
+  const session = yield* openSession(deps);
+  if (!session) return;
+  try {
+    // Two, so the second tells whether more are waiting.
+    const page = await deps.listMessages(
+      session.serverUrl,
+      session.apiKey,
+      { status: "unread", limit: 2 },
+      ctx.signal,
+    );
+    const [newest] = page.messages;
+    if (newest === undefined) {
+      yield {
+        kind: "completed",
+        view: {
+          message: null,
+          marked: false,
+          moreUnread: false,
+          dropped: page.dropped,
+        },
+      };
+      return;
+    }
+    const confirmed = await markAndRefresh(ctx, deps, session, [newest.id]);
+    const marked = confirmed.some((id) =>
+      id.toUpperCase() === newest.id.toUpperCase()
+    );
+    yield {
+      kind: "completed",
+      view: {
+        // The read endpoint returns ids only, so readAt is this CLI's clock.
+        message: {
+          ...toMessageView(newest),
+          readAt: marked ? new Date(deps.now()).toISOString() : null,
+        },
+        marked,
+        moreUnread: page.messages.length > 1 || page.nextCursor !== null,
+        dropped: page.dropped,
+      },
+    };
+  } catch (error: unknown) {
+    if (isAbort(error)) {
+      yield { kind: "error", error: cancelled(error) };
+      return;
+    }
+    throw error;
+  }
+}

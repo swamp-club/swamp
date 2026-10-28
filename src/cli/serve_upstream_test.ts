@@ -17,18 +17,25 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "@std/path";
 import {
   resolveServeUpstream,
   serveUpstreamAppliesTo,
   serveUpstreamRunsLocally,
-  tokenFileBoundTo,
 } from "./serve_upstream.ts";
 import { resetMarkerServerAddress } from "./remote_run.ts";
 import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
 import { FileServerCredentialRepository } from "../infrastructure/persistence/server_credential_repository.ts";
 import { UserError } from "../domain/errors.ts";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { resetWithheldTokenFiles } from "../domain/auth/server_login_hint.ts";
+import { ServeAuthFailedError } from "../infrastructure/datastore_v3/serve_upstream_errors.ts";
 
 const UNSET_ENV: Record<string, string | undefined> = {
   SWAMP_SERVE_URL: undefined,
@@ -193,6 +200,66 @@ Deno.test("resolveServeUpstream: a marker-only address never reads SWAMP_SERVER_
   });
 });
 
+Deno.test("resolveServeUpstream: a marker-only address warns once that the token file was not sent, and its 401 says why", async () => {
+  await withTemp(async (dir) => {
+    const tokenFile = await writeTokenFile(dir, "leaked.secret");
+    const repo = new FileServerCredentialRepository({ configDir: dir });
+    const captured: LogRecord[] = [];
+    resetWithheldTokenFiles();
+    await configure({
+      sinks: { capture: (record: LogRecord) => captured.push(record) },
+      loggers: [
+        {
+          category: ["swamp", "cli", "remote-run"],
+          lowestLevel: "warning",
+          sinks: ["capture"],
+        },
+        { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+      ],
+      reset: true,
+    });
+    try {
+      await withMockedEnv(
+        { ...UNSET_ENV, SWAMP_SERVER_TOKEN_FILE: tokenFile },
+        async () => {
+          for (let i = 0; i < 2; i++) {
+            await resolveServeUpstream({
+              engine: "v3",
+              commandPath: ["data", "get"],
+              markerServerAddress: "http://elsewhere.test:9090",
+              credentialRepository: repo,
+              getCaCerts: noCaCerts,
+            });
+          }
+        },
+      );
+      const warnings = captured.map((r) =>
+        r.message.map((p) => String(p)).join("")
+      );
+      assertEquals(warnings.length, 1);
+      assertStringIncludes(warnings[0], "SWAMP_SERVER_TOKEN_FILE was not sent");
+      assertStringIncludes(warnings[0], "http://elsewhere.test:9090");
+      assertStringIncludes(warnings[0], "SWAMP_SERVE_URL");
+      // --server would run the command on serve, not bind its datastore.
+      assertEquals(warnings[0].includes("--server"), false);
+      assertEquals(warnings[0].includes(tokenFile), false);
+      assertEquals(warnings[0].includes("leaked.secret"), false);
+      const auth = new ServeAuthFailedError(
+        "http://elsewhere.test:9090",
+        "Unauthorized",
+      );
+      assertStringIncludes(
+        auth.message,
+        "SWAMP_SERVER_TOKEN_FILE was not sent",
+      );
+      assertStringIncludes(auth.message, "swamp auth server-login");
+    } finally {
+      await reset();
+      resetWithheldTokenFiles();
+    }
+  });
+});
+
 Deno.test("resolveServeUpstream: SWAMP_SERVER_TOKEN without a matching SWAMP_SERVER_URL is not sent", async () => {
   await withTemp(async (dir) => {
     const repo = new FileServerCredentialRepository({ configDir: dir });
@@ -248,30 +315,6 @@ Deno.test("resolveServeUpstream: a matching env address uses SWAMP_SERVER_TOKEN_
       );
     }
   });
-});
-
-Deno.test("tokenFileBoundTo: a mismatched, empty or unparseable env address does not bind the token file", () => {
-  const key = "http://serve.test:9090";
-  assertEquals(tokenFileBoundTo(key, ["http://other.test:9090"]), false);
-  assertEquals(
-    tokenFileBoundTo(key, [
-      "http://serve.test:9091",
-      "https://serve.test:9090",
-    ]),
-    false,
-  );
-  assertEquals(tokenFileBoundTo(key, [undefined, ""]), false);
-  assertEquals(tokenFileBoundTo(key, ["not a url"]), false);
-  assertEquals(tokenFileBoundTo(key, []), false);
-});
-
-Deno.test("tokenFileBoundTo: either env address naming the key binds the token file", () => {
-  const key = "http://serve.test:9090";
-  assertEquals(tokenFileBoundTo(key, ["ws://SERVE.test:9090/"]), true);
-  assertEquals(
-    tokenFileBoundTo(key, ["http://other.test:9090", "http://serve.test:9090"]),
-    true,
-  );
 });
 
 Deno.test("resolveServeUpstream: an invalid address fails without echoing it", async () => {

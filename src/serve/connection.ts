@@ -3006,16 +3006,18 @@ export function handleMessage(
       );
       break;
     case "model.output.search":
-      task = audited(
-        handleModelOutputSearch(
-          socket,
-          ctx,
-          request.id,
-          controller,
-          principal,
-          request.payload,
-        ),
-        auditOpts("data", "model", request.payload?.query ?? "*"),
+      task = traced(() =>
+        audited(
+          handleModelOutputSearch(
+            socket,
+            ctx,
+            request.id,
+            controller,
+            principal,
+            request.payload,
+          ),
+          auditOpts("data", "model", request.payload?.query ?? "*"),
+        )
       );
       break;
     case "model.method.history.get":
@@ -3053,16 +3055,18 @@ export function handleMessage(
       );
       break;
     case "model.method.history.search":
-      task = audited(
-        handleModelMethodHistorySearch(
-          socket,
-          ctx,
-          request.id,
-          controller,
-          principal,
-          request.payload,
-        ),
-        auditOpts("data", "model", request.payload?.query ?? "*"),
+      task = traced(() =>
+        audited(
+          handleModelMethodHistorySearch(
+            socket,
+            ctx,
+            request.id,
+            controller,
+            principal,
+            request.payload,
+          ),
+          auditOpts("data", "model", request.payload?.query ?? "*"),
+        )
       );
       break;
     case "model.validate":

@@ -953,9 +953,9 @@ export class ScheduledExecutionService {
       if (pendingRunId && this.deps.pendingRunHook) {
         await this.deps.pendingRunHook.delete(pendingRunId);
       }
-      // A replayed fire was recorded before a restart; the schedule may have
-      // been paused since. Its pending entry is consumed either way.
-      if (entry.replayed && this.deps.schedulePauses) {
+      // A queued fire may predate a pause made while it waited, in this
+      // process or before a restart. Its pending entry is consumed either way.
+      if (this.deps.schedulePauses) {
         const workflowId = this.findWorkflowIdByName(entry.workflowName) ??
           entry.workflowId;
         const pause = await this.pauseInForce(
@@ -965,7 +965,8 @@ export class ScheduledExecutionService {
         );
         if (pause) {
           this.emitPausedSkip(workflowId, entry.workflowName, pause, {
-            replayed: true,
+            fireTime: entry.fireTime?.toISOString(),
+            replayed: entry.replayed ? true : undefined,
           });
           return;
         }

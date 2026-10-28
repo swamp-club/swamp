@@ -28,6 +28,7 @@ import {
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
+  TOKEN_FILE_DESCRIPTION,
 } from "../../cli/remote_run.ts";
 import type { AccessCanIResponse } from "../../serve/protocol.ts";
 import {
@@ -61,7 +62,7 @@ export const accessCanICommand = new Command()
   )
   .option(
     "--token-file <path:string>",
-    "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
+    TOKEN_FILE_DESCRIPTION,
   )
   .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
   .option(

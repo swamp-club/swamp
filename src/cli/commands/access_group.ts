@@ -67,6 +67,7 @@ import {
   resolveServerTokenFromOptions,
   resolveServeUrl,
   runModelMethodOverServer,
+  TOKEN_FILE_DESCRIPTION,
 } from "../../cli/remote_run.ts";
 import type {
   AccessGroupListIdpResponse,
@@ -266,7 +267,7 @@ const accessGroupCreateCommand = new Command()
   )
   .option(
     "--token-file <path:string>",
-    "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
+    TOKEN_FILE_DESCRIPTION,
   )
   .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
   .action(async function (options: AnyOptions, name: string) {
@@ -343,7 +344,7 @@ const accessGroupAddMemberCommand = new Command()
   )
   .option(
     "--token-file <path:string>",
-    "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
+    TOKEN_FILE_DESCRIPTION,
   )
   .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
   .action(async function (
@@ -422,7 +423,7 @@ const accessGroupRemoveMemberCommand = new Command()
   )
   .option(
     "--token-file <path:string>",
-    "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
+    TOKEN_FILE_DESCRIPTION,
   )
   .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
   .action(async function (
@@ -497,7 +498,7 @@ const accessGroupListCommand = new Command()
   )
   .option(
     "--token-file <path:string>",
-    "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
+    TOKEN_FILE_DESCRIPTION,
   )
   .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
   .action(async function (options: AnyOptions) {
@@ -571,7 +572,7 @@ const accessGroupMembersCommand = new Command()
   )
   .option(
     "--token-file <path:string>",
-    "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
+    TOKEN_FILE_DESCRIPTION,
   )
   .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
   .action(async function (options: AnyOptions, name: string) {
@@ -653,7 +654,7 @@ const accessGroupListIdpCommand = new Command()
   )
   .option(
     "--token-file <path:string>",
-    "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
+    TOKEN_FILE_DESCRIPTION,
   )
   .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
   .action(async function (options: AnyOptions) {

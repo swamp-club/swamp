@@ -27,19 +27,19 @@ Phases are observations of the
 
 Every phase is a span named `swamp.diagnostic.<phase>` with:
 
-| Attribute                                                        | Type      | Meaning                                                                                             |
-| ---------------------------------------------------------------- | --------- | --------------------------------------------------------------------------------------------------- |
-| `swamp.diagnostic.area`                                          | string    | The path: `enrollment`, `step_outputs`, `worker_delete`, `output_retention`, `access_poll`          |
-| `swamp.diagnostic.phase`                                         | string    | The phase name, as in the span name                                                                 |
-| `swamp.outcome`                                                  | string    | `ok`, `error`, `timeout`, `cancelled`, `closed`; span status is OK only for `ok`                    |
-| `swamp.diagnostic.result`                                        | string    | When set, what the phase achieved: `completed`, `partial`, `applied`, `no_change`, `skipped`        |
-| `swamp.diagnostic.cancel_observed`                               | bool      | Set where the area has a cancellation signal: whether this process had seen it when the phase ended |
-| `swamp.phase.local_ms`                                           | number    | Monotonic elapsed time of the phase                                                                 |
-| `swamp.phase.child_covered_ms`                                   | number    | The part covered by child observations, unioned, never summed                                       |
-| `swamp.phase.uncovered_ms`                                       | number    | The rest: work in the phase itself                                                                  |
-| `swamp.phase.coverage_truncated`, `swamp.phase.pending_children` | bool, int | As in the remote contract                                                                           |
-| `swamp.diagnostic.<counter>`                                     | int       | A count of items or attempts (per phase below)                                                      |
-| `swamp.diagnostic.<work>_work_ms`                                | number    | Milliseconds of one kind of work summed across items: **not elapsed time**                          |
+| Attribute                                                        | Type      | Meaning                                                                                                     |
+| ---------------------------------------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------- |
+| `swamp.diagnostic.area`                                          | string    | The path: `enrollment`, `step_outputs`, `worker_delete`, `output_retention`, `access_poll`, `output_search` |
+| `swamp.diagnostic.phase`                                         | string    | The phase name, as in the span name                                                                         |
+| `swamp.outcome`                                                  | string    | `ok`, `error`, `timeout`, `cancelled`, `closed`; span status is OK only for `ok`                            |
+| `swamp.diagnostic.result`                                        | string    | When set, what the phase achieved: `completed`, `partial`, `applied`, `no_change`, `skipped`                |
+| `swamp.diagnostic.cancel_observed`                               | bool      | Set where the area has a cancellation signal: whether this process had seen it when the phase ended         |
+| `swamp.phase.local_ms`                                           | number    | Monotonic elapsed time of the phase                                                                         |
+| `swamp.phase.child_covered_ms`                                   | number    | The part covered by child observations, unioned, never summed                                               |
+| `swamp.phase.uncovered_ms`                                       | number    | The rest: work in the phase itself                                                                          |
+| `swamp.phase.coverage_truncated`, `swamp.phase.pending_children` | bool, int | As in the remote contract                                                                                   |
+| `swamp.diagnostic.<counter>`                                     | int       | A count of items or attempts (per phase below)                                                              |
+| `swamp.diagnostic.<work>_work_ms`                                | number    | Milliseconds of one kind of work summed across items: **not elapsed time**                                  |
 
 Areas and phases are closed vocabularies, never built from data. A phase is
 exported only inside an area that lists it, or when it is one of the shared
@@ -243,6 +243,46 @@ full scan a `CanonicalResources` without an index falls back to (no
 `definition_lookup` phases appear under `output_walk` where that branch runs
 them), and the CLI (no read policy). The datastore engine does not change the
 phases.
+
+## Behavior history search
+
+Parent: `swamp.serve.request`, for a `model.output.search` (the dashboard's
+Models page and a model's page) or `model.method.history.search` request
+(lab #4056). Both requests run in that traced span, which records the event-loop
+lag seen while they ran. The handler sets the area, and the area carries the
+request's cancellation, so every phase records `cancel_observed`. The CLI's
+`model output search` runs the same search outside any area and exports none of
+these phases.
+
+| Phase              | Parent                      | Attributes                                                                     |
+| ------------------ | --------------------------- | ------------------------------------------------------------------------------ |
+| `candidate_scan`   | `swamp.model.output.search` | Finding the outputs to consider; counters below                                |
+| `definition_names` | `swamp.model.output.search` | `definitions`: the one scan of every definition that names the outputs         |
+| `workflow_names`   | `swamp.model.output.search` | `workflow_ids`: the workflows named in one lookup; absent when none is named   |
+| `authorization`    | `swamp.serve.request`       | `items` considered, `readable` kept, `owner_lookups`, `owner_lookups_reused`   |
+| `response`         | `swamp.serve.request`       | `results` sent: the limit, then workflow-link redaction, then the reply itself |
+
+`candidate_scan` counts `candidates`, and what the repository did to find them.
+A `since` search walks every type and method directory and skips a file whose
+name says it started before the cutoff without a stat or a read; only a file
+whose name is not in the output form is stat'ed for its mtime. A search for one
+model reads that model's files of its type, skipping files named for another
+definition. A search with neither reads every output.
+
+| Attribute                                        | Meaning                                                                         |
+| ------------------------------------------------ | ------------------------------------------------------------------------------- |
+| `type_dirs`, `method_dirs`, `entries`            | Directories listed and output files found by a `since` search                   |
+| `skipped_by_name`                                | Files skipped unread because their name is outside the window or the definition |
+| `stats`, `skipped_by_mtime`, `stat_work_ms`      | Files stat'ed because their name is not in the output form, and those skipped   |
+| `files_read`, `bytes_read`                       | Records read                                                                    |
+| `read_work_ms`, `parse_work_ms`                  | Reading and parsing them                                                        |
+
+A `since` search lists directories and reads files up to 16 at a time, so its
+`*_work_ms` values are cumulative across concurrent operations and can exceed
+the phase's duration. Its duration is mostly the listing and the turns the event
+loop gave the scan; compare it with the request's event-loop lag. Counters are
+exported only when counted: a scan that stat'ed nothing has no `stats`. They are
+counts and durations only: no path, definition id or model name.
 
 ## Worker deletion
 
@@ -551,6 +591,28 @@ Phase latency by phase, outcome and build:
 The sync gate's tagged `gate_wait` has no `swamp.outcome`, so it groups under an
 empty outcome; read `sync_gate.acquired` for whether the gate was taken. The
 access poller's `gate_wait` has an outcome and `swamp.diagnostic.acquired`.
+
+Behavior history search, where the time goes (lab #4056):
+
+```apl
+['swamp-serve-traces']
+| where _time between (datetime(2026-10-26T00:00:00Z) .. datetime(2026-10-27T00:00:00Z))
+| where ['service.name'] == 'swamp-serve-vm'
+| where tostring(['attributes.custom']['swamp.diagnostic.area']) == 'output_search'
+| extend phase=tostring(['attributes.custom']['swamp.diagnostic.phase']),
+         ms=duration/1ms,
+         entries=toint(['attributes.custom']['swamp.diagnostic.entries']),
+         reads=toint(['attributes.custom']['swamp.diagnostic.files_read']),
+         skipped=toint(['attributes.custom']['swamp.diagnostic.skipped_by_name'])
+| summarize n=count(), p50_ms=percentile(ms,50), p95_ms=percentile(ms,95), max_ms=max(ms),
+            max_entries=max(entries), max_reads=max(reads), max_skipped=max(skipped)
+  by phase
+| sort by p95_ms desc
+```
+
+Read the event-loop lag on the request spans of the same window
+(`swamp.serve.event_loop.lag_max_ms`) beside `candidate_scan`: a scan that
+awaits many files is slowed by every turn other work holds the loop.
 
 One operation's breakdown, by trace id:
 
@@ -1074,6 +1136,13 @@ It checks that names, parent ids, value types, outcomes and statuses survive
 export for a mixed batch (eligible, protected and unexpired outputs), an empty
 batch and one that fails after removing some outputs, and that a batch's span
 count is the same for 10 and 300 outputs.
+
+The behavior history search phases (lab #4056) are covered by unit tests of
+the repository, the libswamp search and the serve handler: known counts for
+skipped, stat'ed and read files, phase parentage by area, the limit applied
+after authorization, and that no phase carries a path. No integration test
+drives them through the real OTLP exporter, and their query has not been run
+against Axiom.
 
 `integration/access_poll_phase_telemetry_test.ts` does the same for access
 polls. It runs the real poller, change source, policy snapshot loader and sync
