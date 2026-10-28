@@ -31,6 +31,7 @@ import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.t
 import { rewriteDirectTypeArgs } from "./arg_rewriter.ts";
 import { authGateTiming } from "./auth_gate_exemptions.ts";
 import {
+  commandSucceeded,
   finishInboxNotice,
   type FinishInboxNoticeOptions,
   inboxNoticeDisabledByEnv,
@@ -287,4 +288,10 @@ Deno.test("nested runs: a swamp under another swamp is nested, but an agent swam
   const agent = new LockHolderMarker(launched, 5000);
   agent.publish();
   assertEquals(agent.ancestorPids().size, 0);
+});
+
+Deno.test("commandSucceeded: only a zero exit code is a success", () => {
+  assertEquals(commandSucceeded(0), true);
+  assertEquals(commandSucceeded(1), false);
+  assertEquals(commandSucceeded(3), false);
 });

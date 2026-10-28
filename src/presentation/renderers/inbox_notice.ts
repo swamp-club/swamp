@@ -36,7 +36,10 @@ export const INBOX_NOTICE_READ_COMMAND = "swamp inbox read";
 export const INBOX_NOTICE_READ_LINE =
   `  ${INBOX_NOTICE_READ_LABEL}  ${INBOX_NOTICE_READ_COMMAND}`;
 
-/** The first line: singular for one unread message, plural for more. */
+/**
+ * The first line: singular for one unread message, plural for more. The
+ * policy only shows a notice with at least one unread message.
+ */
 export function inboxNoticeFirstLine(unread: number): string {
   return unread > 1
     ? `ℹ ${unread} new messages from Swamp Club are waiting for you.`

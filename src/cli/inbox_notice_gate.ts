@@ -123,6 +123,16 @@ export function inboxNoticeEligibility(
   return { poll: notice && pollsInbox(run.commandPath), notice };
 }
 
+/**
+ * Whether a command that returned normally succeeded. Commands such as
+ * `workflow run` report a failed run by setting the exit code rather than by
+ * throwing, and a failed run's output must end with its failure, not the
+ * notice.
+ */
+export function commandSucceeded(exitCode: number): boolean {
+  return exitCode === 0;
+}
+
 export interface FinishInboxNoticeOptions {
   readonly poll: InboxPoll | null;
   /** Whether this run may print the notice at all. */

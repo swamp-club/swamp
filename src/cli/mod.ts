@@ -237,6 +237,7 @@ import {
 import { processLockHolderMarker } from "../domain/datastore/lock_holder_marker.ts";
 import { authGateTiming } from "./auth_gate_exemptions.ts";
 import {
+  commandSucceeded,
   finishInboxNotice,
   inboxNoticeDisabledByEnv,
   inboxNoticeEligibility,
@@ -2972,6 +2973,8 @@ async function runInvocation(
     // infrastructure failures (telemetry flush, update checks) from
     // causing a non-zero exit that disrupts the user's coding session.
     // The dispatch runner skips it too, and returns so swamp.cli ends.
+    // Neither is eligible for the inbox poll; one that became eligible would
+    // have to settle it before returning here.
     if (hookMode || isDispatchRunnerCommand(commandInfo)) return;
 
     // Flush datastore sync (push to S3 + release lock)
@@ -3060,7 +3063,10 @@ async function runInvocation(
         notice: inbox.notice,
         outputMode: getOutputModeFromArgs(args),
         quiet: quietRequested,
-        succeeded: true,
+        // `workflow run` and `behavior run` report a failed run through the
+        // exit code and return normally, so a clean return alone is not a
+        // success.
+        succeeded: commandSucceeded(Deno.exitCode),
         show: () =>
           inboxDeps ? showInboxNotice(inboxDeps) : Promise.resolve(null),
       });

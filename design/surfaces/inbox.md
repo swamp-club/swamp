@@ -147,7 +147,9 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   message. Deciding it reads only the cache, so a fast command shows the notice
   a slow command's poll found, at the cost of one small file read and no
   request. It prints only after a command that succeeded, before the update
-  banner; a failed command's output ends with its error. `-q` hides it as it
+  banner; a failed command's output ends with its error. A run that reports
+  its failure through the exit code, as a failed `workflow run` does, counts
+  as failed. `-q` hides it as it
   hides the other post-command notices. These commands never show it: every
   command the auth gate exempts, `inbox`, `subscription`, `auth`, and the
   long-running `serve`, `worker`, `start` and `dashboard`.
