@@ -21,9 +21,11 @@
  * Remote-secrets baseline, path 4: dispatch payload contents (swamp-club#3512).
  *
  * Pins what the WebSocket dispatch and the runner bootstrap stdin frame carry
- * today for a step with a vault secret and a sensitive argument, and the
- * protocol-version baseline Phase 5 revises: REMOTE_PROTOCOL_VERSION 4,
- * checked for exact agreement at enrollment only.
+ * for a step with a vault secret and a sensitive argument, at both protocol
+ * versions of the typed-secrets 5.2 window: a version 6 dispatch carries
+ * references only, and a version 5 dispatch keeps its plaintext frame as the
+ * documented, time-boxed exception (design/enablers/typed-secrets.md
+ * Section 9). Enrollment accepts versions 5 and 6 and refuses any other.
  */
 
 import {
@@ -49,6 +51,7 @@ import {
   type DispatchParams,
   DispatchParamsSchema,
   type DispatchResult,
+  LEGACY_PLAINTEXT_PROTOCOL_VERSION,
   REMOTE_PROTOCOL_VERSION,
   RemoteMethod,
   WorkerMethod,
@@ -69,6 +72,7 @@ import {
 } from "../src/worker/dispatch_handler.ts";
 import { runDispatchRunner } from "../src/worker/exec_dispatch.ts";
 import { RunnerBootstrapParamsSchema } from "../src/worker/runner_protocol.ts";
+import { generateCanaries } from "./canary_values.ts";
 import {
   type BaselineOrchestrator,
   canary,
@@ -110,20 +114,30 @@ interface Captured {
 /**
  * Runs one remotely placed step through the real
  * MethodExecutionService → DispatchService → WorkerGateway path, with the
- * method arg holding a vault sentinel the way model_resolver leaves it, and
- * captures the dispatch at an in-memory worker. The orchestrator loads the
- * sentinel's value from a mock vault before the dispatch, as the step's
- * evaluator's loader does.
+ * method arg holding one vault sentinel per secret the way model_resolver
+ * leaves them, and captures the dispatch at an in-memory worker enrolled at
+ * `protocolVersion`. The step's loader reads a mock vault, and `reads`
+ * lists what serve read from it before the dispatch left.
  */
 async function dispatchStepWithSecret(
   o: BaselineOrchestrator,
-  secret: string,
+  secret: string | readonly string[],
   sensitive: string,
-): Promise<{ captured: Captured; sentinel: string }> {
+  protocolVersion: number = REMOTE_PROTOCOL_VERSION,
+): Promise<
+  {
+    captured: Captured;
+    sentinel: string;
+    sentinels: string[];
+    reads: string[];
+  }
+> {
+  const secrets = typeof secret === "string" ? [secret] : [...secret];
   const worker = await connectInMemoryWorker(
     o,
     `payload-${crypto.randomUUID().slice(0, 8)}`,
     LABELS,
+    protocolVersion,
   );
   const captured: Captured = { raw: {} };
   worker.channel.register(WorkerMethod.dispatch, (params) => {
@@ -137,19 +151,33 @@ async function dispatchStepWithSecret(
   });
 
   const bag = new VaultSecretBag(new SecretBagRegistry());
-  const sentinel = bag.addSecret(REF, "methods.run.arguments.note");
-  const vaultService = new VaultService();
+  const refs = secrets.map((_, i) =>
+    i === 0 ? REF : { vaultName: REF.vaultName, key: `${REF.key}${i}` }
+  );
+  const sentinels = refs.map((ref) =>
+    bag.addSecret(ref, "methods.run.arguments.note")
+  );
+  const reads: string[] = [];
+  const vaultService = new class extends VaultService {
+    override get(vaultName: string, key: string, caller?: string) {
+      reads.push(key);
+      return super.get(vaultName, key, caller);
+    }
+  }();
   vaultService.registerVault({
     name: REF.vaultName,
     type: "mock",
-    config: { [REF.key]: secret },
+    config: Object.fromEntries(refs.map((ref, i) => [ref.key, secrets[i]])),
   });
+  const sentinel = sentinels[0];
   const model = payloadModel();
   const definition = Definition.create({
     name: `payload-${crypto.randomUUID().slice(0, 8)}`,
     globalArguments: {},
     methods: {
-      run: { arguments: { token: sensitive, note: `uses ${sentinel}` } },
+      run: {
+        arguments: { token: sensitive, note: `uses ${sentinels.join(" ")}` },
+      },
     },
   });
   const context: MethodContext = {
@@ -190,12 +218,12 @@ async function dispatchStepWithSecret(
   } finally {
     setRemoteStepDispatcher(null);
   }
-  return { captured, sentinel };
+  return { captured, sentinel, sentinels, reads };
 }
 
 Deno.test({
   name:
-    "remote secrets baseline: dispatch payload: the WebSocket dispatch carries secrets in plaintext in args, secretValues and secretBag",
+    "remote secrets baseline: dispatch payload: a version 5 worker's WebSocket dispatch carries secrets in plaintext in args, secretValues and secretBag, the documented exception of the 5.2 window",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -208,8 +236,13 @@ Deno.test({
           o,
           secret,
           sensitive,
+          LEGACY_PLAINTEXT_PROTOCOL_VERSION,
         );
         const raw = captured.raw;
+        assertEquals(
+          (raw.execution as Record<string, unknown>).protocolVersion,
+          LEGACY_PLAINTEXT_PROTOCOL_VERSION,
+        );
 
         // `lockHolder` rides along only when the test process inherits a
         // lock holder (a swamp workflow step running the suite sets one);
@@ -242,8 +275,8 @@ Deno.test({
           "traceHeaders",
         ]);
 
-        // Baseline (expected by today's design, removed by typed-secrets §9):
-        // the resolved args travel in plaintext over the control socket.
+        // The version 5 exception (typed-secrets §9, removed in 5.3): the
+        // resolved args travel in plaintext over the control socket.
         assertEquals(execution.methodArgs, {
           token: sensitive,
           note: `uses ${secret}`,
@@ -283,7 +316,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "remote secrets baseline: dispatch payload: the runner bootstrap frame carries the whole dispatch, secret fields included, with the dispatch credential as its session credential",
+    "remote secrets baseline: dispatch payload: a version 5 runner bootstrap frame carries the whole dispatch, secret fields included, with the dispatch credential as its session credential",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -296,6 +329,7 @@ Deno.test({
           o,
           secret,
           sensitive,
+          LEGACY_PLAINTEXT_PROTOCOL_VERSION,
         );
         const raw = captured.raw;
 
@@ -348,18 +382,18 @@ Deno.test({
   },
 });
 
-Deno.test("remote secrets baseline: dispatch payload: REMOTE_PROTOCOL_VERSION is 5", () => {
-  // 5 since the sentinel prefix grew to 128 bits (swamp-club#3558): the
-  // dispatch schema validates the format, so the format is the protocol.
-  assertEquals(REMOTE_PROTOCOL_VERSION, 5);
+Deno.test("remote secrets baseline: dispatch payload: REMOTE_PROTOCOL_VERSION is 6, and serve enrolls 5 and 6", () => {
+  // 5 since the sentinel prefix grew to 128 bits (swamp-club#3558); 6 since
+  // a dispatch carries references only (typed-secrets 5.2). Version 5 stays
+  // enrollable until typed-secrets 5.3.
+  assertEquals(REMOTE_PROTOCOL_VERSION, 6);
+  assertEquals(LEGACY_PLAINTEXT_PROTOCOL_VERSION, 5);
 });
 
-for (const offset of [1, -1]) {
+for (const refusedVersion of [4, 7]) {
   Deno.test({
     name:
-      `remote secrets baseline: dispatch payload: enrollment at protocol version ${
-        offset > 0 ? "above" : "below"
-      } 4 is refused with protocol_mismatch and registers no worker`,
+      `remote secrets baseline: dispatch payload: enrollment at protocol version ${refusedVersion} is refused with protocol_mismatch and registers no worker`,
     sanitizeOps: false,
     sanitizeResources: false,
     fn: async () => {
@@ -383,7 +417,7 @@ for (const offset of [1, -1]) {
               token,
               instanceUuid: crypto.randomUUID(),
               machineId: "machine-mismatch",
-              protocolVersion: REMOTE_PROTOCOL_VERSION + offset,
+              protocolVersion: refusedVersion,
               swampVersion: "test",
               platform: "linux",
               arch: "x86_64",
@@ -394,7 +428,7 @@ for (const offset of [1, -1]) {
           }
           assertEquals(code, "protocol_mismatch");
           assertEquals(o.gateway.worker(name), null);
-          // The token was not consumed: the same token still enrolls at 4.
+          // The token was not consumed: the same token still enrolls at 6.
           const ok = await channel.call<{ protocolVersion: number }>(
             RemoteMethod.enroll,
             {
@@ -531,4 +565,106 @@ Deno.test("remote secrets baseline: dispatch payload: the supervisor does not ch
   assertStringIncludes(failure.message, "Failed to spawn");
   peer.close("done");
   channel.close("done");
+});
+
+Deno.test({
+  name:
+    "remote secrets baseline: dispatch payload: a version 6 worker's WebSocket dispatch and runner bootstrap carry references only, no vault canary of any class, and serve loads nothing (typed-secrets 5.2)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const o = await startBaselineOrchestrator(dir);
+      try {
+        // Every class long enough to search for (Section 12.2); the shorter
+        // ones cannot be told apart from other text.
+        const canaries = generateCanaries().filter((c) => c.unique);
+        const sensitive = canary("sensitive-literal");
+        const { captured, sentinels, reads } = await dispatchStepWithSecret(
+          o,
+          canaries.map((c) => c.value),
+          sensitive,
+        );
+        const raw = captured.raw;
+
+        // Serve read no vault value before the dispatch left.
+        assertEquals(reads, []);
+        assertEquals(
+          Object.keys(raw).filter((k) => k !== "lockHolder").sort(),
+          [
+            "bundleFingerprint",
+            "dispatchCredential",
+            "dispatchId",
+            "environmentSnapshot",
+            "execution",
+            "leaseId",
+            "referenceBag",
+            "reportBundleFingerprints",
+            "step",
+          ],
+        );
+        const execution = raw.execution as Record<string, unknown>;
+        assertEquals(execution.protocolVersion, REMOTE_PROTOCOL_VERSION);
+        // The arguments keep their sentinels. A literal a schema marks
+        // sensitive is authored text, outside the typed-secrets contract
+        // (Section 1.3), and travels as written.
+        assertEquals(execution.methodArgs, {
+          token: sensitive,
+          note: `uses ${sentinels.join(" ")}`,
+        });
+        assertEquals(
+          (raw.referenceBag as Array<Record<string, unknown>>).map((e) => ({
+            sentinel: e.sentinel,
+            vaultName: (e.reference as { vaultName: string }).vaultName,
+            encoding: e.encoding,
+            dataOrigin: e.dataOrigin,
+            value: "value" in e,
+          })),
+          sentinels.map((sentinel) => ({
+            sentinel,
+            vaultName: REF.vaultName,
+            encoding: "raw",
+            dataOrigin: false,
+            value: false,
+          })),
+        );
+
+        // As handleDispatch builds the runner's first stdin frame.
+        const bootstrap = JSON.stringify(
+          buildRunnerBootstrapParams(
+            DispatchParamsSchema.parse(raw),
+            raw.dispatchCredential as string,
+            {
+              sessionCredential: () => "control-credential",
+              dataPlaneUrl: o.dataPlaneUrl,
+              cacheDirPath: dir,
+            },
+          ),
+        );
+        const frame = JSON.stringify(raw);
+        for (const c of canaries) {
+          // The value and its JSON-escaped form, as either frame could
+          // hold it.
+          const escaped = JSON.stringify(c.value).slice(1, -1);
+          for (const form of new Set([c.value, escaped])) {
+            assertEquals(frame.includes(form), false, `${c.class} in dispatch`);
+            assertEquals(
+              bootstrap.includes(form),
+              false,
+              `${c.class} in bootstrap`,
+            );
+          }
+        }
+
+        // Serve's registration admits the dispatch's loads for exactly the
+        // references it shipped.
+        assertEquals(
+          (raw.referenceBag as Array<{ reference: unknown }>).length,
+          canaries.length,
+        );
+      } finally {
+        await o.shutdown();
+      }
+    });
+  },
 });

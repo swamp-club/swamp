@@ -52,9 +52,12 @@ import { ModelType } from "../src/domain/models/model_type.ts";
 import {
   type DispatchParams,
   type DispatchResult,
+  LEGACY_PLAINTEXT_PROTOCOL_VERSION,
   REMOTE_PROTOCOL_VERSION,
   WorkerMethod,
 } from "../src/domain/remote/protocol.ts";
+import { SecretBagRegistry } from "../src/domain/vaults/secret_bag_registry.ts";
+import { VaultSecretBag } from "../src/domain/vaults/vault_secret_bag.ts";
 import type { RemoteStepRequest } from "../src/domain/remote/remote_dispatch.ts";
 import {
   createStdioReader,
@@ -72,6 +75,7 @@ import type { RunnerBootstrapParams } from "../src/worker/runner_protocol.ts";
 import { OUTPUT_BASELINE_TYPE } from "./remote_secrets_baseline_output_protection_model.ts";
 import {
   BASELINE_VAULT,
+  type BaselineOrchestrator,
   canary,
   captureLogs,
   captureRunnerStderr,
@@ -105,13 +109,16 @@ const RUNNER_COMMAND = {
 
 const decoder = new TextDecoder();
 
-/** A dispatch of the fixture's `fail` method carrying `secret`. */
+/**
+ * A version 5 dispatch of the fixture's `fail` method carrying `secret` in
+ * plaintext, the frame of the deprecation window.
+ */
 function failDispatch(secret: string): DispatchParams {
   return {
     dispatchId: crypto.randomUUID(),
     leaseId: crypto.randomUUID(),
     execution: {
-      protocolVersion: REMOTE_PROTOCOL_VERSION,
+      protocolVersion: LEGACY_PLAINTEXT_PROTOCOL_VERSION,
       modelType: OUTPUT_BASELINE_TYPE.normalized,
       modelId: crypto.randomUUID(),
       methodName: "fail",
@@ -169,6 +176,49 @@ async function runInProcess(
   assertExists(resultFrame, "the runner sent a result frame");
   return { result: resultFrame.result as DispatchResult, frames };
 }
+
+/**
+ * A step request whose `secret` argument holds `secret`, as serve builds it
+ * for a worker on `version`: a version 5 worker receives the value in the
+ * frame, and a version 6 worker a reference to a vault entry holding it,
+ * which its runner loads through the protected route.
+ */
+async function secretStepRequest(
+  o: BaselineOrchestrator,
+  secret: string,
+  version: number,
+): Promise<RemoteStepRequest> {
+  if (version === LEGACY_PLAINTEXT_PROTOCOL_VERSION) {
+    return stepRequest({
+      methodArgs: { secret },
+      legacyDelivery: () =>
+        Promise.resolve({
+          globalArgs: {},
+          methodArgs: { secret },
+          secretValues: [secret],
+        }),
+    });
+  }
+  const key = `baseline-${crypto.randomUUID()}`;
+  await o.putSecret(key, secret);
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addSecret(
+    { vaultName: BASELINE_VAULT, key },
+    "methods.fail.arguments.secret",
+  );
+  const args = { methodArgs: { secret: sentinel }, globalArgs: {} };
+  return stepRequest({
+    methodArgs: args.methodArgs,
+    referenceBag: bag.referenceEntriesFor(args),
+    secretReferences: bag.referencesFor(args),
+  });
+}
+
+/** Both frames of the deprecation window, run by the tests below. */
+const VERSIONS = [
+  LEGACY_PLAINTEXT_PROTOCOL_VERSION,
+  REMOTE_PROTOCOL_VERSION,
+] as const;
 
 function stepRequest(
   overrides: Partial<RemoteStepRequest> & {
@@ -230,68 +280,73 @@ Deno.test({
 
 Deno.test({
   name:
-    "remote secrets baseline: output protection: the step lease's fail record stores the worker error redacted (swamp-club#3525)",
+    "remote secrets baseline: output protection: the step lease's fail record stores the worker error redacted, for a version 5 and a version 6 worker (swamp-club#3525)",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    await withTempDir(async (dir) => {
-      const o = await startBaselineOrchestrator(dir);
-      try {
-        const worker = await connectInMemoryWorker(o, "lease-worker");
-        let leaseId: string | undefined;
-        // The worker runs the dispatch through the real runner, in-process.
-        worker.channel.register(WorkerMethod.dispatch, async (raw) => {
-          const params = raw as DispatchParams & {
-            dispatchCredential?: string;
-          };
-          leaseId = params.leaseId;
-          let run: RunnerRun | undefined;
-          await withTempDir(async (cacheDirPath) => {
-            run = await runInProcess({
-              sessionCredential: params.dispatchCredential ?? "",
-              dataPlaneUrl: o.dataPlaneUrl,
-              cacheDirPath,
-              dispatch: params,
+    for (const version of VERSIONS) {
+      await withTempDir(async (dir) => {
+        const o = await startBaselineOrchestrator(dir);
+        try {
+          const worker = await connectInMemoryWorker(
+            o,
+            "lease-worker",
+            undefined,
+            version,
+          );
+          let leaseId: string | undefined;
+          // The worker runs the dispatch through the real runner, in-process.
+          worker.channel.register(WorkerMethod.dispatch, async (raw) => {
+            const params = raw as DispatchParams & {
+              dispatchCredential?: string;
+            };
+            leaseId = params.leaseId;
+            let run: RunnerRun | undefined;
+            await withTempDir(async (cacheDirPath) => {
+              run = await runInProcess({
+                sessionCredential: params.dispatchCredential ?? "",
+                dataPlaneUrl: o.dataPlaneUrl,
+                cacheDirPath,
+                dispatch: params,
+              });
             });
+            return run!.result;
           });
-          return run!.result;
-        });
 
-        const secret = canary("lease-error");
-        const error = await assertRejects(
-          () =>
-            o.dispatchService.executeRemote(stepRequest({
-              methodArgs: { secret },
-              secretValues: [secret],
-            })),
-          Error,
-          "method failed holding ***",
-        );
-        assertEquals(error.message.includes(secret), false);
+          const secret = canary("lease-error");
+          const request = await secretStepRequest(o, secret, version);
+          const error = await assertRejects(
+            () => o.dispatchService.executeRemote(request),
+            Error,
+            "method failed holding ***",
+          );
+          assertEquals(error.message.includes(secret), false);
 
-        assertExists(leaseId);
-        const leaseDef = await o.repoContext.definitionRepo.findByName(
-          STEP_LEASE_MODEL_TYPE,
-          STEP_LEASE_INSTANCE_NAME,
-        );
-        assertExists(leaseDef);
-        const content = await o.repoContext.unifiedDataRepo.getContent(
-          STEP_LEASE_MODEL_TYPE,
-          leaseDef.id,
-          leaseDataName(leaseId),
-        );
-        assertExists(content);
-        const lease = JSON.parse(decoder.decode(content));
-        assertEquals(lease.state, "failed");
-        // The worker's result.error reaches the lease through serve's own
-        // dispatch redactor as well, so a worker that predates the
-        // runner-side scrub cannot put the value in the record
-        // (swamp-club#3525).
-        assertEquals(lease.error, "method failed holding ***");
-      } finally {
-        await o.shutdown();
-      }
-    });
+          assertExists(leaseId);
+          const leaseDef = await o.repoContext.definitionRepo.findByName(
+            STEP_LEASE_MODEL_TYPE,
+            STEP_LEASE_INSTANCE_NAME,
+          );
+          assertExists(leaseDef);
+          const content = await o.repoContext.unifiedDataRepo.getContent(
+            STEP_LEASE_MODEL_TYPE,
+            leaseDef.id,
+            leaseDataName(leaseId),
+          );
+          assertExists(content);
+          const lease = JSON.parse(decoder.decode(content));
+          assertEquals(lease.state, "failed");
+          // The worker's result.error reaches the lease through serve's own
+          // dispatch redactor as well, so a worker that predates the
+          // runner-side scrub cannot put the value in the record
+          // (swamp-club#3525).
+          assertEquals(lease.error, "method failed holding ***");
+          assertEquals(JSON.stringify(lease).includes(secret), false);
+        } finally {
+          await o.shutdown();
+        }
+      });
+    }
   },
 });
 
@@ -346,69 +401,85 @@ Deno.test({
 
 Deno.test({
   name:
-    "remote secrets baseline: output protection: the supervisor's debug re-log of runner stderr holds no secret (swamp-club#3526)",
+    "remote secrets baseline: output protection: the supervisor's debug re-log of runner stderr holds no secret, for a version 5 and a version 6 worker (swamp-club#3526)",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    await withTempDir(async (dir) => {
-      const o = await startBaselineOrchestrator(dir);
-      try {
-        const worker = await connectInMemoryWorker(o, "supervisor-worker");
-        registerDispatchHandler({
-          channel: worker.channel,
-          sessionCredential: () => worker.enrollResult.sessionCredential,
-          dataPlaneUrl: o.dataPlaneUrl,
-          cacheDirPath: join(dir, "worker-cache"),
-          capacity: 1,
-          runnerCommand: RUNNER_COMMAND,
-        });
-
-        const secret = canary("supervisor-log");
-        const logs = await captureLogs(async () => {
-          await assertRejects(
-            () =>
-              o.dispatchService.executeRemote(stepRequest({
-                methodArgs: { secret },
-                secretValues: [secret],
-              })),
-            Error,
-            "method failed holding ***",
+    for (const version of VERSIONS) {
+      await withTempDir(async (dir) => {
+        const o = await startBaselineOrchestrator(dir);
+        try {
+          const worker = await connectInMemoryWorker(
+            o,
+            "supervisor-worker",
+            undefined,
+            version,
           );
-        });
-        const dispatchId = logs.map((log) =>
-          /^Runner \[([^\]]+)\]: /.exec(log.text)?.[1]
-        ).find((id) => id !== undefined);
-        assertExists(dispatchId, "the supervisor logged runner stderr");
+          registerDispatchHandler({
+            channel: worker.channel,
+            sessionCredential: () => worker.enrollResult.sessionCredential,
+            dataPlaneUrl: o.dataPlaneUrl,
+            cacheDirPath: join(dir, "worker-cache"),
+            capacity: 1,
+            runnerCommand: RUNNER_COMMAND,
+          });
 
-        // Every runner stderr line is re-logged on the worker at debug. The
-        // runner masks its own stderr and the supervisor scrubs the shipped
-        // values once more, so none of them holds the secret
-        // (swamp-club#3526).
-        const relogged = logs.filter((log) =>
-          log.category === "worker.dispatch" && log.level === "debug" &&
-          log.text.startsWith(`Runner [${dispatchId}]: `)
-        );
-        assertEquals(logsHolding(relogged, secret), []);
-        assert(
-          relogged.some((log) => log.text.includes('method log line "***"')),
-          "the method log line is re-logged, masked",
-        );
-        assert(
-          relogged.some((log) =>
-            log.text.includes(
-              'Runner dispatch failed: "method failed holding ***"',
-            )
-          ),
-          "the runner's failure line is re-logged, masked",
-        );
-        assert(
-          relogged.some((log) => log.text.endsWith("console line ***")),
-          "the console line is re-logged, masked",
-        );
-      } finally {
-        await o.shutdown();
-      }
-    });
+          const secret = canary("supervisor-log");
+          const request = await secretStepRequest(o, secret, version);
+          // The real supervisor relays a version 6 runner's report that the
+          // arguments passed; a version 5 frame's builder makes that call itself.
+          let validated = 0;
+          request.onArgumentsValidated = () => {
+            validated++;
+            return Promise.resolve();
+          };
+          const logs = await captureLogs(async () => {
+            await assertRejects(
+              () => o.dispatchService.executeRemote(request),
+              Error,
+              "method failed holding ***",
+            );
+          });
+          assertEquals(
+            validated,
+            version === REMOTE_PROTOCOL_VERSION ? 1 : 0,
+          );
+          const dispatchId = logs.map((log) =>
+            /^Runner \[([^\]]+)\]: /.exec(log.text)?.[1]
+          ).find((id) => id !== undefined);
+          assertExists(dispatchId, "the supervisor logged runner stderr");
+
+          // Every runner stderr line is re-logged on the worker at debug. The
+          // runner masks its own stderr, with the values shipped (version 5) or
+          // loaded (version 6), and for version 5 the supervisor scrubs the
+          // shipped values once more, so none of them holds the secret
+          // (swamp-club#3526).
+          const relogged = logs.filter((log) =>
+            log.category === "worker.dispatch" && log.level === "debug" &&
+            log.text.startsWith(`Runner [${dispatchId}]: `)
+          );
+          assertEquals(logsHolding(relogged, secret), []);
+          assert(
+            relogged.some((log) => log.text.includes('method log line "***"')),
+            "the method log line is re-logged, masked",
+          );
+          assert(
+            relogged.some((log) =>
+              log.text.includes(
+                'Runner dispatch failed: "method failed holding ***"',
+              )
+            ),
+            "the runner's failure line is re-logged, masked",
+          );
+          assert(
+            relogged.some((log) => log.text.endsWith("console line ***")),
+            "the console line is re-logged, masked",
+          );
+        } finally {
+          await o.shutdown();
+        }
+      });
+    }
   },
 });
 
@@ -421,7 +492,13 @@ Deno.test({
     await withTempDir(async (dir) => {
       const o = await startBaselineOrchestrator(dir);
       try {
-        const worker = await connectInMemoryWorker(o, "redactor-worker");
+        // resolveSecret delivers values to a version 5 dispatch only.
+        const worker = await connectInMemoryWorker(
+          o,
+          "redactor-worker",
+          undefined,
+          LEGACY_PLAINTEXT_PROTOCOL_VERSION,
+        );
         const shipped = canary("shipped");
         const learned = canary("learned");
         const learnedKey = `baseline-learned-${crypto.randomUUID()}`;
@@ -488,12 +565,18 @@ Deno.test({
           } satisfies DispatchResult;
         });
 
+        const methodArgs = {
+          secret: shipped,
+          note: `\${{ vault.get('${BASELINE_VAULT}', '${learnedKey}') }}`,
+        };
         const request = stepRequest({
-          methodArgs: {
-            secret: shipped,
-            note: `\${{ vault.get('${BASELINE_VAULT}', '${learnedKey}') }}`,
-          },
-          secretValues: [shipped],
+          methodArgs,
+          legacyDelivery: () =>
+            Promise.resolve({
+              globalArgs: {},
+              methodArgs,
+              secretValues: [shipped],
+            }),
         });
         await o.dispatchService.executeRemote(request);
 

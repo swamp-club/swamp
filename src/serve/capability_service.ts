@@ -54,6 +54,7 @@ import { createDefinitionId } from "../domain/definitions/definition.ts";
 import {
   type DeleteDataParams,
   DeleteDataParamsSchema,
+  DISPATCH_SECRETS_PATH,
   type GetDataParams,
   GetDataParamsSchema,
   type GetDataResult,
@@ -72,6 +73,7 @@ import {
   ResolveModelParamsSchema,
   type ResolveSecretParams,
   ResolveSecretParamsSchema,
+  shipsReferencesOnly,
 } from "../domain/remote/protocol.ts";
 import type {
   RpcChannel,
@@ -477,6 +479,20 @@ export class CapabilityService {
       if (!dispatch) {
         throw new Error(
           `resolveSecret: worker '${workerName}' has no active dispatch`,
+        );
+      }
+      // A version 6 runner loads its arguments' references, and the
+      // sensitive fields `readResource` claims, through the protected route
+      // (design/enablers/typed-secrets.md Section 9), so a claim never
+      // arrives here for it. A method's own vault read by name still does,
+      // held to the allowlist below as for version 5.
+      if (
+        params.resource !== undefined &&
+        dispatch.protocolVersion !== undefined &&
+        shipsReferencesOnly(dispatch.protocolVersion)
+      ) {
+        throw new Error(
+          `resolveSecret: a protocol version ${dispatch.protocolVersion} dispatch reads a resource's sensitive fields through ${DISPATCH_SECRETS_PATH}, not resolveSecret`,
         );
       }
       if (params.resource !== undefined) {

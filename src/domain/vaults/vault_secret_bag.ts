@@ -32,6 +32,7 @@ import {
   type SecretReference,
   SENTINEL_EXACT,
   SENTINEL_SOURCE,
+  type ShippedReferenceEntry,
   type VaultReferenceEntry,
 } from "./secret_bag_registry.ts";
 import {
@@ -709,6 +710,37 @@ export class VaultSecretBag {
   }
 
   /**
+   * The entries a protocol version 6 dispatch of `args` ships: one per
+   * sentinel of the run that occurs in `args`, in order of first occurrence,
+   * each carrying its reference, encoding, origin and JSON-value mark and no
+   * value. Their references are exactly those {@link referencesFor} lists,
+   * which serve admits to the dispatch's loads. A data entry that holds its
+   * value ships by its reference too, so the worker loads it as it loads
+   * every other. An entry without a reference cannot ship this way and
+   * throws.
+   */
+  referenceEntriesFor(args: unknown): ShippedReferenceEntry[] {
+    const sentinels: string[] = [];
+    this.collectRunSentinels(args, sentinels);
+    return sentinels.map((sentinel) => {
+      const entry = this.registry.issuedEntryOf(sentinel);
+      if (entry === undefined) {
+        throw new Error(
+          "A secret bag entry without a reference cannot be shipped by reference",
+        );
+      }
+      return {
+        sentinel,
+        reference: entry.reference,
+        encoding: entry.encoding,
+        dataOrigin: entry.dataOrigin,
+        ...(isJsonValueEntry(entry) ? { jsonValue: true as const } : {}),
+        location: "location" in entry ? entry.location : "a data read",
+      };
+    });
+  }
+
+  /**
    * Appends to `sentinels` each sentinel of the run that occurs in `args`
    * and is not listed yet, in order of first occurrence.
    */
@@ -758,6 +790,43 @@ export class VaultSecretBag {
           entry.sentinel,
         );
       }
+    }
+    return bag;
+  }
+
+  /**
+   * Rebuilds a bag from {@link referenceEntriesFor} over a registry of its
+   * own, keeping each sentinel exactly as shipped. Every entry is
+   * reference-only, so the bag delivers nothing until a load builds a
+   * delivery view of it ({@link withLoaded}); that view then delivers each
+   * value in its entry's encoding, as the orchestrator's bag would. A
+   * repeated sentinel is refused.
+   */
+  static fromReferenceEntries(
+    entries: readonly ShippedReferenceEntry[],
+  ): VaultSecretBag {
+    const bag = new VaultSecretBag(new SecretBagRegistry());
+    for (const entry of entries) {
+      if (!SENTINEL_EXACT.test(entry.sentinel)) {
+        throw new Error("Malformed vault secret sentinel in secret bag entry");
+      }
+      if (bag.registry.entryOf(entry.sentinel) !== undefined) {
+        throw new Error("Repeated vault secret sentinel in secret bag entry");
+      }
+      const { sentinel, reference, encoding, location } = entry;
+      bag.registry.register(
+        entry.dataOrigin
+          ? {
+            sentinel,
+            reference,
+            encoding,
+            dataOrigin: true,
+            location,
+            ...(entry.jsonValue === true ? { jsonValue: true as const } : {}),
+          }
+          : { sentinel, reference, encoding, dataOrigin: false, location },
+      );
+      bag.issued.push(sentinel);
     }
     return bag;
   }

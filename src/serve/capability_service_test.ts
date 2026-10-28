@@ -1530,3 +1530,73 @@ Deno.test("resolveSecret: a record's verified references are read once per dispa
   );
   assertEquals(lookups.length, 2);
 });
+
+Deno.test("resolveSecret: a protocol version 6 dispatch's resource claim is refused before any vault read, while its method's own reads, its annotations and a version 5 dispatch are answered as before (typed-secrets 5.2)", async () => {
+  const reads: string[] = [];
+  const serviceFor = (protocolVersion: number) => {
+    const dispatches = new DispatchRegistry();
+    dispatches.register({
+      workerName: "worker-1",
+      dispatchId: "d-1",
+      leaseId: "l-1",
+      modelDef: {} as never,
+      modelType: ModelType.create("acme/invoices"),
+      modelId: "m-1",
+      methodName: "run",
+      definitionName: "my-invoice",
+      definitionTags: {},
+      // An allowlist that admits everything, so only the version refuses.
+      allowedSecrets: { staticRefs: [], hasDynamicRefs: true },
+      protocolVersion,
+    });
+    return new CapabilityService({
+      repoDir: "/tmp/test",
+      repoContext: stubRepoContext(),
+      dispatches,
+      createVaultService: () =>
+        Promise.resolve({
+          get: (_vault: string, key: string) => {
+            reads.push(key);
+            return Promise.resolve("s3cret");
+          },
+          getAnnotation: () => Promise.resolve("a note"),
+        } as never),
+    });
+  };
+
+  await assertRejects(
+    () =>
+      serviceFor(6).resolveSecret("worker-1", {
+        vaultName: "default",
+        secretKey: "token",
+        resource: { name: "state-main", version: 1 },
+      }),
+    Error,
+    "reads a resource's sensitive fields through /data/secrets",
+  );
+  assertEquals(reads, []);
+  // A method's own read by name keeps the verb and its allowlist.
+  assertEquals(
+    await serviceFor(6).resolveSecret("worker-1", {
+      vaultName: "default",
+      secretKey: "token",
+    }),
+    { value: "s3cret" },
+  );
+  assertEquals(
+    await serviceFor(6).resolveSecret("worker-1", {
+      vaultName: "default",
+      secretKey: "token",
+      annotation: true,
+    }),
+    { value: "a note" },
+  );
+  assertEquals(
+    await serviceFor(5).resolveSecret("worker-1", {
+      vaultName: "default",
+      secretKey: "token",
+    }),
+    { value: "s3cret" },
+  );
+  assertEquals(reads, ["token", "token"]);
+});

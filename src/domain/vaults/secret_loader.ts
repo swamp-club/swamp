@@ -21,6 +21,7 @@ import {
   holdsValue,
   isIssuedEntry,
   type ReferenceOnlyEntry,
+  type SecretReference,
 } from "./secret_bag_registry.ts";
 import { secretReferenceError } from "./secret_reference_errors.ts";
 import type { ProbeRedactor } from "./secret_reference_check.ts";
@@ -29,6 +30,57 @@ import type { VaultService } from "./vault_service.ts";
 
 /** The audit caller context of a load: a read for delivery. */
 export const LOAD_PURPOSE = "expression:vault-resolve";
+
+/** One reference a load reads, and where it is written, for its errors. */
+export interface SecretRead {
+  reference: SecretReference;
+  location: string;
+}
+
+/** The key a {@link SecretValueSource} answers a reference's value under. */
+export function secretReadKey(reference: SecretReference): string {
+  return `${reference.vaultName}\u0000${reference.key}`;
+}
+
+/**
+ * Where a load reads its values from. It is handed each distinct reference
+ * of one attempt once, in order of first occurrence, and answers a value for
+ * every one keyed by {@link secretReadKey}, or throws naming the reference
+ * that failed and never a value.
+ */
+export interface SecretValueSource {
+  read(reads: readonly SecretRead[]): Promise<ReadonlyMap<string, string>>;
+}
+
+/**
+ * The source a run in this process reads through: `VaultService.get`, one
+ * reference at a time, inside the run's ambient vault access.
+ */
+function vaultServiceSource(
+  vaultService: () => Promise<VaultService>,
+): SecretValueSource {
+  return {
+    async read(reads) {
+      const service = await vaultService();
+      const values = new Map<string, string>();
+      for (const { reference, location } of reads) {
+        const { vaultName, key } = reference;
+        try {
+          values.set(
+            secretReadKey(reference),
+            await service.get(vaultName, key, LOAD_PURPOSE),
+          );
+        } catch (error) {
+          throw secretReferenceError(
+            `Failed to load secret '${key}' from vault '${vaultName}' (at ${location})`,
+            error,
+          );
+        }
+      }
+      return values;
+    },
+  };
+}
 
 /**
  * Loads secret values at delivery (design/enablers/typed-secrets.md
@@ -39,19 +91,41 @@ export const LOAD_PURPOSE = "expression:vault-resolve";
  * and a sensitive-field reference a typed data read issued (typed-secrets
  * 3.3) load alike; a legacy data entry already holds its value.
  *
- * Each load reads through `VaultService.get`, inside the run's ambient vault
- * access, so the principal's grants and the workflow's `vaults:` list apply
- * and a sentinel is never a grant. It reads through the same vault service
- * the existence check asked, so a refresh hook refreshes on load as it did
- * on the eager read. Each value goes to the run's redactor.
+ * In process each load reads through `VaultService.get`, inside the run's
+ * ambient vault access, so the principal's grants and the workflow's
+ * `vaults:` list apply and a sentinel is never a grant. It reads through the
+ * same vault service the existence check asked, so a refresh hook refreshes
+ * on load as it did on the eager read. A protocol version 6 runner reads
+ * through the dispatch's protected load route instead ({@link fromSource}).
+ * Either way a load reads each distinct reference once per attempt, and
+ * each value goes to the run's redactor.
  */
 export class SecretLoader {
+  #source: SecretValueSource;
+  readonly #redactor?: ProbeRedactor;
+
   constructor(
     /** The vault service to read through, resolved on first use. */
-    private readonly vaultService: () => Promise<VaultService>,
+    vaultService: () => Promise<VaultService>,
     /** The run's redactor, which learns each loaded value. */
-    private readonly redactor?: ProbeRedactor,
-  ) {}
+    redactor?: ProbeRedactor,
+  ) {
+    this.#source = vaultServiceSource(vaultService);
+    this.#redactor = redactor;
+  }
+
+  /** A loader that reads through `source` rather than a vault service. */
+  static fromSource(
+    source: SecretValueSource,
+    redactor?: ProbeRedactor,
+  ): SecretLoader {
+    const loader = new SecretLoader(
+      () => Promise.reject(new Error("This loader reads through its source")),
+      redactor,
+    );
+    loader.#source = source;
+    return loader;
+  }
 
   /**
    * A delivery view of `bag` that holds a value for every reference-only
@@ -80,26 +154,26 @@ export class SecretLoader {
     walk(data);
     if (references.size === 0) return bag;
 
-    const vaultService = await this.vaultService();
-    const read = new Map<string, string>();
+    const reads = new Map<string, SecretRead>();
+    for (const { reference, location } of references.values()) {
+      const id = secretReadKey(reference);
+      if (!reads.has(id)) reads.set(id, { reference, location });
+    }
+    const read = await this.#source.read([...reads.values()]);
     const values = new Map<string, string>();
-    for (const [sentinel, { reference, location }] of references) {
-      const { vaultName, key } = reference;
-      const id = `${vaultName}\u0000${key}`;
-      let value = read.get(id);
+    for (const id of reads.keys()) {
+      const value = read.get(id);
       if (value === undefined) {
-        try {
-          value = await vaultService.get(vaultName, key, LOAD_PURPOSE);
-        } catch (error) {
-          throw secretReferenceError(
-            `Failed to load secret '${key}' from vault '${vaultName}' (at ${location})`,
-            error,
-          );
-        }
-        this.redactor?.addSecret(value);
-        read.set(id, value);
+        // Where the reference is written: an argument or a record field.
+        const { reference, location: where } = reads.get(id)!;
+        throw new Error(
+          `Failed to load secret '${reference.key}' from vault '${reference.vaultName}' (at ${where}): no value was returned`,
+        );
       }
-      values.set(sentinel, value);
+      this.#redactor?.addSecret(value);
+    }
+    for (const [sentinel, { reference }] of references) {
+      values.set(sentinel, read.get(secretReadKey(reference))!);
     }
     return bag.withLoaded(values);
   }

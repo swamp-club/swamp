@@ -49,10 +49,13 @@ import {
   EnrollParamsSchema,
   type EnrollResult,
   GATE_PASS_UNAVAILABLE,
+  isSupportedRemoteProtocolVersion,
   REMOTE_PROTOCOL_VERSION,
   RemoteMethod,
   type RpcStreamEvent,
   type SessionRefreshResult,
+  shipsReferencesOnly,
+  SUPPORTED_REMOTE_PROTOCOL_VERSIONS,
   withoutQuotedNames,
   WorkerMethod,
 } from "../domain/remote/protocol.ts";
@@ -165,6 +168,11 @@ export interface WorkerSnapshot {
   platform: string;
   arch: string;
   swampVersion: string;
+  /**
+   * The remote-execution protocol version the worker enrolled at, which
+   * decides the frame its dispatches carry (typed-secrets 5.2).
+   */
+  protocolVersion: number;
   status: "idle" | "busy" | "unverified" | "draining";
   connected: boolean;
   capacity: number;
@@ -186,6 +194,8 @@ interface WorkerEntry {
   platform: string;
   arch: string;
   swampVersion: string;
+  /** The protocol version of the process that holds the entry. */
+  protocolVersion: number;
   channel: RpcChannel | null;
   /** Force-closes the current control socket (absent for test transports). */
   closeSocket: (() => void) | null;
@@ -228,7 +238,8 @@ export type WorkerNotDispatchableReason =
   | "disconnected"
   | "at_capacity"
   | "unverified"
-  | "draining";
+  | "draining"
+  | "version_changed";
 
 const NOT_DISPATCHABLE_PHRASES: Record<WorkerNotDispatchableReason, string> = {
   not_in_pool: "is not in the pool",
@@ -236,6 +247,8 @@ const NOT_DISPATCHABLE_PHRASES: Record<WorkerNotDispatchableReason, string> = {
   at_capacity: "is at capacity",
   unverified: "is unverified",
   draining: "is draining",
+  version_changed:
+    "re-enrolled at another protocol version than its dispatch was built for",
 };
 
 /**
@@ -583,6 +596,14 @@ export class WorkerGateway {
     if (entry.channel === null) {
       throw new WorkerNotDispatchableError(name, "disconnected");
     }
+    // The frame was built for the version the worker held when it was
+    // chosen. A process that re-enrolled under the name since may speak
+    // another version: a version 5 worker would run a reference-only frame's
+    // sentinels as values, and a plaintext frame must never reach a worker
+    // that loads its own. Nothing is sent, so the dispatch retries.
+    if (entry.protocolVersion !== params.execution.protocolVersion) {
+      throw new WorkerNotDispatchableError(name, "version_changed");
+    }
     if (entry.activeDispatchIds.length >= entry.capacity) {
       if (
         entry.status === "unverified" && entry.verifying && params.probeMarker
@@ -762,11 +783,13 @@ export class WorkerGateway {
   ): Promise<EnrollResult> {
     const params = parseUntrustedOrThrow(EnrollParamsSchema, rawParams);
 
-    if (params.protocolVersion !== REMOTE_PROTOCOL_VERSION) {
+    if (!isSupportedRemoteProtocolVersion(params.protocolVersion)) {
       throw new RpcError({
         code: "protocol_mismatch",
         message:
-          `Worker protocol version ${params.protocolVersion} does not match orchestrator version ${REMOTE_PROTOCOL_VERSION}`,
+          `Worker protocol version ${params.protocolVersion} does not match orchestrator version ${REMOTE_PROTOCOL_VERSION} (supported: ${
+            SUPPORTED_REMOTE_PROTOCOL_VERSIONS.join(", ")
+          })`,
       });
     }
 
@@ -905,6 +928,7 @@ export class WorkerGateway {
       if (reconnecting) {
         existing.channel = state.channel;
         existing.capacity = capacity;
+        existing.protocolVersion = params.protocolVersion;
         await runPreparing({
           typeArg: WORKER_MODEL_TYPE.normalized,
           definitionName: workerDefinitionName(workerName),
@@ -953,6 +977,7 @@ export class WorkerGateway {
         platform: params.platform,
         arch: params.arch,
         swampVersion: params.swampVersion,
+        protocolVersion: params.protocolVersion,
         channel: state.channel,
         closeSocket: state.closeSocket,
         status: initialStatus,
@@ -1012,6 +1037,16 @@ export class WorkerGateway {
         worker: workerName,
         mode: reconnecting ? "reconnect" : "first-connect",
       });
+      if (!shipsReferencesOnly(params.protocolVersion)) {
+        logger.warn(
+          "Worker {worker} enrolled at deprecated protocol version {version}: its dispatches carry secret values in plaintext. Upgrade it to protocol version {current}; typed-secrets 5.3 stops enrolling version {version} workers",
+          {
+            worker: workerName,
+            version: params.protocolVersion,
+            current: REMOTE_PROTOCOL_VERSION,
+          },
+        );
+      }
 
       if (this.#options.verifyOnEnroll && this.#options.verifyWorker) {
         this.#startEnrollmentVerify(workerName);
@@ -1027,7 +1062,8 @@ export class WorkerGateway {
         workerId: workerName,
         sessionCredential: session.credential,
         sessionExpiresAtMs: session.expiresAtMs,
-        protocolVersion: REMOTE_PROTOCOL_VERSION,
+        // The version this worker's dispatches speak.
+        protocolVersion: params.protocolVersion,
         ...(gatePass === undefined ? {} : { gatePass }),
       };
     });
@@ -1365,6 +1401,7 @@ export class WorkerGateway {
       platform: entry.platform,
       arch: entry.arch,
       swampVersion: entry.swampVersion,
+      protocolVersion: entry.protocolVersion,
       status: entry.status,
       connected: entry.channel !== null,
       capacity: entry.capacity,

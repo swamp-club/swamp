@@ -81,6 +81,7 @@ import {
 import {
   getRemoteStepDispatcher,
   isRemoteOnlyMode,
+  type LegacyStepDelivery,
   type RemoteStepResult,
 } from "../remote/remote_dispatch.ts";
 import type { RpcStreamEvent } from "../remote/protocol.ts";
@@ -101,14 +102,83 @@ import {
   type ReportedIssue,
   schemaThrew,
 } from "./sensitive_field_extractor.ts";
-import type { SecretLoader } from "../vaults/secret_loader.ts";
-import type { SecretReference } from "../vaults/secret_bag_registry.ts";
-import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { type SecretLoader, secretReadKey } from "../vaults/secret_loader.ts";
+import {
+  type SecretReference,
+  SENTINEL_MARK,
+} from "../vaults/secret_bag_registry.ts";
+import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { vaultReferenceText } from "../secrets/run_sensitive_values.ts";
 import { argumentParseContext } from "../untrusted_parse.ts";
 import {
   type SecretOccurrences,
   secretOccurrencesOf,
 } from "../vaults/secret_occurrences.ts";
+
+/** The prepared delivery of one attempt; see `#prepareDelivery`. */
+interface PreparedDelivery {
+  /** The definition with the global arguments resolved and parsed. */
+  definition: Definition;
+  /** The attempt's context: its delivery view and `unresolvedMethodArgs`. */
+  context: MethodContext;
+  /** What the global-arguments parse received. */
+  globalArgsParseInput: Record<string, unknown>;
+  /** The merge the pre-flight checks receive as `unresolvedMethodArgs`. */
+  checkUnresolvedMethodArgs: Record<string, unknown>;
+}
+
+/** How a remotely placed step's attempt is delivered once a worker is chosen. */
+interface RemoteDelivery {
+  legacyDelivery: () => Promise<LegacyStepDelivery>;
+  validated: (() => Promise<void>) | undefined;
+}
+
+/**
+ * `hook`, called at most once however often the result is: a remote
+ * attempt that is re-dispatched reports its arguments validated from each
+ * worker, and the caller's record is written once (swamp-club#3681).
+ */
+function onceOnly(
+  hook: (() => Promise<void>) | undefined,
+): (() => Promise<void>) | undefined {
+  if (hook === undefined) return undefined;
+  let called: Promise<void> | undefined;
+  return () => called ??= hook();
+}
+
+/**
+ * `definition` with each sentinel of the run written as the reference text
+ * a persisted definition holds for it, so it hashes the same on every run
+ * and the hash is computed from no value. Text that is not a sentinel of the
+ * run is left as it is.
+ */
+function withReferenceText(
+  definition: Definition,
+  bag: VaultSecretBag | undefined,
+): Definition {
+  if (!bag?.resolvesAny) return definition;
+  const registry = bag.registry;
+  const write = (value: unknown): unknown => {
+    if (typeof value === "string") {
+      return value.replace(VaultSecretBag.SENTINEL_PATTERN, (sentinel) => {
+        const entry = registry.issuedEntryOf(sentinel);
+        return entry === undefined
+          ? sentinel
+          : vaultReferenceText(entry.reference);
+      });
+    }
+    if (Array.isArray(value)) return value.map(write);
+    if (value !== null && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value).map(([key, item]) => [key, write(item)]),
+      );
+    }
+    return value;
+  };
+  return Definition.fromData(
+    write(definition.toData()) as ReturnType<Definition["toData"]>,
+  );
+}
 
 /**
  * Filters data entries to only those belonging to declared resource specs.
@@ -416,6 +486,12 @@ export async function deliverStepSecrets(input: {
   secretLoader: SecretLoader | undefined;
   /** False for a remotely placed step, whose shell is the worker's. */
   localPlacement: boolean;
+  /**
+   * False when this attempt's refusals already ran: serve runs them for a
+   * remotely placed step before it is scheduled, and the delivery once a
+   * worker is chosen does not repeat them. Defaults to true.
+   */
+  refuse?: boolean;
 }): Promise<StepSecretDelivery> {
   const { definition, methodName, vaultSecrets } = input;
   const registry = vaultSecrets?.registry;
@@ -426,7 +502,7 @@ export async function deliverStepSecrets(input: {
     ? unresolvedArgumentsOf(definition, methodName)
     : undefined;
   if (
-    (registry !== undefined) &&
+    input.refuse !== false && registry !== undefined &&
     sentinelArguments !== undefined
   ) {
     refuseSecretDestinations({
@@ -719,6 +795,103 @@ function registerDeliveredSecrets(
 }
 
 /**
+ * The lenient parse of the global arguments every delivery makes: a field
+ * holding an unresolved `${{ ... }}` expression is skipped, as is each key
+ * in `skip`, and every other field is coerced and checked, with an unknown
+ * key refused. Throws the refusal the run reports. Returns what the parse
+ * received and what it made.
+ */
+function parseGlobalArguments(
+  schema: z.ZodTypeAny,
+  rawGlobalArgs: Record<string, unknown>,
+  redactor: SecretRedactor | undefined,
+  skip: ReadonlySet<string> = new Set(),
+): { coerced: Record<string, unknown>; data: Record<string, unknown> } {
+  // Identify globalArg fields with unresolved expressions (inputs,
+  // model resource/file refs, or any other swamp ${{ ... }} that wasn't
+  // evaluated). Uses containsSwampExpression for recursive detection of
+  // expressions inside nested objects and arrays.
+  const skipKeys = new Set(skip);
+  const resolvedGlobalArgs: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(rawGlobalArgs)) {
+    if (skipKeys.has(key)) continue;
+    if (containsSwampExpression(value)) {
+      skipKeys.add(key);
+    } else {
+      resolvedGlobalArgs[key] = value;
+    }
+  }
+
+  const coerced = coerceMethodArgs(resolvedGlobalArgs, schema);
+  const shape = getObjectShape(schema);
+  if (shape) {
+    const unknownKeys = Object.keys(rawGlobalArgs).filter(
+      (k) => !Object.hasOwn(shape, k),
+    );
+    if (unknownKeys.length > 0) {
+      const validKeys = Object.keys(shape).join(", ");
+      throw new Error(
+        `Global arguments validation failed: Unknown argument(s): ${
+          unknownKeys.join(", ")
+        }. Valid arguments are: ${validKeys || "none"}`,
+      );
+    }
+  }
+
+  // Use lenient validation: validate provided fields but don't
+  // require missing ones. Direct execution creates ephemeral instances
+  // where not all globalArgs are needed (e.g. get doesn't need
+  // creation-time fields). swamp model create validates strictly.
+  // Unresolved fields are skipped — the Proxy on context.globalArgs
+  // guards them — while resolved fields still get their Zod defaults.
+  let result: ReturnType<typeof parseGlobalArgumentsLeniently>;
+  try {
+    result = parseGlobalArgumentsLeniently(schema, coerced, skipKeys);
+  } catch (error) {
+    throw schemaThrew(error, schema, "Global arguments");
+  }
+  if (!result.success) {
+    // As a method argument's refusal (swamp-club#3681).
+    throw refusedParse(
+      "Global arguments",
+      schema,
+      coerced,
+      result.issues,
+      redactor,
+    );
+  }
+  return { coerced, data: result.data };
+}
+
+/**
+ * The keys of `args` whose value holds a sentinel of the run, at any depth:
+ * the arguments serve cannot validate before a worker is chosen, since their
+ * values are loaded only then.
+ */
+function keysHoldingSentinels(
+  args: Record<string, unknown>,
+  bag: VaultSecretBag | undefined,
+): Set<string> {
+  const keys = new Set<string>();
+  if (!bag?.resolvesAny) return keys;
+  const secrets = secretOccurrencesOf(bag.registry);
+  const holds = (value: unknown): boolean => {
+    if (typeof value === "string") {
+      return secrets.occurrencesIn(value).length > 0;
+    }
+    if (Array.isArray(value)) return value.some(holds);
+    if (value !== null && typeof value === "object") {
+      return Object.values(value).some(holds);
+    }
+    return false;
+  };
+  for (const [key, value] of Object.entries(args)) {
+    if (holds(value)) keys.add(key);
+  }
+  return keys;
+}
+
+/**
  * Default implementation of the method execution service.
  *
  * Validates definition attributes against the method's schema before execution.
@@ -912,11 +1085,11 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
 
   /**
    * Dispatch the method body to a remote worker through the registered
-   * dispatcher port. Vault sentinels are resolved into the shipped args —
-   * the same resolve-before-dispatch pattern out-of-process execution has
-   * always used; secrets travel only for the step that needs them.
-   * `globalArgsParseInput` is what the global-arguments parse received,
-   * before its delivery was merged into the definition.
+   * dispatcher port. The arguments travel as the definition holds them,
+   * sentinels in place, with the reference behind each sentinel and no value
+   * (design/enablers/typed-secrets.md Section 9): a version 6 worker loads
+   * them itself. A version 5 worker gets the frame {@link #legacyDelivery}
+   * builds, which the dispatcher asks for only once it has chosen one.
    */
   async #executeRemotely(
     context: MethodContext,
@@ -924,8 +1097,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     modelDef: ModelDefinition,
     currentDefinition: Definition,
     methodName: string,
-    secretReferences: readonly SecretReference[],
-    globalArgsParseInput: Record<string, unknown>,
+    delivery: RemoteDelivery,
   ): Promise<RemoteStepResult> {
     const dispatcher = getRemoteStepDispatcher();
     if (dispatcher === null) {
@@ -936,62 +1108,39 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       );
     }
 
+    const { globalArgs, methodArgs } = executionRequest;
     const secretBag = context.vaultSecrets;
-    const methodArgs = secretBag?.resolvesAny
-      ? secretBag.resolveDeep(
-        executionRequest.methodArgs,
-      ) as Record<string, unknown>
-      : executionRequest.methodArgs;
-    const globalArgs = secretBag?.resolvesAny
-      ? secretBag.resolveDeep(
-        executionRequest.globalArgs,
-      ) as Record<string, unknown>
-      : executionRequest.globalArgs;
-
-    // The entries this step delivers: its own, and any the run issued
-    // earlier that its unresolved arguments carry. Nothing else of the run
-    // reaches the worker.
-    const shippedEntries = secretBag?.resolvesAny
-      ? secretBag.entriesFor({
-        methodArgs: executionRequest.methodArgs,
-        globalArgs: executionRequest.globalArgs,
-      })
+    // The entries this step's arguments carry, whichever bag of the run
+    // issued them, and the references behind them, which serve admits to
+    // the dispatch's loads (swamp-club#3529): one computation, so what serve
+    // authorizes is what the worker loads.
+    const referenceBag = secretBag?.resolvesAny
+      ? secretBag.referenceEntriesFor({ methodArgs, globalArgs })
       : [];
-    const secretValues = shippedEntries.map((entry) => entry.value);
-    // The worker rebuilds the bag from these and resolves the args itself,
-    // so a command/shell step gets its secrets as environment variables
-    // there, as it does locally (swamp-club#2760). The resolved args above
-    // still travel for workers that predate the fields.
-    const secretDelivery = shippedEntries.length > 0
-      ? {
-        unresolvedMethodArgs: executionRequest.methodArgs,
-        secretBag: shippedEntries,
-      }
-      : {};
-    if (modelDef.globalArguments) {
-      // The definition holds the global arguments as their parse delivered
-      // them, a transform's output included, beside what it was given. The
-      // worker's redactor gets what a local run registers: the delivered
-      // secrets less the text the parse input held only at plain positions
-      // and the keys the schema declares, read against that input as
-      // resolved, so a region or a port is not masked on the worker
-      // (swamp-club#3754).
-      const parseInput = secretBag?.resolvesAny
-        ? secretBag.resolveDeep(globalArgsParseInput) as Record<string, unknown>
-        : globalArgsParseInput;
-      secretValues.push(
-        ...extractDeliveredSensitiveValues(
-          modelDef.globalArguments,
-          parseInput,
-          globalArgs,
-        ),
-      );
+    const secretReferences: SecretReference[] = [];
+    const seen = new Set<string>();
+    for (const { reference } of referenceBag) {
+      const id = secretReadKey(reference);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      secretReferences.push(reference);
     }
+    // A literal a schema marks sensitive is authored text, outside the
+    // typed-secrets contract (Section 1.3); serve's dispatch redactor masks
+    // it, as the worker's does once it has parsed it. Text holding a
+    // sentinel is not a value.
+    const redactorSeeds: string[] = [];
     const methodArgSchema = modelDef.methods[methodName]?.arguments;
-    if (methodArgSchema) {
-      secretValues.push(
-        ...extractSensitiveFieldValues(methodArgSchema, methodArgs),
-      );
+    for (
+      const [schema, args] of [
+        [modelDef.globalArguments, globalArgs],
+        [methodArgSchema, methodArgs],
+      ] as const
+    ) {
+      if (!schema) continue;
+      for (const value of extractSensitiveFieldValues(schema, args)) {
+        if (!value.includes(SENTINEL_MARK)) redactorSeeds.push(value);
+      }
     }
 
     return await withSpan("swamp.remote.dispatch", {
@@ -1021,11 +1170,13 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         stepName: context.tagOverrides?.step,
         signal: context.signal,
         dataRepo: context.dataRepository,
-        secretValues: secretValues.length > 0 ? secretValues : undefined,
-        ...secretDelivery,
+        referenceBag: referenceBag.length > 0 ? referenceBag : undefined,
         secretReferences: secretReferences.length > 0
           ? secretReferences
           : undefined,
+        redactorSeeds: redactorSeeds.length > 0 ? redactorSeeds : undefined,
+        legacyDelivery: delivery.legacyDelivery,
+        onArgumentsValidated: delivery.validated,
         beginLockHandOff: lockHandOffFor(context),
         declaredWrites: context.declaredWrites,
         onEvent: (event: RpcStreamEvent) => {
@@ -1055,6 +1206,403 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           }
         },
       }));
+  }
+
+  /**
+   * The delivery prelude of one attempt, shared by every path that runs a
+   * method body: a run in this process, the version 5 frame serve builds for
+   * a remotely placed step, and a protocol version 6 runner
+   * ({@link executeDispatched}). It builds the merge the checks and the
+   * method see as `unresolvedMethodArgs` while the arguments still hold
+   * their sentinels, refuses a secret at a destination that takes none
+   * (unless the caller already did, before dispatch), loads the references
+   * the arguments carry once, resolves and validates the global arguments,
+   * and lays the parsed globals under the merge (swamp-club#3627).
+   */
+  async #prepareDelivery(input: {
+    definition: Definition;
+    modelDef: ModelDefinition;
+    method: MethodDefinition;
+    methodName: string;
+    context: MethodContext;
+    secretLoader: SecretLoader | undefined;
+    /** False for a remotely placed step, whose shell is the worker's. */
+    localPlacement: boolean;
+    /** False when the destination refusals already ran for this attempt. */
+    refuse: boolean;
+  }): Promise<PreparedDelivery> {
+    const { modelDef, method, methodName } = input;
+    let currentDefinition = input.definition;
+    let context = input.context;
+    const delivery = await deliverStepSecrets({
+      definition: currentDefinition,
+      modelDef,
+      method,
+      methodName,
+      vaultSecrets: context.vaultSecrets,
+      secretLoader: input.secretLoader,
+      localPlacement: input.localPlacement,
+      refuse: input.refuse,
+    });
+    const { secrets, sentinelArguments } = delivery;
+    if (delivery.vaultSecrets !== context.vaultSecrets) {
+      context = { ...context, vaultSecrets: delivery.vaultSecrets };
+    }
+
+    // Resolve vault sentinels in globalArguments before validation.
+    // Sentinels must be replaced with raw values so Zod schemas (e.g., url(),
+    // regex()) validate against actual secret values, not sentinel tokens.
+    // The values go into a copy of the definition, never into the object the
+    // caller passed (its own when no upgrade ran): that object keeps its
+    // sentinels, so no value outlives the attempt in it, and a second
+    // delivery of the same instance loads again and starts from the
+    // sentinels, as a freshly evaluated definition does (swamp-club#3627).
+    // Global validation below writes its parsed values into the same copy.
+    const secretBag = context.vaultSecrets;
+    if (secretBag?.resolvesAny) {
+      currentDefinition = Definition.fromData({
+        ...currentDefinition.toData(),
+        globalArguments: secretBag.resolveDeep(
+          currentDefinition.globalArguments,
+        ) as Record<string, unknown>,
+      });
+    }
+
+    // Validate globalArguments against schema (after upgrade and runtime resolution).
+    // GlobalArguments may contain unevaluated ${{ inputs.* }} expressions when
+    // the user didn't provide those inputs (e.g., running "delete" without
+    // create-time inputs). Strip unresolved fields before Zod validation so
+    // methods that don't need them can proceed. A Proxy on context.globalArgs
+    // will throw a clear error if the method actually accesses an unresolved field.
+    // What the global-arguments parse received, for a placed step's
+    // secret values (swamp-club#3754).
+    let globalArgsParseInput: Record<string, unknown> = {};
+    if (modelDef.globalArguments) {
+      const rawGlobalArgs = currentDefinition.globalArguments;
+      const globalArgsSchema = modelDef.globalArguments;
+      const { coerced: coercedGlobalArgs, data } = parseGlobalArguments(
+        globalArgsSchema,
+        rawGlobalArgs,
+        context.redactor,
+      );
+      // What the method reads from its context is what this parse made,
+      // a transform's output included, so it is registered as a method
+      // argument's parse is (swamp-club#3681).
+      registerDeliveredSecrets(
+        globalArgsSchema,
+        coercedGlobalArgs,
+        data,
+        context.redactor,
+      );
+      // The unresolved fields the parse skipped travel too, as written.
+      globalArgsParseInput = { ...rawGlobalArgs, ...coercedGlobalArgs };
+      // Update definition with parsed values so methods receive correct types
+      for (const [key, value] of Object.entries(data)) {
+        currentDefinition.setGlobalArgument(key, value);
+      }
+    }
+
+    // Build unresolvedMethodArgs for pre-flight checks so they can
+    // validate method arguments. Mirrors the merge in execute():
+    // per-method args override global args, with unresolved ${{ }}
+    // expressions filtered from global args. In a run that holds secrets
+    // it is the merge built before the resolution, with the values
+    // validation parsed laid under its non-secret globals.
+    const checkUnresolvedMethodArgs =
+      sentinelArguments === undefined || secrets === undefined
+        ? unresolvedArgumentsOf(currentDefinition, methodName)
+        : withParsedGlobals(
+          sentinelArguments,
+          currentDefinition,
+          methodName,
+          secrets,
+        );
+    if (sentinelArguments !== undefined) {
+      // The checks and the method see this merge, with the sentinels in
+      // place, as `unresolvedMethodArgs` (Section 6.3): execute() reads it
+      // from the context, since by then the definition holds the values.
+      context = {
+        ...context,
+        unresolvedMethodArgs: checkUnresolvedMethodArgs,
+      };
+    }
+
+    return {
+      definition: currentDefinition,
+      context,
+      globalArgsParseInput,
+      checkUnresolvedMethodArgs,
+    };
+  }
+
+  /**
+   * The parse a remotely placed step's arguments get on serve before it is
+   * scheduled, so a bad argument fails the step at once rather than once a
+   * worker is chosen, or as a queue timeout when none is free. An argument
+   * holding no sentinel is parsed as a run in this process parses it,
+   * reading no vault. One holding a sentinel is left to the delivery once a
+   * worker is chosen, which loads its value; a method argument set missing
+   * such a field is checked leniently, as the global arguments always are,
+   * so a required field it lacks is reported only by that delivery.
+   * When nothing is left out, the parse is the method's own and the
+   * caller's hook is called here, as the deliveries after it then call it
+   * no more. It works on a copy of the definition.
+   */
+  async #checkBeforeScheduling(input: {
+    definition: Definition;
+    context: MethodContext;
+    modelDef: ModelDefinition;
+    method: MethodDefinition;
+    methodName: string;
+    options: MethodDeliveryOptions;
+    validated: (() => Promise<void>) | undefined;
+  }): Promise<void> {
+    const { definition, context, modelDef, method, methodName } = input;
+    const bag = context.vaultSecrets;
+    const rawGlobalArgs = definition.globalArguments;
+    const rawMethodArgs = definition.getMethodArguments(methodName);
+    const globalSkip = keysHoldingSentinels(rawGlobalArgs, bag);
+    // The keys of the method's merge that hold a sentinel, wherever it was
+    // authored: a method argument holding none overrides a global one that
+    // does.
+    const methodSkip = keysHoldingSentinels(
+      isRecordSchema(method.arguments)
+        ? rawMethodArgs
+        : unresolvedArgumentsOf(definition, methodName),
+      bag,
+    );
+
+    if (globalSkip.size === 0 && methodSkip.size === 0) {
+      const prepared = await this.#prepareDelivery({
+        definition: Definition.fromData(definition.toData()),
+        modelDef,
+        method,
+        methodName,
+        context,
+        secretLoader: undefined,
+        localPlacement: false,
+        // The refusals ran before this check.
+        refuse: false,
+      });
+      const { parseInput, parsed } = parseMethodArguments(
+        prepared.definition,
+        method,
+        methodName,
+        prepared.context.vaultSecrets,
+        prepared.context.redactor,
+        input.options.unreadReferences,
+      );
+      registerDeliveredSecrets(
+        method.arguments,
+        parseInput,
+        parsed.data,
+        prepared.context.redactor,
+      );
+      await input.validated?.();
+      return;
+    }
+
+    let parsedGlobals: Record<string, unknown> = {};
+    if (modelDef.globalArguments) {
+      parsedGlobals = parseGlobalArguments(
+        modelDef.globalArguments,
+        rawGlobalArgs,
+        context.redactor,
+        globalSkip,
+      ).data;
+    }
+    const merged: Record<string, unknown> = isRecordSchema(method.arguments)
+      ? {}
+      : { ...parsedGlobals };
+    for (const [key, value] of Object.entries(rawMethodArgs)) {
+      merged[key] = value;
+    }
+    for (const key of methodSkip) delete merged[key];
+    const methodArgs = coerceMethodArgs(merged, method.arguments);
+    // With no field of the merge left out, it is the method's whole input.
+    let issues: readonly z.ZodIssue[] | undefined;
+    try {
+      if (methodSkip.size === 0) {
+        const parsed = method.arguments.safeParse(
+          methodArgs,
+          argumentParseContext(),
+        );
+        if (!parsed.success) issues = parsed.error.issues;
+      } else {
+        const parsed = parseGlobalArgumentsLeniently(
+          method.arguments,
+          methodArgs,
+          methodSkip,
+        );
+        if (!parsed.success) issues = parsed.issues;
+      }
+    } catch (error) {
+      throw schemaThrew(error, method.arguments, "Method arguments");
+    }
+    if (issues !== undefined) {
+      throw refusedParse(
+        "Method arguments",
+        method.arguments,
+        methodArgs,
+        issues,
+        context.redactor,
+      );
+    }
+  }
+
+  /**
+   * The frame a protocol version 5 worker receives, built once the
+   * dispatcher has chosen one: today's delivery, for the deprecation window
+   * typed-secrets 5.3 ends (design/enablers/typed-secrets.md Section 9). It
+   * loads and resolves the step's references here, validates the global and
+   * method arguments, calls the caller's hook, and returns the arguments
+   * resolved, with the bag entries and their values for the worker's
+   * redactor. It works on a copy of the definition, so the one the step
+   * dispatches keeps its sentinels.
+   */
+  async #legacyDelivery(input: {
+    definition: Definition;
+    context: MethodContext;
+    modelDef: ModelDefinition;
+    method: MethodDefinition;
+    methodName: string;
+    options: MethodDeliveryOptions;
+    validated: (() => Promise<void>) | undefined;
+  }): Promise<LegacyStepDelivery> {
+    const { modelDef, method, methodName, options } = input;
+    const prepared = await this.#prepareDelivery({
+      definition: Definition.fromData(input.definition.toData()),
+      modelDef,
+      method,
+      methodName,
+      context: input.context,
+      secretLoader: options.secretLoader,
+      localPlacement: false,
+      // The refusals ran before the step was scheduled.
+      refuse: false,
+    });
+    const { context, definition } = prepared;
+    // The worker parses the shipped arguments itself. The caller's record of
+    // the evaluation and the redactor still need the parse here, before
+    // anything leaves (swamp-club#3681).
+    const { parseInput, parsed } = parseMethodArguments(
+      definition,
+      method,
+      methodName,
+      context.vaultSecrets,
+      context.redactor,
+      options.unreadReferences,
+    );
+    registerDeliveredSecrets(
+      method.arguments,
+      parseInput,
+      parsed.data,
+      context.redactor,
+    );
+    await input.validated?.();
+
+    const unresolvedMethodArgs = definition.getMethodArguments(methodName);
+    const secretBag = context.vaultSecrets;
+    const methodArgs = secretBag?.resolvesAny
+      ? secretBag.resolveDeep(unresolvedMethodArgs) as Record<string, unknown>
+      : unresolvedMethodArgs;
+    const globalArgs = secretBag?.resolvesAny
+      ? secretBag.resolveDeep(
+        definition.globalArguments,
+      ) as Record<string, unknown>
+      : definition.globalArguments;
+
+    // The entries this step delivers: its own, and any the run issued
+    // earlier that its unresolved arguments carry. Nothing else of the run
+    // reaches the worker.
+    const shippedEntries = secretBag?.resolvesAny
+      ? secretBag.entriesFor({
+        methodArgs: unresolvedMethodArgs,
+        globalArgs: definition.globalArguments,
+      })
+      : [];
+    const secretValues = shippedEntries.map((entry) => entry.value);
+    if (modelDef.globalArguments) {
+      // The definition holds the global arguments as their parse delivered
+      // them, a transform's output included, beside what it was given. The
+      // worker's redactor gets what a local run registers: the delivered
+      // secrets less the text the parse input held only at plain positions
+      // and the keys the schema declares, read against that input as
+      // resolved, so a region or a port is not masked on the worker
+      // (swamp-club#3754).
+      const parseInput = secretBag?.resolvesAny
+        ? secretBag.resolveDeep(prepared.globalArgsParseInput) as Record<
+          string,
+          unknown
+        >
+        : prepared.globalArgsParseInput;
+      secretValues.push(
+        ...extractDeliveredSensitiveValues(
+          modelDef.globalArguments,
+          parseInput,
+          globalArgs,
+        ),
+      );
+    }
+    const methodArgSchema = modelDef.methods[methodName]?.arguments;
+    if (methodArgSchema) {
+      secretValues.push(
+        ...extractSensitiveFieldValues(methodArgSchema, methodArgs),
+      );
+    }
+    return {
+      globalArgs,
+      methodArgs,
+      secretValues: secretValues.length > 0 ? secretValues : undefined,
+      // The worker rebuilds the bag from these and resolves the args
+      // itself, so a command/shell step gets its secrets as environment
+      // variables there, as it does locally (swamp-club#2760).
+      ...(shippedEntries.length > 0
+        ? { unresolvedMethodArgs, secretBag: shippedEntries }
+        : {}),
+    };
+  }
+
+  /**
+   * Runs `method` on a protocol version 6 worker: the delivery prelude a
+   * run in this process takes ({@link #prepareDelivery}), loading the
+   * dispatch's references through `secretLoader`, then the method's one
+   * parse and its body. The refusals ran on serve before dispatch, as they
+   * run for every remotely placed step, so they are not repeated here.
+   * `onArgumentsValidated` is called once the arguments pass their schema.
+   */
+  async executeDispatched(
+    definition: Definition,
+    modelDef: ModelDefinition,
+    methodName: string,
+    context: MethodContext,
+    options: {
+      secretLoader: SecretLoader;
+      onArgumentsValidated?: () => Promise<void>;
+    },
+  ): Promise<MethodResult> {
+    const method = modelDef.methods[methodName];
+    if (!method) {
+      throw wordedError(
+        wordedText((w) => `Method '${methodName}' not found in ${w.noun}`),
+      );
+    }
+    const prepared = await this.#prepareDelivery({
+      definition,
+      modelDef,
+      method,
+      methodName,
+      context,
+      secretLoader: options.secretLoader,
+      localPlacement: false,
+      refuse: false,
+    });
+    return await this.#execute(
+      prepared.definition,
+      method,
+      prepared.context,
+      options.onArgumentsValidated,
+    );
   }
 
   executeWorkflow(
@@ -1181,164 +1729,68 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // read its delivery view. The step's own bag stays unloaded, so the
       // next attempt loads again; a step a guard skipped never gets here and
       // loads nothing.
-      const delivery = await deliverStepSecrets({
-        definition: currentDefinition,
-        modelDef,
-        method,
-        methodName,
-        vaultSecrets: context.vaultSecrets,
-        secretLoader: options.secretLoader,
-        localPlacement: !isRemotePlacement,
-      });
-      const { secrets, sentinelArguments } = delivery;
-      if (delivery.vaultSecrets !== context.vaultSecrets) {
-        context = { ...context, vaultSecrets: delivery.vaultSecrets };
-      }
-
-      // Resolve vault sentinels in globalArguments before validation.
-      // Sentinels must be replaced with raw values so Zod schemas (e.g., url(),
-      // regex()) validate against actual secret values, not sentinel tokens.
-      // The values go into a copy of the definition, never into the object the
-      // caller passed (its own when no upgrade ran): that object keeps its
-      // sentinels, so no value outlives the attempt in it, and a second
-      // delivery of the same instance loads again and starts from the
-      // sentinels, as a freshly evaluated definition does (swamp-club#3627).
-      // Global validation below writes its parsed values into the same copy.
-      const secretBag = context.vaultSecrets;
-      // Capture both argument sets before global validation receives their
-      // values. By remote dispatch the globals no longer contain sentinels,
-      // so their references cannot be recovered there (swamp-club#3529).
-      const secretReferences = secretBag?.resolvesAny
-        ? secretBag.referencesFor({
-          methodArgs: currentDefinition.getMethodArguments(methodName),
-          globalArgs: currentDefinition.globalArguments,
-        })
-        : [];
-      if (secretBag?.resolvesAny) {
-        currentDefinition = Definition.fromData({
-          ...currentDefinition.toData(),
-          globalArguments: secretBag.resolveDeep(
-            currentDefinition.globalArguments,
-          ) as Record<string, unknown>,
+      // A run in this process delivers here. A remotely placed step is
+      // delivered once a worker is chosen: by serve for a version 5 worker,
+      // by the worker itself for version 6 (design/enablers/typed-secrets.md
+      // Section 9). Before scheduling it runs the destination refusals,
+      // which read the run's sentinels and no value, and validates every
+      // argument holding no sentinel, so nothing is loaded before dispatch
+      // and a bad argument does not wait for a worker.
+      const validated = onceOnly(options.onArgumentsValidated);
+      let remoteDelivery: RemoteDelivery | undefined;
+      let checkUnresolvedMethodArgs: Record<string, unknown> = {};
+      if (isRemotePlacement) {
+        await deliverStepSecrets({
+          definition: currentDefinition,
+          modelDef,
+          method,
+          methodName,
+          vaultSecrets: context.vaultSecrets,
+          secretLoader: undefined,
+          localPlacement: false,
         });
-      }
-
-      // Validate globalArguments against schema (after upgrade and runtime resolution).
-      // GlobalArguments may contain unevaluated ${{ inputs.* }} expressions when
-      // the user didn't provide those inputs (e.g., running "delete" without
-      // create-time inputs). Strip unresolved fields before Zod validation so
-      // methods that don't need them can proceed. A Proxy on context.globalArgs
-      // will throw a clear error if the method actually accesses an unresolved field.
-      // What the global-arguments parse received, for a placed step's
-      // secret values (swamp-club#3754).
-      let globalArgsParseInput: Record<string, unknown> = {};
-      if (modelDef.globalArguments) {
-        const rawGlobalArgs = currentDefinition.globalArguments;
-
-        // Identify globalArg fields with unresolved expressions (inputs,
-        // model resource/file refs, or any other swamp ${{ ... }} that wasn't
-        // evaluated). Uses containsSwampExpression for recursive detection of
-        // expressions inside nested objects and arrays.
-        const unresolvedKeys = new Set<string>();
-        const resolvedGlobalArgs: Record<string, unknown> = {};
-        for (const [key, value] of Object.entries(rawGlobalArgs)) {
-          if (containsSwampExpression(value)) {
-            unresolvedKeys.add(key);
-          } else {
-            resolvedGlobalArgs[key] = value;
-          }
-        }
-
-        const globalArgsSchema = modelDef.globalArguments;
-        const coercedGlobalArgs = coerceMethodArgs(
-          resolvedGlobalArgs,
-          globalArgsSchema,
-        );
-        const shape = getObjectShape(globalArgsSchema);
-        if (shape) {
-          const unknownKeys = Object.keys(rawGlobalArgs).filter(
-            (k) => !Object.hasOwn(shape, k),
-          );
-          if (unknownKeys.length > 0) {
-            const validKeys = Object.keys(shape).join(", ");
-            throw new Error(
-              `Global arguments validation failed: Unknown argument(s): ${
-                unknownKeys.join(", ")
-              }. Valid arguments are: ${validKeys || "none"}`,
-            );
-          }
-        }
-
-        // Use lenient validation: validate provided fields but don't
-        // require missing ones. Direct execution creates ephemeral instances
-        // where not all globalArgs are needed (e.g. get doesn't need
-        // creation-time fields). swamp model create validates strictly.
-        // Unresolved fields are skipped — the Proxy on context.globalArgs
-        // guards them — while resolved fields still get their Zod defaults.
-        let globalArgsResult: ReturnType<typeof parseGlobalArgumentsLeniently>;
-        try {
-          globalArgsResult = parseGlobalArgumentsLeniently(
-            globalArgsSchema,
-            coercedGlobalArgs,
-            unresolvedKeys,
-          );
-        } catch (error) {
-          throw schemaThrew(error, globalArgsSchema, "Global arguments");
-        }
-        if (!globalArgsResult.success) {
-          // As a method argument's refusal (swamp-club#3681).
-          throw refusedParse(
-            "Global arguments",
-            globalArgsSchema,
-            coercedGlobalArgs,
-            globalArgsResult.issues,
-            context.redactor,
-          );
-        }
-        // What the method reads from its context is what this parse made,
-        // a transform's output included, so it is registered as a method
-        // argument's parse is (swamp-club#3681).
-        registerDeliveredSecrets(
-          globalArgsSchema,
-          coercedGlobalArgs,
-          globalArgsResult.data,
-          context.redactor,
-        );
-        // The unresolved fields the parse skipped travel too, as written.
-        globalArgsParseInput = { ...rawGlobalArgs, ...coercedGlobalArgs };
-        // Update definition with parsed values so methods receive correct types
-        for (const [key, value] of Object.entries(globalArgsResult.data)) {
-          currentDefinition.setGlobalArgument(key, value);
-        }
+        const dispatched = { definition: currentDefinition, context };
+        await this.#checkBeforeScheduling({
+          ...dispatched,
+          modelDef,
+          method,
+          methodName,
+          options,
+          validated,
+        });
+        let legacy: Promise<LegacyStepDelivery> | undefined;
+        remoteDelivery = {
+          // Built at most once per attempt, so a re-dispatch to another
+          // version 5 worker reuses its one load, as before.
+          legacyDelivery: () =>
+            legacy ??= this.#legacyDelivery({
+              ...dispatched,
+              modelDef,
+              method,
+              methodName,
+              options,
+              validated,
+            }),
+          validated,
+        };
+      } else {
+        const prepared = await this.#prepareDelivery({
+          definition: currentDefinition,
+          modelDef,
+          method,
+          methodName,
+          context,
+          secretLoader: options.secretLoader,
+          localPlacement: true,
+          refuse: true,
+        });
+        currentDefinition = prepared.definition;
+        context = prepared.context;
+        checkUnresolvedMethodArgs = prepared.checkUnresolvedMethodArgs;
       }
 
       // Infer method kind for lifecycle checks
       const methodKind = inferMethodKind(methodName, method);
-
-      // Build unresolvedMethodArgs for pre-flight checks so they can
-      // validate method arguments. Mirrors the merge in execute():
-      // per-method args override global args, with unresolved ${{ }}
-      // expressions filtered from global args. In a run that holds secrets
-      // it is the merge built before the resolution, with the values
-      // validation parsed laid under its non-secret globals.
-      const checkUnresolvedMethodArgs =
-        sentinelArguments === undefined || secrets === undefined
-          ? unresolvedArgumentsOf(currentDefinition, methodName)
-          : withParsedGlobals(
-            sentinelArguments,
-            currentDefinition,
-            methodName,
-            secrets,
-          );
-      if (sentinelArguments !== undefined) {
-        // The checks and the method see this merge, with the sentinels in
-        // place, as `unresolvedMethodArgs` (Section 6.3): execute() reads it
-        // from the context, since by then the definition holds the values.
-        context = {
-          ...context,
-          unresolvedMethodArgs: checkUnresolvedMethodArgs,
-        };
-      }
 
       // Skip pre-flight checks for remotely-placed steps — checks run on
       // the orchestrator where worker-local filesystem state is unavailable.
@@ -1541,7 +1993,13 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         }
       }
 
-      const definitionHash = await currentDefinition.computeHash();
+      // A remotely placed step's definition still holds its sentinels,
+      // which differ on every run: it is hashed with each one written as its
+      // reference, as a persisted definition holds it, so the hash is stable
+      // and holds no value.
+      const definitionHash = await (isRemotePlacement
+        ? withReferenceText(currentDefinition, context.vaultSecrets)
+        : currentDefinition).computeHash();
 
       const executionRequest:
         import("./execution_envelope.ts").ExecutionRequest = {
@@ -1618,26 +2076,6 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
 
       try {
         if (isRemotePlacement) {
-          // The worker parses the shipped arguments itself. The caller's
-          // record of the evaluation and the redactor still need the parse
-          // here, before anything leaves (swamp-club#3681).
-          const { parseInput, parsed } = parseMethodArguments(
-            currentDefinition,
-            method,
-            methodName,
-            context.vaultSecrets,
-            context.redactor,
-            options.unreadReferences,
-          );
-          registerDeliveredSecrets(
-            method.arguments,
-            parseInput,
-            parsed.data,
-            context.redactor,
-          );
-          if (options.onArgumentsValidated) {
-            await options.onArgumentsValidated();
-          }
           // Remote placement: the method body runs on a matching worker; the
           // surrounding pipeline (output records below)
           // stays at the orchestrator. Pre-flight checks are skipped (they
@@ -1648,8 +2086,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             modelDef,
             currentDefinition,
             methodName,
-            secretReferences,
-            globalArgsParseInput,
+            remoteDelivery!,
           );
           // Rebuild full handles from the durable records the data plane
           // persisted — downstream consumers (data-record mapping, workflow
@@ -1703,7 +2140,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           );
           const executionResult = await withSpan("swamp.method.execute", {
             "model.type": context.modelType.normalized,
-          }, () => inProcessExecutor.execute(executionRequest));
+          }, () =>
+            inProcessExecutor.execute(executionRequest));
 
           if (executionResult.outputs.some((o) => o.kind === "pending")) {
             throw new Error(
