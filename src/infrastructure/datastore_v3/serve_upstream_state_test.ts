@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import { UserError } from "../../domain/errors.ts";
@@ -247,10 +247,40 @@ Deno.test("ServeUpstreamState: a file at schema version 1 keeps its cursor and h
     try {
       assertEquals(state.feedCursor(), 7);
       assertEquals(state.feedAnchor(), undefined);
+      assertEquals(state.copyId().length, 32, "the upgrade gave it an id");
       state.advanceFeedCursor(9, ANCHOR_A);
       assertEquals(state.feedAnchor(), ANCHOR_A);
     } finally {
       state.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState.copyId: random per file, kept across a reopen", async () => {
+  await withTempDir((dir) => {
+    const copyDir = join(dir, "serve-1");
+    const path = join(copyDir, "serve_upstream.db");
+    const state = ServeUpstreamState.open(path);
+    let id: string;
+    try {
+      id = state.copyId();
+      assertEquals(/^[0-9a-f]{32}$/.test(id), true, id);
+    } finally {
+      state.close();
+    }
+    const reopened = ServeUpstreamState.open(path);
+    try {
+      assertEquals(reopened.copyId(), id);
+    } finally {
+      reopened.close();
+    }
+    // A copy moved aside and started afresh at the same path has another.
+    Deno.renameSync(copyDir, join(dir, "serve-1.moved"));
+    const fresh = ServeUpstreamState.open(path);
+    try {
+      assert(fresh.copyId() !== id);
+    } finally {
+      fresh.close();
     }
   });
 });

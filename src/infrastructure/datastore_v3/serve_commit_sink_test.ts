@@ -19,6 +19,7 @@
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
 import type { Commit } from "../../domain/datastore_v3/commit.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
@@ -516,5 +517,43 @@ Deno.test("createServeCommitSink: a unit whose stale commit meets a serve behind
     assertEquals(serve.head(MODEL), 1, "serve took nothing");
     assertEquals((await store.head("", MODEL)).seq, 2);
     assertEquals(await outbox.hasEntries(), false);
+  });
+});
+
+Deno.test("createServeCommitSink: a commit that lands on a serve without the copy's head commit lands, and is warned about", async () => {
+  await withCheckout(async ({ serve, catchUp, sink }) => {
+    await otherWriter(serve);
+    await otherWriter(serve);
+    await catchUp.catchUp(new AbortController().signal);
+    // Serve's commit at the copy's head is now another log's.
+    const log = serve.logs.get(MODEL.toString())!;
+    const swapped = serveStamped(2, [await savePut("b2", 1)], MODEL, "b-2");
+    log[1] = { ...log[1], txnId: swapped.txnId, json: swapped.toJSON() };
+
+    const records: LogRecord[] = [];
+    await configure({
+      sinks: { capture: (record: LogRecord) => records.push(record) },
+      loggers: [
+        {
+          category: ["datastore", "v3", "serve"],
+          lowestLevel: "warning",
+          sinks: ["capture"],
+        },
+        { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+      ],
+      reset: true,
+    });
+    let result;
+    try {
+      result = await sink.append(modelCommit(3, [await savePut("a", 1)]));
+    } finally {
+      await reset();
+    }
+
+    assertEquals(result, { kind: "appended", seq: 3 });
+    const warnings = records.map((r) => r.message.map(String).join(""));
+    assertEquals(warnings.length, 1, warnings.join("\n"));
+    assert(warnings[0].includes("saved to serve"), warnings[0]);
+    assert(warnings[0].includes("commit 2 of partition"), warnings[0]);
   });
 });

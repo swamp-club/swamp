@@ -64,6 +64,11 @@ export type CheckoutView =
   | {
     readonly kind: "serve";
     readonly root: string;
+    /**
+     * The copy's id (swamp-club#4049): a copy moved aside and started
+     * afresh at the same root is another view.
+     */
+    readonly copy: string;
     readonly caller: string;
     /** Serve's address, for messages only: the root is keyed by it. */
     readonly serverUrl: string;
@@ -82,16 +87,21 @@ export function serveCallerFingerprint(token: string | undefined): string {
   return createHash("sha256").update(token ?? "").digest("hex");
 }
 
-/** The view a context over the v3 datastore at `datastorePath` reads. */
+/**
+ * The view a context over the v3 datastore at `datastorePath` reads;
+ * `copyId` is the serve copy's, which a serve view records.
+ */
 export function checkoutViewOf(
   datastorePath: string,
   namespace: string,
+  copyId: string | undefined,
 ): CheckoutView {
   const serve = serveUpstreamAt(datastorePath);
   return serve !== undefined
     ? {
       kind: "serve",
       root: resolve(datastorePath),
+      copy: copyId ?? "",
       caller: serveCallerFingerprint(serve.target.token),
       serverUrl: serve.target.serverUrl,
     }
@@ -100,7 +110,7 @@ export function checkoutViewOf(
 
 function sameView(a: CheckoutView, b: CheckoutView): boolean {
   if (a.kind === "serve" && b.kind === "serve") {
-    return a.root === b.root && a.caller === b.caller;
+    return a.root === b.root && a.copy === b.copy && a.caller === b.caller;
   }
   if (a.kind === "solo" && b.kind === "solo") {
     return a.datastore === b.datastore && a.namespace === b.namespace;
@@ -194,7 +204,7 @@ async function readRecordedView(
     const view = parsed?.view;
     if (
       (view?.kind === "serve" && typeof view.root === "string" &&
-        typeof view.caller === "string" &&
+        typeof view.copy === "string" && typeof view.caller === "string" &&
         typeof view.serverUrl === "string") ||
       (view?.kind === "solo" && typeof view.datastore === "string" &&
         typeof view.namespace === "string")

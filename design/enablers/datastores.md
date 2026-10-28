@@ -6620,8 +6620,11 @@ switch between serve mode and the solo datastore. Built from one log and
 caught up from another, a projection shows records the new view does not
 hold, and its cursor is the other log's, so the new log's commits may never
 apply. So the checkout records the view its projection was built from in
-`checkout_view.json` in its read-model state directory: a serve root and the
-token fingerprint, or the solo datastore's path and namespace.
+`checkout_view.json` in its read-model state directory: a serve root, the
+copy's id and the token fingerprint, or the solo datastore's path and
+namespace. The copy's id is random, made with the copy's `serve_upstream.db`
+(swamp-club#4049), so a copy moved aside and started afresh at the same root
+is another view. A view recorded before copies had ids is rebuilt once.
 `v3RepositoryFactoryConfig` opens the handle (after the copy is current) and,
 before any recovery or catch-up, rebuilds the projection when the recorded
 view differs or a rebuild did not finish (`alignCheckoutView`):
@@ -6794,11 +6797,14 @@ an older backup mixed silently into the copy:
   another `txnId` there, the command fails with `serve_upstream_diverged`.
   That is a user error, not exit 75. The message names the address and the
   copy's directory, and says to start a fresh copy by moving the directory
-  aside, so commits not yet sent stay in the moved copy's outbox. The copy is
-  never re-synced on its own: one that holds commits serve lost may be what a
-  restore needs. A commit that met the refusal after a stale seq never
-  landed, so its unit fails with the refusal rather than as a commit that
-  may land.
+  aside, so commits not yet sent stay in the moved copy's outbox. The fresh
+  copy has a new id, so the checkout's projection is rebuilt from it before
+  anything is read. The copy is never re-synced on its own: one that holds
+  commits serve lost may be what a restore needs. A commit that met the
+  refusal after a stale seq never landed, so its unit fails with the refusal
+  rather than as a commit that may land. A commit serve accepted, whose
+  catch-up then finds the divergence, has landed, so the command succeeds and
+  warns, and the next command is refused.
 - **Not checked.** Some cases cannot be told from a moved serve, so they are
   not refused:
   - a commit serve now withholds from the caller;

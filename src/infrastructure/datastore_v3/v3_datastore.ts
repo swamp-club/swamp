@@ -613,6 +613,11 @@ export interface V3Datastore {
    */
   readonly serveUpstreamStore?: ServeUpstreamCommitStore;
   /**
+   * The id of the serve copy this handle reads, when its upstream is serve
+   * (swamp-club#4049): a copy started afresh at the same root has another.
+   */
+  readonly serveCopyId?: string;
+  /**
    * For a reader of a checkout another process writes (swamp-club#3803):
    * nothing while the read model is complete; otherwise waits up to
    * `lockWaitMs` for the catch-up in progress and catches up if the read
@@ -1054,6 +1059,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     ...(serveSink !== undefined
       ? { serveUpstreamStore: serveSink.upstream }
       : {}),
+    ...(serveState !== undefined ? { serveCopyId: serveState.copyId() } : {}),
     async catchUp(signal) {
       await catchUpFromServe(signal ?? lifetime.signal, "read");
       await unreachableAsCatchUpError(() =>

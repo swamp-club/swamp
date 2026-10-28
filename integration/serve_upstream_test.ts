@@ -949,6 +949,16 @@ Deno.test({
         // Moved back to A, the copy holds A's log only.
         target = serveA.origin;
         assertEquals(await read(), aView);
+
+        // At B again, the copy moved aside as the refusal says: a fresh copy
+        // and the checkout's records hold B's log only.
+        target = serveB.origin;
+        await assertRejects(read, ServeUpstreamDivergedError);
+        await Deno.rename(readError.copyDir, `${readError.copyDir}.moved`);
+        assertEquals(await read(), {
+          vpc: null,
+          db: { version: 2, content: "2" },
+        });
       } finally {
         await proxy.close();
       }

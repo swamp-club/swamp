@@ -63,10 +63,17 @@ const MIGRATIONS: readonly string[] = [
    );`,
   // The feed anchor (swamp-club#4049): the last commit of the last page
   // applied, which serve must still hold for the cursor to mean anything.
+  // And the copy's id, random per copy: a copy moved aside and started
+  // afresh at the same root is another view of serve.
   `ALTER TABLE feed ADD COLUMN anchor_namespace TEXT;
    ALTER TABLE feed ADD COLUMN anchor_partition TEXT;
    ALTER TABLE feed ADD COLUMN anchor_seq INTEGER;
-   ALTER TABLE feed ADD COLUMN anchor_txn_id TEXT;`,
+   ALTER TABLE feed ADD COLUMN anchor_txn_id TEXT;
+   CREATE TABLE copy (
+     id INTEGER PRIMARY KEY CHECK (id = 1),
+     copy_id TEXT NOT NULL
+   );
+   INSERT INTO copy (id, copy_id) VALUES (1, lower(hex(randomblob(16))));`,
 ];
 
 /**
@@ -207,6 +214,17 @@ export class ServeUpstreamState {
        ON CONFLICT (namespace, partition)
        DO UPDATE SET seq = MAX(seq, excluded.seq)`,
     ).run(namespace, partition, seq);
+  }
+
+  /**
+   * The copy's id: random, made with the file, so a fresh copy at the same
+   * root has another (swamp-club#4049).
+   */
+  copyId(): string {
+    this.#assertOpen();
+    return (this.#db.prepare("SELECT copy_id FROM copy WHERE id = 1").get() as {
+      copy_id: string;
+    }).copy_id;
   }
 
   /** The caller the copy was built for; undefined before the first stamp. */

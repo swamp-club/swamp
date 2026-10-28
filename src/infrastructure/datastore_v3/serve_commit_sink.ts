@@ -56,6 +56,7 @@ import {
   createOutboxCommitSink,
   type OutboxCommitSink,
 } from "./outbox_commit_sink.ts";
+import { getSwampLogger } from "../logging/logger.ts";
 import type { ServeCatchUp } from "./serve_catch_up.ts";
 import { storageNamespaceOf } from "./serve_datastore_storage.ts";
 import type {
@@ -69,6 +70,8 @@ import {
   ServeUpstreamDivergedError,
 } from "./serve_upstream_errors.ts";
 import type { SqliteCommitStore } from "./sqlite_commit_store.ts";
+
+const logger = getSwampLogger(["datastore", "v3", "serve"]);
 
 /** The most chunks one commit request carries; serve's own limit. */
 export const MAX_CARRIED_CHUNKS = 1024;
@@ -241,7 +244,15 @@ export function createServeCommitSink(
         commit.partition,
         signal,
       );
-    } catch {
+    } catch (error) {
+      // The commit is in serve's log either way: it is not failed. A serve
+      // that no longer holds the copy's head is said now, though, since
+      // this commit landed in a log the copy does not follow
+      // (swamp-club#4049); the next command refuses it.
+      if (error instanceof ServeUpstreamDivergedError) {
+        logger
+          .warn`This change was saved to serve, but serve no longer holds the commits this checkout's copy follows: ${error.message}`;
+      }
       catchUp.recordServeHead(commit.namespace, commit.partition, reply.seq);
     }
     return reply.duplicate
