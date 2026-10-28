@@ -745,6 +745,7 @@ Deno.test("composeScore: dependency-trust loses one point for loose specifiers a
     factor.remediation ?? "",
     "2 loose dependency specifier(s) (loose-specifier) cost 1 of 2 points",
   );
+  assertStringIncludes(factor.remediation ?? "", "Commit a valid lock");
   assertEquals(score.allPassed, false);
 });
 
