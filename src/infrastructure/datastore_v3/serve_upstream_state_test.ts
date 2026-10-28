@@ -304,3 +304,39 @@ Deno.test("ServeUpstreamState.recordServeLogId: the first log recorded stays", a
     }
   });
 });
+
+Deno.test("ServeUpstreamState.recordBaseLoaded: the feed reads on from exactly the point, the anchor is forgotten and the base's point recorded (swamp-club#4006)", async () => {
+  await withTempDir((dir) => {
+    const state = ServeUpstreamState.open(join(dir, "serve_upstream.db"));
+    try {
+      assertEquals(state.basePoint(), 0);
+      state.advanceFeedCursor(12, {
+        namespace: "",
+        partition: "model/a",
+        seq: 3,
+        txnId: "t",
+      });
+      // A base replaces every commit the copy held, those past its point
+      // too: the feed reads them again.
+      state.recordBaseLoaded(9, [
+        { namespace: "", partition: "model/a", seq: 2 },
+      ]);
+      assertEquals(state.feedCursor(), 9);
+      assertEquals(state.feedAnchor(), undefined);
+      assertEquals(state.basePoint(), 9);
+      assertEquals(state.serveHead("", "model/a"), 2);
+
+      // A page read under another base point is not in the copy.
+      assertEquals(state.advanceFeedCursor(15, undefined, 0), false);
+      assertEquals(state.feedCursor(), 9);
+      assertEquals(state.advanceFeedCursor(15, undefined, 9), true);
+      assertEquals(state.feedCursor(), 15);
+
+      // A reset to another caller forgets the base too.
+      state.beginCallerReset();
+      assertEquals(state.basePoint(), 0);
+    } finally {
+      state.close();
+    }
+  });
+});

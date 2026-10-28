@@ -32,6 +32,7 @@
  * | `POST partitions/{p}/commits` | one commit and its missing chunks, framed: `{seq}` or a conflict |
  * | `GET partitions/{p}/commits?after=` | a partition's commits after a seq |
  * | `GET changes?cursor=` | every commit since a cursor the caller may read |
+ * | `GET base?after=` | the compacted base, a page at a time, filtered to what the caller may read |
  * | `POST locks` | take serve's model or workflow-run lock for the caller: a lease |
  * | `PUT locks/{leaseId}` | renew a lease |
  * | `DELETE locks/{leaseId}` | release a lease |
@@ -55,6 +56,8 @@ import {
   ADMIN_RESOURCE,
   type AggregateResourceResolver,
   authorizeCommit,
+  baseDataReadAccessOf,
+  baseRecordReadAccessOf,
   type CallerAuthority,
   type CommitRefusal,
   definitionRecordReadAccessOf,
@@ -64,7 +67,15 @@ import {
   type RequiredAccess,
 } from "../domain/datastore_v3/commit_authorization.ts";
 import { storageNamespaceOf } from "../domain/datastore_v3/chunk_store.ts";
-import { CommitsCompactedError } from "../domain/datastore_v3/commit_store.ts";
+import {
+  CommitsCompactedError,
+  type CompactedBaseEntry,
+  InvalidBasePageTokenError,
+} from "../domain/datastore_v3/commit_store.ts";
+import {
+  type ObservedBaseEntry,
+  observedBaseEntryToJSON,
+} from "../domain/datastore_v3/observed_base.ts";
 import { type Op, opFromJSON } from "../domain/datastore_v3/op.ts";
 import { CommitRejectedError } from "../domain/datastore_v3/partition.ts";
 import {
@@ -72,6 +83,7 @@ import {
   partitionOf,
 } from "../domain/datastore_v3/partition_key.ts";
 import { ReadModelIncompleteError } from "../domain/datastore_v3/read_model.ts";
+import { RecordKey } from "../domain/datastore_v3/record_key.ts";
 import { isControlPlaneModelType } from "../domain/models/control_plane_types.ts";
 import { findDefinitionByIdGlobal } from "../domain/models/model_lookup.ts";
 import { ModelType } from "../domain/models/model_type.ts";
@@ -142,6 +154,8 @@ export const MAX_HAS_HASHES = 1024;
 export const MAX_PAGE = 1000;
 /** The most feed rows one changes request scans, kept or filtered. */
 export const MAX_CHANGES_SCAN = 10_000;
+/** The most compacted base entries one base request scans, kept or filtered. */
+export const MAX_BASE_SCAN = 10_000;
 /** The most partitions a chunk read checks the caller against. */
 const MAX_REFERENCING_PARTITIONS = 64;
 /** The most chunk requests one principal has in flight. */
@@ -282,6 +296,10 @@ async function answerDatastoreRequest(
       case "changes":
         return req.method === "GET"
           ? await api.changes(req)
+          : methodNotAllowed("GET");
+      case "base":
+        return req.method === "GET"
+          ? await api.compactedBase(req)
           : methodNotAllowed("GET");
       case "locks":
         return req.method === "POST"
@@ -800,6 +818,133 @@ class DatastoreApi {
     // The next cursor moves past filtered rows too, so a caller who may
     // read nothing still makes progress.
     return Response.json({ changes: kept, cursor: next, more });
+  }
+
+  /**
+   * `GET base?after={token}&limit=` (swamp-club#4006): the compacted base of
+   * this namespace, a page at a time, with only what the caller may read.
+   * Each entry is decided by its partition and key, never more loosely than
+   * the changes feed decides the op that wrote it. A partition the caller
+   * may read as a whole is sent in its own section; one it may not (a
+   * config partition same-named definitions share) is sent just before the
+   * first entry of it the caller may read, so each entry arrives with its
+   * partition's compacted seq. `next` moves past filtered entries, so a
+   * caller who may read nothing still reaches the end. A page holds entries
+   * of one compaction point: when the point moves mid-request, the page ends
+   * there and the next one reports the new point.
+   */
+  async compactedBase(req: Request): Promise<Response> {
+    const params = new URL(req.url).searchParams;
+    const after = params.get("after") ?? undefined;
+    const limit = pageLimit(params.get("limit"));
+    if (limit === undefined) {
+      return failure(400, "invalid_request", "limit must be an integer");
+    }
+    const store = this.#v3.commitStore;
+    const entries: Record<string, unknown>[] = [];
+    const announced = new Set<string>();
+    let next = after;
+    let point: number | undefined;
+    let scanned = 0;
+    let kept = 0;
+    while (kept < limit && scanned < MAX_BASE_SCAN) {
+      let page;
+      try {
+        page = await store.readCompactedBase(
+          next,
+          Math.min(limit - kept, MAX_BASE_SCAN - scanned),
+        );
+      } catch (error) {
+        if (!(error instanceof InvalidBasePageTokenError)) throw error;
+        return failure(
+          400,
+          "invalid_request",
+          "after must be the next token of a base page",
+        );
+      }
+      if (point === undefined) point = page.point;
+      else if (page.point !== point) break;
+      for (const entry of page.entries) {
+        scanned++;
+        if (entry.namespace !== this.#namespace) continue;
+        const readable = await this.#readableBaseEntry(entry, announced);
+        if (readable === undefined) continue;
+        for (const sent of readable) {
+          entries.push(observedBaseEntryToJSON(sent));
+        }
+        kept++;
+      }
+      next = page.next;
+      if (next === undefined) break;
+    }
+    return Response.json({
+      point: point ?? 0,
+      entries,
+      ...(next === undefined ? {} : { next }),
+    });
+  }
+
+  /**
+   * The entries to send for `entry`: none when the caller may not read it,
+   * else the entry, after its partition's when that was not sent yet.
+   */
+  async #readableBaseEntry(
+    entry: CompactedBaseEntry,
+    announced: Set<string>,
+  ): Promise<ObservedBaseEntry[] | undefined> {
+    if (entry.kind === "partition") {
+      const partition = PartitionKey.parse(entry.partition);
+      if (
+        !this.#mayRead(await partitionReadAccessOf(partition, this.#resolver))
+      ) {
+        return undefined;
+      }
+      const marks = await this.#compactedPartition(partition);
+      if (marks === undefined) return undefined;
+      announced.add(entry.partition);
+      return [marks];
+    }
+    const owner = entry.kind === "file"
+      ? entry.ownership.owner
+      : entry.partition;
+    const partition = PartitionKey.parse(owner);
+    const required = entry.kind === "record" || entry.kind === "file"
+      ? await baseRecordReadAccessOf(
+        partition,
+        RecordKey.create(entry.key),
+        this.#resolver,
+      )
+      : await baseDataReadAccessOf(partition, this.#resolver);
+    if (!this.#mayRead(required)) return undefined;
+    if (announced.has(owner)) return [entry];
+    announced.add(owner);
+    const marks = await this.#compactedPartition(partition);
+    return marks === undefined ? [entry] : [marks, entry];
+  }
+
+  /**
+   * A compacted partition's entry: its compacted seq, and its data names'
+   * marks when the caller may read its data.
+   */
+  async #compactedPartition(
+    partition: PartitionKey,
+  ): Promise<ObservedBaseEntry | undefined> {
+    const marks = await this.#v3.commitStore.compactedPartition(
+      this.#namespace,
+      partition,
+    );
+    if (marks === undefined) return undefined;
+    const names = marks.names.length > 0 &&
+        this.#mayRead(await baseDataReadAccessOf(partition, this.#resolver))
+      ? marks.names
+      : [];
+    return {
+      kind: "partition",
+      namespace: this.#namespace,
+      partition: partition.toString(),
+      seq: marks.seq,
+      names,
+    };
   }
 
   /**
@@ -1570,6 +1715,7 @@ export function datastoreErrorResponse(error: unknown): Response {
     return Response.json({
       code: "commits_compacted",
       point: error.point,
+      ...(error.compactedSeq === undefined ? {} : { seq: error.compactedSeq }),
       message: error.message,
     }, { status: 410 });
   }

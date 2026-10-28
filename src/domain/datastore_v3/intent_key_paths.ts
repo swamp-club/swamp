@@ -263,6 +263,30 @@ function bindSegments(
 }
 
 /**
+ * What a record key of a behavior's partition holds, from its layout alone
+ * (swamp-club#4006): `data` for a key under the behavior's data directory,
+ * `model` for one of its outputs or evaluated definitions, undefined for a
+ * key the behavior's intents never write. A compacted record no longer
+ * carries the intent that wrote it, so the base is filtered on this.
+ */
+export function modelRecordKind(
+  model: { readonly type: string; readonly id: string },
+  key: RecordKey,
+): "data" | "model" | undefined {
+  const segments = key.toString().split("/");
+  if (dataKey(model, segments) !== undefined) return "data";
+  const intents: readonly Intent[] = [
+    // The output binding reads only the model, never the output id.
+    { kind: "output.save", model, outputId: "" },
+    { kind: "evaluated-definition.save", model },
+  ];
+  for (const intent of intents) {
+    if (bindSegments(intent, segments)?.ok === true) return "model";
+  }
+  return undefined;
+}
+
+/**
  * A key under the behavior's data directory, in the data layout. With
  * `names`, the key must be under one of those data names; with a version, under that version's
  * directory or the name's latest marker. `only` narrows it to one of the

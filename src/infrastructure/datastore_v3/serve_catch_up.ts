@@ -39,6 +39,17 @@
  * caller, a partition it may no longer read, and an anchor serve has
  * compacted cannot be checked, and are not refused.
  *
+ * A copy whose cursor serve has compacted past (a fresh checkout of a
+ * compacted datastore, or one left behind) loads serve's compacted base
+ * instead (swamp-club#4006): under the copy's writer lease, paged into a
+ * staging file of its own beside the copy, installed in one transaction,
+ * and only then recorded in the serve-mode state, so a load cut off leaves
+ * the copy as it was or reads as behind the point again and loads once
+ * more. The feed then reads on from the point. A partition read that meets
+ * a partition compacted past the copy's head reads on from its compacted
+ * seq when the base the copy loaded covers serve's point, and loads the
+ * base first otherwise: commits compacted away are read only from a base.
+ *
  * Serve's replies are untrusted (swamp-club#4062): its address can come
  * from a committed `.swamp.yaml`. A commit outside the copy's namespace,
  * in a feed page or a partition read, refuses the page before any of it
@@ -48,6 +59,8 @@
  * @module
  */
 
+import { join } from "@std/path";
+import { resolveLockTimeoutMs } from "../../domain/datastore/datastore_config.ts";
 import { Commit } from "../../domain/datastore_v3/commit.ts";
 import type { HeadIdentity } from "../../domain/datastore_v3/commit_outbox.ts";
 import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
@@ -66,7 +79,11 @@ import type {
   ServeFeedAnchor,
   ServeUpstreamState,
 } from "./serve_upstream_state.ts";
-import type { SqliteCommitStore } from "./sqlite_commit_store.ts";
+import {
+  ObservedBaseStaging,
+  type SqliteCommitStore,
+} from "./sqlite_commit_store.ts";
+import { acquireV3WriterLock } from "./v3_writer_lock.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "serve"]);
 
@@ -105,15 +122,33 @@ export function serveLogCheck(
  */
 export const SERVE_PARTITION_PAGE = 1000;
 
+/** The most compacted base entries one page asks serve for. */
+export const SERVE_BASE_PAGE = 1000;
+
+/**
+ * How many times a base load starts again when serve's compaction point
+ * moves between its pages, before it gives up for this command.
+ */
+export const BASE_LOAD_ATTEMPTS = 3;
+
+/**
+ * The name every staging file a base load writes in the copy's directory
+ * starts with: `base_staging-{uuid}.db`, one per load.
+ */
+export const OBSERVED_BASE_STAGING_PREFIX = "base_staging";
+
+/** Base loads in progress in this process, by copy directory. */
+const loadsInProcess = new Map<string, Promise<void>>();
+
 /** What {@link ServeCatchUp} reads from and writes to. */
 export interface ServeCatchUpOptions {
   readonly client: Pick<
     ServeDatastoreClient,
-    "baseUrl" | "changes" | "partitionCommits"
+    "baseUrl" | "changes" | "partitionCommits" | "compactedBase"
   >;
   readonly commitStore: Pick<
     SqliteCommitStore,
-    "append" | "head" | "headIdentity"
+    "append" | "head" | "headIdentity" | "installObservedBase"
   >;
   readonly state: Pick<
     ServeUpstreamState,
@@ -122,6 +157,8 @@ export interface ServeCatchUpOptions {
     | "feedAnchor"
     | "serveHead"
     | "recordServeHead"
+    | "recordBaseLoaded"
+    | "basePoint"
   >;
   /** The copy's directory, which a refused divergence names. */
   readonly copyDir: string;
@@ -131,6 +168,12 @@ export interface ServeCatchUpOptions {
    * `_default` for an empty one.
    */
   readonly namespace: string;
+  /**
+   * Takes the copy's writer lease for a base load; the root's v3 writer
+   * lock by default, which a writing command of this process already holds
+   * and joins.
+   */
+  readonly lockCopy?: () => Promise<() => Promise<void>>;
 }
 
 /** What one catch-up applied. */
@@ -146,6 +189,7 @@ export class ServeCatchUp {
   readonly #state: ServeCatchUpOptions["state"];
   readonly #copyDir: string;
   readonly #namespace: string;
+  readonly #lockCopy: () => Promise<() => Promise<void>>;
   /** One feed catch-up at a time per handle; later callers share it. */
   #feed: Promise<ServeCatchUpReport> | undefined;
 
@@ -155,6 +199,11 @@ export class ServeCatchUp {
     this.#state = options.state;
     this.#copyDir = options.copyDir;
     this.#namespace = options.namespace;
+    this.#lockCopy = options.lockCopy ??
+      (() =>
+        acquireV3WriterLock(options.copyDir, {
+          maxWaitMs: resolveLockTimeoutMs(),
+        }));
   }
 
   /**
@@ -173,15 +222,30 @@ export class ServeCatchUp {
     await this.#checkAnchor(signal);
     let applied = 0;
     let limit = SERVE_PARTITION_PAGE;
+    let loads = 0;
     for (;;) {
       signal.throwIfAborted();
       const cursor = this.#state.feedCursor();
-      const read = await pageAtMost(
-        "changes",
-        cursor,
-        limit,
-        (at) => this.#client.changes(cursor, signal, at),
-      );
+      const basePoint = this.#state.basePoint();
+      let read;
+      try {
+        read = await pageAtMost(
+          "changes",
+          cursor,
+          limit,
+          (at) => this.#client.changes(cursor, signal, at),
+        );
+      } catch (error) {
+        // Serve compacted past the cursor: load its base, then read on.
+        if (
+          !(error instanceof ServeCommitsCompactedError) ||
+          ++loads > BASE_LOAD_ATTEMPTS
+        ) {
+          throw error;
+        }
+        await this.#loadBase(error, signal);
+        continue;
+      }
       limit = read.limit;
       const page = read.page;
       // Every commit is checked before any is applied: a page holding one
@@ -195,16 +259,167 @@ export class ServeCatchUp {
         commits.push(commit);
       }
       let last: Commit | undefined;
-      for (const commit of commits) {
-        applied += await this.#applyInOrder(commit, signal);
-        last = commit;
+      try {
+        for (const commit of commits) {
+          applied += await this.#applyInOrder(commit, signal);
+          last = commit;
+        }
+      } catch (error) {
+        // A gap in a partition serve compacted past the copy's base: load
+        // the base, which the feed then reads on from.
+        if (
+          !(error instanceof ServeCommitsCompactedError) ||
+          ++loads > BASE_LOAD_ATTEMPTS
+        ) {
+          throw error;
+        }
+        await this.#loadBase(error, signal);
+        continue;
       }
-      this.#state.advanceFeedCursor(
-        page.cursor,
-        last === undefined ? undefined : anchorOf(last),
-      );
+      // Another process may have loaded a base meanwhile, replacing what
+      // this page applied: the cursor is then the base's, read on from it.
+      if (
+        !this.#state.advanceFeedCursor(
+          page.cursor,
+          last === undefined ? undefined : anchorOf(last),
+          basePoint,
+        )
+      ) {
+        continue;
+      }
       if (!page.more) return { applied };
     }
+  }
+
+  /**
+   * Loads serve's compacted base into the copy: see the module doc. A serve
+   * with no base route keeps the refusal `compacted` is. The load starts
+   * again when serve's point moves between pages, at most
+   * {@link BASE_LOAD_ATTEMPTS} times.
+   */
+  async #loadBase(
+    compacted: ServeCommitsCompactedError,
+    signal: AbortSignal,
+  ): Promise<void> {
+    // One load of a copy at a time: in this process by the chain, and
+    // across processes by the copy's writer lease, which a process joins.
+    const key = this.#copyDir;
+    const previous = loadsInProcess.get(key);
+    let finished!: () => void;
+    const mine = new Promise<void>((resolve) => finished = resolve);
+    const chained = (previous ?? Promise.resolve()).then(() => mine);
+    loadsInProcess.set(key, chained);
+    try {
+      await previous;
+      const release = await this.#lockCopy();
+      try {
+        // Another command loaded a base covering serve's point meanwhile.
+        if (this.#state.basePoint() >= compacted.point) return;
+        await this.#loadBaseLocked(compacted, signal);
+      } finally {
+        await release();
+      }
+    } finally {
+      finished();
+      if (loadsInProcess.get(key) === chained) loadsInProcess.delete(key);
+    }
+  }
+
+  async #loadBaseLocked(
+    compacted: ServeCommitsCompactedError,
+    signal: AbortSignal,
+  ): Promise<void> {
+    removeStagingFiles(this.#copyDir);
+    for (let attempt = 1;; attempt++) {
+      const path = join(
+        this.#copyDir,
+        `${OBSERVED_BASE_STAGING_PREFIX}-${crypto.randomUUID()}.db`,
+      );
+      const staging = ObservedBaseStaging.create(path, this.#namespace);
+      try {
+        const loaded = await this.#stageBase(staging, compacted, signal);
+        if (loaded !== undefined) {
+          await this.#commitStore.installObservedBase(staging, loaded.point);
+          this.#state.recordBaseLoaded(loaded.point, loaded.heads);
+          logger
+            .debug`Loaded serve's compacted base at point ${loaded.point} into ${this.#copyDir}`;
+          return;
+        }
+      } finally {
+        staging.close();
+        ObservedBaseStaging.remove(path);
+      }
+      if (attempt >= BASE_LOAD_ATTEMPTS) {
+        throw new ServeUpstreamError(
+          503,
+          "commits_compacted",
+          `Serve at ${this.#client.baseUrl} compacted its log again while ` +
+            "this checkout read its compacted base; run the command again",
+        );
+      }
+    }
+  }
+
+  /**
+   * Pages serve's base into `staging`. Undefined when serve's point moved
+   * between pages: they are parts of two bases.
+   */
+  async #stageBase(
+    staging: ObservedBaseStaging,
+    compacted: ServeCommitsCompactedError,
+    signal: AbortSignal,
+  ): Promise<
+    | {
+      readonly point: number;
+      readonly heads: { namespace: string; partition: string; seq: number }[];
+    }
+    | undefined
+  > {
+    let point: number | undefined;
+    const heads: { namespace: string; partition: string; seq: number }[] = [];
+    let after: string | undefined;
+    let limit = SERVE_BASE_PAGE;
+    do {
+      signal.throwIfAborted();
+      const at = after;
+      let read;
+      try {
+        read = await pageAtMost(
+          "base",
+          at,
+          limit,
+          (size) =>
+            this.#client.compactedBase(at, this.#namespace, signal, size),
+        );
+      } catch (error) {
+        // A serve too old to send its base.
+        if (
+          error instanceof ServeUpstreamError && error.status === 404 &&
+          point === undefined
+        ) {
+          throw compacted;
+        }
+        throw error;
+      }
+      limit = read.limit;
+      const page = read.page;
+      if (point !== undefined && page.point !== point) return undefined;
+      point = page.point;
+      staging.add(page.entries);
+      for (const entry of page.entries) {
+        if (entry.kind === "partition") {
+          heads.push({
+            namespace: entry.namespace,
+            partition: entry.partition,
+            seq: entry.seq,
+          });
+        }
+      }
+      after = page.next;
+    } while (after !== undefined);
+    // Serve refused the feed as compacted, so it has a base to send.
+    if (point === undefined || point === 0) throw compacted;
+    return { point, heads };
   }
 
   /**
@@ -270,9 +485,31 @@ export class ServeCatchUp {
     partition: PartitionKey,
     signal: AbortSignal,
   ): Promise<number> {
+    for (let loads = 0;; loads++) {
+      try {
+        return await this.#catchUpPartitionOnce(namespace, partition, signal);
+      } catch (error) {
+        // Serve compacted the partition past the copy's head and the base
+        // the copy holds: load the base, then read on after it.
+        if (
+          !(error instanceof ServeCommitsCompactedError) ||
+          loads >= BASE_LOAD_ATTEMPTS
+        ) {
+          throw error;
+        }
+        await this.#loadBase(error, signal);
+      }
+    }
+  }
+
+  async #catchUpPartitionOnce(
+    namespace: string,
+    partition: PartitionKey,
+    signal: AbortSignal,
+  ): Promise<number> {
     const local = await this.#commitStore.headIdentity(namespace, partition);
     if (local.seq === 0) {
-      return await this.#readPartition(namespace, partition, 0, signal);
+      return await this.#readPartitionPastBase(namespace, partition, 0, signal);
     }
     try {
       return await this.#readPartition(
@@ -284,9 +521,23 @@ export class ServeCatchUp {
         local,
       );
     } catch (error) {
-      // Compacted through exactly the copy's head: read on from it unchecked.
       if (!(error instanceof ServeCommitsCompactedError)) throw error;
-      return await this.#readPartition(namespace, partition, local.seq, signal);
+      // Compacted through exactly the copy's head: read on from it,
+      // unchecked.
+      if ((error.compactedSeq ?? local.seq) <= local.seq) {
+        return await this.#readPartition(
+          namespace,
+          partition,
+          local.seq,
+          signal,
+        );
+      }
+      return await this.#readPartitionPastBase(
+        namespace,
+        partition,
+        local.seq,
+        signal,
+      );
     }
   }
 
@@ -315,7 +566,7 @@ export class ServeCatchUp {
       // Commits this caller could not read when the feed passed them (a
       // grant changed since), or that serve filters: read the partition
       // up to this commit.
-      await this.#readPartition(
+      await this.#readPartitionPastBase(
         commit.namespace,
         commit.partition,
         local,
@@ -325,6 +576,46 @@ export class ServeCatchUp {
     }
     if (await this.#append(commit)) applied++;
     return applied;
+  }
+
+  /**
+   * {@link #readPartition} from `after`, or from the partition's compacted
+   * seq when serve compacted past `after` and the base the copy loaded
+   * covers serve's point: the base held what was compacted, so the copy
+   * reads on after it. Otherwise serve's refusal is thrown, for the caller
+   * to load the base.
+   */
+  async #readPartitionPastBase(
+    namespace: string,
+    partition: PartitionKey,
+    after: number,
+    signal: AbortSignal,
+    through?: number,
+  ): Promise<number> {
+    try {
+      return await this.#readPartition(
+        namespace,
+        partition,
+        after,
+        signal,
+        through,
+      );
+    } catch (error) {
+      if (
+        !(error instanceof ServeCommitsCompactedError) ||
+        error.compactedSeq === undefined || error.compactedSeq <= after ||
+        this.#state.basePoint() < error.point
+      ) {
+        throw error;
+      }
+      return await this.#readPartition(
+        namespace,
+        partition,
+        error.compactedSeq,
+        signal,
+        through,
+      );
+    }
   }
 
   /**
@@ -438,6 +729,22 @@ export class ServeCatchUp {
   }
 }
 
+/** Removes the staging files a cut-off base load left in `copyDir`. */
+function removeStagingFiles(copyDir: string): void {
+  let entries: Deno.DirEntry[];
+  try {
+    entries = [...Deno.readDirSync(copyDir)];
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return;
+    throw error;
+  }
+  for (const entry of entries) {
+    if (entry.isFile && entry.name.startsWith(OBSERVED_BASE_STAGING_PREFIX)) {
+      Deno.removeSync(join(copyDir, entry.name));
+    }
+  }
+}
+
 function anchorOf(commit: Commit): ServeFeedAnchor {
   return {
     namespace: commit.namespace,
@@ -454,7 +761,7 @@ function anchorOf(commit: Commit): ServeFeedAnchor {
  */
 async function pageAtMost<T>(
   route: string,
-  cursor: number,
+  cursor: number | string | undefined,
   limit: number,
   read: (limit: number) => Promise<T>,
 ): Promise<{ readonly page: T; readonly limit: number }> {

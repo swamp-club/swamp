@@ -53,8 +53,15 @@ import {
   versionOp,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import {
+  CommitsCompactedError,
+  InvalidBasePageTokenError,
+} from "../../domain/datastore_v3/commit_store.ts";
+import { DataMetadataSchema } from "../../domain/data/data_metadata.ts";
+import { metadata as fixtureMetadata } from "../../domain/datastore_v3/v3_test_helpers.ts";
+import {
   COMMIT_STORE_SCHEMA_VERSION,
   CommitStoreTruncateRefusedError,
+  ObservedBaseStaging,
   SqliteCommitStore,
   type SqliteCommitStoreOptions,
 } from "./sqlite_commit_store.ts";
@@ -1660,6 +1667,208 @@ Deno.test("SqliteCommitStore follower: a snapshot truncateAfter puts back is at 
       });
     } finally {
       await reopened.close();
+    }
+  });
+});
+
+/** A staged base of the fixture model at compacted seq `seq`. */
+async function stageBase(
+  dir: string,
+  seq: number,
+  names: { name: string; highWater: number; removed?: [number, number][] }[],
+  live: number[] = [],
+): Promise<ObservedBaseStaging> {
+  const staging = ObservedBaseStaging.create(join(dir, "staging.db"), "");
+  const partition = modelPartition().toString();
+  const put = await savePut("a", 1);
+  staging.add([
+    { kind: "partition", namespace: "", partition, seq, names },
+    {
+      kind: "record",
+      namespace: "",
+      partition,
+      key: put.key.toString(),
+      record: { sha256: put.sha256, content: { inline: btoa("a@1") } },
+    },
+    ...live.map((version) => ({
+      kind: "version" as const,
+      namespace: "",
+      partition,
+      version: {
+        version,
+        metadata: DataMetadataSchema.parse(fixtureMetadata("a", version)),
+      },
+    })),
+  ]);
+  return staging;
+}
+
+Deno.test("SqliteCommitStore.installObservedBase: a follower takes serve's base in place of its commits (swamp-club#4006)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const store = SqliteCommitStore.open(path, { follower: true });
+    try {
+      for (const seq of [1, 2]) await store.append(await save(seq));
+      const logId = store.logId();
+      const staging = await stageBase(
+        dir,
+        7,
+        [{ name: "a", highWater: 9, removed: [[2, 3], [5, 5]] }],
+        [3, 4],
+      );
+      try {
+        // Serve's point is below the copy's own cursors: the local point is
+        // past every cursor the copy handed out.
+        await store.installObservedBase(staging, 1);
+      } finally {
+        staging.close();
+      }
+      assertEquals(await store.compactionPoint(), 3);
+      assertEquals(store.highWaterMark().cursor, 3);
+      assertEquals(store.logId(), logId);
+      assertEquals((await store.head("", modelPartition())).seq, 7);
+      await assertRejects(
+        () => store.readPartition("", modelPartition(), 7, 10),
+        CommitsCompactedError,
+      );
+      // Serve's marks hold, and a version live in the base is not removed.
+      assertEquals(await store.dataHighWater("", modelPartition(), "a"), 9);
+      const base = await store.readCompactedBase(undefined, 100);
+      assertEquals(base.point, 3);
+      assertEquals(
+        base.entries.map((entry) => entry.kind),
+        ["partition", "record", "version", "version"],
+      );
+
+      // The next commit serve sends appends past the compacted seq, at a
+      // cursor past the point.
+      assertEquals(await store.append(await save(9)), {
+        kind: "appended",
+        seq: 9,
+      });
+      assertEquals(
+        (await store.changesSince(3, 10)).map((change) => change.cursor),
+        [4],
+      );
+    } finally {
+      await store.close();
+    }
+    // A reopened store rebuilds the partition from the snapshot the base
+    // left at its compacted seq.
+    const reopened = SqliteCommitStore.open(path, { follower: true });
+    try {
+      assertEquals(
+        await reopened.dataHighWater("", modelPartition(), "a"),
+        9,
+      );
+      assertEquals((await reopened.head("", modelPartition())).seq, 9);
+    } finally {
+      await reopened.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitStore.installObservedBase: only a follower loads serve's base, and a bad point is refused", async () => {
+  await withTempDir(async (dir) => {
+    const solo = SqliteCommitStore.open(join(dir, "solo.db"));
+    const follower = SqliteCommitStore.open(join(dir, "copy.db"), {
+      follower: true,
+    });
+    const staging = await stageBase(dir, 2, []);
+    try {
+      await assertRejects(
+        () => solo.installObservedBase(staging, 5),
+        Error,
+        "only a serve-mode copy",
+      );
+      await assertRejects(
+        () => follower.installObservedBase(staging, 0),
+        Error,
+        "point must be a positive integer",
+      );
+      assertEquals(await follower.compactionPoint(), 0);
+    } finally {
+      staging.close();
+      await solo.close();
+      await follower.close();
+    }
+  });
+});
+
+Deno.test("ObservedBaseStaging: one partition at two seqs is refused, and create removes a cut-off load's file", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "staging.db");
+    const partition = modelPartition().toString();
+    const staging = ObservedBaseStaging.create(path, "");
+    try {
+      staging.add([{
+        kind: "partition",
+        namespace: "",
+        partition,
+        seq: 2,
+        names: [],
+      }]);
+      assertThrows(
+        () =>
+          staging.add([
+            { kind: "partition", namespace: "", partition, seq: 3, names: [] },
+          ]),
+        Error,
+        "at seqs 2 and 3",
+      );
+      assertThrows(
+        () =>
+          staging.add([
+            {
+              kind: "partition",
+              namespace: "other",
+              partition,
+              seq: 2,
+              names: [],
+            },
+          ]),
+        Error,
+        "namespace",
+      );
+    } finally {
+      staging.close();
+    }
+    const again = ObservedBaseStaging.create(path, "");
+    try {
+      assertEquals(
+        rawRows(path, "SELECT COUNT(*) AS n FROM compacted_partitions"),
+        [{ n: 0 }],
+      );
+    } finally {
+      again.close();
+    }
+    ObservedBaseStaging.remove(path);
+    await assertRejects(() => Deno.stat(path));
+  });
+});
+
+Deno.test("SqliteCommitStore.compactedPartition: a compacted partition's seq and its names' marks now", async () => {
+  await withStore(async (store) => {
+    for (const seq of [1, 2, 3]) await store.append(await save(seq));
+    assertEquals(
+      await store.compactedPartition("", modelPartition()),
+      undefined,
+    );
+    await store.compactHistory(2);
+    assertEquals(await store.compactedPartition("", modelPartition()), {
+      seq: 2,
+      names: [{ name: "a", highWater: 3 }],
+    });
+  });
+});
+
+Deno.test("SqliteCommitStore.readCompactedBase: a token it never handed out is refused as such", async () => {
+  await withStore(async (store) => {
+    for (const token of ["not json", "null", '{"section":99,"key":[]}']) {
+      await assertRejects(
+        () => store.readCompactedBase(token, 10),
+        InvalidBasePageTokenError,
+      );
     }
   });
 });

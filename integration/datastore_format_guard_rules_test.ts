@@ -161,6 +161,11 @@ const GUARDED_PINNED = [
   // v3RepositoryFactoryConfig opened, after the same check.
   "src/infrastructure/datastore_v3/serve_upstream_binding.ts:resetCopyForCaller",
   "src/infrastructure/datastore_v3/checkout_view.ts:alignCheckoutView",
+  // swamp-club#4006: a serve-mode copy loading serve's compacted base takes
+  // the local root's writer lease, so two commands never load one copy at
+  // once. It runs only on a handle whose upstream is serve, opened after
+  // the same check; only the local root is locked, never the storage.
+  "src/infrastructure/datastore_v3/serve_catch_up.ts:ServeCatchUp",
   // swamp-club#3482: making the copy current reads the handle of the
   // datastore holdV3Writer or v3RepositoryFactoryConfig passes it, after
   // the same check; serve's upkeep does the same for the config serve's

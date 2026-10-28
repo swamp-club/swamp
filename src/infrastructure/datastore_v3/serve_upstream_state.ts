@@ -76,6 +76,10 @@ const MIGRATIONS: readonly string[] = [
      log_id TEXT
    );
    INSERT INTO copy (id, copy_id) VALUES (1, lower(hex(randomblob(16))));`,
+  // The compaction point of the base the copy loaded (swamp-club#4006); 0
+  // when it loaded none. A partition compacted past the copy's head reads
+  // on from its compacted seq only when this base covers serve's point.
+  `ALTER TABLE copy ADD COLUMN base_point INTEGER NOT NULL DEFAULT 0;`,
 ];
 
 /**
@@ -140,11 +144,31 @@ export class ServeUpstreamState {
    * page's last commit as the anchor; a page without commits keeps the
    * anchor recorded. Never moves either back: two processes catching up the
    * same checkout both land, and the anchor stays the recorded cursor's.
+   * With `basePoint`, the base point the page was read under: when another
+   * process loaded a base since, nothing moves and it answers false.
    */
-  advanceFeedCursor(cursor: number, anchor?: ServeFeedAnchor): void {
+  advanceFeedCursor(
+    cursor: number,
+    anchor?: ServeFeedAnchor,
+    basePoint?: number,
+  ): boolean {
     this.#assertOpen();
     assertSeqLike(cursor, "feed cursor");
     if (anchor !== undefined) assertSeqLike(anchor.seq, "anchor seq");
+    let advanced = true;
+    this.#transaction(() => {
+      // A page applied to a copy another process has since replaced with a
+      // base is not in the copy: the cursor stays the base's.
+      if (basePoint !== undefined && this.basePoint() !== basePoint) {
+        advanced = false;
+        return;
+      }
+      this.#advance(cursor, anchor);
+    });
+    return advanced;
+  }
+
+  #advance(cursor: number, anchor: ServeFeedAnchor | undefined): void {
     this.#db.prepare(
       `INSERT INTO feed (id, cursor, anchor_namespace, anchor_partition,
          anchor_seq, anchor_txn_id) VALUES (1, ?, ?, ?, ?, ?)
@@ -196,6 +220,52 @@ export class ServeUpstreamState {
       seq: row.anchor_seq,
       txnId: row.anchor_txn_id,
     };
+  }
+
+  /**
+   * Records that the copy loaded serve's compacted base at `point`
+   * (swamp-club#4006), in one transaction: the feed reads on from exactly
+   * the point (the install replaced every commit the copy held), the anchor
+   * is forgotten (a compacted commit cannot be asked for), the base's point
+   * is recorded, and each partition's compacted seq is a head serve
+   * reported.
+   */
+  recordBaseLoaded(
+    point: number,
+    heads: readonly {
+      readonly namespace: string;
+      readonly partition: string;
+      readonly seq: number;
+    }[],
+  ): void {
+    this.#assertOpen();
+    assertSeqLike(point, "compaction point");
+    for (const head of heads) assertSeqLike(head.seq, "serve head");
+    this.#transaction(() => {
+      this.#db.prepare(
+        `INSERT OR REPLACE INTO feed (id, cursor, anchor_namespace,
+           anchor_partition, anchor_seq, anchor_txn_id)
+         VALUES (1, ?, NULL, NULL, NULL, NULL)`,
+      ).run(point);
+      this.#db.prepare("UPDATE copy SET base_point = ? WHERE id = 1").run(
+        point,
+      );
+      const upsert = this.#db.prepare(
+        `INSERT INTO serve_heads (namespace, partition, seq) VALUES (?, ?, ?)
+         ON CONFLICT (namespace, partition)
+         DO UPDATE SET seq = MAX(seq, excluded.seq)`,
+      );
+      for (const head of heads) {
+        upsert.run(head.namespace, head.partition, head.seq);
+      }
+    });
+  }
+
+  /** The compaction point of the base the copy loaded; 0 when none. */
+  basePoint(): number {
+    this.#assertOpen();
+    return (this.#db.prepare("SELECT base_point FROM copy WHERE id = 1")
+      .get() as { base_point: number } | undefined)?.base_point ?? 0;
   }
 
   /** The head serve last reported for a partition; 0 when none was. */
@@ -286,7 +356,7 @@ export class ServeUpstreamState {
     this.#transaction(() => {
       this.#db.exec(
         "DELETE FROM feed; DELETE FROM serve_heads; " +
-          "UPDATE copy SET log_id = NULL;",
+          "UPDATE copy SET log_id = NULL, base_point = 0;",
       );
       this.#db.prepare(
         `INSERT INTO caller (id, fingerprint, resetting) VALUES (1, '', 1)
