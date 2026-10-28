@@ -31,6 +31,7 @@ import {
   type PickerResult,
   SearchPicker,
 } from "./components/search_picker.tsx";
+import { pressOnFrame } from "./components/press_on_frame_test_helpers.ts";
 import {
   createInboxPickerRenderer,
   inboxMessageLines,
@@ -198,6 +199,26 @@ Deno.test({
       "the preview to follow the highlight",
     );
     picker.stdin.write("\x12");
+
+    assertEquals(await picker.selection(), {
+      kind: "mark",
+      ids: [ISSUE.id],
+      message: ISSUE,
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "inbox picker: Ctrl-r pressed as the moved highlight is drawn marks that message",
+  ...inkTestOptions,
+  fn: async () => {
+    const picker = openPicker(makeView([ANNOUNCEMENT, ISSUE, POINTS]));
+    await picker.drawn();
+
+    const frameCount = picker.frames.length;
+    pressOnFrame(picker, () => picker.frames.length > frameCount, "\x12");
+    picker.stdin.write("\x1b[B");
 
     assertEquals(await picker.selection(), {
       kind: "mark",
