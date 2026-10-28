@@ -921,6 +921,10 @@ const PINNED_CLI_ROOT_UNIT_COMMANDS: readonly string[] = [
   // swamp-club#3279: `datastore gc` sweeps chunks under the global lock's
   // coordinator root, as `datastore compact` runs.
   "src/cli/commands/datastore_gc.ts: datastoreGcCommand",
+  // swamp-club#4063: `datastore claim` and `release` change the claim under
+  // the coordinator root, as `datastore gc` runs.
+  "src/cli/commands/datastore_claim.ts: datastoreClaimCommand",
+  "src/cli/commands/datastore_release.ts: datastoreReleaseCommand",
 ];
 
 // Callers of ModelLockResult.flush (push, then release) whose push is not a
@@ -1607,6 +1611,11 @@ const PINNED_ENGINE_READERS: readonly string[] = [
   "src/cli/commands/datastore_status.ts: datastoreStatusCommand",
   "src/cli/commands/serve.ts: serveCommand",
   "src/serve/handlers/admin_handlers.ts: handleDatastoreStatus",
+  // swamp-club#4063: a claim and a release apply only to a v3 datastore's
+  // commit log, CLI and serve.
+  "src/cli/commands/datastore_claim.ts: datastoreClaimCommand",
+  "src/cli/commands/datastore_release.ts: datastoreReleaseCommand",
+  "src/serve/handlers/admin_handlers.ts: serveClaimCommitLog",
   // swamp-club#3741: a traced dashboard read records the engine as a span
   // attribute; nothing is chosen by it.
   "src/serve/connection.ts: handleMessage",

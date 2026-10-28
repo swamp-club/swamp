@@ -1923,6 +1923,19 @@ export {
   type DatastoreGcEvent,
 } from "./datastores/gc.ts";
 export {
+  datastoreClaim,
+  type DatastoreClaimCommitLog,
+  type DatastoreClaimData,
+  type DatastoreClaimDeps,
+  type DatastoreClaimEvent,
+  type DatastoreClaimInput,
+} from "./datastores/claim.ts";
+export {
+  datastoreRelease,
+  type DatastoreReleaseData,
+  type DatastoreReleaseEvent,
+} from "./datastores/release.ts";
+export {
   createMigrateIndexDeps,
   type CreateMigrateIndexDepsOptions,
   datastoreMigrateIndex,

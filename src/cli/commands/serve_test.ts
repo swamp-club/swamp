@@ -2022,3 +2022,31 @@ Deno.test("resolveServeStartupSettings: refuses an off-loopback bind without TLS
     "Off-loopback binding requires TLS",
   );
 });
+
+Deno.test("resolveServeStartupSettings: --address is normalized as the owner address, and one that is not a URL is refused (swamp-club#4063)", () => {
+  assertEquals(
+    resolveServeStartupSettings(mergedServeOptions()).ownerAddress,
+    undefined,
+  );
+  assertEquals(
+    resolveServeStartupSettings(
+      mergedServeOptions({ address: "HTTPS://Swamp.Example.com:443/" }),
+    ).ownerAddress,
+    "https://swamp.example.com",
+  );
+  assertThrows(
+    () =>
+      resolveServeStartupSettings(
+        mergedServeOptions({ address: "swamp.example.com" }),
+      ),
+    UserError,
+    "not a valid",
+  );
+});
+
+Deno.test("collectServeExtraArgs: forwards --address to the daemon (swamp-club#4063)", () => {
+  assertEquals(
+    collectServeExtraArgs({ address: "https://swamp.example.com" }),
+    ["--address", "https://swamp.example.com"],
+  );
+});

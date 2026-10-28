@@ -332,6 +332,17 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // locks are serve's own, held through its lock routes, so two machines
   // never allocate the same data version.
   "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/serve_lock.ts",
+  // swamp-club#4063: `datastore claim` and `release` change the claim on a
+  // v3 datastore through its commit log, under the writer lease, directly
+  // or in serve's handlers; the owner value object normalizes the address
+  // serve was started with, the address a claim names, and the one its
+  // audit entry records.
+  "src/cli/commands/datastore_claim.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  "src/cli/commands/datastore_release.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  "src/cli/commands/serve.ts -> src/domain/datastore_v3/datastore_owner.ts",
+  "src/libswamp/datastores/claim.ts -> src/domain/datastore_v3/datastore_owner.ts",
+  "src/serve/connection.ts -> src/domain/datastore_v3/datastore_owner.ts",
+  "src/serve/handlers/admin_handlers.ts -> src/domain/datastore_v3/datastore_owner.ts",
 ];
 
 Deno.test("datastore v3: no production code outside v3 imports it", async () => {
@@ -382,7 +393,7 @@ const CHECKPOINT = /wal_(?:auto)?checkpoint/i;
 /** v3 files that mention a checkpoint pragma, as `file:line`. */
 const PINNED_V3_CHECKPOINTS: readonly string[] = [
   // Auto-checkpoint off on a copy Litestream replicates (swamp-club#3935).
-  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2229",
+  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2351",
 ];
 
 Deno.test("datastore v3: no v3 code forces or tunes a WAL checkpoint", async () => {

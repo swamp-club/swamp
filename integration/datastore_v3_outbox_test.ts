@@ -57,8 +57,14 @@ import {
 import {
   closeV3Datastores,
   holdV3Writer,
+  v3ClaimCommitLog,
+  v3DatastoreConfigOf,
   v3DatastoreFor,
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
+import {
+  DatastoreClaimedError,
+  DatastoreOwner,
+} from "../src/domain/datastore_v3/datastore_owner.ts";
 import {
   acquireV3WriterLock,
   tryAcquireV3WriterLock,
@@ -206,6 +212,21 @@ async function commitsOf(datastorePath: string, id: string): Promise<Commit[]> {
   }
 }
 
+/** The stored changes of an auto-definition's partition, with cursors. */
+async function changesOf(datastorePath: string, id: string) {
+  const store = SqliteCommitStore.open(join(datastorePath, "commits.db"));
+  try {
+    return await store.readPartition(
+      "",
+      partitionOf({ kind: "definition", id }),
+      1,
+      100,
+    );
+  } finally {
+    await store.close();
+  }
+}
+
 async function outboxHasEntries(datastorePath: string): Promise<boolean> {
   const outbox = new SqliteCommitOutbox(
     v3OutboxPath(join(datastorePath, "commits.db")),
@@ -288,6 +309,42 @@ Deno.test("v3 outbox: a writer killed before its append lands is landed once by 
     // A later writer lands nothing more.
     await startWriter(repos);
     assertEquals((await commitsOf(datastorePath, killed.id)).length, 1);
+  });
+});
+
+Deno.test("v3 outbox: a killed writer's prepared commit lands under the claim's lease before the claim, and nothing lands after it (swamp-club#4063)", async () => {
+  await withV3RowRepos({}, async (repos, datastorePath) => {
+    const killed = await killWriter(repos, datastorePath, {
+      pauses: ["after-prepare"],
+      killAt: "after-prepare",
+    });
+    // `swamp datastore claim` in B: its hold recovers the outbox first.
+    await requireInitializedRepoUnlocked({
+      repoDir: repos.repoB,
+      outputMode: "json",
+      v3OwnerCheck: { as: "claimer" },
+    });
+    const config = await v3DatastoreConfigOf(repos.repoB, {
+      type: "filesystem",
+      path: datastorePath,
+    } as FilesystemDatastoreConfig);
+    const log = v3ClaimCommitLog(repos.repoB, config);
+    const claimedAtCursor = log.highWaterCursor();
+    await log.claim(DatastoreOwner.create({
+      address: "https://swamp.example.com",
+      claimedAt: new Date().toISOString(),
+      claimedAtCursor,
+    }));
+    await closeV3Datastores();
+    const landed = await changesOf(datastorePath, killed.id);
+    assertEquals(landed.length, 1);
+    assert(landed[0].cursor <= claimedAtCursor, "landed before the claim");
+    assertEquals(await outboxHasEntries(datastorePath), false);
+
+    // The killed writer's checkout writes again: refused, lands nothing.
+    await assertRejects(() => startWriter(repos), DatastoreClaimedError);
+    await closeV3Datastores();
+    assertEquals((await changesOf(datastorePath, killed.id)).length, 1);
   });
 });
 

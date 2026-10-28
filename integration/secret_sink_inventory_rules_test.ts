@@ -336,6 +336,10 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
       READ_ONLY_DB,
     "src/infrastructure/datastore_v3/v3_datastore.ts: listV3Namespaces":
       READ_ONLY_DB,
+    // swamp-club#4063: a writer reads the claim before it takes the lease
+    // (SqliteCommitStore.peekOwner), read-only.
+    "src/infrastructure/datastore_v3/sqlite_commit_store.ts: SqliteCommitStore":
+      READ_ONLY_DB,
     // swamp-club#3617: reads a commits.db's schema version and history to
     // restore a lost format marker or resume a setup; changes no schema.
     "src/infrastructure/datastore_v3/v3_datastore.ts: readCommitLogFacts":

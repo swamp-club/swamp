@@ -281,6 +281,33 @@ Deno.test({
 
 Deno.test({
   name:
+    "v3 restore: a claim one machine writes reaches the next machine's restore, which refuses to write, and a release lets it write (swamp-club#4063)",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const a = await world.machine("a");
+      await a.send({ kind: "write", commits: 1, close: true });
+      await a.send({ kind: "claim", address: "https://swamp.example.com" });
+      const b = await world.machine("b");
+      const refused = await assertRejects(
+        () => b.send({ kind: "write", commits: 1, close: true }),
+        MachineError,
+        "https://swamp.example.com",
+      );
+      assertEquals(refused.code, "datastore_claimed");
+      await b.send({ kind: "close" });
+      // Reads stay allowed, and the refused write landed nothing.
+      assertEquals((await read(b)).commits, 1);
+      await a.send({ kind: "release" });
+      await b.send({ kind: "write", commits: 1, close: true });
+      const c = await world.machine("c");
+      assertEquals((await read(c)).commits, 2);
+    });
+  },
+});
+
+Deno.test({
+  name:
     "v3 restore: a stale reader refreshes, and a current one downloads nothing",
   ignore,
   async fn() {

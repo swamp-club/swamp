@@ -172,6 +172,12 @@ const GUARDED_PINNED = [
   // the datastore v3RepositoryFactoryConfig or holdV3Writer passes it, after
   // the same check.
   "src/infrastructure/datastore_v3/v3_repo_context.ts:recoverAndMark",
+  // swamp-club#4063: the hold reads the claim through the handle it opened
+  // once the lease is held, after the same check; the claim log of
+  // `datastore claim` and `release`, CLI and serve, uses the handle of a
+  // checked repository context.
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:refuseUnlessOwner",
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:v3ClaimCommitLog",
   "src/infrastructure/datastore_v3/interrupted_writer_recovery.ts:lockHeldByLiveProcess",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:v3DatastoreFor",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:v3RepositoryFactoryConfig",

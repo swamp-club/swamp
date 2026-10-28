@@ -659,6 +659,14 @@ export interface ExtensionUpdatePayload {
 
 // ── Datastore setup ─────────────────────────────────────────────────
 
+/**
+ * `swamp datastore claim --server` (swamp-club#4063): makes this serve the
+ * owner of its v3 datastore, for the address clients reach it at.
+ */
+export interface DatastoreClaimPayload {
+  address: string;
+}
+
 export interface DatastoreSetupExtensionPayload {
   type: string;
   config: Record<string, unknown>;
@@ -1048,6 +1056,8 @@ export type ServerRequest =
     id: string;
     payload: DatastoreSetupExtensionPayload;
   }
+  | { type: "datastore.claim"; id: string; payload: DatastoreClaimPayload }
+  | { type: "datastore.release"; id: string }
   | { type: "vault.migrate"; id: string; payload: VaultMigratePayload }
   | { type: "extension.list"; id: string; payload?: ExtensionListPayload }
   | { type: "extension.search"; id: string; payload?: ExtensionSearchPayload }
@@ -1796,6 +1806,21 @@ export interface DatastoreStatusResponse {
   data: Record<string, unknown>;
 }
 
+/** The claim serve wrote, or found already written (swamp-club#4063). */
+export interface DatastoreClaimResponse {
+  data: {
+    address: string;
+    claimedAt: string;
+    claimedAtCursor: number;
+    alreadyClaimed: boolean;
+  };
+}
+
+/** Whether serve removed a claim, and whose (swamp-club#4063). */
+export interface DatastoreReleaseResponse {
+  data: { released: boolean; address?: string; claimedAt?: string };
+}
+
 export interface DatastoreSetupExtensionResponse {
   data: Record<string, unknown>;
 }
@@ -2228,6 +2253,12 @@ export type ServerMessage =
     type: "datastore.setup.extension";
     id: string;
     payload: DatastoreSetupExtensionResponse;
+  }
+  | { type: "datastore.claim"; id: string; payload: DatastoreClaimResponse }
+  | {
+    type: "datastore.release";
+    id: string;
+    payload: DatastoreReleaseResponse;
   }
   | { type: "vault.migrate"; id: string; payload: VaultMigrateResponse }
   | { type: "extension.list"; id: string; payload: ExtensionListResponse }

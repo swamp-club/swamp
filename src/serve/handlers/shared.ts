@@ -370,6 +370,12 @@ export interface ConnectionContext {
    * (swamp-club#3968). Absent outside `swamp serve`: requests then scan.
    */
   definitionIndex?: DefinitionOwnerIndex;
+  /**
+   * The normalized address clients reach this serve at (`serve --address`):
+   * the owner a claim through serve records (swamp-club#4063). Absent when
+   * serve was started without it.
+   */
+  ownerAddress?: string;
   datastoreConfig: DatastoreConfig;
   datastoreResolver: DatastorePathResolver;
   /**

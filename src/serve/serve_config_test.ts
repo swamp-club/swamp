@@ -3215,3 +3215,46 @@ Deno.test("loadServeConfig: dispatch-env-allow must be a list of names", () => {
     });
   }
 });
+
+// ── address (swamp-club#4063) ───────────────────────────────────────────
+
+Deno.test("mergeServeOptions: address comes from the CLI flag, then SWAMP_SERVE_ADDRESS, then serve.yaml", () => {
+  const config: ServeConfigFile = {
+    address: "https://from-config.example.com",
+  };
+  const env = (name: string) =>
+    name === "SWAMP_SERVE_ADDRESS" ? "https://from-env.example.com" : undefined;
+  assertEquals(
+    mergeServeOptions(
+      config,
+      { address: "https://from-cli.example.com" },
+      new Set(["address"]),
+      env,
+    ).address,
+    "https://from-cli.example.com",
+  );
+  assertEquals(
+    mergeServeOptions(config, {}, new Set<string>(), env).address,
+    "https://from-env.example.com",
+  );
+  assertEquals(
+    mergeServeOptions(config, {}, new Set<string>(), () => undefined).address,
+    "https://from-config.example.com",
+  );
+  assertEquals(
+    mergeServeOptions(null, {}, new Set<string>(), () => undefined).address,
+    undefined,
+  );
+});
+
+Deno.test("loadServeConfig: reads address and refuses one that is not a string", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { address: "https://swamp.example.com" });
+    assertEquals(
+      loadServeConfig(undefined, dir)?.address,
+      "https://swamp.example.com",
+    );
+    writeConfig(dir, { address: 42 });
+    assertThrows(() => loadServeConfig(undefined, dir));
+  });
+});
