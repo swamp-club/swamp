@@ -7050,8 +7050,12 @@ can neither claim nor release. A serve-mode copy is never claimed.
   under its own fence and confirms the row replicated before it answers
   (`v3ClaimCommitLog` with `confirmReplicated`): the row is not a commit and
   moves no high-water mark, so the per-request confirmation would skip it.
-- Claiming again for the owner's address changes nothing. Another address is
-  refused with `datastore_claimed` until the claim is released.
+- Claiming again for the owner's address writes nothing but confirms the
+  claim as it stands is replicated (so a retry after a claim that was written
+  but not confirmed is not acknowledged unconfirmed), and likewise a release
+  of an unclaimed datastore. Another address is refused with
+  `datastore_claimed` until the claim is released. A release removes a claim
+  row it cannot read, and a claimer's hold never reads it.
 - A serve records its own address, `serve --address` (`SWAMP_SERVE_ADDRESS`,
   `address:` in `serve.yaml`), and refuses a claim naming another, or any
   claim when it was started without one.
@@ -7083,8 +7087,10 @@ set `serverAddress` or `SWAMP_SERVE_URL` and run `swamp auth server-login`.
   that shows a claim it may not write under, it takes the lease without
   waiting, and a busy lease is refused at once with `datastore_claimed`
   instead of `datastore_v3_writer_busy` after the lock timeout. A free lease
-  goes on to the check under it, which decides, so a stale copy's claim never
-  refuses a write a release allowed.
+  goes on to the check under it, which decides. A bucket checkout's copy can
+  predate a release, so there the refusal says the claim was seen in this
+  checkout's last copy while another process held the lease, and to run the
+  command again once it is done.
 - Reads stay allowed: read-only opens take no writer hold.
 - Serve-mode checkouts are unaffected: they never write storage, and serve
   writes as the owner.

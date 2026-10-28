@@ -308,6 +308,34 @@ Deno.test({
 
 Deno.test({
   name:
+    "v3 restore: a stale copy's claim, met with a busy lease, is refused as the copy's, and the write goes ahead once the lease is free (swamp-club#4063)",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const a = await world.machine("a");
+      const b = await world.machine("b");
+      await a.send({ kind: "claim", address: "https://swamp.example.com" });
+      // B's copy now shows the claim.
+      await read(b);
+      await a.send({ kind: "release" });
+      // Another process holds the lease while B writes.
+      await a.send({ kind: "lease", ttlMs: 60_000 });
+      const refused = await assertRejects(
+        () => b.send({ kind: "write", commits: 1, close: true }),
+        MachineError,
+        "last copy of the datastore shows the claim",
+      );
+      assertEquals(refused.code, "datastore_claimed");
+      await b.send({ kind: "close" });
+      await a.send({ kind: "close" });
+      await b.send({ kind: "write", commits: 1, close: true });
+      assertEquals((await read(b)).commits, 1);
+    });
+  },
+});
+
+Deno.test({
+  name:
     "v3 restore: a stale reader refreshes, and a current one downloads nothing",
   ignore,
   async fn() {

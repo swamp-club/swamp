@@ -309,8 +309,8 @@ swamp datastore setup filesystem --path /mnt/shared/swamp-v3 --format 3 --json
 - A refusal with `datastore_claimed` means `swamp datastore claim` made serve
   the datastore's owner: write through serve by setting `serverAddress` (or
   `SWAMP_SERVE_URL`) to the address the error names and running
-  `swamp auth server-login`. Reads still work. An admin claims with
-  `swamp datastore claim --address <url>` (through the running serve with
+  `swamp auth server-login --server <url>`. Reads still work. An admin claims
+  with `swamp datastore claim --address <url>` (through the running serve with
   `--server`, or in serve's checkout with serve stopped) and removes the claim
   with `swamp datastore release`. Serve must run with `--address <url>` to write
   a datastore claimed for that address.

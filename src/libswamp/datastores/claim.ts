@@ -58,6 +58,12 @@ export interface DatastoreClaimCommitLog {
   claim(owner: DatastoreOwner): Promise<void>;
   /** Removes the claim, under the writer fence. */
   release(): Promise<void>;
+  /**
+   * Confirms the claim as it stands is replicated, for a claim or release
+   * that changed nothing: an earlier attempt may have written it without
+   * confirming it.
+   */
+  confirm(): Promise<void>;
 }
 
 /** Dependencies for {@link datastoreClaim} and `datastoreRelease`. */
@@ -115,10 +121,12 @@ export async function* datastoreClaim(
         if (!existing.isAddress(candidate.address)) {
           throw new DatastoreClaimedError(
             existing,
+            undefined,
             "Release the claim with 'swamp datastore release' before " +
               "claiming it for another address.",
           );
         }
+        await log.confirm();
         yield {
           kind: "completed" as const,
           data: { ...ownerData(existing), alreadyClaimed: true },

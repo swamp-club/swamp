@@ -58,6 +58,10 @@ function memoryLog(
       log.current = undefined;
       return Promise.resolve();
     },
+    confirm: () => {
+      log.calls.push("confirm");
+      return Promise.resolve();
+    },
   };
   return log;
 }
@@ -96,14 +100,15 @@ Deno.test("datastoreClaim: catches up, then records the normalized address at th
   ]);
 });
 
-Deno.test("datastoreClaim: a claim for the owner's address changes nothing and reports the existing claim", async () => {
+Deno.test("datastoreClaim: a claim for the owner's address writes nothing, confirms the claim as it stands, and reports it", async () => {
+  // As a retry after a claim that was written but not confirmed replicated.
   const log = memoryLog(owner("https://swamp.example.com"));
   const events = await collect<DatastoreClaimEvent>(
     datastoreClaim(createLibSwampContext(), { commitLog: log }, {
       address: "https://swamp.example.com/",
     }),
   );
-  assertEquals(log.calls, []);
+  assertEquals(log.calls, ["confirm"]);
   assertEquals(events, [{
     kind: "completed",
     data: {
@@ -128,6 +133,7 @@ Deno.test("datastoreClaim: a claim for another address is refused with datastore
     "swamp datastore release",
   );
   assertEquals(error.code, DATASTORE_CLAIMED_CODE);
+  assertEquals(error.message.includes("server-login"), false);
   assertEquals(log.calls, []);
 });
 
@@ -178,10 +184,24 @@ Deno.test("datastoreRelease: removes the claim and reports whose it was; an uncl
     ),
     [{ kind: "completed", data: { released: false } }],
   );
-  assertEquals(log.calls, ["release"]);
+  assertEquals(log.calls, ["release", "confirm"]);
   await assertRejects(
     () => collect(datastoreRelease(createLibSwampContext(), {})),
     UserError,
     "only to v3 datastores",
   );
+});
+
+Deno.test("datastoreRelease: a claim row that cannot be read is removed all the same", async () => {
+  const log = memoryLog();
+  log.owner = () => {
+    throw new UserError("A datastore claim's time is not a date: soon");
+  };
+  assertEquals(
+    await collect<DatastoreReleaseEvent>(
+      datastoreRelease(createLibSwampContext(), { commitLog: log }),
+    ),
+    [{ kind: "completed", data: { released: true } }],
+  );
+  assertEquals(log.calls, ["release"]);
 });

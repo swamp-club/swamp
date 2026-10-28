@@ -22,7 +22,6 @@
  * operations and streams serialized events back to the client.
  */
 
-import { normalizeOwnerAddress } from "../domain/datastore_v3/datastore_owner.ts";
 import { z } from "zod";
 import {
   SERVE_CAPABILITY_LITERAL_INPUTS,
@@ -49,6 +48,7 @@ import {
 import { audited, type AuditedOptions } from "./audited.ts";
 import { traceWebSocketRequest } from "./ws_request_span.ts";
 import { resolverEngine } from "../domain/datastore/datastore_path_resolver.ts";
+import { normalizeOwnerAddress } from "../domain/datastore_v3/datastore_owner.ts";
 import {
   IDEMPOTENCY_KEY_FORM,
   isIdempotencyKey,

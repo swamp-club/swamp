@@ -52,12 +52,25 @@ export async function* datastoreRelease(
     (async function* () {
       const log = deps.commitLog;
       if (log === undefined) throw notV3Error("release");
-      const owner = log.owner();
-      if (owner === undefined) {
+      // A row that cannot be read is removed all the same: release is the
+      // way out of a claim, whatever state it is in.
+      let owner;
+      let unreadable = false;
+      try {
+        owner = log.owner();
+      } catch {
+        unreadable = true;
+      }
+      if (owner === undefined && !unreadable) {
+        await log.confirm();
         yield { kind: "completed" as const, data: { released: false } };
         return;
       }
       await log.release();
+      if (owner === undefined) {
+        yield { kind: "completed" as const, data: { released: true } };
+        return;
+      }
       yield {
         kind: "completed" as const,
         data: {

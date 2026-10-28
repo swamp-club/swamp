@@ -746,7 +746,16 @@ async function takeV3WriterHold(
     });
   } catch (error) {
     if (claimHint !== undefined && error instanceof V3WriterBusyError) {
-      throw claimHint;
+      // A replicated checkout read its last copy, which can predate a
+      // release: say so, so a stale claim is not taken for a live one.
+      if (!v3ReplicatesAt(config.path)) throw claimHint;
+      throw new DatastoreClaimedError(
+        claimHint.owner,
+        "This checkout's last copy of the datastore shows the claim, and " +
+          "another process holds the writer lease, so the write was not " +
+          "tried. If the claim was released since, run the command again " +
+          "once that process is done.",
+      );
     }
     throw error;
   }
@@ -872,7 +881,9 @@ function refuseUnlessOwner(
 ): void {
   const datastore = resolve(config.path);
   const check = ownerCheckOf(config, ownerCheck);
-  const refusal = claimRefusal(
+  // A claimer changes the claim whatever it says, so it never reads it: a
+  // row that cannot be read still lets `datastore release` remove it.
+  const refusal = check.as === "claimer" ? undefined : claimRefusal(
     v3DatastoreFor(repoDir, config).commitStore.owner(),
     check,
   );
@@ -1963,6 +1974,7 @@ export function v3ClaimCommitLog(
   highWaterCursor(): number;
   claim(owner: DatastoreOwner): Promise<void>;
   release(): Promise<void>;
+  confirm(): Promise<void>;
 } {
   const handle = v3DatastoreFor(repoDir, config);
   const fence = (): number => {
@@ -1978,15 +1990,18 @@ export function v3ClaimCommitLog(
     }
     return held;
   };
+  const confirm = async (): Promise<void> => {
+    if (options.confirmReplicated === true && v3ReplicatesAt(config.path)) {
+      await syncForRequests(resolve(config.path));
+    }
+  };
   const changed = async (): Promise<void> => {
     const datastore = resolve(config.path);
     const start = commandStartMarks.get(datastore);
     if (start !== undefined) {
       commandStartMarks.set(datastore, { ...start, mark: -1 });
     }
-    if (options.confirmReplicated === true && v3ReplicatesAt(config.path)) {
-      await syncForRequests(datastore);
-    }
+    await confirm();
   };
   return {
     owner: () => handle.commitStore.owner(),
@@ -2000,6 +2015,7 @@ export function v3ClaimCommitLog(
       await handle.commitStore.releaseOwner(fence());
       await changed();
     },
+    confirm,
   };
 }
 

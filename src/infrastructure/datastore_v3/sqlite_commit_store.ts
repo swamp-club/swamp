@@ -441,6 +441,21 @@ const MIGRATIONS: readonly SqliteMigration[] = [
   `,
 ];
 
+/** The owner row of `db` (swamp-club#4063), undefined when it holds none. */
+function readOwner(db: DatabaseSync): DatastoreOwner | undefined {
+  const row = db.prepare(
+    "SELECT address, claimed_at, claimed_at_cursor FROM datastore_owner WHERE id = 1",
+  ).get() as
+    | { address: string; claimed_at: string; claimed_at_cursor: number }
+    | undefined;
+  if (row === undefined) return undefined;
+  return DatastoreOwner.create({
+    address: row.address,
+    claimedAt: row.claimed_at,
+    claimedAtCursor: row.claimed_at_cursor,
+  });
+}
+
 /** Error code for a `commits.db` written by a newer swamp. */
 export const COMMIT_STORE_SCHEMA_NEWER_CODE = "datastore_v3_schema_newer";
 
@@ -801,17 +816,7 @@ export class SqliteCommitStore implements CommitStore {
    */
   owner(): DatastoreOwner | undefined {
     this.#assertOpen();
-    const row = this.#db.prepare(
-      "SELECT address, claimed_at, claimed_at_cursor FROM datastore_owner WHERE id = 1",
-    ).get() as
-      | { address: string; claimed_at: string; claimed_at_cursor: number }
-      | undefined;
-    if (row === undefined) return undefined;
-    return DatastoreOwner.create({
-      address: row.address,
-      claimedAt: row.claimed_at,
-      claimedAtCursor: row.claimed_at_cursor,
-    });
+    return readOwner(this.#db);
   }
 
   /**
@@ -829,16 +834,7 @@ export class SqliteCommitStore implements CommitStore {
       return undefined;
     }
     try {
-      const row = db.prepare(
-        "SELECT address, claimed_at, claimed_at_cursor FROM datastore_owner WHERE id = 1",
-      ).get() as
-        | { address: string; claimed_at: string; claimed_at_cursor: number }
-        | undefined;
-      return row === undefined ? undefined : DatastoreOwner.create({
-        address: row.address,
-        claimedAt: row.claimed_at,
-        claimedAtCursor: row.claimed_at_cursor,
-      });
+      return readOwner(db);
     } catch {
       return undefined;
     } finally {
