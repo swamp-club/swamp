@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { quoteShellWord } from "../shell_word.ts";
-import { isTextContentType } from "./content_type.ts";
 
 /**
  * The coordinates of one stored data item, as a `swamp data query` predicate
@@ -114,56 +113,4 @@ export function dataQueryCommand(
   return options.withEncoding
     ? `${command} --select ${quoteShellWord(ENCODED_CONTENT_SELECT)} --json`
     : `${command} --select content`;
-}
-
-/** One version of a data item a retrieval hint points at. */
-export interface RetrievalData {
-  name: string;
-  version: number;
-  contentType: string;
-}
-
-/**
- * The command that reads `data` back. Content that may not be UTF-8 text —
- * any non-text content type — is selected with its `contentEncoding`, so a
- * base64-encoded body can be told apart from text.
- */
-function retrievalCommand(
-  data: RetrievalData,
-  target: DataQueryTarget,
-): string {
-  return dataQueryCommand(target, {
-    includeContent: true,
-    withEncoding: !isTextContentType(data.contentType),
-  });
-}
-
-/** The command that reads one version of a model's data. */
-export function modelRetrievalCommand(
-  modelName: string,
-  data: RetrievalData,
-): string {
-  return retrievalCommand(data, {
-    modelName,
-    dataName: data.name,
-    version: data.version,
-  });
-}
-
-/**
- * The command that reads one item a workflow step wrote, named by its run,
- * job and step so it cannot pick up another step's data of the same name.
- */
-export function stepRetrievalCommand(
-  workflowRunId: string,
-  step: { jobName: string; stepName: string },
-  data: RetrievalData,
-): string {
-  return retrievalCommand(data, {
-    workflowRunId,
-    jobName: step.jobName,
-    stepName: step.stepName,
-    dataName: data.name,
-    version: data.version,
-  });
 }

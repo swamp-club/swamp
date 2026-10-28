@@ -18,12 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import {
-  dataQueryCommand,
-  dataQueryPredicate,
-  modelRetrievalCommand,
-  stepRetrievalCommand,
-} from "./data_query_command.ts";
+import { dataQueryCommand, dataQueryPredicate } from "./data_query_command.ts";
 
 Deno.test("dataQueryPredicate: a model-scoped read names the model, data name and version", () => {
   assertEquals(
@@ -109,54 +104,6 @@ Deno.test("dataQueryCommand: shell-quotes a single quote inside a name", () => {
       includeContent: false,
     }),
     `swamp data query 'modelName == "it'"'"'s" && name == "n"'`,
-  );
-});
-
-Deno.test("stepRetrievalCommand: reads a step's item by run, job, step, name and version", () => {
-  assertEquals(
-    stepRetrievalCommand(
-      "run-1",
-      { jobName: "tests", stepName: "lint" },
-      { name: "log", version: 3, contentType: "text/plain" },
-    ),
-    `swamp data query 'workflowRunId == "run-1" && jobName == "tests" && ` +
-      `stepName == "lint" && name == "log" && version == 3' --select content`,
-  );
-});
-
-Deno.test("stepRetrievalCommand: a binary item is selected with its content encoding", () => {
-  assertEquals(
-    stepRetrievalCommand(
-      "run-1",
-      { jobName: "build", stepName: "package" },
-      { name: "bundle.tar", version: 2, contentType: "application/x-tar" },
-    ),
-    `swamp data query 'workflowRunId == "run-1" && jobName == "build" && ` +
-      `stepName == "package" && name == "bundle.tar" && version == 2' ` +
-      `--select '{"content": content, "contentEncoding": contentEncoding}' --json`,
-  );
-});
-
-Deno.test("modelRetrievalCommand: a binary item is selected with its content encoding", () => {
-  assertEquals(
-    modelRetrievalCommand("site", {
-      name: "logo",
-      version: 1,
-      contentType: "image/png",
-    }),
-    `swamp data query 'modelName == "site" && name == "logo" && version == 1' ` +
-      `--select '{"content": content, "contentEncoding": contentEncoding}' --json`,
-  );
-});
-
-Deno.test("modelRetrievalCommand: reads one version of a model's text data", () => {
-  assertEquals(
-    modelRetrievalCommand("my-server", {
-      name: "info",
-      version: 4,
-      contentType: "application/json",
-    }),
-    `swamp data query 'modelName == "my-server" && name == "info" && version == 4' --select content`,
   );
 });
 
