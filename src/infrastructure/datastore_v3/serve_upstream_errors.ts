@@ -373,6 +373,31 @@ export class ServeRateLimitedError extends ServeUpstreamError {
   }
 }
 
+/**
+ * A reply whose body passed the bytes the client reads of it
+ * (swamp-club#4062): serve is broken or hostile, and the body was
+ * cancelled unread past the limit. `status` is the reply's.
+ */
+export class ServeReplyTooLargeError extends ServeUpstreamError {
+  declare readonly code: "reply_too_large";
+
+  constructor(
+    status: number,
+    /** The route the reply answered, as the client names it. */
+    readonly route: string,
+    /** The most bytes the client reads of this reply. */
+    readonly maxBytes: number,
+  ) {
+    super(
+      status,
+      "reply_too_large",
+      `Serve's reply to ${route} is larger than the ${maxBytes} bytes ` +
+        `the client reads of it`,
+    );
+    this.name = "ServeReplyTooLargeError";
+  }
+}
+
 /** Every reason a partition refuses a commit with, by name. */
 const COMMIT_REJECTIONS: Readonly<Record<CommitRejection, true>> = {
   "partition-mismatch": true,

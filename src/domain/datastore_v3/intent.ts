@@ -290,7 +290,7 @@ export function changesDefinition(intent: Intent): boolean {
 }
 
 /** The longest name, id or type string an intent accepts. */
-const MAX_FIELD_LENGTH = 1024;
+export const MAX_FIELD_LENGTH = 1024;
 
 /**
  * Checks an intent and returns a canonical copy: exactly the fields its

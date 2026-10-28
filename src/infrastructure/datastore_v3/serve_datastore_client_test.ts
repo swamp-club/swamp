@@ -27,7 +27,18 @@ import {
 import { withMockedFetch } from "@swamp-club/swamp-testing";
 import { createHash } from "node:crypto";
 import { CHUNK_BYTES } from "../../domain/datastore_v3/chunk_store.ts";
-import { modelPartition } from "../../domain/datastore_v3/v3_test_helpers.ts";
+import { MAX_COMMIT_OPS } from "../../domain/datastore_v3/commit.ts";
+import { MAX_FIELD_LENGTH as MAX_INTENT_FIELD_LENGTH } from "../../domain/datastore_v3/intent.ts";
+import { MAX_INLINE_BYTES, putOp } from "../../domain/datastore_v3/op.ts";
+import {
+  MAX_RECORD_KEY_LENGTH,
+  RecordKey,
+} from "../../domain/datastore_v3/record_key.ts";
+import {
+  modelIntent,
+  modelPartition,
+  savePut,
+} from "../../domain/datastore_v3/v3_test_helpers.ts";
 import { withMockedEnv } from "../persistence/path_test_helpers.ts";
 import {
   ChunkHashMismatchError,
@@ -39,7 +50,12 @@ import {
   COMMIT_CONTENT_TYPE,
   DEFAULT_SERVE_TIMEOUT_MS,
   MAX_HAS_HASHES,
+  MAX_PUT_OP_REPLY_BYTES,
+  MAX_WRITTEN_COMMIT_REPLY_BYTES,
   SERVE_DATASTORE_LOG_HEADER,
+  SERVE_ERROR_BODY_MAX_BYTES,
+  SERVE_PAGE_MAX_BYTES,
+  SERVE_REPLY_MAX_BYTES,
   ServeDatastoreClient,
   type ServeDatastoreClientOptions,
   serveRequestTimeoutMs,
@@ -48,10 +64,12 @@ import {
   ServeAuthFailedError,
   ServePreconditionFailedError,
   ServeRateLimitedError,
+  ServeReplyTooLargeError,
   ServeStaleSeqError,
   ServeUnreachableError,
   ServeUpstreamError,
 } from "./serve_upstream_errors.ts";
+import { serveStamped } from "./serve_upstream_test_helpers.ts";
 
 const BASE = "https://serve.example.com";
 const PREFIX = `${BASE}/api/v1/datastore/_default`;
@@ -734,4 +752,239 @@ Deno.test("ServeDatastoreClient.checkLog: every reply's log id is checked before
   );
 
   assertEquals(seen, ["log-a", undefined, "log-b"]);
+});
+
+/** The bytes a stream hands out per pull in the bounded-read tests. */
+const PIECE = 256 * 1024;
+
+/**
+ * A body of `total` bytes of `fill` (endless when omitted), handed out
+ * {@link PIECE} bytes a pull and only when read, counting what it handed
+ * out and whether it was cancelled.
+ */
+function counted(total = Infinity, fill = 0x20, prefix = new Uint8Array()) {
+  let handed = 0;
+  let cancelled = false;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (handed === 0 && prefix.byteLength > 0) {
+        handed = prefix.byteLength;
+        controller.enqueue(prefix);
+        return;
+      }
+      if (handed >= total) {
+        controller.close();
+        return;
+      }
+      const n = Math.min(PIECE, total - handed);
+      handed += n;
+      controller.enqueue(new Uint8Array(n).fill(fill));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  }, { highWaterMark: 0 });
+  return { stream, handed: () => handed, cancelled: () => cancelled };
+}
+
+/** A JSON object `{"head":0,"commits":[]}` padded with spaces to `total` bytes. */
+function paddedPage(total: number) {
+  const json = new TextEncoder().encode('{"head":0,"commits":[]}');
+  return counted(total, 0x20, json);
+}
+
+/** Asserts `body` was cut off within one piece of `maxBytes`, and cancelled. */
+function assertBounded(body: ReturnType<typeof counted>, maxBytes: number) {
+  assert(
+    body.handed() <= maxBytes + PIECE,
+    `read ${body.handed()} bytes of a ${maxBytes}-byte limit`,
+  );
+  assert(body.cancelled(), "the body is cancelled");
+}
+
+Deno.test("ServeDatastoreClient.getChunk: a body past the largest chunk is refused and cancelled, whatever Content-Length says", async () => {
+  const lengths: Record<string, string>[] = [{}, { "content-length": "10" }];
+  for (const headers of lengths) {
+    const body = counted();
+    const { client } = clientWith(() =>
+      new Response(body.stream, { status: 200, headers })
+    );
+    const error = await assertRejects(
+      () => client.getChunk("a".repeat(64), signal()),
+      ServeReplyTooLargeError,
+    );
+    assertEquals(error.maxBytes, CHUNK_BYTES);
+    assertEquals(error.code, "reply_too_large");
+    assertBounded(body, CHUNK_BYTES);
+  }
+});
+
+Deno.test("ServeDatastoreClient.getChunk: a 206 is held to the range asked, a 200 to the largest chunk", async () => {
+  const longer = counted(101);
+  const { client } = clientWith(() =>
+    new Response(longer.stream, { status: 206 })
+  );
+  const error = await assertRejects(
+    () => client.getChunk("a".repeat(64), signal(), { start: 0, end: 99 }),
+    ServeReplyTooLargeError,
+  );
+  assertEquals(error.maxBytes, 100);
+
+  // A serve that answers a range with the whole chunk: read and hash-checked.
+  const whole = new Uint8Array(CHUNK_BYTES).fill(7);
+  const { client: ignoring } = clientWith(() =>
+    new Response(whole, { status: 200 })
+  );
+  assertEquals(
+    (await ignoring.getChunk(sha(whole), signal(), { start: 0, end: 99 }))
+      ?.byteLength,
+    CHUNK_BYTES,
+  );
+});
+
+Deno.test("ServeDatastoreClient.changes and partitionCommits: a page past its limit is refused and cancelled, and one at it reads", async () => {
+  const overLimit = paddedPage(SERVE_PAGE_MAX_BYTES + 1);
+  const { client } = clientWith(() =>
+    new Response(overLimit.stream, {
+      status: 200,
+      headers: { "content-length": "23" },
+    })
+  );
+  const error = await assertRejects(
+    () => client.partitionCommits(modelPartition(), 0, signal(), 1000),
+    ServeReplyTooLargeError,
+  );
+  assertEquals(error.maxBytes, SERVE_PAGE_MAX_BYTES);
+  assertBounded(overLimit, SERVE_PAGE_MAX_BYTES);
+
+  const atLimit = paddedPage(SERVE_PAGE_MAX_BYTES);
+  const { client: real } = clientWith(() =>
+    new Response(atLimit.stream, { status: 200 })
+  );
+  assertEquals(await real.partitionCommits(modelPartition(), 0, signal(), 2), {
+    head: 0,
+    commits: [],
+  });
+
+  const feed = counted();
+  const { client: endless } = clientWith(() =>
+    new Response(feed.stream, { status: 200 })
+  );
+  await assertRejects(
+    () => endless.changes(0, signal(), 1000),
+    ServeReplyTooLargeError,
+  );
+  assertBounded(feed, SERVE_PAGE_MAX_BYTES);
+});
+
+Deno.test("ServeDatastoreClient.partitionCommits: a page of one commit may pass the page limit, up to the largest commit serve writes", async () => {
+  const pastPage = paddedPage(SERVE_PAGE_MAX_BYTES + 1);
+  const { client } = clientWith(() =>
+    new Response(pastPage.stream, { status: 200 })
+  );
+  assertEquals(
+    await client.partitionCommits(modelPartition(), 0, signal(), 1),
+    {
+      head: 0,
+      commits: [],
+    },
+  );
+  assert(MAX_WRITTEN_COMMIT_REPLY_BYTES > SERVE_PAGE_MAX_BYTES);
+});
+
+Deno.test("ServeDatastoreClient.changes: a page of 1000 typical commits reads", async () => {
+  const commit = serveStamped(1, [await savePut("m", 1)], modelPartition())
+    .toJSON();
+  const page = {
+    changes: Array.from({ length: 1000 }, (_, i) => ({
+      cursor: i + 1,
+      commit: { ...commit, seq: i + 1 },
+    })),
+    cursor: 1000,
+    more: false,
+  };
+  const { client } = clientWith(() => Response.json(page));
+  assertEquals((await client.changes(0, signal(), 1000)).changes.length, 1000);
+});
+
+Deno.test("MAX_WRITTEN_COMMIT_REPLY_BYTES: a page of the largest commit serve's unit of work writes fits it", async () => {
+  // MAX_COMMIT_OPS puts, each of the most inline content, the longest key
+  // and the longest intent strings, in three-byte characters. Every op has
+  // the same size, so one is measured and the rest counted.
+  const wide = "€";
+  const longest = wide.repeat(MAX_INTENT_FIELD_LENGTH);
+  const prefix = `data/x/${MAX_COMMIT_OPS}/`;
+  const op = await putOp({
+    intent: modelIntent({ kind: "data.rename", name: longest, to: longest }),
+    key: RecordKey.create(
+      prefix + wide.repeat(MAX_RECORD_KEY_LENGTH - prefix.length),
+    ),
+    inline: btoa("\xff".repeat(MAX_INLINE_BYTES)),
+    expect: { sha256: "a".repeat(64) },
+  });
+  const opBytes = new TextEncoder().encode(JSON.stringify(op.toJSON()))
+    .byteLength;
+  assert(opBytes <= MAX_PUT_OP_REPLY_BYTES, `${opBytes} bytes`);
+  const empty = new TextEncoder().encode(
+    JSON.stringify({
+      head: 1,
+      commits: [serveStamped(1, [op], modelPartition()).toJSON()],
+    }),
+  ).byteLength - opBytes;
+  // One comma between each op and the next.
+  const page = empty + MAX_COMMIT_OPS * (opBytes + 1);
+  assert(
+    page <= MAX_WRITTEN_COMMIT_REPLY_BYTES,
+    `${page} bytes against ${MAX_WRITTEN_COMMIT_REPLY_BYTES}`,
+  );
+});
+
+Deno.test("ServeDatastoreClient: a small JSON reply past its limit is refused", async () => {
+  const body = counted();
+  const { client } = clientWith(() => new Response(body.stream));
+  const error = await assertRejects(
+    () => client.hasChunks(["a".repeat(64)], signal()),
+    ServeReplyTooLargeError,
+  );
+  assertEquals(error.maxBytes, SERVE_REPLY_MAX_BYTES);
+  assertBounded(body, SERVE_REPLY_MAX_BYTES);
+});
+
+Deno.test("ServeDatastoreClient: an error body past its limit maps from the status alone", async () => {
+  for (
+    const send of [
+      (c: ServeDatastoreClient) => c.changes(0, signal()),
+      (c: ServeDatastoreClient) => c.acquireLock(LOCK_KEY, 30_000, 0, signal()),
+    ]
+  ) {
+    const body = counted(Infinity, 0x20, new TextEncoder().encode('{"code":'));
+    const { client } = clientWith(() =>
+      new Response(body.stream, { status: 409 })
+    );
+    const error = await assertRejects(() => send(client), ServeUpstreamError);
+    assert(!(error instanceof ServeReplyTooLargeError));
+    assertEquals(error.status, 409);
+    assertEquals(error.message, `Serve at ${BASE} answered HTTP 409`);
+    assertBounded(body, SERVE_ERROR_BODY_MAX_BYTES);
+  }
+});
+
+Deno.test("ServeDatastoreClient: a connection lost while reading an error body is still maybe sent", async () => {
+  const { client } = clientWith(() =>
+    new Response(
+      new ReadableStream({
+        pull(controller) {
+          controller.error(
+            new Error("error reading a body from connection: reset"),
+          );
+        },
+      }),
+      { status: 500 },
+    )
+  );
+  const thrown = await assertRejects(
+    () => client.changes(0, signal()),
+    ServeUnreachableError,
+  );
+  assertEquals(thrown.sent, "maybe");
 });

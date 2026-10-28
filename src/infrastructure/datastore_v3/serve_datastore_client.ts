@@ -35,7 +35,12 @@
  */
 
 import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
+import { CHUNK_BYTES } from "../../domain/datastore_v3/chunk_store.ts";
+import { MAX_COMMIT_OPS } from "../../domain/datastore_v3/commit.ts";
+import { MAX_FIELD_LENGTH as MAX_INTENT_FIELD_LENGTH } from "../../domain/datastore_v3/intent.ts";
+import { MAX_INLINE_BYTES } from "../../domain/datastore_v3/op.ts";
 import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
+import { MAX_RECORD_KEY_LENGTH } from "../../domain/datastore_v3/record_key.ts";
 import {
   type ChunkDeclaration,
   ChunkHashMismatchError,
@@ -44,6 +49,7 @@ import {
 import { isNetworkFailure } from "./network_failure.ts";
 import {
   serveErrorFromReply,
+  ServeReplyTooLargeError,
   ServeUnreachableError,
   ServeUpstreamError,
 } from "./serve_upstream_errors.ts";
@@ -59,6 +65,61 @@ export const DEFAULT_MAX_ATTEMPTS = 3;
 
 /** The longest a 429's `Retry-After` is waited for. */
 export const DEFAULT_MAX_RETRY_DELAY_MS = 10_000;
+
+/**
+ * The most bytes of an error reply's body the client reads
+ * (swamp-club#4062). Past it the refusal is mapped from its status alone.
+ */
+export const SERVE_ERROR_BODY_MAX_BYTES = 64 * 1024;
+
+/**
+ * The most bytes the client reads of a small JSON reply: `chunks/has`,
+ * a chunk upload, a commit and a lease. `chunks/has`, the largest,
+ * answers at most {@link MAX_HAS_HASHES} hashes, about 70 KiB.
+ */
+export const SERVE_REPLY_MAX_BYTES = 1024 * 1024;
+
+/** The most bytes the client reads of a page of more than one commit. */
+export const SERVE_PAGE_MAX_BYTES = 64 * 1024 * 1024;
+
+/** The most UTF-8 bytes one UTF-16 unit of text JSON does not escape takes. */
+const UTF8_BYTES_PER_UNIT = 3;
+
+/**
+ * The most strings a put's intent carries: `data.rename`'s model type and
+ * id, name and new name.
+ */
+const MAX_INTENT_STRINGS = 4;
+
+/** A put's kind, expect, access, and JSON's own quotes and separators. */
+const PUT_OP_SYNTAX_ALLOWANCE = 1024;
+
+/**
+ * The largest JSON one put op with inline content takes: the longest base64
+ * of {@link MAX_INLINE_BYTES}, a key of {@link MAX_RECORD_KEY_LENGTH}
+ * UTF-16 units, and an intent of {@link MAX_INTENT_STRINGS} strings of the
+ * longest an intent accepts.
+ */
+export const MAX_PUT_OP_REPLY_BYTES = Math.ceil(MAX_INLINE_BYTES / 3) * 4 +
+  MAX_RECORD_KEY_LENGTH * UTF8_BYTES_PER_UNIT +
+  MAX_INTENT_STRINGS * MAX_INTENT_FIELD_LENGTH * UTF8_BYTES_PER_UNIT +
+  PUT_OP_SYNTAX_ALLOWANCE;
+
+/**
+ * The bytes a page's and a commit's own fields take around its ops: its
+ * namespace, txnId, writer and principal of at most 1024 units each.
+ */
+const COMMIT_REPLY_HEADER_ALLOWANCE = 32 * 1024;
+
+/**
+ * The most bytes the client reads of a page of one commit: the largest
+ * commit serve writes. Serve's own runs commit through the commit-log unit
+ * of work, which splits a partition's changes only at
+ * {@link MAX_COMMIT_OPS}, so that commit is larger than any a client can
+ * post (an envelope of at most 4 MiB). About 350 MiB.
+ */
+export const MAX_WRITTEN_COMMIT_REPLY_BYTES =
+  MAX_COMMIT_OPS * MAX_PUT_OP_REPLY_BYTES + COMMIT_REPLY_HEADER_ALLOWANCE;
 
 /** The media type of a framed commit body. */
 export const COMMIT_CONTENT_TYPE = "application/vnd.swamp.commit+v1";
@@ -323,9 +384,15 @@ export class ServeDatastoreClient {
           return null;
         }
         if (response.status !== 200 && response.status !== 206) {
-          throw await this.#refusal(response);
+          throw await this.#refusal(response, "chunks/{sha256}");
         }
-        const bytes = new Uint8Array(await response.arrayBuffer());
+        const bytes = await readBounded(
+          response,
+          "chunks/{sha256}",
+          response.status === 206 && range !== undefined
+            ? rangeBytes(range)
+            : CHUNK_BYTES,
+        );
         if (response.status === 200) {
           const actual = await sha256Hex(bytes);
           if (actual !== sha256) {
@@ -378,14 +445,18 @@ export class ServeDatastoreClient {
     signal: AbortSignal,
     limit?: number,
   ): Promise<PartitionCommitsPage> {
-    const body = await this.#json({
-      method: "GET",
-      path: `${partitionPath(partition)}/commits`,
-      query: {
-        after: String(after),
-        ...(limit === undefined ? {} : { limit: String(limit) }),
+    const body = await this.#json(
+      {
+        method: "GET",
+        path: `${partitionPath(partition)}/commits`,
+        query: {
+          after: String(after),
+          ...(limit === undefined ? {} : { limit: String(limit) }),
+        },
       },
-    }, signal);
+      signal,
+      pageMaxBytes(limit),
+    );
     if (!isSeq(body.head) || !Array.isArray(body.commits)) {
       throw invalidReply("partitions/{p}/commits", "head and commits");
     }
@@ -398,14 +469,18 @@ export class ServeDatastoreClient {
     signal: AbortSignal,
     limit?: number,
   ): Promise<ChangesPage> {
-    const body = await this.#json({
-      method: "GET",
-      path: "changes",
-      query: {
-        cursor: String(cursor),
-        ...(limit === undefined ? {} : { limit: String(limit) }),
+    const body = await this.#json(
+      {
+        method: "GET",
+        path: "changes",
+        query: {
+          cursor: String(cursor),
+          ...(limit === undefined ? {} : { limit: String(limit) }),
+        },
       },
-    }, signal);
+      signal,
+      pageMaxBytes(limit),
+    );
     if (
       !Array.isArray(body.changes) || !isSeq(body.cursor) ||
       typeof body.more !== "boolean"
@@ -447,9 +522,11 @@ export class ServeDatastoreClient {
       signal,
       async (response) => {
         if (response.status === 409) {
-          const body = await response.json().catch(() => undefined) as
-            | Record<string, unknown>
-            | undefined;
+          const body = await readBoundedJson(
+            response,
+            "locks",
+            SERVE_ERROR_BODY_MAX_BYTES,
+          ).catch(() => undefined) as Record<string, unknown> | undefined;
           if (body?.code === "lock_held") {
             return {
               acquired: false,
@@ -461,8 +538,13 @@ export class ServeDatastoreClient {
           }
           throw serveErrorFromReply(409, body, this.baseUrl);
         }
-        if (!response.ok) throw await this.#refusal(response);
-        return { acquired: true, lease: leaseOf(await response.json()) };
+        if (!response.ok) throw await this.#refusal(response, "locks");
+        return {
+          acquired: true,
+          lease: leaseOf(
+            await readBoundedJson(response, "locks", SERVE_REPLY_MAX_BYTES),
+          ),
+        };
       },
     );
   }
@@ -489,8 +571,16 @@ export class ServeDatastoreClient {
           await response.body?.cancel();
           return undefined;
         }
-        if (!response.ok) throw await this.#refusal(response);
-        return leaseOf(await response.json());
+        if (!response.ok) {
+          throw await this.#refusal(response, "locks/{leaseId}");
+        }
+        return leaseOf(
+          await readBoundedJson(
+            response,
+            "locks/{leaseId}",
+            SERVE_REPLY_MAX_BYTES,
+          ),
+        );
       },
     );
   }
@@ -508,7 +598,9 @@ export class ServeDatastoreClient {
           await response.body?.cancel();
           return false;
         }
-        if (!response.ok) throw await this.#refusal(response);
+        if (!response.ok) {
+          throw await this.#refusal(response, "locks/{leaseId}");
+        }
         await response.body?.cancel();
         return true;
       },
@@ -531,14 +623,22 @@ export class ServeDatastoreClient {
     this.#logCheck = check;
   }
 
-  /** A request whose success is a JSON object. */
+  /**
+   * A request whose success is a JSON object of at most `maxBytes`
+   * ({@link SERVE_REPLY_MAX_BYTES} by default).
+   */
   async #json(
     spec: RequestSpec,
     signal: AbortSignal,
+    maxBytes = SERVE_REPLY_MAX_BYTES,
   ): Promise<Record<string, unknown>> {
     return await this.#exchange(spec, signal, async (response) => {
-      if (!response.ok) throw await this.#refusal(response);
-      const body: unknown = await response.json();
+      if (!response.ok) throw await this.#refusal(response, spec.path);
+      const body: unknown = await readBoundedJson(
+        response,
+        spec.path,
+        maxBytes,
+      );
       if (typeof body !== "object" || body === null || Array.isArray(body)) {
         throw invalidReply(spec.path, "a JSON object");
       }
@@ -606,11 +706,14 @@ export class ServeDatastoreClient {
     }
   }
 
-  /** The error a reply that is not a success maps to. */
-  async #refusal(response: Response): Promise<Error> {
+  /**
+   * The error a reply that is not a success maps to. A body past
+   * {@link SERVE_ERROR_BODY_MAX_BYTES} is not read: the status alone maps.
+   */
+  async #refusal(response: Response, route: string): Promise<Error> {
     let body: unknown;
     try {
-      body = await response.json();
+      body = await readBoundedJson(response, route, SERVE_ERROR_BODY_MAX_BYTES);
     } catch (error) {
       if (isNetworkFailure(error)) throw error;
       body = undefined;
@@ -708,6 +811,66 @@ function invalidReply(route: string, wanted: string): ServeUpstreamError {
     "invalid_response",
     `Serve's reply to ${route} is missing ${wanted}`,
   );
+}
+
+/**
+ * The most bytes read of a page of `limit` commits: one commit's largest
+ * at limit 1, else {@link SERVE_PAGE_MAX_BYTES}. A caller that names no
+ * limit gets serve's page of up to 1000.
+ */
+function pageMaxBytes(limit: number | undefined): number {
+  return limit === 1 ? MAX_WRITTEN_COMMIT_REPLY_BYTES : SERVE_PAGE_MAX_BYTES;
+}
+
+/** The bytes a 206 for `range` holds at most. */
+function rangeBytes(range: ChunkRange): number {
+  return range.end === undefined
+    ? Math.max(0, CHUNK_BYTES - range.start)
+    : Math.max(0, range.end - range.start + 1);
+}
+
+/**
+ * A reply's body, read as it arrives and counted: past `maxBytes` the body
+ * is cancelled and the reply refused. `Content-Length` is not consulted,
+ * since serve sets it.
+ */
+async function readBounded(
+  response: Response,
+  route: string,
+  maxBytes: number,
+): Promise<Uint8Array> {
+  if (response.body === null) return new Uint8Array();
+  const reader = response.body.getReader();
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      throw new ServeReplyTooLargeError(response.status, route, maxBytes);
+    }
+    parts.push(value);
+  }
+  if (parts.length === 1) return parts[0];
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    bytes.set(part, offset);
+    offset += part.byteLength;
+  }
+  return bytes;
+}
+
+/** A reply's body as JSON, read through {@link readBounded}. */
+async function readBoundedJson(
+  response: Response,
+  route: string,
+  maxBytes: number,
+): Promise<unknown> {
+  const bytes = await readBounded(response, route, maxBytes);
+  return JSON.parse(new TextDecoder().decode(bytes));
 }
 
 function ownBuffer(bytes: Uint8Array): Uint8Array<ArrayBuffer> {

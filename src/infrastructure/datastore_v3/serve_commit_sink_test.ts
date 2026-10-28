@@ -93,6 +93,7 @@ async function withCheckout(fn: (c: Checkout) => Promise<void>) {
     commitStore: store,
     state,
     copyDir: dir,
+    namespace: "",
   });
   const cache = new CachedServeStorage(
     join(dir, "datastore"),
