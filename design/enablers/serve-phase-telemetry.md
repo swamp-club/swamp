@@ -286,9 +286,9 @@ scan in the process (lab #4058), so their `*_work_ms` values are cumulative
 across concurrent operations and can exceed the phase's duration. Their
 duration is mostly the listing, the turns the event loop gave the scan, and
 waiting for one of the 16 while other requests scan; compare it with the
-request's event-loop lag. Counters are
-exported only when counted: a scan that stat'ed nothing has no `stats`. They are
-counts and durations only: no path, definition id or model name.
+request's event-loop lag. Counters are exported only when counted: a scan that
+stat'ed nothing has no `stats`. They are counts and durations only: no path,
+definition id or model name.
 
 ## Worker deletion
 
