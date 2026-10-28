@@ -116,6 +116,14 @@ export {
   markRead,
   type MarkReadEvent,
 } from "./inbox/read.ts";
+export {
+  createInboxNoticeDeps,
+  type CreateInboxNoticeDepsOptions,
+  type InboxNoticeDeps,
+  type InboxPoll,
+  showInboxNotice,
+  startInboxPoll,
+} from "./inbox/notice.ts";
 
 // Workflow operations
 export {
