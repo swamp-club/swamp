@@ -49,7 +49,10 @@ import {
   ServeUpstreamError,
   ServeUpstreamUpgradeRequiredError,
 } from "./serve_upstream_errors.ts";
-import { ServeUpstreamState } from "./serve_upstream_state.ts";
+import {
+  ServeCopyReplacedError,
+  ServeUpstreamState,
+} from "./serve_upstream_state.ts";
 import {
   FakeServe,
   removeTempDir,
@@ -1249,6 +1252,44 @@ Deno.test("serveAccessCheck: warns only for a mismatch the reply records, and wi
       assertEquals(texts().length, 1);
     } finally {
       await reset();
+    }
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a reset of the copy by another command while this one pages the feed refuses the rest, so the new copy is never told it holds pages it does not (swamp-club#4089)", async () => {
+  await withCheckout(async ({ state, serve, catchUp }) => {
+    serve.feedPageSize = 2;
+    for (let seq = 1; seq <= 5; seq++) serve.land(await other(seq));
+    // Another command resets the copy between this one's first and second
+    // pages, as an access change does.
+    let reads = 0;
+    serve.tooLarge = (route) => {
+      if (route === "changes" && ++reads === 2) {
+        const other = ServeUpstreamState.open(state.path);
+        try {
+          other.beginCallerReset();
+          other.finishCallerReset("token-a", 1_000);
+        } finally {
+          other.close();
+        }
+      }
+      return false;
+    };
+
+    await assertRejects(
+      () => catchUp.catchUp(signal()),
+      ServeCopyReplacedError,
+    );
+    const reset = ServeUpstreamState.open(state.path);
+    try {
+      assertEquals(
+        reset.feedCursor(),
+        0,
+        "the reset copy reads from the start",
+      );
+      assertEquals(reset.feedAnchor(), undefined);
+    } finally {
+      reset.close();
     }
   });
 });

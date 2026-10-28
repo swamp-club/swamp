@@ -375,9 +375,9 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     const principalKey = principalToString(principal.principal);
     const key = JSON.stringify([
       principalKey,
-      principal.collectives,
-      principal.groups,
-      restrictedTypes,
+      [...principal.collectives].sort(),
+      [...principal.groups].sort(),
+      [...restrictedTypes].sort(),
     ]);
     const cached = cache.get(key);
     if (cached !== undefined) return cached;

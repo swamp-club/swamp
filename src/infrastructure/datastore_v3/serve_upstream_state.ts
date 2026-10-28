@@ -43,6 +43,27 @@ import { markErrorPaths, UserError } from "../../domain/errors.ts";
 export const SERVE_UPSTREAM_STATE_SCHEMA_NEWER_CODE =
   "datastore_v3_serve_state_schema_newer";
 
+/** Error code for {@link ServeCopyReplacedError}. */
+export const SERVE_COPY_REPLACED_CODE = "datastore_v3_serve_copy_replaced";
+
+/**
+ * Thrown when a command records its catch-up into a copy another command
+ * has since reset (swamp-club#4089): what it read went into the copy that
+ * was replaced, so recording it would leave the new copy missing commits.
+ */
+export class ServeCopyReplacedError extends UserError {
+  constructor(readonly statePath: string) {
+    super(
+      `Another command rebuilt this checkout's copy of the datastore at ` +
+        `serve while this command was reading it, after your access to it ` +
+        `changed or its serve token did. Nothing this command read was ` +
+        `kept. Run the command again.`,
+      SERVE_COPY_REPLACED_CODE,
+    );
+    this.name = "ServeCopyReplacedError";
+  }
+}
+
 /** The file name, beside the checkout's `commits.db`. */
 export const SERVE_UPSTREAM_STATE_FILE = "serve_upstream.db";
 
@@ -162,11 +183,34 @@ export const SERVE_UPSTREAM_STATE_SCHEMA_VERSION = MIGRATIONS.length;
 export class ServeUpstreamState {
   readonly path: string;
   readonly #db: DatabaseSync;
+  /**
+   * The copy's id when this handle opened: a reset by another handle gives
+   * the copy another, and this handle's catch-up writes are then refused
+   * ({@link ServeCopyReplacedError}).
+   */
+  #copyId: string;
   #closed = false;
 
   private constructor(path: string, db: DatabaseSync) {
     this.path = path;
     this.#db = db;
+    this.#copyId = this.#currentCopyId();
+  }
+
+  #currentCopyId(): string {
+    return (this.#db.prepare("SELECT copy_id FROM copy WHERE id = 1").get() as {
+      copy_id: string;
+    }).copy_id;
+  }
+
+  /**
+   * Refuses a write for a copy this handle did not open: another handle
+   * reset it since. Run inside the write's transaction.
+   */
+  #assertSameCopy(): void {
+    if (this.#currentCopyId() !== this.#copyId) {
+      throw markErrorPaths(new ServeCopyReplacedError(this.path), [this.path]);
+    }
   }
 
   /** Opens the file at `path`, creating it and its schema when absent. */
@@ -210,6 +254,7 @@ export class ServeUpstreamState {
     if (anchor !== undefined) assertSeqLike(anchor.seq, "anchor seq");
     let advanced = true;
     this.#transaction(() => {
+      this.#assertSameCopy();
       // A page applied to a copy another process has since replaced with a
       // base is not in the copy: the cursor stays the base's.
       if (basePoint !== undefined && this.basePoint() !== basePoint) {
@@ -295,6 +340,7 @@ export class ServeUpstreamState {
     assertSeqLike(point, "compaction point");
     for (const head of heads) assertSeqLike(head.seq, "serve head");
     this.#transaction(() => {
+      this.#assertSameCopy();
       this.#db.prepare(
         `INSERT OR REPLACE INTO feed (id, cursor, anchor_namespace,
            anchor_partition, anchor_seq, anchor_txn_id)
@@ -334,11 +380,14 @@ export class ServeUpstreamState {
   recordServeHead(namespace: string, partition: string, seq: number): void {
     this.#assertOpen();
     assertSeqLike(seq, "serve head");
-    this.#db.prepare(
-      `INSERT INTO serve_heads (namespace, partition, seq) VALUES (?, ?, ?)
-       ON CONFLICT (namespace, partition)
-       DO UPDATE SET seq = MAX(seq, excluded.seq)`,
-    ).run(namespace, partition, seq);
+    this.#transaction(() => {
+      this.#assertSameCopy();
+      this.#db.prepare(
+        `INSERT INTO serve_heads (namespace, partition, seq) VALUES (?, ?, ?)
+         ON CONFLICT (namespace, partition)
+         DO UPDATE SET seq = MAX(seq, excluded.seq)`,
+      ).run(namespace, partition, seq);
+    });
   }
 
   /**
@@ -367,9 +416,12 @@ export class ServeUpstreamState {
    */
   recordServeLogId(logId: string): string {
     this.#assertOpen();
-    this.#db.prepare(
-      "UPDATE copy SET log_id = ? WHERE id = 1 AND log_id IS NULL",
-    ).run(logId);
+    this.#transaction(() => {
+      this.#assertSameCopy();
+      this.#db.prepare(
+        "UPDATE copy SET log_id = ? WHERE id = 1 AND log_id IS NULL",
+      ).run(logId);
+    });
     return this.serveLogId()!;
   }
 
@@ -424,13 +476,23 @@ export class ServeUpstreamState {
    */
   recordAccessSeen(fingerprint: string): ServeCopyAccess {
     this.#assertOpen();
-    this.#db.prepare(
-      `UPDATE copy SET
-         access_seen = CASE
-           WHEN access_seen IS NULL OR access_seen = access_built THEN ?
-           ELSE access_seen END,
-         access_built = COALESCE(access_built, ?) WHERE id = 1`,
-    ).run(fingerprint, fingerprint);
+    this.#transaction(() => {
+      this.#assertSameCopy();
+      // A copy that read the feed before any access was recorded (one made
+      // by an older swamp, or through a serve too old to send it) was built
+      // under access nobody knows: it is recorded as none, so the access
+      // serve sends differs and the copy is rebuilt once.
+      this.#db.prepare(
+        `UPDATE copy SET
+           access_seen = CASE
+             WHEN access_seen IS NULL OR access_seen = access_built THEN ?
+             ELSE access_seen END,
+           access_built = COALESCE(
+             access_built,
+             CASE WHEN EXISTS (SELECT 1 FROM feed) THEN '' ELSE ? END
+           ) WHERE id = 1`,
+      ).run(fingerprint, fingerprint);
+    });
     return this.access();
   }
 
@@ -457,6 +519,7 @@ export class ServeUpstreamState {
          ON CONFLICT (id) DO UPDATE SET resetting = 1`,
       ).run();
     });
+    this.#copyId = this.#currentCopyId();
   }
 
   /**

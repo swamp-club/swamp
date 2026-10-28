@@ -6728,12 +6728,15 @@ replies: the command warns once that the next command rebuilds the copy (or,
 within the cooldown below, that a later one does); a later command whose
 binding already found the mismatch says why it waits instead.
 The next command's binding then resets the copy as a token switch does
-(`resetCopyForCaller`, `accessResetDue`), with two differences:
+(`resetCopyForCaller`, `accessResetDue`), with these differences:
 
 - **Unlanded writes wait.** An outbox that still holds entries defers the
   reset with a warning instead of refusing, since the member cannot return to
   the old grants to settle them. A writing command lands them as it would
-  anyway, and the next command resets.
+  anyway, and the next command resets. An entry serve refuses with a 403 (a
+  narrowing that took the caller's `write`) is dropped by recovery like any
+  refused entry, so a refusal cannot hold the reset off for good; if an
+  earlier attempt landed it, the next catch-up brings it back.
 - **A busy checkout waits.** The reset takes the copy's writer lease without
   waiting: when another command of the checkout is writing, this command
   warns and reads the copy as it is, rather than waiting the lock timeout and
@@ -6746,13 +6749,30 @@ The next command's binding then resets the copy as a token switch does
   `ACCESS_RESET_COOLDOWN_MS` (10 minutes) of the last reset for access only
   warns that the replicas may disagree; the first command after it resets if
   the access still differs. A reset recorded in the future (the clock moved
-  back) holds nothing off.
+  back) holds nothing off. The cooldown applies to a narrowing too: one made
+  within 10 minutes of an earlier reset for access (a grant widened, then
+  narrowed again) leaves the records it revokes in the copy and the
+  checkout's files until the cooldown ends. Serve filters every reply under
+  the narrowed access meanwhile.
 
 A serve too old to send the header leaves both values unrecorded, and the
-copy behaves as before: only a token switch resets it. This is freshness,
+copy behaves as before: only a token switch resets it. A copy that read the
+feed before any access was recorded (made by an older swamp, or through such a
+serve) records its build access as unknown when a fingerprint first arrives,
+so it is rebuilt once rather than adopting access it was not built under. This is freshness,
 not safety, so unlike the log id its absence is never refused. A grant change
 therefore takes effect in the copy from the second command after it: the
 first sees it, the second resets.
+
+**A reset never loses another command's pages.** A read-only command catches
+the copy up without the writer lease, so another command can reset the copy
+while it pages the feed: its commits then went into the replaced
+`commits.db`. Each `ServeUpstreamState` handle remembers the copy id it opened
+under, and every write of the catch-up (the feed cursor and anchor, serve's
+heads, a loaded base, the log id, the access seen) checks it in the same
+transaction. A copy reset since refuses them
+(`datastore_v3_serve_copy_replaced`): the command fails and says to run it
+again, and the new copy reads from the start.
 
 A reset removes what a narrowed grant no longer allows from this checkout's
 copy and files. Serve cannot reach copies made elsewhere before the
