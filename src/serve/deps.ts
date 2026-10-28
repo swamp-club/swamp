@@ -49,12 +49,10 @@ import {
   type StepLockHook,
   WorkflowExecutionService,
 } from "../domain/workflows/execution_service.ts";
-import type { WorkflowRunId } from "../domain/workflows/workflow_id.ts";
 import {
   findWorkflowById,
   findWorkflowByIdOrName,
 } from "../domain/workflows/workflow_lookup.ts";
-import type { WorkflowRun } from "../domain/workflows/workflow_run.ts";
 import type { RunTrackerRepository } from "../domain/models/run_tracker_repository.ts";
 import type { RunCheckpointer } from "../domain/workflows/run_checkpointer.ts";
 import { TriggerInputResolver } from "../domain/workflows/trigger_input_resolver.ts";
@@ -280,17 +278,8 @@ export async function createWorkflowRunDeps(
     definitionRepo: repoContext.definitionRepo,
     telemetrySink: options?.telemetrySink,
     supersede: {
-      findSuspendedRuns: async (workflowId) => {
-        const runRepo = repoContext.workflowRunRepo;
-        const suspended = await runRepo
-          .findSummariesByStatus(workflowId, "suspended");
-        const runs = await Promise.all(
-          suspended.map((s) =>
-            runRepo.findById(workflowId, s.id as WorkflowRunId)
-          ),
-        );
-        return runs.filter((r): r is WorkflowRun => r !== null);
-      },
+      findSuspendedRuns: (workflowId) =>
+        repoContext.workflowRunRepo.findByStatus(workflowId, "suspended"),
       findEvaluatedWorkflow: (runId) => evaluatedWorkflows().findByRunId(runId),
       // On a v3 datastore only serve's own evaluations run: none trusted
       // refuses rather than falling back to the file (swamp-club#3922).

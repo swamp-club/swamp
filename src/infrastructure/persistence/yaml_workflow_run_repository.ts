@@ -1694,20 +1694,56 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
    * stops between records only once no caller needs it. Serve's continuation
    * sweep passes its own signal so shutdown is not held up (swamp-club#3472).
    */
-  async findSummariesByStatus(
+  findSummariesByStatus(
     workflowId: WorkflowId,
     status: string,
     signal?: AbortSignal,
   ): Promise<WorkflowRunSummary[]> {
+    return this.listByStatus(workflowId, status, signal, openDirectly);
+  }
+
+  /** {@link findSummariesByStatus}, its listing and reads made through `open`. */
+  private async listByStatus(
+    workflowId: WorkflowId,
+    status: string,
+    signal: AbortSignal | undefined,
+    open: OpenFile,
+  ): Promise<WorkflowRunSummary[]> {
     const runsDir = this.getRunsDir(workflowId);
     const indexDir = this.getLocalIndexDir(workflowId);
-    const index = await this.getValidatedIndex(runsDir, indexDir, signal);
+    const index = await this.getValidatedIndex(runsDir, indexDir, signal, open);
     await this.warnLeftOut(runsDir);
     if (!index) {
-      const all = await this.readSummariesByWorkflowId(workflowId);
+      const all = await this.readSummariesByWorkflowId(workflowId, open);
       return all.filter((s) => s.status === status);
     }
     return indexToSummaries(index).filter((s) => s.status === status);
+  }
+
+  /**
+   * The workflow's runs with `status`, in the order
+   * {@link findSummariesByStatus} lists them. The listing, and the record
+   * reads {@link SCAN_CONCURRENCY} at a time, are made under the search share
+   * of the scan permits every repository shares, as in
+   * {@link findGlobalByStatus} (swamp-club#4077). The status is the index's
+   * when listed: a run resumed before its record is read comes back with its
+   * new status, so callers check it again. A run deleted before it is read is
+   * left out.
+   */
+  async findByStatus(
+    workflowId: WorkflowId,
+    status: string,
+    signal?: AbortSignal,
+  ): Promise<WorkflowRun[]> {
+    const open: OpenFile = (opened) => withScanPermit("search", opened, signal);
+    const summaries = await this.listByStatus(workflowId, status, signal, open);
+    const runs = await mapBounded(
+      summaries,
+      SCAN_CONCURRENCY,
+      (summary) => this.readById(workflowId, summary.id as WorkflowRunId, open),
+      signal,
+    );
+    return runs.filter((run) => run !== null);
   }
 
   private async getValidatedIndex(
