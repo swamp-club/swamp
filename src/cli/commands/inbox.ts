@@ -142,7 +142,10 @@ export const inboxCommand = new Command()
       "Otherwise lists unread messages (all with --all) by date, kind and " +
       "title, and marks nothing read.",
   )
-  .option("--all", "Include messages you have already read")
+  .option(
+    "--all",
+    "Include messages you have already read; the terminal picker always includes them",
+  )
   .option(
     "--limit <n:integer>",
     `How many messages to load, 1 to ${MAX_INBOX_LIST_LIMIT} (default ${DEFAULT_INBOX_LIST_LIMIT})`,

@@ -158,8 +158,10 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   `Link:` and `Next:` lines. Previewing makes no request and marks nothing
   read. Enter opens the message: it is marked read and left in the scrollback.
   Ctrl-r marks the highlighted message read and Ctrl-a marks every unread
-  message on the loaded page read, filtered out or not; both close the picker
-  and say how many were marked. Esc closes it and changes nothing. The action
+  message on the loaded page read, including rows the filter hides; both close
+  the picker and say how many were marked. Like every action key, Ctrl-a acts
+  only while at least one row is showing, so it does nothing while the filter
+  matches none. Esc closes it and changes nothing. The action
   keys need Ctrl because plain letters type into the filter, and Ctrl-m is the
   same key as Enter. `swamp inbox read` starts on the newest unread message on
   the page, or on the first row when none on the page is unread. An empty
