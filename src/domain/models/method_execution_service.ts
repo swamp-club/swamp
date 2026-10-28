@@ -147,6 +147,31 @@ function onceOnly(
 }
 
 /**
+ * `hook` as a version 6 worker's report of its parse calls it: while the
+ * method runs on the worker, so an error it throws cannot stop the method.
+ * It is logged as a warning, and the step keeps the outcome the method
+ * reported; failing a step whose method ran would invite a retry that runs
+ * it again.
+ */
+function reportedOnly(
+  hook: (() => Promise<void>) | undefined,
+  context: Pick<MethodContext, "logger" | "redactor">,
+): (() => Promise<void>) | undefined {
+  if (hook === undefined) return undefined;
+  return async () => {
+    try {
+      await hook();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      context.logger.warn(
+        "Could not record the arguments the worker validated: {error}",
+        { error: redacted(message, context.redactor) },
+      );
+    }
+  };
+}
+
+/**
  * `definition` with each sentinel of the run written as the reference text
  * a persisted definition holds for it, so it hashes the same on every run
  * and the hash is computed from no value. Text that is not a sentinel of the
@@ -293,7 +318,11 @@ export interface MethodDeliveryOptions {
    * parse whose result the method receives, so a schema transform runs
    * once; a remote dispatch parses here and again on the worker. Not called
    * when validation fails; an error it throws fails the run before the
-   * method runs.
+   * method runs. The one exception is a remotely placed step whose
+   * arguments hold a secret, dispatched to a worker that validates them
+   * itself: the hook is called on the worker's report, while the method
+   * runs, so an error it throws is logged as a warning and the step keeps
+   * the method's outcome.
    */
   onArgumentsValidated?: () => Promise<void>;
   /**
@@ -1176,7 +1205,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           : undefined,
         redactorSeeds: redactorSeeds.length > 0 ? redactorSeeds : undefined,
         legacyDelivery: delivery.legacyDelivery,
-        onArgumentsValidated: delivery.validated,
+        onArgumentsValidated: reportedOnly(delivery.validated, context),
         beginLockHandOff: lockHandOffFor(context),
         declaredWrites: context.declaredWrites,
         onEvent: (event: RpcStreamEvent) => {
@@ -1401,6 +1430,17 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       await input.validated?.();
       return;
     }
+
+    // A method argument still holding a stored reference its vault could not
+    // read fails here, as the method's own parse fails it: a version 6
+    // worker has no record of the run's unread references (swamp-club#3806).
+    // It reads expression text, never a value.
+    const unreadError = unreadReferenceError(
+      "methodArguments",
+      rawMethodArgs,
+      input.options.unreadReferences,
+    );
+    if (unreadError) throw unreadError;
 
     let parsedGlobals: Record<string, unknown> = {};
     if (modelDef.globalArguments) {

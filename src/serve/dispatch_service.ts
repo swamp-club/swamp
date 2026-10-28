@@ -172,6 +172,21 @@ interface DispatchFrame {
   redactorSeeds: string[] | undefined;
 }
 
+/** `value` with every string in it, at any depth, passed through `redactor`. */
+function redactedStrings<T>(value: T, redactor: SecretRedactor): T {
+  const walk = (item: unknown): unknown => {
+    if (typeof item === "string") return redactor.redact(item);
+    if (Array.isArray(item)) return item.map(walk);
+    if (item !== null && typeof item === "object") {
+      return Object.fromEntries(
+        Object.entries(item).map(([key, entry]) => [key, walk(entry)]),
+      );
+    }
+    return item;
+  };
+  return walk(value) as T;
+}
+
 export interface DispatchServiceOptions {
   repoDir: string;
   repoContext: RepositoryContext;
@@ -931,6 +946,18 @@ export class DispatchService {
       | undefined;
     let resultArrived = false;
     const referencesOnly = shipsReferencesOnly(frame.protocolVersion);
+    // What the method writes on the worker reaches the run log through the
+    // dispatch's redactor, read when each line arrives so it holds every
+    // value the load route and resolveSecret have served the dispatch so
+    // far: a version 6 run's own redactor never sees those values, so this
+    // is the scrub after the worker's own.
+    const scrubbed = <T>(value: T): T => {
+      const redactor = this.#options.dispatches.forDispatch(
+        workerName,
+        dispatchId,
+      )?.redactor;
+      return redactor?.hasSecrets ? redactedStrings(value, redactor) : value;
+    };
     const onEvent = (event: RpcStreamEvent) => {
       if (event.kind === ARGUMENTS_VALIDATED_EVENT) {
         if (referencesOnly && !resultArrived && validation === undefined) {
@@ -943,7 +970,9 @@ export class DispatchService {
         }
         return;
       }
-      request.onEvent?.(event);
+      request.onEvent?.(
+        event.kind === "method_event" ? scrubbed(event) : event,
+      );
     };
 
     try {
@@ -969,11 +998,6 @@ export class DispatchService {
       });
       resultArrived = true;
       const validated = await validation;
-      // A method that failed reports its own error; one that ran reports
-      // the hook's, as a run in this process does.
-      if (validated?.failed && result.status !== "error") {
-        throw validated.error;
-      }
       // What the method wrote to the console on the worker travels in the
       // result, not the stream. Forward it as output so it reaches the run
       // log whether the dispatch succeeded or failed (swamp-club#3080). The
@@ -985,7 +1009,12 @@ export class DispatchService {
         try {
           request.onEvent?.({
             kind: "method_event",
-            event: { type: "output", line, stream: "stdout", level: "info" },
+            event: {
+              type: "output",
+              line: scrubbed(line),
+              stream: "stdout",
+              level: "info",
+            },
           });
         } catch (error) {
           logger.warn(
@@ -997,6 +1026,12 @@ export class DispatchService {
           );
           break;
         }
+      }
+      // A method that failed reports its own error; one that ran reports
+      // the hook's, as a run in this process does, after its console output
+      // has reached the run log.
+      if (validated?.failed && result.status !== "error") {
+        throw validated.error;
       }
       if (result.status === "error") {
         // The worker scrubs its result error before sending it

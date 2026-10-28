@@ -1276,7 +1276,14 @@ worker for protocol version 6, and 5.3 removes the version 5 frame.
   with a runner-level `arguments_validated` event, which a method's own events
   cannot imitate. Serve calls `onArgumentsValidated` on it at most once per
   attempt, however many workers the attempt is dispatched to, and only before
-  the result.
+  the result. A step whose arguments hold no secret has called it on serve
+  before scheduling, so the report adds nothing. For one that holds a secret
+  the report arrives while the method runs, so a hook that throws cannot stop
+  the method: the run logs it as a warning and the step keeps the outcome the
+  method reported, since failing a step whose method ran would invite a retry
+  that runs it again. A method argument holding a stored reference whose vault
+  could not be read is refused on serve before scheduling, since the worker
+  has no record of the run's unread references (swamp-club#3806).
 - **A method's own vault reads.** A method that reads a secret by name in its
   code (`context.vaultService.get`) keeps `resolveSecret` on both versions,
   held to the dispatch's allowlist. `resolveSecret` is protected traffic, not
@@ -1309,7 +1316,9 @@ worker for protocol version 6, and 5.3 removes the version 5 frame.
 Redaction stays after the trusted boundary. Worker result errors are already
 scrubbed on both hops, by the runner before the result frame and by serve
 before the lease record and the step error (swamp-club#3525); runner stderr
-follows (swamp-club#3526). Off loopback, serve keeps requiring TLS and an auth
+follows (swamp-club#3526). Serve also passes a worker's streamed method events
+and console capture through the dispatch's redactor before the run log, since
+a version 6 run's own redactor never holds the values the worker loaded. Off loopback, serve keeps requiring TLS and an auth
 mode (`assertOffLoopbackSecurity`).
 
 ## 10. Compatibility and rollout

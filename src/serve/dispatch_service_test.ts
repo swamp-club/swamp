@@ -2260,25 +2260,30 @@ Deno.test("DispatchService: a version 6 worker's arguments_validated event calls
   assertEquals(v5Calls, 0);
 });
 
-Deno.test("DispatchService: a hook that fails after a version 6 worker validated fails the step, and a method's own failure is reported over it", async () => {
+Deno.test("DispatchService: a hook that fails after a version 6 worker validated fails the step once its console output is forwarded, and a method's own failure is reported over it", async () => {
   const h = createHarness();
   h.setBehavior((_name, _params, options) => {
     options?.onEvent?.({ kind: ARGUMENTS_VALIDATED_EVENT });
     return Promise.resolve<DispatchResult>({
       status: "success",
       outputs: [],
-      logs: [],
+      logs: ["created the bucket"],
       durationMs: 1,
     });
   });
+  const lines: unknown[] = [];
   const request = stepRequest({
     onArgumentsValidated: () => Promise.reject(new Error("record not saved")),
+    onEvent: (event) => {
+      lines.push((event.event as { line?: unknown } | undefined)?.line);
+    },
   });
   await assertRejects(
     () => h.service.executeRemote(request),
     Error,
     "record not saved",
   );
+  assertEquals(lines, ["created the bucket"]);
   h.setBehavior((_name, _params, options) => {
     options?.onEvent?.({ kind: ARGUMENTS_VALIDATED_EVENT });
     return Promise.resolve<DispatchResult>({
@@ -2294,6 +2299,51 @@ Deno.test("DispatchService: a hook that fails after a version 6 worker validated
     Error,
     "method failed",
   );
+});
+
+Deno.test("DispatchService: a worker's method events and console output reach the run through the dispatch's redactor, with the values served mid-dispatch (typed-secrets 5.2)", async () => {
+  const h = createHarness();
+  h.setBehavior((name, params, options) => {
+    // As the load route adds each value it serves to the registration.
+    const registration = h.dispatches.forDispatch(name, params.dispatchId)!;
+    (registration.redactor ??= new SecretRedactor()).addSecret("s3cret-loaded");
+    options?.onEvent?.({
+      kind: "method_event",
+      event: {
+        type: "output",
+        line: "token=s3cret-loaded seed=literal-seed",
+        stream: "stdout",
+        level: "info",
+        nested: { values: ["s3cret-loaded"] },
+      },
+    });
+    return Promise.resolve<DispatchResult>({
+      status: "success",
+      outputs: [],
+      logs: ["console s3cret-loaded"],
+      durationMs: 1,
+    });
+  });
+  const forwarded: RpcStreamEvent[] = [];
+  await h.service.executeRemote(stepRequest({
+    redactorSeeds: ["literal-seed"],
+    onEvent: (event) => forwarded.push(event),
+  }));
+  assertEquals(forwarded.map((event) => event.event), [
+    {
+      type: "output",
+      line: "token=*** seed=***",
+      stream: "stdout",
+      level: "info",
+      nested: { values: ["***"] },
+    },
+    {
+      type: "output",
+      line: "console ***",
+      stream: "stdout",
+      level: "info",
+    },
+  ]);
 });
 
 Deno.test("DispatchService: dispatch-env-allow limits the shipped snapshot (swamp-club#2791)", async () => {

@@ -7922,3 +7922,109 @@ Deno.test("executeWorkflow: a remotely placed step holding a secret has its othe
     setRemoteStepDispatcher(null);
   }
 });
+
+Deno.test("executeWorkflow: a remotely placed step holding a secret fails before it is scheduled when a method argument holds an unreadable stored reference (swamp-club#3806)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const { unread, reference } = unreadTicket();
+  const calls: unknown[] = [];
+  const model = ticketModel(calls);
+  let scheduled = 0;
+  setRemoteStepDispatcher({
+    executeRemote: () => {
+      scheduled++;
+      return Promise.resolve({
+        outputs: [],
+        logs: [],
+        durationMs: 1,
+        workerName: "w1",
+      });
+    },
+    releaseAffinity: () => {},
+  });
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addSecret(
+    { vaultName: "v", key: "api" },
+    "globalArguments.api",
+  );
+  const { context } = createTestContext({
+    modelType: model.type,
+    placement: { labels: { tier: "remote" } },
+    vaultSecrets: bag,
+  });
+  try {
+    const error = await assertRejects(
+      () =>
+        service.executeWorkflow(
+          Definition.create({
+            name: "placed",
+            globalArguments: { api: sentinel },
+            methods: { run: { arguments: { token: `Bearer ${reference}` } } },
+          }),
+          model,
+          "run",
+          context,
+          { unreadReferences: unread },
+        ),
+      Error,
+      "Could not read methodArguments.token",
+    );
+    assertStringIncludes(error.message, "op: command not found");
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
+  assertEquals(scheduled, 0);
+  assertEquals(calls, []);
+});
+
+Deno.test("executeWorkflow: a hook that fails on a version 6 worker's report, while the method runs, is logged as a warning and the step keeps the method's outcome", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createTestModel({});
+  setRemoteStepDispatcher({
+    executeRemote: async (request) => {
+      // As serve calls it on a version 6 worker's arguments_validated event.
+      await request.onArgumentsValidated?.();
+      return { outputs: [], logs: [], durationMs: 1, workerName: "w1" };
+    },
+    releaseAffinity: () => {},
+  });
+  const warnings: string[] = [];
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addSecret(
+    { vaultName: "v", key: "token" },
+    "methods.start.arguments.value",
+  );
+  const { context } = createTestContext({
+    modelType: model.type,
+    placement: { labels: { tier: "remote" } },
+    vaultSecrets: bag,
+  });
+  // The test logger, with its warnings captured.
+  const logger: MethodContext["logger"] = Object.assign(
+    Object.create(context.logger),
+    {
+      warn: (message: string, props?: Record<string, unknown>) => {
+        warnings.push(message.replace("{error}", String(props?.error ?? "")));
+      },
+    },
+  );
+  try {
+    await service.executeWorkflow(
+      Definition.create({
+        name: "placed",
+        methods: { start: { arguments: { value: sentinel } } },
+      }),
+      model,
+      "start",
+      { ...context, logger },
+      {
+        onArgumentsValidated: () =>
+          Promise.reject(new Error("evaluation not saved")),
+      },
+    );
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
+  assertEquals(warnings, [
+    "Could not record the arguments the worker validated: evaluation not saved",
+  ]);
+});
