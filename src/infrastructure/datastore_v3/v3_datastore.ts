@@ -91,7 +91,7 @@ import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { CatalogStore } from "../persistence/catalog_store.ts";
 import { writeDatastoreFormatMarker } from "../persistence/datastore_format_marker_writer.ts";
 import { FileSystemStorage } from "../persistence/fs_datastore_storage.ts";
-import { ServeCatchUp } from "./serve_catch_up.ts";
+import { ServeCatchUp, serveLogCheck } from "./serve_catch_up.ts";
 import {
   createServeCommitSink,
   type ServeUpstreamCommitStore,
@@ -613,6 +613,11 @@ export interface V3Datastore {
    */
   readonly serveUpstreamStore?: ServeUpstreamCommitStore;
   /**
+   * The id of the serve copy this handle reads, when its upstream is serve
+   * (swamp-club#4049): a copy started afresh at the same root has another.
+   */
+  readonly serveCopyId?: string;
+  /**
    * For a reader of a checkout another process writes (swamp-club#3803):
    * nothing while the read model is complete; otherwise waits up to
    * `lockWaitMs` for the catch-up in progress and catches up if the read
@@ -925,8 +930,18 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       join(dirname(commitsDbPath), SERVE_UPSTREAM_STATE_FILE),
     )
     : undefined;
+  if (serveClient !== undefined && serveState !== undefined) {
+    serveClient.checkLog(
+      serveLogCheck(serveState, serveClient.baseUrl, dirname(commitsDbPath)),
+    );
+  }
   const serveCatchUp = serveClient !== undefined && serveState !== undefined
-    ? new ServeCatchUp({ client: serveClient, commitStore, state: serveState })
+    ? new ServeCatchUp({
+      client: serveClient,
+      commitStore,
+      state: serveState,
+      copyDir: dirname(commitsDbPath),
+    })
     : undefined;
   const serveSink = serveClient !== undefined && serveCatchUp !== undefined
     ? createServeCommitSink({
@@ -1049,6 +1064,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     ...(serveSink !== undefined
       ? { serveUpstreamStore: serveSink.upstream }
       : {}),
+    ...(serveState !== undefined ? { serveCopyId: serveState.copyId() } : {}),
     async catchUp(signal) {
       await catchUpFromServe(signal ?? lifetime.signal, "read");
       await unreachableAsCatchUpError(() =>

@@ -411,6 +411,21 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     )
     GROUP BY namespace, sha256, partition;
   `,
+  // 8 → 9: the log's id (swamp-club#4049), random, minted once for the
+  // log: a failover, a Litestream restore and a restore from backup keep
+  // it, a fresh deployment or another bucket has another. Serve reports it
+  // on every datastore API reply, so a checkout's copy can tell the log it
+  // follows from another one at the same address. Minted here for an
+  // existing log too; a swamp at schema 8 would not report it, so it must
+  // refuse the store as newer.
+  `
+  CREATE TABLE IF NOT EXISTS log_identity (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    log_id TEXT NOT NULL
+  ) STRICT;
+  INSERT OR IGNORE INTO log_identity (id, log_id)
+    VALUES (1, lower(hex(randomblob(16))));
+  `,
 ];
 
 /** Error code for a `commits.db` written by a newer swamp. */
@@ -753,6 +768,17 @@ export class SqliteCommitStore implements CommitStore {
   /** How many rebuilt partitions the store holds; for tests and diagnostics. */
   get cachedPartitionCount(): number {
     return this.#cache.size;
+  }
+
+  /**
+   * The log's id (swamp-club#4049): random, minted once for the log and
+   * kept by every copy and restore of it, so two logs never share one.
+   */
+  logId(): string {
+    this.#assertOpen();
+    return (this.#db.prepare(
+      "SELECT log_id FROM log_identity WHERE id = 1",
+    ).get() as { log_id: string }).log_id;
   }
 
   /**

@@ -27,14 +27,26 @@
 
 import "../src/domain/models/models.ts";
 import { AsyncResource } from "node:async_hooks";
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { exists } from "@std/fs";
+import { DatabaseSync } from "node:sqlite";
 import { join } from "@std/path";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { resolveDatastoreForRepo } from "../src/cli/repo_context.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import type { ModelType } from "../src/domain/models/model_type.ts";
 import { serveUpstreamLocalRoot } from "../src/infrastructure/datastore_v3/serve_upstream_binding.ts";
+import { SERVE_DATASTORE_LOG_HEADER } from "../src/infrastructure/datastore_v3/serve_datastore_client.ts";
+import {
+  SERVE_UPSTREAM_DIVERGED_CODE,
+  SERVE_UPSTREAM_UPGRADE_REQUIRED_CODE,
+  ServeUpstreamDivergedError,
+  ServeUpstreamUpgradeRequiredError,
+} from "../src/infrastructure/datastore_v3/serve_upstream_errors.ts";
+import {
+  SERVE_UPSTREAM_STATE_FILE,
+  ServeUpstreamState,
+} from "../src/infrastructure/datastore_v3/serve_upstream_state.ts";
 import { v3ReplicatesAt } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import type { RepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
@@ -846,6 +858,308 @@ Deno.test({
         (await serve.log()).some((entry) => entry.partition.includes(other)),
         false,
       );
+    });
+  },
+});
+
+/**
+ * The member grants a team sets: name-scoped, so another serve, which has
+ * never seen the behaviors the copy holds, answers 404 for their
+ * partitions, as it does to a caller whose grant was revoked.
+ */
+const NAMED: readonly GrantSpec[] = [
+  { actions: ["read", "write", "run"], kind: "model", pattern: "web" },
+  { actions: ["read", "write"], kind: "data", pattern: "web" },
+];
+
+for (
+  const [grantsName, grants] of [["wildcard", MEMBER], [
+    "named",
+    NAMED,
+  ]] as const
+) {
+  Deno.test({
+    name:
+      `serve upstream: an address that moves to another serve's datastore is refused on the first read and the first write, with nothing mixed into the copy (${grantsName} grants)`,
+    sanitizeOps: false,
+    sanitizeResources: false,
+    fn: async () => {
+      await withScratch(async (scratch) => {
+        const serveA = await scratch.serve({ grants });
+        const serveB = await scratch.serve({ grants });
+        const bucket = scratch.bucket();
+        const client = await scratch.client("client", { bucket });
+        let target = serveA.origin;
+        const proxy = startProxy(() => target);
+        const env = serveEnv(proxy, "alice-token");
+        const read = () =>
+          readCommand(scratch, client, env, async (repos) => ({
+            vpc: await latestOf(
+              repos,
+              serveA.modelType,
+              serveA.models.web,
+              "vpc",
+            ),
+            db: await latestOf(
+              repos,
+              serveB.modelType,
+              serveB.models.web,
+              "db",
+            ),
+          }));
+        const aView = { vpc: { version: 3, content: "3" }, db: null };
+        try {
+          // Behind the address, serve A takes three saves of vpc.
+          for (let version = 1; version <= 3; version++) {
+            await writeCommand(
+              scratch,
+              client,
+              env,
+              (repos) =>
+                repos.unifiedDataRepo.save(
+                  serveA.modelType,
+                  serveA.models.web,
+                  dataOf("vpc", VPC_ID),
+                  json(version),
+                ),
+            );
+          }
+          assertEquals(await read(), aView);
+
+          // The address moves to serve B, with its own datastore, which takes
+          // two saves of db.
+          target = serveB.origin;
+          const other = await scratch.client("other", { bucket });
+          for (let version = 1; version <= 2; version++) {
+            await writeCommand(
+              scratch,
+              other,
+              env,
+              (repos) =>
+                repos.unifiedDataRepo.save(
+                  serveB.modelType,
+                  serveB.models.web,
+                  dataOf("db", DB_ID),
+                  json(version),
+                ),
+            );
+          }
+          const logB = (await serveB.log()).length;
+
+          const readError = await assertRejects(
+            read,
+            ServeUpstreamDivergedError,
+          );
+          assertEquals(readError.code, SERVE_UPSTREAM_DIVERGED_CODE);
+          assertEquals(readError.divergence.kind, "other-log");
+          assertEquals(readError.serveUrl, proxy.origin);
+          assert(
+            readError.message.includes(readError.copyDir),
+            "the refusal names the copy",
+          );
+          const writeError = await assertRejects(
+            () =>
+              writeCommand(
+                scratch,
+                client,
+                env,
+                (repos) =>
+                  repos.unifiedDataRepo.save(
+                    serveB.modelType,
+                    serveB.models.web,
+                    dataOf("db", DB_ID),
+                    json(3),
+                  ),
+              ),
+            ServeUpstreamDivergedError,
+          );
+          assertEquals(writeError.code, SERVE_UPSTREAM_DIVERGED_CODE);
+          assertEquals((await serveB.log()).length, logB, "B took the write");
+
+          // Moved back to A, the copy holds A's log only.
+          target = serveA.origin;
+          assertEquals(await read(), aView);
+
+          // At B again, the copy moved aside as the refusal says: a fresh copy
+          // and the checkout's records hold B's log only.
+          target = serveB.origin;
+          await assertRejects(read, ServeUpstreamDivergedError);
+          await Deno.rename(readError.copyDir, `${readError.copyDir}.moved`);
+          assertEquals(await read(), {
+            vpc: null,
+            db: { version: 2, content: "2" },
+          });
+        } finally {
+          await proxy.close();
+        }
+        assertEquals(bucket.touched(), []);
+      });
+    },
+  });
+}
+
+Deno.test({
+  name:
+    "serve upstream: a serve restored behind the copy's head in one partition is refused on a write, though the feed anchor still checks",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ models: ["other"] });
+      const bucket = scratch.bucket();
+      const client = await scratch.client("client", { bucket });
+      const type = serve.modelType;
+      const { web, other } = serve.models;
+      // Serve answers web's partition as restored to its first commit:
+      // reads end at head 1, and a commit past it is a stale seq. A restore
+      // keeps the log, so its replies name the log id serve named before.
+      let restored = false;
+      let logId = "";
+      const isWeb = (request: Request) =>
+        decodeURIComponent(new URL(request.url).pathname).includes(web);
+      const proxy = startProxy(serve.origin, async (request, forward) => {
+        if (!restored || !isWeb(request)) {
+          const response = await forward();
+          logId = response.headers.get(SERVE_DATASTORE_LOG_HEADER) ?? logId;
+          return response;
+        }
+        const headers = { [SERVE_DATASTORE_LOG_HEADER]: logId };
+        if (request.method === "GET") {
+          return Response.json({ head: 1, commits: [] }, { headers });
+        }
+        return Response.json({
+          code: "stale_seq",
+          seq: 1,
+          message: "Partition head is 1",
+        }, { status: 409, headers });
+      });
+      const env = serveEnv(proxy, "alice-token");
+      const save = (modelId: string, version: number) =>
+        writeCommand(
+          scratch,
+          client,
+          env,
+          (repos) =>
+            repos.unifiedDataRepo.save(
+              type,
+              modelId,
+              dataOf("vpc"),
+              json(version),
+            ),
+        );
+      try {
+        await save(web, 1);
+        await save(web, 2);
+        // The last commit the feed carries, so the anchor, is other's.
+        await save(other, 1);
+        await readCommand(scratch, client, env, () => Promise.resolve());
+
+        restored = true;
+        const error = await assertRejects(
+          () => save(web, 3),
+          ServeUpstreamDivergedError,
+        );
+        assertEquals(error.code, SERVE_UPSTREAM_DIVERGED_CODE);
+        assert(
+          error.commit?.partition.includes(web) === true,
+          `refused on ${error.commit?.partition}, not web's partition`,
+        );
+        assertEquals(error.commit?.seq, 2);
+        assertEquals(error.divergence, { kind: "behind", serveHead: 1 });
+        // The feed's anchor check read other's partition, and passed.
+        assert(
+          proxy.requests.some((request) =>
+            request.method === "GET" &&
+            decodeURIComponent(request.path).includes(other)
+          ),
+          "the feed anchor was not checked",
+        );
+      } finally {
+        await proxy.close();
+      }
+      assertEquals(bucket.touched(), []);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve upstream: a copy from before log ids records serve's on first contact, and a serve that names none is refused (swamp-club#4049)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve();
+      const bucket = scratch.bucket();
+      const client = await scratch.client("client", { bucket });
+      const type = serve.modelType;
+      const web = serve.models.web;
+      let strip = false;
+      let logId: string | null = null;
+      const proxy = startProxy(serve.origin, async (_request, forward) => {
+        const response = await forward();
+        logId = response.headers.get(SERVE_DATASTORE_LOG_HEADER) ?? logId;
+        if (!strip) return response;
+        // A serve from before log ids: the same reply, naming none.
+        const headers = new Headers(response.headers);
+        headers.delete(SERVE_DATASTORE_LOG_HEADER);
+        return new Response(response.body, {
+          status: response.status,
+          headers,
+        });
+      });
+      const env = serveEnv(proxy, "alice-token");
+      const read = () =>
+        readCommand(
+          scratch,
+          client,
+          env,
+          (repos) => latestOf(repos, type, web, "vpc"),
+        );
+      const statePath = join(
+        serveUpstreamLocalRoot(client.repoDir, proxy.origin, ""),
+        SERVE_UPSTREAM_STATE_FILE,
+      );
+      const recordedLog = () => {
+        const state = ServeUpstreamState.open(statePath);
+        try {
+          return state.serveLogId();
+        } finally {
+          state.close();
+        }
+      };
+      try {
+        await writeCommand(
+          scratch,
+          client,
+          env,
+          (repos) =>
+            repos.unifiedDataRepo.save(type, web, dataOf("vpc"), json(1)),
+        );
+        assert(logId !== null, "serve named no log");
+        assertEquals(recordedLog(), logId);
+
+        // As a swamp before log ids left the copy: none recorded.
+        const db = new DatabaseSync(statePath);
+        try {
+          db.exec("UPDATE copy SET log_id = NULL");
+        } finally {
+          db.close();
+        }
+        assertEquals(await read(), { version: 1, content: "1" });
+        assertEquals(recordedLog(), logId, "recorded on first contact");
+
+        strip = true;
+        const error = await assertRejects(
+          read,
+          ServeUpstreamUpgradeRequiredError,
+        );
+        assertEquals(error.code, SERVE_UPSTREAM_UPGRADE_REQUIRED_CODE);
+        assertEquals(error.serveUrl, proxy.origin);
+      } finally {
+        await proxy.close();
+      }
+      assertEquals(bucket.touched(), []);
     });
   },
 });

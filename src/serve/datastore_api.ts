@@ -97,6 +97,7 @@ import type {
   UploadLedger,
   UploadReservation,
 } from "../infrastructure/datastore_v3/upload_ledger.ts";
+import { SERVE_DATASTORE_LOG_HEADER } from "../infrastructure/datastore_v3/serve_datastore_client.ts";
 import type { V3Datastore } from "../infrastructure/datastore_v3/v3_datastore.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
@@ -180,7 +181,12 @@ const catchUps = new WeakMap<V3Datastore, CatchUpCoalescer>();
 /**
  * Answers a request {@link matchDatastoreRoute} matched. The caller is
  * authenticated and rate-limited before anything else, and a body is read
- * only once the request is authorised.
+ * only once the request is authorised. Every reply to an authenticated
+ * caller of a v3 datastore carries the log's id
+ * ({@link SERVE_DATASTORE_LOG_HEADER}): a checkout's copy refuses a serve
+ * that answers with another log's (swamp-club#4049). It says nothing of
+ * the log's content, so it goes to every authenticated caller, whatever
+ * its grants.
  */
 export async function handleDatastoreRequest(
   req: Request,
@@ -190,7 +196,47 @@ export async function handleDatastoreRequest(
 ): Promise<Response> {
   const authenticated = await authenticateCaller(req, sourceIp, deps);
   if (authenticated instanceof Response) return authenticated;
-  const caller = authenticated;
+  const response = await answerDatastoreRequest(
+    req,
+    route,
+    authenticated,
+    deps,
+  );
+  const logId = logIdOf(deps.v3);
+  return logId === undefined ? response : withHeader(response, logId);
+}
+
+/** The log's id; undefined when there is no v3 log, or it is closing. */
+function logIdOf(v3: V3Datastore | undefined): string | undefined {
+  try {
+    return v3?.commitStore.logId();
+  } catch {
+    return undefined;
+  }
+}
+
+/** `response` with the log header set; a copy when its headers are fixed. */
+function withHeader(response: Response, logId: string): Response {
+  try {
+    response.headers.set(SERVE_DATASTORE_LOG_HEADER, logId);
+    return response;
+  } catch {
+    const headers = new Headers(response.headers);
+    headers.set(SERVE_DATASTORE_LOG_HEADER, logId);
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
+}
+
+async function answerDatastoreRequest(
+  req: Request,
+  route: DatastoreRoute,
+  caller: ApiCaller,
+  deps: DatastoreApiDeps,
+): Promise<Response> {
   const { ctx, v3 } = deps;
   if (
     ctx.auditEmitter && ctx.auditFailOpen === false &&

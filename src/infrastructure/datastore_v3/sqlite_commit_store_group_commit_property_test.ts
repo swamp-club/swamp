@@ -272,12 +272,15 @@ function outcomeOf(settled: PromiseSettledResult<unknown>): Outcome {
   };
 }
 
-/** Every table's rows, in a fixed order. */
+/**
+ * Every table's rows, in a fixed order, but the log's id: random per
+ * store, so two stores never share one (swamp-club#4049).
+ */
 function allTables(path: string): Record<string, unknown> {
   const db = new DatabaseSync(path, { readOnly: true });
   try {
     const tables = (db.prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name != 'log_identity' ORDER BY name",
     ).all() as { name: string }[]).map((row) => row.name);
     const out: Record<string, unknown> = {};
     for (const table of tables) {

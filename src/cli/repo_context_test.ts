@@ -29,7 +29,10 @@ import { ensureDir, exists, walk } from "@std/fs";
 import { configure, type LogRecord } from "@logtape/logtape";
 import { join, resolve } from "@std/path";
 import { hostname } from "node:os";
-import { createRecordingSyncService } from "@swamp-club/swamp-testing";
+import {
+  createRecordingSyncService,
+  withMockedFetch,
+} from "@swamp-club/swamp-testing";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { HydrateContractViolationError } from "../domain/datastore/datastore_sync_service.ts";
 import {
@@ -135,6 +138,11 @@ import {
   LockWaitCycleError,
 } from "../domain/datastore/distributed_lock.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
+import { RepoMarkerRepository } from "../infrastructure/persistence/repo_marker_repository.ts";
+import {
+  resetServeUpstreamCommandPath,
+  setServeUpstreamCommandPath,
+} from "./serve_upstream.ts";
 import { RepoService } from "../domain/repo/repo_service.ts";
 import { UserError } from "../domain/errors.ts";
 import { VERSION } from "./commands/version.ts";
@@ -353,6 +361,55 @@ Deno.test("resolveDatastoreForRepo - throws UserError for non-initialized repo",
     );
 
     assertStringIncludes(error.message, "Not a swamp repository");
+  });
+});
+
+Deno.test("resolveDatastoreForRepo - SWAMP_DATASTORE in a format-3 checkout with a serve address opens the override's datastore and asks serve nothing (swamp-club#4049)", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+    const repoPath = RepoPath.create(dir);
+    const markers = new RepoMarkerRepository();
+    const marker = await markers.read(repoPath);
+    await markers.write(repoPath, {
+      ...marker!,
+      datastore: { type: "filesystem", path: join(dir, "v3-store"), format: 3 },
+      serverAddress: "http://serve.test:9090",
+    });
+    const override = join(dir, "override-store");
+    const env = {
+      SWAMP_SERVE_URL: undefined,
+      SWAMP_SERVER_URL: undefined,
+      SWAMP_SERVER_TOKEN_FILE: undefined,
+      SWAMP_CONFIG_DIR: join(dir, "config"),
+    };
+    setServeUpstreamCommandPath(["data", "get"]);
+    try {
+      // Without the override, the same checkout writes through serve.
+      const viaServe = await withMockedEnv(
+        { ...env, SWAMP_DATASTORE: undefined },
+        () => resolveDatastoreForRepo(dir),
+      );
+      assertEquals(
+        viaServe.serveUpstream?.serverUrl,
+        "http://serve.test:9090",
+      );
+
+      const { result, calls } = await withMockedFetch(
+        () => new Response("serve was asked", { status: 500 }),
+        () =>
+          withMockedEnv(
+            { ...env, SWAMP_DATASTORE: `filesystem:${override}` },
+            () => resolveDatastoreForRepo(dir),
+          ),
+      );
+      assertEquals(result.serveUpstream, undefined);
+      const config = result.datastoreConfig;
+      assert(!isCustomDatastoreConfig(config), config.type);
+      assertPathEquals(config.path, override);
+      assertEquals(calls.length, 0);
+    } finally {
+      resetServeUpstreamCommandPath();
+    }
   });
 });
 

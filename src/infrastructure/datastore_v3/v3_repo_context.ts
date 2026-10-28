@@ -1183,7 +1183,7 @@ export async function v3RepositoryFactoryConfig(
   await alignCheckoutView(
     repoDir,
     handle,
-    checkoutViewOf(config.path, config.namespace ?? ""),
+    checkoutViewOf(config.path, config.namespace ?? "", handle.serveCopyId),
     { holdsWriterLock: writer },
   );
   // In the checkout another process is writing, its files are already the

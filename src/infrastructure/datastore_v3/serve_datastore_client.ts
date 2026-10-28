@@ -64,6 +64,12 @@ export const DEFAULT_MAX_RETRY_DELAY_MS = 10_000;
 export const COMMIT_CONTENT_TYPE = "application/vnd.swamp.commit+v1";
 
 /**
+ * The header every datastore API reply to an authenticated caller carries
+ * with the id of the commit log serve serves (swamp-club#4049).
+ */
+export const SERVE_DATASTORE_LOG_HEADER = "x-swamp-datastore-log";
+
+/**
  * The per-request timeout `SWAMP_SERVE_TIMEOUT_MS` sets (a positive
  * integer of milliseconds), as the remote-run client reads it, else
  * {@link DEFAULT_SERVE_TIMEOUT_MS}.
@@ -209,6 +215,7 @@ export class ServeDatastoreClient {
   readonly #fetch: typeof fetch;
   readonly #maxAttempts: number;
   readonly #maxRetryDelayMs: number;
+  #logCheck: ((logId: string | undefined) => void) | undefined;
 
   constructor(options: ServeDatastoreClientOptions) {
     this.baseUrl = normalizeServerUrl(options.baseUrl);
@@ -513,6 +520,17 @@ export class ServeDatastoreClient {
     return this.#timeoutMs;
   }
 
+  /**
+   * Has every reply checked by `check` before it is read
+   * (swamp-club#4049): with the log id the reply names, or undefined for a
+   * success that names none. A refusal that names none (one serve's
+   * datastore API did not answer) is not checked. A throw refuses the
+   * reply.
+   */
+  checkLog(check: (logId: string | undefined) => void): void {
+    this.#logCheck = check;
+  }
+
   /** A request whose success is a JSON object. */
   async #json(
     spec: RequestSpec,
@@ -564,6 +582,18 @@ export class ServeDatastoreClient {
           await response.body?.cancel();
           await abortableDelay(Math.min(wait, this.#maxRetryDelayMs), signal);
           continue;
+        }
+      }
+      const logId = response.headers.get(SERVE_DATASTORE_LOG_HEADER) ??
+        undefined;
+      if (
+        this.#logCheck !== undefined && (logId !== undefined || response.ok)
+      ) {
+        try {
+          this.#logCheck(logId);
+        } catch (error) {
+          await response.body?.cancel();
+          throw error;
         }
       }
       try {

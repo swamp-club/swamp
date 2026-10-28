@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import { UserError } from "../../domain/errors.ts";
@@ -156,6 +156,149 @@ Deno.test("ServeUpstreamState.hasReadFeed: false until a page is applied, even a
       state.advanceFeedCursor(0);
       assertEquals(state.hasReadFeed(), true);
       assertEquals(state.feedCursor(), 0);
+    } finally {
+      state.close();
+    }
+  });
+});
+
+const ANCHOR_A = {
+  namespace: "",
+  partition: "model/a",
+  seq: 3,
+  txnId: "txn-a3",
+};
+const ANCHOR_B = {
+  namespace: "",
+  partition: "model/b",
+  seq: 1,
+  txnId: "txn-b1",
+};
+
+Deno.test("ServeUpstreamState.feedAnchor: recorded with the cursor, kept by a page without commits, never moved back", async () => {
+  await withTempDir((dir) => {
+    const path = join(dir, "serve_upstream.db");
+    const state = ServeUpstreamState.open(path);
+    try {
+      assertEquals(state.feedAnchor(), undefined);
+      state.advanceFeedCursor(4, ANCHOR_A);
+      assertEquals(state.feedAnchor(), ANCHOR_A);
+      // A page that carried no commit moves the cursor and keeps the anchor.
+      state.advanceFeedCursor(6);
+      assertEquals(state.feedCursor(), 6);
+      assertEquals(state.feedAnchor(), ANCHOR_A);
+      // Another process that applied an older page lands neither.
+      state.advanceFeedCursor(5, ANCHOR_B);
+      assertEquals(state.feedCursor(), 6);
+      assertEquals(state.feedAnchor(), ANCHOR_A);
+      state.advanceFeedCursor(8, ANCHOR_B);
+      assertEquals(state.feedAnchor(), ANCHOR_B);
+    } finally {
+      state.close();
+    }
+    const reopened = ServeUpstreamState.open(path);
+    try {
+      assertEquals(reopened.feedCursor(), 8);
+      assertEquals(reopened.feedAnchor(), ANCHOR_B);
+    } finally {
+      reopened.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState.feedAnchor: a caller reset forgets it and the log id with the cursor", async () => {
+  await withTempDir((dir) => {
+    const state = ServeUpstreamState.open(join(dir, "serve_upstream.db"));
+    try {
+      state.stampCaller("aaa");
+      state.advanceFeedCursor(4, ANCHOR_A);
+      state.recordServeLogId("log-a");
+      state.beginCallerReset();
+      assertEquals(state.feedAnchor(), undefined);
+      assertEquals(
+        state.serveLogId(),
+        undefined,
+        "the reset copy follows none",
+      );
+      assertEquals(state.feedCursor(), 0);
+    } finally {
+      state.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState: a file at schema version 1 keeps its cursor and has no anchor", async () => {
+  await withTempDir((dir) => {
+    const path = join(dir, "serve_upstream.db");
+    const db = new DatabaseSync(path);
+    db.exec(`CREATE TABLE feed (
+       id INTEGER PRIMARY KEY CHECK (id = 1),
+       cursor INTEGER NOT NULL
+     );
+     CREATE TABLE serve_heads (
+       namespace TEXT NOT NULL,
+       partition TEXT NOT NULL,
+       seq INTEGER NOT NULL,
+       PRIMARY KEY (namespace, partition)
+     );
+     CREATE TABLE caller (
+       id INTEGER PRIMARY KEY CHECK (id = 1),
+       fingerprint TEXT NOT NULL,
+       resetting INTEGER NOT NULL DEFAULT 0
+     );
+     INSERT INTO feed (id, cursor) VALUES (1, 7);
+     PRAGMA user_version=1;`);
+    db.close();
+    const state = ServeUpstreamState.open(path);
+    try {
+      assertEquals(state.feedCursor(), 7);
+      assertEquals(state.feedAnchor(), undefined);
+      assertEquals(state.copyId().length, 32, "the upgrade gave it an id");
+      state.advanceFeedCursor(9, ANCHOR_A);
+      assertEquals(state.feedAnchor(), ANCHOR_A);
+    } finally {
+      state.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState.copyId: random per file, kept across a reopen", async () => {
+  await withTempDir((dir) => {
+    const copyDir = join(dir, "serve-1");
+    const path = join(copyDir, "serve_upstream.db");
+    const state = ServeUpstreamState.open(path);
+    let id: string;
+    try {
+      id = state.copyId();
+      assertEquals(/^[0-9a-f]{32}$/.test(id), true, id);
+    } finally {
+      state.close();
+    }
+    const reopened = ServeUpstreamState.open(path);
+    try {
+      assertEquals(reopened.copyId(), id);
+    } finally {
+      reopened.close();
+    }
+    // A copy moved aside and started afresh at the same path has another.
+    Deno.renameSync(copyDir, join(dir, "serve-1.moved"));
+    const fresh = ServeUpstreamState.open(path);
+    try {
+      assert(fresh.copyId() !== id);
+    } finally {
+      fresh.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState.recordServeLogId: the first log recorded stays", async () => {
+  await withTempDir((dir) => {
+    const state = ServeUpstreamState.open(join(dir, "serve_upstream.db"));
+    try {
+      assertEquals(state.serveLogId(), undefined);
+      assertEquals(state.recordServeLogId("log-a"), "log-a");
+      assertEquals(state.recordServeLogId("log-b"), "log-a");
+      assertEquals(state.serveLogId(), "log-a");
     } finally {
       state.close();
     }
