@@ -115,14 +115,23 @@ export function useScrollableList<T>(
   items: T[],
   maxVisible: number = 10,
   resetDeps: unknown[] = [],
+  initialIndex: number = 0,
 ): UseScrollableListResult<T> {
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [selectedIndex, setSelectedIndex] = useState(() =>
+    Math.max(0, Math.min(initialIndex, items.length - 1))
+  );
   // Use ref to track scroll offset for "sticky" scrolling behavior
   // (viewport only moves when selected item would go off-screen)
   const scrollOffsetRef = useRef(0);
+  const mountedRef = useRef(false);
 
-  // Reset selection and scroll when dependencies change (e.g., query)
+  // Reset selection and scroll when dependencies change (e.g., query). The
+  // effect's run on mount is skipped so it keeps the initial index.
   useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      return;
+    }
     setSelectedIndex(0);
     scrollOffsetRef.current = 0;
     // eslint-disable-next-line react-hooks/exhaustive-deps

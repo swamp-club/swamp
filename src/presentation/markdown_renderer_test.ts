@@ -17,10 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { stripAnsiCode } from "@std/fmt/colors";
 import {
   renderMarkdownPlain,
   renderMarkdownToTerminal,
+  renderUntrustedMarkdownToTerminal,
   truncateMarkdownTableCells,
 } from "./markdown_renderer.ts";
 
@@ -110,4 +112,58 @@ Deno.test("renderMarkdownToTerminal - default behavior unchanged without options
   const withOpts = renderMarkdownToTerminal(md);
   const withoutOpts = renderMarkdownToTerminal(md, undefined);
   assertEquals(withOpts, withoutOpts);
+});
+
+const OSC_8 = "\x1b]8;";
+
+Deno.test("renderUntrustedMarkdownToTerminal: a link shows its target beside its text", () => {
+  const result = renderUntrustedMarkdownToTerminal(
+    "See [swamp-club.com](https://elsewhere.example/login) now.",
+  );
+  assertStringIncludes(
+    stripAnsiCode(result),
+    "swamp-club.com (https://elsewhere.example/login)",
+  );
+  assert(!result.includes(OSC_8));
+});
+
+Deno.test("renderUntrustedMarkdownToTerminal: any scheme is shown, not hidden or dropped", () => {
+  const result = renderUntrustedMarkdownToTerminal(
+    "[click](javascript:alert(1))",
+  );
+  assertStringIncludes(stripAnsiCode(result), "click (javascript:alert(1))");
+  assert(!result.includes(OSC_8));
+});
+
+Deno.test("renderUntrustedMarkdownToTerminal: an autolink prints its URL once", () => {
+  const result = stripAnsiCode(
+    renderUntrustedMarkdownToTerminal("Go to https://swamp-club.com/lab"),
+  );
+  assertStringIncludes(result, "https://swamp-club.com/lab");
+  assert(!result.includes("(https://swamp-club.com/lab)"));
+});
+
+Deno.test("renderUntrustedMarkdownToTerminal: formatted link text keeps its target", () => {
+  const result = stripAnsiCode(
+    renderUntrustedMarkdownToTerminal(
+      "[**release notes**](https://x.example/n)",
+    ),
+  );
+  assertStringIncludes(result, "release notes (https://x.example/n)");
+});
+
+Deno.test("renderUntrustedMarkdownToTerminal: an image shows its source", () => {
+  const result = stripAnsiCode(
+    renderUntrustedMarkdownToTerminal("![logo](https://x.example/logo.png)"),
+  );
+  assertStringIncludes(result, "https://x.example/logo.png");
+});
+
+Deno.test("renderUntrustedMarkdownToTerminal: wraps to the given width", () => {
+  const result = stripAnsiCode(
+    renderUntrustedMarkdownToTerminal("word ".repeat(40), { maxWidth: 30 }),
+  );
+  for (const line of result.split("\n")) {
+    assert(line.length <= 30, line);
+  }
 });

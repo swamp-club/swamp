@@ -64,6 +64,63 @@ export function renderMarkdownToTerminal(
   return md;
 }
 
+interface LinkToken {
+  href: string;
+  tokens: unknown[];
+}
+
+/**
+ * A terminal renderer whose links always print their target. marked-terminal
+ * turns a link into an OSC 8 hyperlink where the terminal supports one, which
+ * shows only the link text and so can disguise where it leads.
+ */
+function visibleLinkRenderer(rendererOptions: Record<string, unknown>) {
+  // deno-lint-ignore no-explicit-any
+  const renderer = new (TerminalRenderer as any)(rendererOptions);
+  renderer.link = function (
+    this: {
+      parser: { parseInline(tokens: unknown[]): string };
+      o: { link(s: string): string; href(s: string): string };
+    },
+    token: LinkToken,
+  ): string {
+    const text = this.parser.parseInline(token.tokens);
+    const href = this.o.href(token.href);
+    return this.o.link(
+      text && text !== token.href ? `${text} (${href})` : href,
+    );
+  };
+  return renderer;
+}
+
+/**
+ * Renders markdown that someone else wrote, such as a Swamp Club inbox
+ * message, for the terminal. Same as renderMarkdownToTerminal, except that
+ * every link shows its target as text, whatever the terminal supports.
+ */
+export function renderUntrustedMarkdownToTerminal(
+  markdown: string,
+  options?: WidthOptions,
+): string {
+  const marked = new Marked();
+  marked.setOptions({
+    renderer: visibleLinkRenderer(
+      options?.maxWidth
+        ? {
+          width: options.maxWidth,
+          reflowText: true,
+          tableOptions: { wordWrap: true },
+        }
+        : {},
+    ),
+  });
+  const md = options?.maxColWidth
+    ? truncateMarkdownTableCells(markdown, options.maxColWidth)
+    : markdown;
+  const result = marked.parse(md);
+  return typeof result === "string" ? result : md;
+}
+
 export function renderMarkdownPlain(
   markdown: string,
   options?: WidthOptions,
