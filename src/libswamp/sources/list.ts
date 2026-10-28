@@ -30,9 +30,7 @@ import {
   readSwampSources,
   resolveExtensionKindsForSource,
 } from "../../infrastructure/persistence/swamp_sources_repository.ts";
-import { resolveGitMainWorktreeRoot } from "../../infrastructure/persistence/git_worktree.ts";
-import { expandEnvVars } from "../../infrastructure/persistence/env_path.ts";
-import { isAbsolute, resolve } from "@std/path";
+import { resolveSourceBaseDirs } from "../../infrastructure/persistence/git_worktree.ts";
 
 /** Dependencies for the source list operation. */
 export interface SourceListDeps {
@@ -40,6 +38,9 @@ export interface SourceListDeps {
   repoDir: string;
   /** Base directory for resolving relative source paths. */
   sourceBaseDir: string;
+  /** Git root fallback for relative paths recorded before
+   * swamp-club#4027; see `resolveSourceBaseDirs`. */
+  legacyBaseDir?: string;
   /** Returns the kinds a source contributes. Injectable for unit tests. */
   resolveKinds: (source: SwampSource) => Promise<ExtensionKind[]>;
 }
@@ -48,13 +49,14 @@ export interface SourceListDeps {
 export async function createSourceListDeps(
   repoDir: string,
 ): Promise<SourceListDeps> {
-  const sourceBaseDir = await resolveGitMainWorktreeRoot(repoDir);
+  const { baseDir, legacyBaseDir } = await resolveSourceBaseDirs(repoDir);
   return {
     readSources: () => readSwampSources(repoDir),
     repoDir,
-    sourceBaseDir,
+    sourceBaseDir: baseDir,
+    legacyBaseDir,
     resolveKinds: (source) =>
-      resolveExtensionKindsForSource(source, sourceBaseDir),
+      resolveExtensionKindsForSource(source, baseDir, legacyBaseDir),
   };
 }
 
@@ -90,6 +92,7 @@ export async function* sourceList(
           { sources: [source] },
           deps.repoDir,
           deps.sourceBaseDir,
+          deps.legacyBaseDir,
         );
         entry.expandedPaths = expanded.map((s) => s.path);
         if (expanded.length === 0) {
@@ -104,10 +107,12 @@ export async function* sourceList(
           }
         }
       } else {
-        const expandedPath = expandEnvVars(source.path);
-        const absolutePath = isAbsolute(expandedPath)
-          ? expandedPath
-          : resolve(deps.sourceBaseDir, expandedPath);
+        const [{ path: absolutePath }] = await expandSourcePaths(
+          { sources: [source] },
+          deps.repoDir,
+          deps.sourceBaseDir,
+          deps.legacyBaseDir,
+        );
         entry.expandedPaths = [absolutePath];
 
         let exists = false;

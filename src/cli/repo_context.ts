@@ -291,7 +291,7 @@ import {
   readSwampSources,
   resolveSourceExtensionDirs,
 } from "../infrastructure/persistence/swamp_sources_repository.ts";
-import { resolveGitMainWorktreeRoot } from "../infrastructure/persistence/git_worktree.ts";
+import { resolveSourceBaseDirs } from "../infrastructure/persistence/git_worktree.ts";
 import type { ExtensionWorkflowRepository } from "../infrastructure/persistence/extension_workflow_repository.ts";
 
 /**
@@ -311,11 +311,12 @@ export async function getSourceWorkflowDirs(
     sourceWorkflowDirCache.set(repoDir, []);
     return [];
   }
-  const sourceBaseDir = await resolveGitMainWorktreeRoot(repoDir);
+  const { baseDir, legacyBaseDir } = await resolveSourceBaseDirs(repoDir);
   const expanded = await expandSourcePaths(
     sourcesConfig,
     repoDir,
-    sourceBaseDir,
+    baseDir,
+    legacyBaseDir,
   );
   const { resolved } = await resolveSourceExtensionDirs(expanded);
   const dirs = collectDirsForKind(resolved, "workflows");
