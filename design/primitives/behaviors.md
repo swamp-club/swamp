@@ -660,6 +660,11 @@ The `read` and `list` kinds do not trigger checks; every other kind does. Names
 not in this list (e.g. `sync`) infer no kind, so they default to mutating. Set
 `kind: "read"` or `kind: "list"` to suppress checks for them.
 
+`type describe`, `get` and `method describe` report each method's resolved
+`kind` and a `kindSource` of `declared`, `inferred` or `none`, computed by
+`resolveMethodKind()` from the same rule, so agents and permission hooks see
+the kind swamp acts on.
+
 Checks let behaviors enforce invariants (policy constraints, dependency
 readiness, quota availability) before execution begins, which avoids
 half-completed operations.

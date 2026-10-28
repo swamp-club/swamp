@@ -31,6 +31,7 @@ const testData = {
       name: "run",
       description: "Run",
       arguments: { type: "object", properties: {}, required: [] },
+      kindSource: "none" as const,
     },
   ],
 };
@@ -174,6 +175,7 @@ const testDataWithSpecs = {
         properties: { cmd: { type: "string" }, timeout: { type: "number" } },
         required: ["cmd"],
       },
+      kindSource: "none" as const,
     },
   ],
 };
@@ -218,6 +220,49 @@ Deno.test("JsonTypeDescribeRenderer full mode: outputs complete spec objects at 
     assertEquals(parsed.dataOutputSpecs[0].kind, "resource");
     assertEquals(typeof parsed.dataOutputSpecs[0].schema, "object");
     assertEquals("inputs" in parsed.methods[0], false);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("JsonTypeDescribeRenderer compact mode: carries each method's kind and kindSource", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createTypeDescribeRenderer("json", true);
+    const args = { type: "object", properties: {} };
+    const events: TypeDescribeEvent[] = [
+      { kind: "resolving" },
+      {
+        kind: "completed",
+        data: {
+          ...testData,
+          methods: [
+            {
+              name: "get",
+              description: "Get it",
+              arguments: args,
+              kind: "read",
+              kindSource: "inferred",
+            },
+            {
+              name: "sync",
+              description: "Sync it",
+              arguments: args,
+              kindSource: "none",
+            },
+          ],
+        },
+      },
+    ];
+    await consumeStream(toStream(events), renderer.handlers());
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.methods[0].kind, "read");
+    assertEquals(parsed.methods[0].kindSource, "inferred");
+    assertEquals("kind" in parsed.methods[1], false);
+    assertEquals(parsed.methods[1].kindSource, "none");
   } finally {
     console.log = originalLog;
   }

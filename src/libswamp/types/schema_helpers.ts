@@ -18,10 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
-import type {
-  FileOutputSpec,
-  MethodDefinition,
-  ResourceOutputSpec,
+import {
+  type FileOutputSpec,
+  type MethodDefinition,
+  type MethodKind,
+  type MethodKindSource,
+  resolveMethodKind,
+  type ResourceOutputSpec,
 } from "../../domain/models/model.ts";
 
 /**
@@ -46,6 +49,10 @@ export interface MethodDescribeData {
   name: string;
   description: string;
   arguments: object;
+  /** The method's resolved kind; absent when `kindSource` is `"none"`. */
+  kind?: MethodKind;
+  /** Whether `kind` was declared on the method, inferred from its name, or neither. */
+  kindSource: MethodKindSource;
   outputLifetime?: string;
 }
 
@@ -247,10 +254,13 @@ export function toMethodDescribeData(
   name: string,
   method: MethodDefinition,
 ): MethodDescribeData {
+  const { kind, source } = resolveMethodKind(name, method);
   return {
     name,
     description: method.description,
     arguments: zodToJsonSchema(method.arguments),
+    ...(kind ? { kind } : {}),
+    kindSource: source,
     ...(method.outputLifetime ? { outputLifetime: method.outputLifetime } : {}),
   };
 }

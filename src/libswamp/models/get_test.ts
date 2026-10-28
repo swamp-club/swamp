@@ -253,6 +253,34 @@ Deno.test("modelGet: exposes configured method arguments and redacts sensitive v
   });
 });
 
+Deno.test("modelGet reports each method's kind and where it came from", async () => {
+  const deps = makeDeps({
+    lookupResult: { definition: testDefinition, type: testModelType },
+    modelDef: {
+      version: "2026.06.01.1",
+      methods: {
+        probe: { kind: "list", arguments: z.object({}) },
+        get: { arguments: z.object({}) },
+        run: { arguments: z.object({}) },
+      },
+    },
+  });
+
+  const events = await collect<ModelGetEvent>(
+    modelGet(createLibSwampContext(), deps, "my-model"),
+  );
+
+  const methods = completedData(events).methods ?? [];
+  assertEquals(
+    methods.map((m) => [m.name, m.kind, m.kindSource]),
+    [
+      ["probe", "list", "declared"],
+      ["get", "read", "inferred"],
+      ["run", undefined, "none"],
+    ],
+  );
+});
+
 Deno.test("modelGet passes global arguments through unredacted when the model type is unavailable", async () => {
   const deps = makeDeps({
     lookupResult: {
