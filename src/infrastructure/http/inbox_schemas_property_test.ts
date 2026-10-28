@@ -32,6 +32,9 @@ const ANY_CONTROL_RE = /[\x00-\x1f\x7f-\x9f]/;
 const BODY_FORBIDDEN_RE = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/;
 const INVISIBLE_RE =
   /[\u061c\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/;
+/** Less the joiners, which prose (the body and the title) keeps. */
+const PROSE_INVISIBLE_RE =
+  /[\u061c\u200b\u200e\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/;
 
 /** Text dense in escapes and control characters. */
 const arbHostileText = fc.array(
@@ -55,6 +58,8 @@ const arbHostileText = fc.array(
       "\u2069",
       "\u2060",
       "\ufeff",
+      "\u200c",
+      "\u200d",
       "😀",
     ),
     fc.integer({ min: 0, max: 0x9f }).map((c) => String.fromCharCode(c)),
@@ -66,7 +71,7 @@ Deno.test("sanitizeInboxBody: output holds no control character but newline and 
     fc.property(arbHostileText, (text) => {
       const clean = sanitizeInboxBody(text);
       assert(!BODY_FORBIDDEN_RE.test(clean));
-      assert(!INVISIBLE_RE.test(clean));
+      assert(!PROSE_INVISIBLE_RE.test(clean));
     }),
   );
 });
@@ -92,7 +97,7 @@ Deno.test("parseInboxMessage: one-line fields never hold a control character", (
         assert(!ANY_CONTROL_RE.test(parsed.kind));
         assert(!ANY_CONTROL_RE.test(parsed.title));
         assert(!INVISIBLE_RE.test(parsed.kind));
-        assert(!INVISIBLE_RE.test(parsed.title));
+        assert(!PROSE_INVISIBLE_RE.test(parsed.title));
         assert(parsed.kind.isWellFormed());
         assert(parsed.title.isWellFormed());
         if (parsed.action) {

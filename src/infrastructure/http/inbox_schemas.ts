@@ -25,6 +25,9 @@
 
 import { z } from "zod";
 import { sanitizeFieldText } from "../../domain/vaults/vault_config_fields.ts";
+import { getSwampLogger } from "../logging/logger.ts";
+
+const logger = getSwampLogger(["inbox", "schemas"]);
 
 export const MAX_INBOX_TITLE_LENGTH = 120;
 export const MAX_INBOX_BODY_BYTES = 8 * 1024;
@@ -126,6 +129,16 @@ const BODY_CONTROL_RE = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
  */
 const INVISIBLE_RE =
   /[\u061c\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
+/** {@link INVISIBLE_RE} without the global flag, for a stateless test. */
+const HAS_INVISIBLE_RE = new RegExp(INVISIBLE_RE.source);
+/**
+ * The same, less the zero-width non-joiner and joiner (U+200C, U+200D):
+ * prose needs them, to join an emoji sequence and to spell Persian and
+ * several Indic scripts, and they cannot reorder text. Kept in the body and
+ * the title only.
+ */
+const PROSE_INVISIBLE_RE =
+  /[\u061c\u200b\u200e\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
 const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
 
 /** Whether the text is a message id: a ULID, in either case. */
@@ -135,8 +148,9 @@ export function isInboxMessageId(text: string): boolean {
 
 /**
  * Makes a markdown body safe to print: strips ANSI escape sequences, bidi
- * and zero-width characters, and every control character except newline and
- * tab, and normalises line endings to LF.
+ * controls and zero-width characters other than the joiners, and every
+ * control character except newline and tab, and normalises line endings to
+ * LF.
  */
 export function sanitizeInboxBody(text: string): string {
   return text
@@ -144,17 +158,21 @@ export function sanitizeInboxBody(text: string): string {
     .replace(ANSI_CSI_RE, "")
     .replace(/\r\n?/g, "\n")
     .replace(BODY_CONTROL_RE, "")
-    .replace(INVISIBLE_RE, "");
+    .replace(PROSE_INVISIBLE_RE, "");
 }
 
 /**
  * One line of text safe to print, at most `maxLength` code points. Cut on
  * code points, so a character outside the BMP is never split into half a
- * surrogate pair.
+ * surrogate pair. `invisible` is the set of characters it strips.
  */
-function sanitizeLine(text: string, maxLength: number): string {
+function sanitizeLine(
+  text: string,
+  maxLength: number,
+  invisible: RegExp = INVISIBLE_RE,
+): string {
   const cleaned = sanitizeFieldText(
-    text.replace(INVISIBLE_RE, ""),
+    text.replace(invisible, ""),
     Number.MAX_SAFE_INTEGER,
   );
   const codePoints = Array.from(cleaned);
@@ -163,9 +181,9 @@ function sanitizeLine(text: string, maxLength: number): string {
 }
 
 /** Sanitized one-line text, refused when nothing is left. */
-function lineText(maxLength: number) {
+function lineText(maxLength: number, invisible: RegExp = INVISIBLE_RE) {
   return z.string()
-    .transform((s) => sanitizeLine(s, maxLength))
+    .transform((s) => sanitizeLine(s, maxLength, invisible))
     .pipe(z.string().min(1));
 }
 
@@ -281,8 +299,11 @@ function parseAction(raw: unknown): InboxAction | undefined {
     return undefined;
   }
   const cleanLabel = sanitizeLine(label, MAX_INBOX_ACTION_LABEL_LENGTH);
-  // Not stripped of invisible characters: the shell-syntax rule refuses a
-  // command that holds one, where stripping would let it through.
+  // Refused rather than stripped: stripping an invisible character could turn
+  // a command that differs from an allowed one into that allowed one. Tested
+  // on the raw text, since cleaning it trims a leading or trailing U+FEFF as
+  // whitespace.
+  if (HAS_INVISIBLE_RE.test(command)) return undefined;
   const cleanCommand = sanitizeFieldText(command, Number.MAX_SAFE_INTEGER);
   if (
     cleanLabel === "" ||
@@ -297,7 +318,7 @@ function parseAction(raw: unknown): InboxAction | undefined {
 const messageSchema = z.object({
   id: ulid,
   kind: lineText(MAX_INBOX_KIND_LENGTH),
-  title: lineText(MAX_INBOX_TITLE_LENGTH),
+  title: lineText(MAX_INBOX_TITLE_LENGTH, PROSE_INVISIBLE_RE),
   body,
   createdAt: isoDatetime,
   link: z.unknown().optional(),
@@ -306,6 +327,15 @@ const messageSchema = z.object({
 }).transform((m): InboxMessage => {
   const link = parseLink(m.link);
   const action = parseAction(m.action);
+  // Only the id: the refused text is the server's, and stays out of logs.
+  if (m.link !== undefined && link === undefined) {
+    logger
+      .debug`Inbox message ${m.id}: dropped a link that is not a plain https URL`;
+  }
+  if (m.action !== undefined && action === undefined) {
+    logger
+      .debug`Inbox message ${m.id}: dropped an action whose command is not allowed`;
+  }
   return {
     id: m.id,
     kind: m.kind,

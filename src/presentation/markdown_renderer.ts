@@ -66,6 +66,7 @@ export function renderMarkdownToTerminal(
 
 interface LinkToken {
   href: string;
+  text: string;
   tokens: unknown[];
 }
 
@@ -114,6 +115,16 @@ function visibleLinkRenderer(rendererOptions: Record<string, unknown>) {
   ): string {
     const text = this.parser.parseInline(token.tokens);
     const target = safeHref(token.href);
+    // A bare `www.` or email autolink: its text is its whole target, so
+    // printing the text hides nothing, and prose that names a site or an
+    // address reads as written.
+    if (
+      target === undefined &&
+      (token.href === `http://${token.text}` ||
+        token.href === `mailto:${token.text}`)
+    ) {
+      return text;
+    }
     if (target === undefined) {
       return text ? `${text} ${LINK_REMOVED}` : LINK_REMOVED;
     }

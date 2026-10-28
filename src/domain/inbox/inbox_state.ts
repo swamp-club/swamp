@@ -99,7 +99,11 @@ export const InboxState = {
  */
 export type PollOutcome =
   | { readonly kind: "ok"; readonly snapshot: InboxSnapshot }
-  | { readonly kind: "not_modified" }
+  | {
+    readonly kind: "not_modified";
+    /** Epoch milliseconds the request was sent, when known. */
+    readonly sentAt?: number;
+  }
   /** The server has no inbox. */
   | { readonly kind: "unsupported" }
   /** A collective key has no inbox. */

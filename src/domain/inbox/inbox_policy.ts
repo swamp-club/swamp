@@ -22,7 +22,12 @@
  * functions; `now` is always epoch milliseconds passed in by the caller.
  */
 
-import type { InboxSnapshot, InboxState, PollOutcome } from "./inbox_state.ts";
+import type {
+  InboxSnapshot,
+  InboxState,
+  PollOutcome,
+  PollStop,
+} from "./inbox_state.ts";
 
 /** The server can lengthen the gap between polls but never shorten it below this. */
 export const MIN_POLL_INTERVAL_SECONDS = 900;
@@ -74,6 +79,19 @@ export function shouldPoll(state: InboxState, now: number): boolean {
 }
 
 /**
+ * The stop left after a successful answer: cleared, unless the request was
+ * sent before the stop was recorded. Such an answer predates whatever stopped
+ * the key, so it says nothing about whether the key works now.
+ */
+function stopAfterSuccess(
+  stop: PollStop | null,
+  sentAt: number | undefined,
+): PollStop | null {
+  if (stop === null || sentAt === undefined) return null;
+  return sentAt < stop.at ? stop : null;
+}
+
+/**
  * Whichever snapshot was fetched later. A stored snapshot wins only when it
  * was fetched after the new one and not in the future: a clock that went
  * back must not freeze the cache, and a snapshot from before `fetchedAt`
@@ -107,10 +125,19 @@ export function applyPollOutcome(
       return {
         ...state,
         snapshot: newerSnapshot(state.snapshot, outcome.snapshot, now),
-        schedule: { ...schedule, stop: null },
+        schedule: {
+          ...schedule,
+          stop: stopAfterSuccess(schedule.stop, outcome.snapshot.fetchedAt),
+        },
       };
     case "not_modified":
-      return { ...state, schedule: { ...schedule, stop: null } };
+      return {
+        ...state,
+        schedule: {
+          ...schedule,
+          stop: stopAfterSuccess(schedule.stop, outcome.sentAt),
+        },
+      };
     case "failed":
       return { ...state, schedule };
     case "backoff":

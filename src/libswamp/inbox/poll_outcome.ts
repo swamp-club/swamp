@@ -55,6 +55,7 @@ export function toPollOutcome(
       };
     }
     case "not_modified":
+      return { kind: "not_modified", sentAt };
     case "unsupported":
     case "unavailable":
     case "rejected":

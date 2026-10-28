@@ -302,6 +302,35 @@ Deno.test("applyPollOutcome: a key rejected once polls again after an ok or not_
   }
 });
 
+Deno.test("applyPollOutcome: an answer sent before the stop leaves the stop in place", () => {
+  const stopped = applyPollOutcome(
+    InboxState.empty(),
+    { kind: "rejected" },
+    T0,
+  );
+  for (
+    const outcome of [
+      { kind: "ok", snapshot: snapshot({ fetchedAt: T0 - SECOND }) },
+      { kind: "not_modified", sentAt: T0 - SECOND },
+    ] as const
+  ) {
+    const after = applyPollOutcome(stopped, outcome, T0 + MINUTE);
+    assertEquals(after.schedule.stop, { reason: "rejected", at: T0 });
+  }
+  // Sent at or after the stop: the key works.
+  for (
+    const outcome of [
+      { kind: "ok", snapshot: snapshot({ fetchedAt: T0 }) },
+      { kind: "not_modified", sentAt: T0 + SECOND },
+    ] as const
+  ) {
+    assertEquals(
+      applyPollOutcome(stopped, outcome, T0 + MINUTE).schedule.stop,
+      null,
+    );
+  }
+});
+
 Deno.test("applyPollOutcome: an older snapshot never replaces a newer one", () => {
   const newer = snapshot({ unread: 0, newestId: null, fetchedAt: T0 + 10 });
   const held = applyPollOutcome(

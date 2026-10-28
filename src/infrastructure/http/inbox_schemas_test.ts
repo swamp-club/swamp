@@ -312,22 +312,53 @@ Deno.test("parseInboxMessage: strips bidi and zero-width characters from every t
       action: { label: `Up${c}date`, command: "swamp update" },
     });
     const name = `U+${c.codePointAt(0)!.toString(16)}`;
+    // The joiners stay in prose, the body and the title.
+    const joiner = c === "\u200c" || c === "\u200d";
     assert(parsed, name);
     assertEquals(parsed.kind, "announcement", name);
-    assertEquals(parsed.title, "Hello", name);
-    assertEquals(parsed.body, "[x](https://swamp-club.com)", name);
+    assertEquals(parsed.title, joiner ? `Hel${c}lo` : "Hello", name);
+    assertEquals(
+      parsed.body,
+      joiner
+        ? `[x${c}](https://swamp${c}-club.com)`
+        : "[x](https://swamp-club.com)",
+      name,
+    );
     assertEquals(parsed.link, "https://swamp-club.com/blog", name);
     assertEquals(parsed.action?.label, "Update", name);
   }
 });
 
-Deno.test("parseInboxMessage: drops a command holding an invisible character rather than stripping it", () => {
+Deno.test("parseInboxMessage: keeps an emoji sequence and Persian joined by the zero-width joiners", () => {
+  const family = "👨\u200d👩\u200d👧";
+  const persian = "می\u200cخواهم";
   const parsed = parseInboxMessage({
     ...message(),
-    action: { label: "Run", command: "swamp up\u200bdate" },
+    title: `${family} ${persian}`,
+    body: `${family}\n\n${persian}`,
   });
   assert(parsed);
-  assertEquals(parsed.action, undefined);
+  assertEquals(parsed.title, `${family} ${persian}`);
+  assertEquals(parsed.body, `${family}\n\n${persian}`);
+});
+
+Deno.test("parseInboxMessage: drops a command holding an invisible character rather than stripping it", () => {
+  for (
+    const command of [
+      "swamp up\u200bdate",
+      // Cleaning trims these as whitespace, so the raw text is what decides.
+      "swamp update\ufeff",
+      "\ufeffswamp update",
+      "swamp\u200d update",
+    ]
+  ) {
+    const parsed = parseInboxMessage({
+      ...message(),
+      action: { label: "Run", command },
+    });
+    assert(parsed, JSON.stringify(command));
+    assertEquals(parsed.action, undefined, JSON.stringify(command));
+  }
 });
 
 Deno.test("parseInboxMessage: cuts a title on code points, never inside a surrogate pair", () => {

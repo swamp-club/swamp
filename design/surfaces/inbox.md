@@ -66,8 +66,12 @@ translate it into swamp's own values, so nothing past them sees raw server text:
   bidi controls (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069)
   and zero-width characters (U+200B to U+200D, U+2060, U+FEFF), which print
   nothing yet can reorder the text around them or hide a difference between
-  two strings. The action's command is not stripped: one holding such a
-  character breaks the rule below and is dropped.
+  two strings. The body and the title keep the zero-width non-joiner and
+  joiner (U+200C, U+200D): prose needs them to join an emoji sequence and to
+  spell Persian and several Indic scripts, and they cannot reorder text. The
+  action's command is never stripped: a command holding any of these
+  characters, anywhere in the text as sent, drops the action, since stripping
+  could turn it into a command it only resembled.
 - **An action is always one allowed `swamp` command.** The command must be
   `swamp` followed by words made of letters, digits and the characters `@`, `%`,
   `+`, `,`, `.`, `/`, `:`, `=`, `_` and `-`. Quotes, `;`, `|`, `&`, `$`,
@@ -142,7 +146,9 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   owns the config directory and creates and removes a file in the cache
   directory. A key that a later answer shows working, an `ok` or a `304` from
   the refresh that follows marking read, is no longer stopped, so one wrong
-  `401` from a proxy never ends polling for good.
+  `401` from a proxy never ends polling for good. An answer to a request sent
+  before the stop was recorded leaves the stop in place: it predates whatever
+  stopped the key.
 - **The cache.** The last summary and its `ETag` are cached locally, so a `304`
   costs nothing and the notice needs no network call. Each API key has its own
   file per server, `inbox-v2/<hash>.json` in the swamp config directory, named
@@ -159,7 +165,12 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   snapshot. At most 8 keys are kept and the least recently saved is dropped.
   The first layout, `inbox/<fingerprint>.json`, shared one file across
   servers; it is left to older swamps, and logout removes the key's file
-  there too. A file that is missing, corrupt or out of bounds
+  there too. Logout removes the file for the server the stored login names
+  only: state the same key left for another server (through
+  `SWAMP_CLUB_URL`) cannot be found from its hashed name, holds no secret,
+  and goes with the 8-key cap. Upgrading to this layout starts every key from
+  an empty state once: the next slow command polls, and a message already
+  announced but still unread may be announced again. A file that is missing, corrupt or out of bounds
   reads as a key never polled. Changes to the file format are additive only,
   and each added field must be safe to lose, since an older swamp drops fields
   it does not know when it saves. A breaking change moves to a new directory,
@@ -183,7 +194,9 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   carries it. The `swamp` skill quotes the second line, so the two must change
   together. A notice retires after 24 hours, whether or not the user reads the
   message, and at once if its announcement is dated after now, as when the
-  clock went back. A message's first showing is shown only once it is
+  clock went back. If the clock then returns past that time, the same
+  message shows again for what remains of its 24 hours. A message's first
+  showing is shown only once it is
   recorded in the cache, so a notice that could never retire, in a config
   directory this process cannot write, is never shown. Deciding it reads only the cache, so a fast command shows the notice
   a slow command's poll found, at the cost of one small file read and no
@@ -245,7 +258,10 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   in its parsed form, so a look-alike host shows as punycode
   (`https://xn--swmp-club-1yh.com/…`) and the path is encoded. An href that is
   not `https:`, carries a username or password, or does not parse prints the
-  link text followed by `(link removed)`.
+  link text followed by `(link removed)`. The one exception is a bare
+  `www.` or email autolink, such as `www.swamp-club.com` or
+  `team@swamp-club.com` in running text: its text is its whole target, so it
+  prints as written.
 - **`swamp inbox read` outside a terminal** prints the newest unread message
   (kind and date, title, the body as plain markdown, `Link:` and `Next:`) and
   marks it read. While more are unread it ends with
@@ -253,7 +269,10 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   `No unread messages.` and exits 0. Unread messages are listed two at a time;
   while every entry on a page broke the contract and another page follows,
   listing goes on, at most 5 pages. `moreUnread` is true when a second valid
-  message, a later page or a left-out entry exists. `--json` prints
+  message, a later page or a left-out entry exists. A left-out entry is an
+  unread message this swamp cannot show, so it can keep `moreUnread` true
+  after the last message it can show: the next `swamp inbox read` then
+  prints `No unread messages.` with the left-out warning. `--json` prints
   `{ message, moreUnread, dropped }`, with `message: null` when nothing is
   unread. The message's `readAt` is the CLI's own clock at the time it marked
   it, since `POST /api/inbox/read` returns ids only. `dropped` counts unread

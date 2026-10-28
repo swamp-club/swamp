@@ -115,6 +115,12 @@ async function seedHome(realConfig: string, home: string): Promise<void> {
   if (typeof auth.apiKey !== "string" || auth.apiKey === "") {
     throw new Error("Sign in with swamp auth login first: no stored API key");
   }
+  if (typeof auth.serverUrl !== "string" || !URL.canParse(auth.serverUrl)) {
+    throw new Error(
+      "auth.json has no server URL to key the inbox cache by; sign in again " +
+        "with swamp auth login",
+    );
+  }
   const fingerprint = await keyFingerprint(auth.apiKey);
   const state: InboxState = {
     ...InboxState.empty(),

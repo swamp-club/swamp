@@ -67,7 +67,7 @@ Deno.test("toPollOutcome: an over-long newestAt is dropped", () => {
 
 Deno.test("toPollOutcome: every result kind maps to its poll outcome", () => {
   const cases: [InboxSummaryResult, ReturnType<typeof toPollOutcome>][] = [
-    [{ kind: "not_modified" }, { kind: "not_modified" }],
+    [{ kind: "not_modified" }, { kind: "not_modified", sentAt: SENT_AT }],
     [{ kind: "unsupported" }, { kind: "unsupported" }],
     [{ kind: "unavailable" }, { kind: "unavailable" }],
     [{ kind: "rejected" }, { kind: "rejected" }],

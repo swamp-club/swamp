@@ -128,6 +128,8 @@ interface Coverage {
   unstopped: number;
   /** A snapshot fetched earlier that lost to the one held. */
   olderLost: number;
+  /** A stop kept against an answer sent before it. */
+  staleKept: number;
 }
 
 function newCoverage(): Coverage {
@@ -138,14 +140,16 @@ function newCoverage(): Coverage {
     retried: 0,
     unstopped: 0,
     olderLost: 0,
+    staleKept: 0,
   };
 }
 
-/** Stamps the outcome's snapshot with when its request was sent. */
+/** Stamps the outcome with when its request was sent. */
 function sent(outcome: PollOutcome, at: number): PollOutcome {
-  return outcome.kind === "ok"
-    ? { ...outcome, snapshot: { ...outcome.snapshot, fetchedAt: at } }
-    : outcome;
+  if (outcome.kind === "ok") {
+    return { ...outcome, snapshot: { ...outcome.snapshot, fetchedAt: at } };
+  }
+  return outcome.kind === "not_modified" ? { ...outcome, sentAt: at } : outcome;
 }
 
 /**
@@ -162,8 +166,17 @@ function checkApplied(
 ): string | undefined {
   const stop = before.schedule.stop;
   if (outcome.kind === "ok" || outcome.kind === "not_modified") {
-    if (after.schedule.stop !== null) return "a working key stayed stopped";
-    if (stop !== null) coverage.unstopped++;
+    const sentAt = outcome.kind === "ok"
+      ? outcome.snapshot.fetchedAt
+      : outcome.sentAt;
+    if (stop !== null && sentAt !== undefined && sentAt < stop.at) {
+      // Sent before the stop: it says nothing about the key now.
+      if (after.schedule.stop !== stop) return "a stale answer cleared a stop";
+      coverage.staleKept++;
+    } else {
+      if (after.schedule.stop !== null) return "a working key stayed stopped";
+      if (stop !== null) coverage.unstopped++;
+    }
   } else if (stop !== null && after.schedule.stop !== stop) {
     return "a stop was cleared or replaced";
   }
@@ -337,6 +350,8 @@ function assertCovered(coverage: Coverage, notices: NoticeBranch[]): void {
     coverage.unstopped,
     "older snapshots lost:",
     coverage.olderLost,
+    "stale answers kept a stop:",
+    coverage.staleKept,
   );
   for (
     const kind of [
@@ -358,6 +373,7 @@ function assertCovered(coverage: Coverage, notices: NoticeBranch[]): void {
   assert(coverage.retried > 0, "never tried: a poll after unsupported");
   assert(coverage.unstopped > 0, "never tried: a stop cleared");
   assert(coverage.olderLost > 0, "never tried: an older snapshot losing");
+  assert(coverage.staleKept > 0, "never tried: a stale answer and a stop");
 }
 
 Deno.test("inbox policy (property): with a monotonic clock, polls stay 900 s apart and retired notices stay retired", () => {

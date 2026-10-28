@@ -145,6 +145,31 @@ Deno.test("renderUntrustedMarkdownToTerminal: a link that is not https prints it
   }
 });
 
+Deno.test("renderUntrustedMarkdownToTerminal: a bare www or email autolink prints as written", () => {
+  const result = stripAnsiCode(
+    renderUntrustedMarkdownToTerminal(
+      "Visit www.swamp-club.com or write to team@swamp-club.com.",
+    ),
+  );
+  assertStringIncludes(
+    result,
+    "Visit www.swamp-club.com or write to team@swamp-club.com.",
+  );
+  assert(!result.includes(LINK_REMOVED));
+  assert(!result.includes("http://"));
+  assert(!result.includes("mailto:"));
+});
+
+Deno.test("renderUntrustedMarkdownToTerminal: an http link whose text differs from its target is still removed", () => {
+  const result = stripAnsiCode(
+    renderUntrustedMarkdownToTerminal(
+      "[www.swamp-club.com](http://evil.example)",
+    ),
+  );
+  assertStringIncludes(result, `www.swamp-club.com ${LINK_REMOVED}`);
+  assert(!result.includes("evil.example"));
+});
+
 Deno.test("renderUntrustedMarkdownToTerminal: a look-alike host prints as punycode", () => {
   const result = stripAnsiCode(
     renderUntrustedMarkdownToTerminal(
