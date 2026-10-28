@@ -670,6 +670,7 @@ function fetchContentOf(
 }
 
 const NO_FETCH_CONTENT = "second.service has no fetchContent";
+const NO_CLEAR_DIRTY = "first.service has no clearDirty";
 const NO_TWO_PHASE = "the sync service has no preparePush/commitPush";
 
 function skipWithoutTwoPhase(
@@ -1334,6 +1335,50 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
       );
     },
   },
+  {
+    name: "clear-dirty",
+    skip: ({ first }) =>
+      typeof first.service.clearDirty === "function"
+        ? undefined
+        : NO_CLEAR_DIRTY,
+    run: async ({ first, second }) => {
+      const dir = `${ROOT}/clear-dirty`;
+      const peer = `${dir}/peer/raw`;
+      const later = `${dir}/later/raw`;
+      const peerBytes = sampleBytes("clear-dirty-peer");
+      const laterBytes = sampleBytes("clear-dirty-later");
+      // A directory first marked for a write it then undid, as a refused
+      // push leaves its data-name directory (swamp-club#4091).
+      await first.service.markDirty({ relPath: dir });
+      await markAndWrite(second, peer, peerBytes);
+      assertChanged(await second.service.pushChanged(), "second pushChanged()");
+
+      await first.service.clearDirty!([dir]);
+      assertUnchanged(
+        await first.service.pushChanged(),
+        "first pushChanged() after clearDirty",
+      );
+      assertChanged(await first.service.pullChanged(), "first pullChanged()");
+      await assertHasBytes(
+        first,
+        peer,
+        peerBytes,
+        "a cleared directory mark must not delete the peer's file remotely",
+      );
+
+      // A mark made after clearDirty is kept and pushed.
+      await first.service.markDirty({ relPath: dir });
+      await writeLocal(first.cacheDir, later, laterBytes);
+      assertChanged(await first.service.pushChanged(), "first pushChanged()");
+      assertChanged(await second.service.pullChanged(), "second pullChanged()");
+      await assertHasBytes(
+        second,
+        later,
+        laterBytes,
+        "a mark made after clearDirty must still be pushed",
+      );
+    },
+  },
 ];
 
 /**
@@ -1388,6 +1433,10 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
  *   cannot stat (a dangling symlink, as a file removed mid-walk would be)
  *   still sends the directory's changes and deletes none of its other files
  *   remotely. Skipped on Windows.
+ * - `clear-dirty`: `clearDirty` drops a directory mark, so the next push
+ *   neither deletes a peer's file under it nor sends anything, and a mark
+ *   made after it is still pushed. Skipped when `first.service` has no
+ *   `clearDirty`.
  *
  * Counts may be void ("unknown") everywhere. A failing case rejects with an
  * error naming it; skipped cases are returned so callers can assert on them.

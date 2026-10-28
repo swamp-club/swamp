@@ -221,6 +221,9 @@ values:
 Each service also has `fetchContent(relPath)`, which returns the committed bytes
 of one file, or `null`, and touches neither the cache nor its dirty state. Pass
 `{ fetchContent: false }` to `connect` for a service without the method.
+`clearDirty(relPaths)` drops the marks whose keys equal `relPaths`, keeping a
+parent's or child's mark and the bulk flag; no released S3 or GCS extension has
+it yet, so pass `{ clearDirty: false }` to model one without it.
 
 ```typescript
 import { createInMemoryRemote } from "@swamp-club/swamp-testing";
@@ -521,6 +524,7 @@ once per case (fifteen fixtures), pulls on both caches, then runs:
 | `remark-between-prepare-and-commit` | A prepared path marked and rewritten before `commitPush` stays dirty, and the next push sends its new bytes                                         |
 | `bulk-between-prepare-and-commit`   | A bare `markDirty()` after `preparePush` stays set through `commitPush`, and the next push sends a later write                                      |
 | `vanish-during-walk`                | A marked directory holding an entry the push cannot stat (a dangling symlink) still pushes its changes and deletes none of its other files remotely |
+| `clear-dirty`                       | A directory mark `clearDirty` dropped makes the next push delete and send nothing, and a mark made after it is still pushed                         |
 
 The suite marks before it writes or deletes, as swamp core does. Counts may
 resolve to `void` everywhere.
@@ -544,7 +548,8 @@ a reason:
 - `two-phase` and the three `*-between-prepare-and-commit` cases when the
   service has no `preparePush` and `commitPush`;
 - `vanish-during-walk` on Windows, where creating a symlink may need Developer
-  Mode.
+  Mode;
+- `clear-dirty` when `first.service` has no `clearDirty`.
 
 A failing case rejects with an error that names it, such as
 `sync round-trip case "push-deletes" failed: ...`.

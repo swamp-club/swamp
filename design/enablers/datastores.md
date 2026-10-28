@@ -116,6 +116,24 @@ directory sync is logged before the markers are written. Only a clean restore
 keeps the promise that a durable marker never names content a power cut could
 lose.
 
+The refused writes also left their paths marked: a save marks the data-name
+directory before it allocates a version, then the version directory and the
+`latest` marker. A push walks a marked directory and deletes every remote file
+under it that the cache lacks, so a later bare push deleted the new holder's
+versions the cache never held, and uploaded the restored `latest` marker over
+a newer one (swamp-club#4091). For each data name whose restore matched the
+datastore throughout (every read answered, every write and directory sync
+succeeded), the discard then calls `clearDirty` with the refused version
+directories, the files restored or left removed, the `latest` marker and the
+data-name directory. A name with any failure keeps its marks. A sync service
+without `clearDirty`, which today includes the S3 and GCS extensions, keeps
+every mark, and the deletion stays possible until the extension implements
+it. The refusal then warns once, naming the data names whose marks stay, that
+a later push from the checkout can delete or overwrite the other run's
+versions there, and that updating the extension fixes it once a release
+implements `clearDirty`. A cache whose per-path marks have overflowed pushes with a whole-cache
+walk that deletes what the cache lacks; `clearDirty` cannot help there.
+
 ### S3 (via `@swamp/s3-datastore` extension)
 
 Stores runtime data in an S3 bucket. All reads and writes use a local cache at
@@ -1483,6 +1501,30 @@ The contract has eight rules:
    Extensions MUST let a bulk signal override per-path signals from the same
    operation. Simplest approach: keep a `bulkInvalidated: boolean` flag beside
    the dirty set, and do a full walk in `pushChanged` whenever it is true.
+
+#### `clearDirty()` contract
+
+`clearDirty(relPaths)` is optional (swamp-club#4091). Core calls it after it
+undoes writes it had marked: a push refused because its model lock was lost
+discards the refused versions and puts back the datastore's copy of each file
+(see "Lock Breakglass" below). The marks those writes left would make the next
+push delete the new lock holder's files under a marked directory and upload a
+stale `latest` marker over the holder's.
+
+1. **Exact keys only.** A mark is dropped when its key equals one of
+   `relPaths`. A parent's or child's mark is a different key and stays.
+2. **Only marks made before the call.** A `markDirty` that starts during or
+   after the call keeps its mark. Snapshot the marks to drop when the call
+   begins, as a push snapshots the marks it walks.
+3. **Bulk and overflow stay.** Neither flag is cleared.
+4. **Nothing remote.** No remote read or write, and no pull watermark change.
+5. **Keys as `markDirty` received them**: cache-relative, forward-slash, with
+   the namespace prefix when there is one.
+6. **Idempotent.** An unmarked path is ignored.
+
+Core treats the method's presence as the capability. `createInMemoryRemote`
+models it, and the conformance suite's `clear-dirty` case holds an adapter to
+it. `@swamp/s3-datastore` and `@swamp/gcs-datastore` do not implement it yet.
 
 `assertSyncServiceRoundTripConformance` in `@swamp-club/swamp-testing` holds
 every `DatastoreSyncService` adapter to this contract, delete propagation and
@@ -8462,7 +8504,11 @@ the datastore's copy. A run refused while its datastore is unreachable leaves
 its data on no clone. A breakglass followed by an outage before the restore,
 or a sync service without `fetchContent`, can still leave a removed file that a
 push-only sync turns into a delete of the other run's copy; a sync that pulls
-first does not. A command whose own work succeeded fails with the
+first does not. Once the restore matched the datastore, the discard also drops
+the marks the refused writes left with `clearDirty` (swamp-club#4091), so a
+later push neither deletes the other run's versions under the marked data-name
+directory nor uploads a stale `latest` marker; without `clearDirty` those marks
+stay. A command whose own work succeeded fails with the
 refusal (`runCommandInRootUnit`) rather than logging it as a push warning. A filesystem datastore has no
 push and is unchanged, and v3 fences its own writer. The check and the upload
 are not atomic, and the other run can push after that pull and before the

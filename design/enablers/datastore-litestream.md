@@ -858,7 +858,8 @@ home are the same order (560–850 MB against 610–620 MB).
 - A checkout behind the writer that reads during a Litestream cut hangs about
   112 s, then exits 0 (measured in swamp-club#3882's verification). Since
   swamp-club#3893 its restore is watched and the read fails with
-  `datastore_v3_catch_up_unreachable` within about 10 s.
+  `datastore_v3_catch_up_unreachable` within about 10 s (about 12 s since
+  swamp-club#4092 spaced the listings).
 - A SIGKILLed workflow's per-model lock outlives `workflow recover`, so the next
   `data gc` waits out the lock's 30 s TTL (v2 too).
 
@@ -1208,10 +1209,19 @@ replica the storage cannot list (swamp-club#3893): Litestream retries a
 dropped listing for about two minutes on S3, so while a restore runs swamp
 lists the replica's lineage paths itself through the provider's
 `replicaPaths()` store, after 2 s and then every 2 s, each listing bounded
-by 4 s. Two that fail on the network in a row stop the restore, within about
-10 s; a restore that fails on its own first (GCS answers the same cut
-within seconds) is followed by one such listing. Either way the command
-fails: a reader with
+by 4 s, or by `SWAMP_V3_RESTORE_PROBE_MS` milliseconds when that is set to a
+positive integer (a replica whose first listing is always slower: a far
+region, a slow S3-compatible store). The interval follows a failed listing
+too, so two that fail on the network in a row, 2 s apart, stop the restore
+within about 12 s (swamp-club#4092); a restore that fails on its own first
+(GCS answers the same cut within seconds) is followed by one such listing.
+A failure that is not about reaching storage is not followed by a listing
+and is handled as any other restore failure: a refusal of what Litestream
+downloaded (a newer schema, a lineage mismatch, a corrupt copy:
+`V3RestoredDatabaseRefusedError`) or any other `UserError` (a refused
+config, a refused Litestream binary). Litestream failing to download is a
+`V3RestoreError` whatever stopped it, so it is still followed by one. Either way a replica found unreachable fails the
+command: a reader with
 `datastore_v3_catch_up_unreachable` (the next command finishes the
 catch-up), a writer with `datastore_v3_storage_unreachable`. A stale read
 would be silent in `--json`, which carries no warnings. One failed listing

@@ -270,6 +270,7 @@ const ALL_ROUND_TRIP_CASES = [
   "remark-between-prepare-and-commit",
   "bulk-between-prepare-and-commit",
   "vanish-during-walk",
+  "clear-dirty",
 ];
 
 /** Cases that skip on this OS whatever the fixture. */
@@ -860,6 +861,15 @@ const BROKEN_IMPLEMENTATIONS: BrokenImplementation[] = [
     remoteOptions: { semantics: { vanishedEntryDeletesDir: true } },
     ignore: Deno.build.os === "windows",
     breakFixture: (fixture) => fixture,
+  },
+  {
+    caseName: "clear-dirty",
+    bug: "clearDirty drops no mark",
+    breakFixture: (fixture) =>
+      withFirst(fixture, {
+        ...fixture.first.service,
+        clearDirty: () => Promise.resolve(),
+      }),
   },
 ];
 

@@ -396,7 +396,10 @@ async function makeV3CopyCurrentNow(
       // fails with its code, and the next command restores (swamp-club#3893),
       // whether the watch stopped the restore or Litestream gave up first.
       if (error instanceof V3ReplicaUnreachableError) throw error;
-      const unreachable = await replicaUnreachableAfterFailure(watched);
+      const unreachable = await replicaUnreachableAfterFailure(
+        watched,
+        error,
+      );
       if (unreachable !== undefined) throw unreachable;
       // A reader whose restore fails otherwise (the lineage collected while
       // it read) reads a copy restored before as it is; a writer fails, its

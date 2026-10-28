@@ -1450,6 +1450,79 @@ for (const [kind, cut] of Object.entries(CUT_RESTORES)) {
   });
 }
 
+Deno.test({
+  name:
+    "v3 bucket: a restore that fails with a UserError keeps its own error, with no listing to call the replica unreachable (swamp-club#4092)",
+  ignore: SIDECAR_TESTS_IGNORED,
+  async fn() {
+    await withRoot(async (root, bucket) => {
+      const first = join(root, "first");
+      await initRepo(first);
+      assertEquals(errorOf(await setupBucket(first, bucket)), undefined);
+      const second = join(root, "second");
+      await cloneRepo(first, second);
+      await withSidecar(root, async () => {
+        await writeIn(first, 2);
+        assertEquals(await restoredCommits(second), 2);
+        // The second checkout is behind now.
+        await writeIn(first, 1);
+      });
+      setV3ReplicationForTesting({
+        privateRoot: join(root, "priv"),
+        timings: TEST_TIMINGS,
+        resolveBinary: () =>
+          Promise.reject(new UserError("the Litestream binary was refused")),
+      });
+      let listings = 0;
+      setV3RestoreWatchForTesting({
+        // Over before the watch lists: only a listing after the failure
+        // could name the replica unreachable.
+        timing: { graceMs: 60_000, probeMs: 100, intervalMs: 0 },
+        replicaPaths: {
+          list: () => {
+            listings++;
+            return Promise.reject(
+              Object.assign(new Error("socket hang up"), {
+                code: "ECONNRESET",
+              }),
+            );
+          },
+          removePath: () => Promise.reject(new Error("never removes")),
+        },
+      });
+      try {
+        await withMockedEnv(
+          {
+            [V3_REPLICA_ENV]: JSON.stringify({
+              type: "file",
+              path: join(root, "replica"),
+            }),
+          },
+          async () => {
+            // A reader reads the copy it restored before, as for any
+            // restore failure that is not the storage being cut off.
+            assertEquals(await restoredCommits(second), 2);
+            const refused = await assertRejects(
+              () => writeIn(second, 1),
+              UserError,
+            );
+            assertStringIncludes(
+              refused.message,
+              "the Litestream binary was refused",
+            );
+            assert(refused.code !== V3_STORAGE_UNREACHABLE_CODE);
+          },
+        );
+        assertEquals(listings, 0);
+      } finally {
+        setV3RestoreWatchForTesting(undefined);
+        await closeV3Datastores().catch(() => {});
+        setV3ReplicationForTesting(undefined);
+      }
+    });
+  },
+});
+
 const S3_ENDPOINT = Deno.env.get("SWAMP_TEST_LITESTREAM_S3_ENDPOINT");
 
 Deno.test({

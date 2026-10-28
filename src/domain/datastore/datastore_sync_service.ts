@@ -274,6 +274,42 @@ export interface DatastoreSyncService {
   markDirty(options?: DatastoreSyncOptions): Promise<void>;
 
   /**
+   * Drop per-path dirty marks core made for changes it has since undone.
+   *
+   * A push refused because its model lock was lost (swamp-club#3485)
+   * discards the refused versions and puts back the datastore's copy of
+   * every file it removed. The marks those writes left would still make the
+   * next `pushChanged` walk them: a marked directory's remote entries the
+   * cache lacks are deleted (rule 2 of {@link markDirty}), and a marked file
+   * that differs is uploaded, over the new lock holder's versions and
+   * `latest` marker (swamp-club#4091). Core calls this once the cache holds
+   * what the datastore holds under each path.
+   *
+   * Contract:
+   *
+   * 1. **Exact keys only.** A mark is dropped when its key equals one of
+   *    `relPaths`. A mark on a parent or a child of a given path is a
+   *    different key and is kept.
+   * 2. **Only marks made before the call.** A `markDirty` that starts
+   *    while this call runs, or after it, keeps its mark: take the marks to
+   *    drop when the call begins, as a push snapshots its marks.
+   * 3. **Bulk and overflow stay.** A bulk mark ({@link markDirty} rule 3)
+   *    or an overflowed path set is never cleared here.
+   * 4. **Nothing remote.** No remote file is read or written, and no pull
+   *    watermark changes.
+   * 5. **Keys as `markDirty` received them.** `relPaths` are cache-relative
+   *    and forward-slash-normalized, with the namespace prefix when there is
+   *    one, exactly as {@link markDirty}'s `relPath` was. Normalize them the
+   *    same way before comparing.
+   * 6. **Idempotent.** A path with no mark is ignored.
+   *
+   * Optional — core treats the method's presence as the capability, and
+   * checks for it before calling. Without it a refused push leaves its
+   * marks, as before.
+   */
+  clearDirty?(relPaths: readonly string[]): Promise<void>;
+
+  /**
    * Download a single file from the remote datastore by cache-relative path.
    *
    * Used for transparent content hydration when `hydrationStrategy` is

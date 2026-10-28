@@ -26,16 +26,21 @@
  */
 
 import type { ReplicaPathStore } from "../../../domain/datastore/replica_path_store.ts";
+import { UserError } from "../../../domain/errors.ts";
 import { getSwampLogger } from "../../logging/logger.ts";
 import { isNetworkFailure } from "../network_failure.ts";
+import {
+  V3RestoredDatabaseRefusedError,
+  V3RestoreError,
+} from "./litestream_restorer.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "replication"]);
 
 /**
  * How a restore's replica is watched (swamp-club#3893): once the restore
  * has run `graceMs`, swamp lists the replica's lineage paths itself, each
- * listing bounded by `probeMs` and the next `intervalMs` after one answers.
- * Litestream retries a listing the storage drops for about two minutes on
+ * listing bounded by `probeMs` and the next `intervalMs` after it, whether
+ * it answered or failed (swamp-club#4092). Litestream retries a listing the storage drops for about two minutes on
  * S3; the watch tells that apart from a long, healthy download.
  */
 export interface V3RestoreWatchTiming {
@@ -51,21 +56,49 @@ const DEFAULT_RESTORE_WATCH: V3RestoreWatchTiming = {
 };
 
 /**
- * Listings that must fail in a row before a restore is stopped: one
- * dropped request never cuts a healthy restore short. With the default
- * timing a replica that cannot be listed stops the restore within about
- * 10 s: the grace and two bounded listings.
+ * Sets each listing's bound, in milliseconds (swamp-club#4092), for a
+ * replica whose first listing takes longer than the default 4 s: a far
+ * region, a slow S3-compatible store, a cold bucket.
+ */
+export const RESTORE_PROBE_ENV_VAR = "SWAMP_V3_RESTORE_PROBE_MS";
+
+/**
+ * Listings that must fail in a row before a restore is stopped, an
+ * interval apart: one dropped request never cuts a healthy restore short.
+ * With the default timing a replica that cannot be listed stops the
+ * restore within about 12 s: the grace, two bounded listings and the
+ * interval between them.
  */
 const RESTORE_WATCH_FAILURES = 2;
 
-let restoreWatch = DEFAULT_RESTORE_WATCH;
+let timingOverride: V3RestoreWatchTiming | undefined;
 let storeOverride: ReplicaPathStore | undefined;
+
+/**
+ * The listing bound {@link RESTORE_PROBE_ENV_VAR} sets (a positive integer
+ * of milliseconds), else the default 4 s.
+ */
+export function restoreProbeMs(): number {
+  const env = Deno.env.get(RESTORE_PROBE_ENV_VAR);
+  if (env !== undefined) {
+    const parsed = parseInt(env, 10);
+    if (!Number.isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return DEFAULT_RESTORE_WATCH.probeMs;
+}
+
+/** The timing a restore is watched with, read when the watch starts. */
+function restoreWatchTiming(): V3RestoreWatchTiming {
+  return timingOverride ??
+    { ...DEFAULT_RESTORE_WATCH, probeMs: restoreProbeMs() };
+}
 
 /**
  * Test seam: the restore watch's timing, and the store every restore is
  * watched through instead of its provider's, or undefined for the
  * defaults: a file replica, which tests replicate to, has no provider
- * store bound to its root.
+ * store bound to its root. A timing set here wins over
+ * {@link RESTORE_PROBE_ENV_VAR}.
  */
 export function setV3RestoreWatchForTesting(
   options: {
@@ -73,7 +106,7 @@ export function setV3RestoreWatchForTesting(
     readonly replicaPaths?: ReplicaPathStore;
   } | undefined,
 ): void {
-  restoreWatch = options?.timing ?? DEFAULT_RESTORE_WATCH;
+  timingOverride = options?.timing;
   storeOverride = options?.replicaPaths;
 }
 
@@ -129,18 +162,24 @@ export async function restoreWhileWatched<T>(
 }
 
 /**
- * After a restore failed, whether `store` can be listed: the error to fail
- * with when one bounded listing fails on the network, undefined otherwise
- * (swamp-club#3893). A restore can fail fast on a listing the storage drops
- * (GCS answers it within seconds, before the watch lists), and a reader
- * would then read its old copy with no word of it in `--json`.
+ * After a restore failed with `failure`, whether `store` can be listed: the
+ * error to fail with when one bounded listing fails on the network,
+ * undefined otherwise (swamp-club#3893). A restore can fail fast on a
+ * listing the storage drops (GCS answers it within seconds, before the
+ * watch lists), and a reader would then read its old copy with no word of
+ * it in `--json`. A failure that is not about reaching storage lists
+ * nothing and stays the error (swamp-club#4092).
  */
 export async function replicaUnreachableAfterFailure(
   store: ReplicaPathStore | undefined,
+  failure: unknown,
 ): Promise<V3ReplicaUnreachableError | undefined> {
-  if (store === undefined) return undefined;
+  if (store === undefined || !mayBeStorage(failure)) return undefined;
   try {
-    await listOrAbort(store, AbortSignal.timeout(restoreWatch.probeMs));
+    await listOrAbort(
+      store,
+      AbortSignal.timeout(restoreWatchTiming().probeMs),
+    );
     return undefined;
   } catch (error) {
     return isNetworkFailure(error)
@@ -149,13 +188,25 @@ export async function replicaUnreachableAfterFailure(
   }
 }
 
+/**
+ * Whether a restore failure could be the storage being cut off. Litestream
+ * failing to download is a `V3RestoreError` whatever stopped it, so it may
+ * be; a refusal of what it downloaded (a newer schema, a lineage mismatch,
+ * a corrupt copy) is not, nor is any other `UserError` (a refused config, a
+ * refused Litestream binary).
+ */
+function mayBeStorage(failure: unknown): boolean {
+  if (failure instanceof V3RestoredDatabaseRefusedError) return false;
+  return !(failure instanceof UserError) || failure instanceof V3RestoreError;
+}
+
 /** Lists `store` until `stop`, aborting `cut` when it cannot be reached. */
 async function watchReplica(
   store: ReplicaPathStore,
   stop: AbortSignal,
   cut: AbortController,
 ): Promise<void> {
-  const timing = restoreWatch;
+  const timing = restoreWatchTiming();
   let failures = 0;
   // Once a listing answered, one that only runs past its bound is a slow
   // replica, not a cut one: a refusal still counts, a timeout no longer.
@@ -189,7 +240,10 @@ async function watchReplica(
         cut.abort(new V3ReplicaUnreachableError(error));
         return;
       }
-      wait = 0;
+      // The next listing waits the interval, so the failures that stop a
+      // restore are spread over time, not one blip seen twice
+      // (swamp-club#4092).
+      wait = timing.intervalMs;
     }
   }
 }

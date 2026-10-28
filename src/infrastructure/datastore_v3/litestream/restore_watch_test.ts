@@ -20,10 +20,19 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import type { ReplicaPathStore } from "../../../domain/datastore/replica_path_store.ts";
+import { UserError } from "../../../domain/errors.ts";
 import { initializeLogging } from "../../logging/logger.ts";
+import { withMockedEnv } from "../../persistence/path_test_helpers.ts";
 import { isNetworkFailure } from "../network_failure.ts";
 import {
+  V3RestoredDatabaseCorruptError,
+  V3RestoredDatabaseRefusedError,
+  V3RestoreError,
+} from "./litestream_restorer.ts";
+import {
   replicaUnreachableAfterFailure,
+  RESTORE_PROBE_ENV_VAR,
+  restoreProbeMs,
   restoreWhileWatched,
   setV3RestoreWatchForTesting,
   V3ReplicaUnreachableError,
@@ -64,9 +73,12 @@ function pendingRestore() {
   return { restore, release: () => release(), signal: () => seen };
 }
 
-async function withWatchTiming(fn: () => Promise<void>): Promise<void> {
+async function withWatchTiming(
+  fn: () => Promise<void>,
+  intervalMs = 0,
+): Promise<void> {
   setV3RestoreWatchForTesting({
-    timing: { graceMs: 0, probeMs: 50, intervalMs: 0 },
+    timing: { graceMs: 0, probeMs: 50, intervalMs },
   });
   try {
     await fn();
@@ -170,21 +182,112 @@ Deno.test("restoreWhileWatched: without a store the restore runs unwatched, with
 
 Deno.test("replicaUnreachableAfterFailure: a listing the network refuses after a failed restore names the replica unreachable; a refusal or no store does not (swamp-club#3893)", async () => {
   await withWatchTiming(async () => {
+    const failed = new Error("litestream failed");
     const cut = scriptedStore(() => Promise.reject(refused()));
-    const error = await replicaUnreachableAfterFailure(cut.store);
+    const error = await replicaUnreachableAfterFailure(cut.store, failed);
     assert(error instanceof V3ReplicaUnreachableError);
     assert(isNetworkFailure(error), "the error is a network failure");
     const hung = scriptedStore(() => new Promise(() => {}));
     assert(
-      await replicaUnreachableAfterFailure(hung.store) instanceof
+      await replicaUnreachableAfterFailure(hung.store, failed) instanceof
         V3ReplicaUnreachableError,
     );
     const denied = scriptedStore(() =>
       Promise.reject(new Error("AccessDenied"))
     );
-    assertEquals(await replicaUnreachableAfterFailure(denied.store), undefined);
+    assertEquals(
+      await replicaUnreachableAfterFailure(denied.store, failed),
+      undefined,
+    );
     const fine = scriptedStore(() => Promise.resolve([]));
-    assertEquals(await replicaUnreachableAfterFailure(fine.store), undefined);
-    assertEquals(await replicaUnreachableAfterFailure(undefined), undefined);
+    assertEquals(
+      await replicaUnreachableAfterFailure(fine.store, failed),
+      undefined,
+    );
+    assertEquals(
+      await replicaUnreachableAfterFailure(undefined, failed),
+      undefined,
+    );
+  });
+});
+
+Deno.test("restoreWhileWatched: a listing the network refuses is followed by the interval, not a second listing at once, so one blip never stops a restore (swamp-club#4092)", async () => {
+  await withWatchTiming(async () => {
+    const { store, calls } = scriptedStore(() => Promise.reject(refused()));
+    const restore = pendingRestore();
+    const restoring = restoreWhileWatched(store, restore.restore);
+    await waitFor(() => calls() >= 1, "the first listing");
+    // The second listing is an interval away; the restore ends first.
+    restore.release();
+    assertEquals(await restoring, "restored");
+    assertEquals(calls(), 1);
+    assertEquals(restore.signal()?.aborted, false);
+  }, 60_000);
+});
+
+Deno.test("restoreWhileWatched: two listings the network refuses an interval apart stop the restore (swamp-club#4092)", async () => {
+  await withWatchTiming(async () => {
+    const { store, calls } = scriptedStore(() => Promise.reject(refused()));
+    const restore = pendingRestore();
+    await assertRejects(
+      () => restoreWhileWatched(store, restore.restore),
+      V3ReplicaUnreachableError,
+    );
+    assertEquals(calls(), 2);
+  }, 20);
+});
+
+Deno.test("restoreProbeMs: SWAMP_V3_RESTORE_PROBE_MS sets the listing bound; unset or not a positive integer leaves 4 s (swamp-club#4092)", () => {
+  const probe = (value: string | undefined) =>
+    withMockedEnv({ [RESTORE_PROBE_ENV_VAR]: value }, () => restoreProbeMs());
+  assertEquals(probe(undefined), 4_000);
+  assertEquals(probe("15000"), 15_000);
+  assertEquals(probe("0"), 4_000);
+  assertEquals(probe("-5"), 4_000);
+  assertEquals(probe("soon"), 4_000);
+  assertEquals(probe(""), 4_000);
+});
+
+Deno.test("replicaUnreachableAfterFailure: bounds its listing by SWAMP_V3_RESTORE_PROBE_MS when no test timing is set (swamp-club#4092)", async () => {
+  const hung = scriptedStore(() => new Promise(() => {}));
+  // With the default 4 s bound the hung listing would hold this test 4 s;
+  // the variable's 20 ms ends it at once.
+  const error = await withMockedEnv(
+    { [RESTORE_PROBE_ENV_VAR]: "20" },
+    () => replicaUnreachableAfterFailure(hung.store, new Error("failed")),
+  );
+  assert(error instanceof V3ReplicaUnreachableError);
+  assertEquals(hung.calls(), 1);
+});
+
+Deno.test("replicaUnreachableAfterFailure: a restore failure not about reaching storage lists nothing and is not named unreachable (swamp-club#4092)", async () => {
+  await withWatchTiming(async () => {
+    for (
+      const failure of [
+        new UserError("the datastore config was refused"),
+        new V3RestoredDatabaseRefusedError("the restored schema is newer"),
+        new V3RestoredDatabaseCorruptError("integrity check failed"),
+      ]
+    ) {
+      const cut = scriptedStore(() => Promise.reject(refused()));
+      assertEquals(
+        await replicaUnreachableAfterFailure(cut.store, failure),
+        undefined,
+        failure.name,
+      );
+      assertEquals(cut.calls(), 0, failure.name);
+    }
+  });
+});
+
+Deno.test("replicaUnreachableAfterFailure: Litestream failing to download, a V3RestoreError, is still followed by a listing (swamp-club#4092)", async () => {
+  await withWatchTiming(async () => {
+    const cut = scriptedStore(() => Promise.reject(refused()));
+    const error = await replicaUnreachableAfterFailure(
+      cut.store,
+      new V3RestoreError("litestream could not restore lineage 000000000001"),
+    );
+    assert(error instanceof V3ReplicaUnreachableError);
+    assertEquals(cut.calls(), 1);
   });
 });
