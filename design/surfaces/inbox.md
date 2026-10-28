@@ -107,7 +107,15 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   counts, a failed one included. A `backoff` waits out `Retry-After`.
   `unsupported` asks again 24 hours later, since a server can add the inbox in
   a later upgrade. `unavailable` and `rejected` stop the poll for that key, and
-  the cache records why and when.
+  the cache records why and when. The slow commands are `workflow run`,
+  `behavior run` (and `model method run`), `extension pull` and
+  `extension push`. The poll starts once the auth gate has passed, before the
+  command's action, and runs alongside it for at most 5 seconds. At teardown,
+  on success and on error alike, the CLI waits at most 250 ms more, aborts a
+  poll still running (saved as a failed poll), and only then writes the
+  cache, so a command that exits early loses at most one request, never a
+  half-written state. A process that cannot write the config directory does
+  not poll, since it could not record the poll.
 - **The cache.** The last summary and its `ETag` are cached locally, so a `304`
   costs nothing and the notice needs no network call. Each API key has its own
   file, `inbox/<fingerprint>.json` in the swamp config directory, so a personal
@@ -136,7 +144,20 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   agent running commands with `--json` never sees it, and JSON output never
   carries it. The `swamp` skill quotes the second line, so the two must change
   together. A notice retires after 24 hours, whether or not the user reads the
-  message.
+  message. Deciding it reads only the cache, so a fast command shows the notice
+  a slow command's poll found, at the cost of one small file read and no
+  request. It prints only after a command that succeeded, before the update
+  banner; a failed command's output ends with its error. `-q` hides it as it
+  hides the other post-command notices. These commands never show it: every
+  command the auth gate exempts, `inbox`, `subscription`, `auth`, and the
+  long-running `serve`, `worker`, `start` and `dashboard`.
+- **Switching it off.** `CI` set to anything but an empty string, `0` or
+  `false` turns off both the poll and the notice; nobody reads a CI log for
+  them. `SWAMP_NO_INBOX_NOTICE`, read the same way as `SWAMP_NO_UPDATE_CHECK`,
+  does the same anywhere. A nested run — a swamp started by another swamp, such
+  as from a workflow step or a shell behavior — neither polls nor shows the
+  notice, so it never prints into output its parent captures; the outermost
+  run does both.
 - **The commands.** Outside a terminal (stdout or stdin not a TTY) and with
   `--json`, `swamp inbox` lists messages, newest first: unread ones by default,
   read ones too with `--all`. `--limit` takes 1 to 100 (default 20, always

@@ -236,6 +236,17 @@ import {
 } from "./auth_gate_session.ts";
 import { processLockHolderMarker } from "../domain/datastore/lock_holder_marker.ts";
 import { authGateTiming } from "./auth_gate_exemptions.ts";
+import {
+  finishInboxNotice,
+  inboxNoticeDisabledByEnv,
+  inboxNoticeEligibility,
+} from "./inbox_notice_gate.ts";
+import {
+  createInboxNoticeDeps,
+  type InboxPoll,
+  showInboxNotice,
+  startInboxPoll,
+} from "../libswamp/inbox/notice.ts";
 import { UpdatePreferencesFileRepository } from "../infrastructure/update/update_preferences_file_repository.ts";
 import { AutoupdateLogFileRepository } from "../infrastructure/update/autoupdate_log_file_repository.ts";
 import {
@@ -2631,6 +2642,20 @@ async function runInvocation(
   // process's pid and its ancestor chain down to any swamp it starts.
   processLockHolderMarker.publish();
 
+  // What this run does with the inbox (design/surfaces/inbox.md): slow
+  // commands poll it in the background, and eligible commands print the
+  // notice from the cache. Decided after publish, so a nested run sees the
+  // chain it inherited.
+  const inbox = inboxNoticeEligibility({
+    commandPath: commandTree
+      ? resolveTelemetryInvocation(commandTree, args, []).commandPath ?? []
+      : [],
+    gateTiming,
+    gatePassed: gateOutcome?.kind === "pass",
+    nested: processLockHolderMarker.ancestorPids().size > 0,
+    disabledByEnv: inboxNoticeDisabledByEnv(),
+  });
+
   // Read marker once for log level, extension loading, auto-resolver,
   // and serverAddress cache. Hook commands skip this — null marker gives
   // default "info" log level and no serverAddress fallback.
@@ -2917,7 +2942,16 @@ async function runInvocation(
 
   bootstrapSpan.end();
 
+  // Started inside the try, so both teardown paths settle it: startup code
+  // above can throw outside it.
+  let inboxPoll: InboxPoll | null = null;
   try {
+    if (inbox.poll) {
+      inboxPoll = await startInboxPoll(
+        createInboxNoticeDeps({ identity: await loadIdentity() }),
+      );
+    }
+
     // Cliffy would take the token after an empty `--title=` as its value
     // (swamp-club#3542), so reject the empty value before it parses.
     const emptyOption = findEmptyOptionValue(cli, args);
@@ -3012,6 +3046,17 @@ async function runInvocation(
           );
         }
       }
+
+      // The inbox notice prints after the command's output, before the
+      // update banner.
+      await finishInboxNotice({
+        poll: inboxPoll,
+        notice: inbox.notice,
+        outputMode: getOutputModeFromArgs(args),
+        quiet: quietRequested,
+        succeeded: true,
+        show: () => showInboxNotice(createInboxNoticeDeps()),
+      });
 
       // Proactive update notification (after telemetry, before exit)
       if (!isUpdateCheckDisabledByEnv() && !isDevBuild(VERSION)) {
@@ -3161,6 +3206,16 @@ async function runInvocation(
     if (!hookMode && !isDispatchRunnerCommand(commandInfo)) {
       await runGateRefresh(gateOutcome);
     }
+    // Saves the poll; a failed command's output ends with its error, so it
+    // prints no notice.
+    await finishInboxNotice({
+      poll: inboxPoll,
+      notice: false,
+      outputMode: getOutputModeFromArgs(args),
+      quiet: quietRequested,
+      succeeded: false,
+      show: () => Promise.resolve(null),
+    });
 
     // Record error invocation and flush before re-throwing
     if (telemetryCtx && reported instanceof Error) {
