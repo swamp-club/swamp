@@ -29,6 +29,7 @@ import {
   isRepoScopedCommand,
   isTelemetryDisabledByConfig,
   isTelemetryDisabledByEnv,
+  isTelemetryExemptCommand,
   isTelemetryOptedOut,
   isTelemetryOptOutInvocation,
   isThinClientCommand,
@@ -909,6 +910,42 @@ Deno.test("isTelemetryOptOutInvocation: only config set telemetry.collection dis
     ]),
     false,
   );
+});
+
+Deno.test("isTelemetryExemptCommand: true for every completions invocation", () => {
+  for (
+    const args of [
+      ["completions", "zsh"],
+      ["completions", "bash"],
+      ["completions", "fish"],
+      ["completions", "powershell"],
+      ["completions", "complete", "model"],
+      ["--no-color", "completions", "zsh"],
+    ]
+  ) {
+    assertEquals(
+      isTelemetryExemptCommand(extractCommandInfo(args)),
+      true,
+      args.join(" "),
+    );
+  }
+});
+
+Deno.test("isTelemetryExemptCommand: false for other commands", () => {
+  for (
+    const args of [
+      [],
+      ["config", "set", "telemetry.collection", "enabled"],
+      ["version"],
+      ["behavior", "run", "my-model", "start"],
+    ]
+  ) {
+    assertEquals(
+      isTelemetryExemptCommand(extractCommandInfo(args)),
+      false,
+      args.join(" "),
+    );
+  }
 });
 
 Deno.test("assertModelsDirEnvConsistent: refuses SWAMP_MODELS_DIR and SWAMP_BEHAVIORS_DIR naming different directories", () => {

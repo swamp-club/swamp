@@ -468,6 +468,20 @@ export function isTelemetryOptOutInvocation(
 }
 
 /**
+ * Whether this invocation records no telemetry. `swamp completions` runs at
+ * every shell start (rc files source its script) and on every Tab press
+ * (`completions complete`), and the shell waits for stdout to close — so it
+ * must not wait on the telemetry flush at teardown (swamp-club#4083).
+ *
+ * @internal Exported for testing
+ */
+export function isTelemetryExemptCommand(
+  commandInfo: Pick<CommandInvocationData, "command">,
+): boolean {
+  return commandInfo.command === "completions";
+}
+
+/**
  * Checks whether a command may need the extension loader infrastructure.
  * Returns false for commands that never operate inside a swamp repo.
  *
@@ -2515,7 +2529,8 @@ async function runInvocation(
   // Pre-parse check for telemetry disable flag
   const telemetryDisabled = isTelemetryDisabled(args) ||
     isTelemetryDisabledByEnv() ||
-    isTelemetryOptOutInvocation(commandInfo, args);
+    isTelemetryOptOutInvocation(commandInfo, args) ||
+    isTelemetryExemptCommand(commandInfo);
 
   // Hook commands (audit record --from-hook) run as PostToolUse hooks and
   // must be as fast as possible. Skip all non-essential startup and teardown
