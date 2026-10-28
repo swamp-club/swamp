@@ -2073,7 +2073,7 @@ Deno.test("workflowRun: a --last-evaluated cache that cannot be read is reported
   assertEquals(captured.options, undefined);
 });
 
-Deno.test("workflowRun: a run cancelled while its suspended runs are read for superseding supersedes none and still goes to the run, which records it cancelled (swamp-club#4088)", async () => {
+Deno.test("workflowRun: a run cancelled while its suspended runs are read for superseding supersedes none and still goes to the execution service with its signal (swamp-club#4088)", async () => {
   const workflow = createTestWorkflow();
   const captured: { options?: Record<string, unknown> } = {};
   const controller = new AbortController();
@@ -2104,8 +2104,8 @@ Deno.test("workflowRun: a run cancelled while its suspended runs are read for su
   const kinds = events.map((e) => e.kind);
   assertEquals(kinds.includes("superseded_runs"), false);
   assertEquals(kinds.includes("error"), false);
-  // The execution service is handed the aborted signal and records the run
-  // as cancelled, as it does for any run cancelled before its first step.
+  // The execution service records a run cancelled before its first step as
+  // cancelled; it is handed the aborted signal to do so.
   assertEquals(captured.options?.signal, controller.signal);
 });
 

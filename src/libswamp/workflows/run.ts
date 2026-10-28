@@ -79,7 +79,6 @@ import {
   type SkippedSupersedeData,
   type SupersedeDeps,
   supersedeMatchInputs,
-  type SupersedeResult,
   supersedeSuspendedRuns,
 } from "./supersede.ts";
 import type { EvaluatedWorkflowCache } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
@@ -958,32 +957,24 @@ export async function* workflowRun(
             )
             : undefined;
           if (supersedeInputs && deps.supersede) {
-            let superseded: SupersedeResult | undefined;
-            try {
-              superseded = await supersedeSuspendedRuns(
+            // A run cancelled while its suspended runs are read supersedes
+            // none of them, and is recorded as cancelled by the run below
+            // (swamp-club#4088).
+            const { cancelledRunIds, skippedRuns, ...nested } =
+              await supersedeSuspendedRuns(
                 workflow,
                 supersedeInputs,
                 deps.supersede,
                 deps.runRepo,
                 ctx.signal,
               );
-            } catch (error) {
-              // A run cancelled while its suspended runs are read, whatever
-              // reason it was aborted with, supersedes none of them and is
-              // still recorded as cancelled by the run below
-              // (swamp-club#4088).
-              if (!ctx.signal.aborted) throw error;
-            }
-            if (superseded) {
-              const { cancelledRunIds, skippedRuns, ...nested } = superseded;
-              if (cancelledRunIds.length > 0 || skippedRuns.length > 0) {
-                yield {
-                  kind: "superseded_runs",
-                  cancelledRunIds,
-                  ...nestedCascadeFields(nested),
-                  ...(skippedRuns.length > 0 ? { skippedRuns } : {}),
-                };
-              }
+            if (cancelledRunIds.length > 0 || skippedRuns.length > 0) {
+              yield {
+                kind: "superseded_runs",
+                cancelledRunIds,
+                ...nestedCascadeFields(nested),
+                ...(skippedRuns.length > 0 ? { skippedRuns } : {}),
+              };
             }
           }
 

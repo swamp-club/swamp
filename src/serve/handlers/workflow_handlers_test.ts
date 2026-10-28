@@ -2475,7 +2475,7 @@ class SignalRecordingRunRepository extends YamlWorkflowRunRepository {
   }
 }
 
-Deno.test("handleWorkflowApprovals: a request cancelled while its suspended-run read waits for a scan permit leaves the queue and replies cancelled (swamp-club#4088)", async () => {
+Deno.test("handleWorkflowApprovals: a request cancelled during its suspended-run read, while the search share is held, stops the read and replies cancelled (swamp-club#4088)", async () => {
   await withWorkflowRepo(async (dir, repo) => {
     await seedGatedRun(dir, repo, "deploy", {});
     const runRepo = new SignalRecordingRunRepository(dir);

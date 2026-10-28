@@ -612,13 +612,40 @@ Deno.test("supersedeSuspendedRuns: passes its signal to findSuspendedRuns (swamp
   assertEquals(result.cancelledRunIds, [run.id]);
 });
 
-Deno.test("supersedeSuspendedRuns: a cancelled read rejects with the abort reason and settles no run (swamp-club#4088)", async () => {
+Deno.test("supersedeSuspendedRuns: a cancelled read supersedes nothing and settles no run, whatever its abort reason (swamp-club#4088)", async () => {
   const wf = createWorkflow("deploy");
   const run = createSuspendedRun(wf, { env: "prod" });
   const controller = new AbortController();
-  controller.abort(new DOMException("run cancelled", "AbortError"));
+  controller.abort(new Error("serve is shutting down"));
   const saved: WorkflowRun[] = [];
   let claims = 0;
+
+  const result = await supersedeSuspendedRuns(
+    wf,
+    { env: "prod" },
+    {
+      findSuspendedRuns: (_id, signal) => Promise.reject(signal?.reason),
+      evaluatedCache: () => Promise.resolve(null),
+      findEvaluatedWorkflow: noSnapshot,
+      runClaims: {
+        withClaim: (_runId, fn) => {
+          claims++;
+          return fn();
+        },
+      },
+    },
+    stubRunRepo(saved, [run]),
+    controller.signal,
+  );
+
+  assertEquals(result.cancelledRunIds, []);
+  assertEquals(result.skippedRuns, []);
+  assertEquals(claims, 0);
+  assertEquals(saved, []);
+});
+
+Deno.test("supersedeSuspendedRuns: a read that fails while its signal has not aborted rejects with its error (swamp-club#4088)", async () => {
+  const wf = createWorkflow("deploy");
 
   await assertRejects(
     () =>
@@ -626,22 +653,15 @@ Deno.test("supersedeSuspendedRuns: a cancelled read rejects with the abort reaso
         wf,
         { env: "prod" },
         {
-          findSuspendedRuns: (_id, signal) => Promise.reject(signal?.reason),
+          findSuspendedRuns: () => Promise.reject(new Error("disk is full")),
           evaluatedCache: () => Promise.resolve(null),
           findEvaluatedWorkflow: noSnapshot,
-          runClaims: {
-            withClaim: (_runId, fn) => {
-              claims++;
-              return fn();
-            },
-          },
+          runClaims: unclaimedRuns,
         },
-        stubRunRepo(saved, [run]),
-        controller.signal,
+        stubRunRepo([]),
+        new AbortController().signal,
       ),
-    DOMException,
-    "run cancelled",
+    Error,
+    "disk is full",
   );
-  assertEquals(claims, 0);
-  assertEquals(saved, []);
 });
