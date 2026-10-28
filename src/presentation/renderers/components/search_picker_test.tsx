@@ -25,6 +25,7 @@ import { Box, Text, useInput } from "ink";
 import { waitFor } from "@swamp-club/swamp-testing";
 import type { ActionDef } from "./help_bar.tsx";
 import { SearchPicker } from "./search_picker.tsx";
+import { pressOnFrame } from "./press_on_frame_test_helpers.ts";
 
 const inkTestOptions = { sanitizeOps: false, sanitizeResources: false };
 
@@ -220,5 +221,46 @@ Deno.test({
     await waitFor(() => selected.length > 0, "a selection");
 
     assertEquals(selected[0], "alpha");
+  },
+});
+
+Deno.test({
+  name:
+    "SearchPicker: Enter pressed as the query frame is drawn selects the first match",
+  ...inkTestOptions,
+  fn: async () => {
+    const selected: string[] = [];
+    const picker = renderPicker(2, (item) => selected.push(item));
+
+    await waitFor(
+      () => (picker.lastFrame() ?? "").includes("charlie"),
+      "the picker to draw its rows",
+    );
+    pressOnFrame(picker, (frame) => frame.includes("a\u258F"), "\r");
+    picker.stdin.write("a");
+    await waitFor(() => selected.length > 0, "a selection");
+
+    assertEquals(selected[0], "alpha");
+  },
+});
+
+Deno.test({
+  name:
+    "SearchPicker: Enter pressed as the moved highlight is drawn selects that row",
+  ...inkTestOptions,
+  fn: async () => {
+    const selected: string[] = [];
+    const picker = renderPicker(undefined, (item) => selected.push(item));
+
+    await waitFor(
+      () => (picker.lastFrame() ?? "").includes("charlie"),
+      "the picker to draw its rows",
+    );
+    const frameCount = picker.frames.length;
+    pressOnFrame(picker, () => picker.frames.length > frameCount, "\r");
+    picker.stdin.write("\x1b[B");
+    await waitFor(() => selected.length > 0, "a selection");
+
+    assertEquals(selected[0], "bravo");
   },
 });

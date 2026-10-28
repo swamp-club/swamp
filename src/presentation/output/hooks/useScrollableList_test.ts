@@ -17,8 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import React from "react";
 import { assertEquals } from "@std/assert";
-import { calculateScrollWindow } from "./useScrollableList.ts";
+import { Text } from "ink";
+import { render } from "ink-testing-library";
+import {
+  calculateScrollWindow,
+  useScrollableList,
+} from "./useScrollableList.ts";
 
 Deno.test("calculateScrollWindow returns empty range for empty list", () => {
   const result = calculateScrollWindow(0, 0, 5);
@@ -83,4 +89,33 @@ Deno.test("calculateScrollWindow handles single item list", () => {
 Deno.test("calculateScrollWindow handles visible height of 1", () => {
   const result = calculateScrollWindow(10, 5, 1);
   assertEquals(result, { start: 5, end: 6 });
+});
+
+function ScrollableListProbe(props: { query: string }) {
+  const { selectedIndex } = useScrollableList(
+    ["alpha", "bravo", "charlie"],
+    10,
+    [props.query],
+    2,
+  );
+  return React.createElement(Text, null, `selected:${selectedIndex}`);
+}
+
+Deno.test({
+  name:
+    "useScrollableList: the first frame after a reset dependency changes shows the first row selected",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: () => {
+    const probe = render(
+      React.createElement(ScrollableListProbe, { query: "" }),
+    );
+    assertEquals(probe.lastFrame(), "selected:2");
+
+    const frameCount = probe.frames.length;
+    probe.rerender(React.createElement(ScrollableListProbe, { query: "a" }));
+
+    assertEquals(probe.frames.slice(frameCount), ["selected:0"]);
+    probe.unmount();
+  },
 });
