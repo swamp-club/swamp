@@ -27,6 +27,10 @@
  */
 
 import { Commit, type CommitJSON } from "../../domain/datastore_v3/commit.ts";
+import type {
+  ObservedBaseEntry,
+  ObservedBasePage,
+} from "../../domain/datastore_v3/observed_base.ts";
 import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import {
   type ChangesPage,
@@ -89,6 +93,7 @@ type Client = Pick<
   | "namespace"
   | "changes"
   | "partitionCommits"
+  | "compactedBase"
   | "postCommit"
   | "hasChunks"
   | "putChunk"
@@ -124,7 +129,10 @@ export class FakeServe implements Client {
    * returns true for the read's route and limit.
    */
   tooLarge:
-    | ((route: "changes" | "partition", limit: number | undefined) => boolean)
+    | ((
+      route: "changes" | "partition" | "base",
+      limit: number | undefined,
+    ) => boolean)
     | undefined;
   readonly postFaults: PostFault[] = [];
   /** Runs before each commit request is acted on: another writer, say. */
@@ -139,6 +147,21 @@ export class FakeServe implements Client {
   readonly unreadablePartitions = new Set<string>();
   /** Awaited at the start of every `changes` request. */
   changesGate: Promise<void> | undefined;
+  /**
+   * The compacted base `compactedBase` pages, filtered as serve would
+   * filter it; undefined is a serve with no base route (404).
+   */
+  base: { point: number; entries: ObservedBaseEntry[] } | undefined;
+  /** The feed position compacted through: a feed read below it is a 410. */
+  compactionPoint = 0;
+  /** Base entries per page. */
+  basePageSize = FAKE_SERVE_MAX_PAGE;
+  readonly baseReads: {
+    after: string | undefined;
+    limit: number | undefined;
+  }[] = [];
+  /** Runs before each base page is answered, with the page's index. */
+  beforeBasePage: ((page: number) => void) | undefined;
 
   constructor(namespace = "_default") {
     this.namespace = namespace;
@@ -195,6 +218,12 @@ export class FakeServe implements Client {
     if (this.changesGate !== undefined) await this.changesGate;
     signal.throwIfAborted();
     if (this.changesFault !== undefined) throw this.changesFault;
+    if (cursor < this.compactionPoint) {
+      throw new ServeCommitsCompactedError(
+        this.compactionPoint,
+        `The changes feed is compacted through ${this.compactionPoint}`,
+      );
+    }
     if (this.tooLarge?.("changes", limit) === true) {
       throw new ServeReplyTooLargeError(200, "changes", SERVE_PAGE_MAX_BYTES);
     }
@@ -209,6 +238,38 @@ export class FakeServe implements Client {
       }
     }
     return { changes, cursor: next, more: next < this.feed.length };
+  }
+
+  compactedBase(
+    after: string | undefined,
+    namespace: string,
+    signal: AbortSignal,
+    limit?: number,
+  ): Promise<ObservedBasePage> {
+    this.baseReads.push({ after, limit });
+    signal.throwIfAborted();
+    this.beforeBasePage?.(this.baseReads.length - 1);
+    if (this.base === undefined) {
+      return Promise.reject(
+        new ServeUpstreamError(404, "not_found", "Not found"),
+      );
+    }
+    if (this.tooLarge?.("base", limit) === true) {
+      return Promise.reject(
+        new ServeReplyTooLargeError(200, "base", SERVE_PAGE_MAX_BYTES),
+      );
+    }
+    const from = after === undefined ? 0 : Number(after);
+    const max = Math.min(limit ?? this.basePageSize, this.basePageSize);
+    const entries = this.base.entries.slice(from, from + max).filter((entry) =>
+      entry.namespace === namespace
+    );
+    const end = Math.min(from + max, this.base.entries.length);
+    return Promise.resolve({
+      point: this.base.point,
+      entries,
+      next: end < this.base.entries.length ? String(end) : undefined,
+    });
   }
 
   partitionCommits(
@@ -245,6 +306,7 @@ export class FakeServe implements Client {
         new ServeCommitsCompactedError(
           compacted,
           `Partition ${key} is compacted through seq ${compacted}`,
+          compacted,
         ),
       );
     }

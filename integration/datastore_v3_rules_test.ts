@@ -291,10 +291,12 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/serve/datastore_api.ts -> src/domain/datastore_v3/commit.ts",
   "src/serve/datastore_api.ts -> src/domain/datastore_v3/commit_authorization.ts",
   "src/serve/datastore_api.ts -> src/domain/datastore_v3/commit_store.ts",
+  "src/serve/datastore_api.ts -> src/domain/datastore_v3/observed_base.ts",
   "src/serve/datastore_api.ts -> src/domain/datastore_v3/op.ts",
   "src/serve/datastore_api.ts -> src/domain/datastore_v3/partition.ts",
   "src/serve/datastore_api.ts -> src/domain/datastore_v3/partition_key.ts",
   "src/serve/datastore_api.ts -> src/domain/datastore_v3/read_model.ts",
+  "src/serve/datastore_api.ts -> src/domain/datastore_v3/record_key.ts",
   "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/chunk_ingest.ts",
   "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/forwarded_commit.ts",
   // The log id header serve sends and the client checks (swamp-club#4049).
@@ -393,7 +395,7 @@ const CHECKPOINT = /wal_(?:auto)?checkpoint/i;
 /** v3 files that mention a checkpoint pragma, as `file:line`. */
 const PINNED_V3_CHECKPOINTS: readonly string[] = [
   // Auto-checkpoint off on a copy Litestream replicates (swamp-club#3935).
-  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2347",
+  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2451",
 ];
 
 Deno.test("datastore v3: no v3 code forces or tunes a WAL checkpoint", async () => {

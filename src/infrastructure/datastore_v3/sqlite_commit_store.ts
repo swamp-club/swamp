@@ -53,6 +53,7 @@ import {
 } from "node:sqlite";
 import { dirname } from "@std/path";
 import { ensureDirSync } from "@std/fs";
+import { maxOf } from "../../domain/array_extrema.ts";
 import { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
 import { readFileAccess } from "../../domain/datastore_v3/file_access.ts";
 import type { LiveDataVersion } from "../../domain/datastore_v3/catalog_projection.ts";
@@ -68,8 +69,11 @@ import {
   CommitStoreCorruptError,
   type CompactedBaseEntry,
   type CompactedBasePage,
+  type CompactedPartitionMarks,
   type CompactHistoryOptions,
   type CompactionReport,
+  type DataNameMarks,
+  InvalidBasePageTokenError,
   type PartitionHead,
 } from "../../domain/datastore_v3/commit_store.ts";
 import {
@@ -96,6 +100,8 @@ import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
 import { DatastoreOwner } from "../../domain/datastore_v3/datastore_owner.ts";
 import { UserError } from "../../domain/errors.ts";
 import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
+import type { ObservedBaseEntry } from "../../domain/datastore_v3/observed_base.ts";
+import { VersionRanges } from "../../domain/datastore_v3/version_ranges.ts";
 import {
   addColumnsIfAbsent,
   runMigration,
@@ -980,6 +986,41 @@ export class SqliteCommitStore implements CommitStore {
     });
   }
 
+  /**
+   * A compacted partition's compacted seq, with each data name's version
+   * marks as the partition stands now (swamp-club#4006); undefined when the
+   * partition was never compacted. Serve sends them with the compacted
+   * base, so a follower copy built from it never picks a version number
+   * already used: a high-water mark only grows and removed ranges only
+   * gain entries, so marks newer than the compacted seq are safe.
+   */
+  compactedPartition(
+    namespace: string,
+    key: PartitionKey,
+  ): Promise<CompactedPartitionMarks | undefined> {
+    if (this.#closed) return Promise.reject(closedError());
+    return this.#enqueue(async () => {
+      const row = this.#db.prepare(
+        "SELECT seq FROM compacted_partitions WHERE namespace = ? AND partition = ?",
+      ).get(namespace, key.toString()) as { seq: number } | undefined;
+      if (row === undefined) return undefined;
+      let partition = await this.#partition(namespace, key);
+      const head = this.#selectHead.get(namespace, key.toString()) as
+        | { seq: number }
+        | undefined;
+      if ((head?.seq ?? 0) !== partition.seq) {
+        this.#cache.delete(cacheKeyOf(namespace, key.toString()));
+        partition = await this.#partition(namespace, key);
+      }
+      const names = partition.snapshot().names.map((name) => ({
+        name: name.name,
+        highWater: name.highWater,
+        ...(name.removed === undefined ? {} : { removed: name.removed }),
+      }));
+      return { seq: row.seq, names };
+    });
+  }
+
   append(commit: Commit): Promise<CommitStoreAppendResult> {
     if (this.#closed) return Promise.reject(closedError());
     return new Promise<CommitStoreAppendResult>((resolve, reject) => {
@@ -1581,6 +1622,7 @@ export class SqliteCommitStore implements CommitStore {
         throw new CommitsCompactedError(
           this.#point(),
           `Partition ${partition} is compacted through seq ${compacted}; commits from seq ${fromSeq} cannot be read`,
+          compacted,
         );
       }
       return this.#selectPartitionPage.all(
@@ -1909,10 +1951,14 @@ export class SqliteCommitStore implements CommitStore {
   ): Promise<CompactedBasePage> {
     if (this.#closed) return Promise.reject(closedError());
     requirePositive(limit, "limit");
-    return Promise.resolve(this.#readTransaction(() => {
-      const page = this.#base.readPage(after, limit);
-      return { point: this.#point(), ...page };
-    }));
+    try {
+      return Promise.resolve(this.#readTransaction(() => {
+        const page = this.#base.readPage(after, limit);
+        return { point: this.#point(), ...page };
+      }));
+    } catch (error) {
+      return Promise.reject(error);
+    }
   }
 
   /**
@@ -2255,6 +2301,64 @@ export class SqliteCommitStore implements CommitStore {
   replaceContentFrom(path: string): Promise<void> {
     if (this.#closed) return Promise.reject(closedError());
     return this.#enqueue(() => this.#replaceContent(path));
+  }
+
+  /**
+   * Installs the compacted base `staging` holds in place of this follower
+   * copy's content (swamp-club#4006): a copy whose cursor serve has
+   * compacted past loads serve's base, filtered to what its caller may
+   * read, rather than the commits. Every commit the copy held is at or
+   * below serve's `point`, so the base replaces them.
+   *
+   * The staging file is finished first, nothing in this store changed:
+   *
+   * - the compaction point is the higher of serve's point and the copy's
+   *   last cursor plus one, and the commits' sequence at least that. Base
+   *   ownership marks are positions in serve's feed, at or below its point,
+   *   so they sort before every later append, and a read model at any
+   *   cursor this copy handed out sees the point past it and loads the base;
+   * - each partition's head is its compacted seq, with a snapshot there
+   *   built from its records and its data names' versions and marks, so a
+   *   rebuild never needs a commit the copy never held;
+   * - the rows that belong to this file, not its content, are carried from
+   *   it: the log id, the writer fence and the owner.
+   *
+   * It is then installed in one write transaction, as
+   * {@link replaceContentFrom} installs a restored file: a crash leaves
+   * either the old content or the new.
+   */
+  installObservedBase(
+    staging: ObservedBaseStaging,
+    point: number,
+  ): Promise<void> {
+    if (this.#closed) return Promise.reject(closedError());
+    if (!this.#follower) {
+      return Promise.reject(
+        new Error(
+          "Internal error: only a serve-mode copy of a v3 datastore loads serve's compacted base",
+        ),
+      );
+    }
+    if (!Number.isSafeInteger(point) || point < 1) {
+      return Promise.reject(
+        new Error(`point must be a positive integer: ${point}`),
+      );
+    }
+    return this.#enqueue(() => {
+      // Installed from its path: a file gone from it would install as an
+      // empty store, so it is refused instead.
+      Deno.statSync(staging.path);
+      const last = (this.#db.prepare(
+        "SELECT seq FROM sqlite_sequence WHERE name = 'commits'",
+      ).get() as { seq: number } | undefined)?.seq ?? 0;
+      const local = Math.max(point, last + 1, this.#point());
+      staging.finish(local, {
+        logId: this.logId(),
+        fence: this.#db.prepare("SELECT * FROM writer_fence").all(),
+        owner: this.#db.prepare("SELECT * FROM datastore_owner").all(),
+      });
+      this.#replaceContent(staging.path);
+    });
   }
 
   #replaceContent(path: string): void {
@@ -3097,12 +3201,277 @@ class SqliteCompactedBase implements CompactedBaseWriter {
   }
 }
 
+/** The rows of a follower's `commits.db` that belong to the file, not its content. */
+export interface ObservedBaseFileRows {
+  readonly logId: string;
+  readonly fence: readonly Record<string, SQLInputValue>[];
+  readonly owner: readonly Record<string, SQLInputValue>[];
+}
+
+/**
+ * A compacted base serve sent, staged in a `commits.db` of its own beside a
+ * follower copy before {@link SqliteCommitStore.installObservedBase}
+ * installs it (swamp-club#4006). Each page is added in one transaction; a
+ * load cut off leaves only this file, which {@link ObservedBaseStaging.create}
+ * removes before staging again. Nothing reads it as a copy.
+ */
+export class ObservedBaseStaging {
+  readonly path: string;
+  readonly #db: DatabaseSync;
+  readonly #namespace: string;
+  /** Each partition's compacted seq and its data names' marks. */
+  readonly #partitions = new Map<
+    string,
+    { seq: number; names: readonly DataNameMarks[] }
+  >();
+  #closed = false;
+
+  private constructor(path: string, db: DatabaseSync, namespace: string) {
+    this.path = path;
+    this.#db = db;
+    this.#namespace = namespace;
+  }
+
+  /** A fresh staging file at `path`, removing whatever a cut-off load left. */
+  static create(path: string, namespace: string): ObservedBaseStaging {
+    removeDatabaseFiles(path);
+    return new ObservedBaseStaging(path, openCommitsDatabase(path), namespace);
+  }
+
+  /** Removes the staging file at `path` and its WAL, if there. */
+  static remove(path: string): void {
+    removeDatabaseFiles(path);
+  }
+
+  /**
+   * Adds one page of serve's entries. A partition named twice with another
+   * seq is refused: one point has one seq per partition.
+   */
+  add(entries: readonly ObservedBaseEntry[]): void {
+    this.#assertOpen();
+    const base = new SqliteCompactedBase(this.#db);
+    const insertVersion = this.#db.prepare(
+      "INSERT OR REPLACE INTO base_versions (namespace, partition, name, version, metadata) VALUES (?, ?, ?, ?, ?)",
+    );
+    const insertCatalog = this.#db.prepare(
+      "INSERT OR REPLACE INTO base_catalog (namespace, partition, name, version) VALUES (?, ?, ?, ?)",
+    );
+    const insertForward = this.#db.prepare(
+      "INSERT OR REPLACE INTO base_forwards (namespace, partition, name, renamed_to) VALUES (?, ?, ?, ?)",
+    );
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      base.begin(0);
+      for (const entry of entries) {
+        if (entry.namespace !== this.#namespace) {
+          throw new Error(
+            `A base entry of namespace ${entry.namespace} is not this copy's`,
+          );
+        }
+        switch (entry.kind) {
+          case "partition": {
+            const known = this.#partitions.get(entry.partition);
+            if (known !== undefined && known.seq !== entry.seq) {
+              throw new Error(
+                `Serve sent partition ${entry.partition} at seqs ${known.seq} and ${entry.seq} in one base`,
+              );
+            }
+            this.#partitions.set(entry.partition, {
+              seq: entry.seq,
+              names: entry.names,
+            });
+            base.setCompactedSeq(entry.namespace, entry.partition, entry.seq);
+            break;
+          }
+          case "record":
+            base.putRecord(
+              entry.namespace,
+              entry.partition,
+              entry.key,
+              entry.record,
+            );
+            break;
+          case "version":
+            insertVersion.run(
+              entry.namespace,
+              entry.partition,
+              entry.version.metadata.name,
+              entry.version.version,
+              JSON.stringify(entry.version.metadata),
+            );
+            break;
+          case "catalog-row":
+            insertCatalog.run(
+              entry.namespace,
+              entry.partition,
+              entry.metadata.name,
+              entry.metadata.version,
+            );
+            break;
+          case "forward":
+            insertForward.run(
+              entry.namespace,
+              entry.partition,
+              entry.name,
+              entry.to,
+            );
+            break;
+          case "file":
+            base.setFileOwnership(entry.namespace, entry.key, entry.ownership);
+            break;
+        }
+      }
+      this.#db.exec("COMMIT");
+    } catch (error) {
+      rollbackQuietly(this.#db);
+      throw error;
+    }
+  }
+
+  /**
+   * Makes the staged base a store at compaction point `point`: heads,
+   * snapshots, the commits' sequence and the file's own rows. Called by
+   * {@link SqliteCommitStore.installObservedBase}, which then installs it.
+   */
+  finish(point: number, rows: ObservedBaseFileRows): void {
+    this.#assertOpen();
+    const db = this.#db;
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.prepare("UPDATE compaction SET point = ? WHERE id = 1").run(point);
+      db.prepare("DELETE FROM sqlite_sequence WHERE name = 'commits'").run();
+      db.prepare(
+        "INSERT INTO sqlite_sequence (name, seq) VALUES ('commits', ?)",
+      ).run(point);
+      db.prepare("UPDATE log_identity SET log_id = ? WHERE id = 1").run(
+        rows.logId,
+      );
+      copyRows(db, "writer_fence", rows.fence);
+      copyRows(db, "datastore_owner", rows.owner);
+      const records = db.prepare(
+        "SELECT record_key, sha256 FROM base_records WHERE namespace = ? AND partition = ? ORDER BY record_key",
+      );
+      const versions = db.prepare(
+        "SELECT name, version FROM base_versions WHERE namespace = ? AND partition = ? ORDER BY name, version",
+      );
+      const upsertHead = db.prepare(
+        "INSERT OR REPLACE INTO partition_heads (namespace, partition, seq, highest_fence) VALUES (?, ?, ?, NULL)",
+      );
+      const upsertSnapshot = db.prepare(
+        "INSERT OR REPLACE INTO partition_snapshots (namespace, partition, seq, body) VALUES (?, ?, ?, ?)",
+      );
+      for (const [partition, { seq, names }] of this.#partitions) {
+        const live = new Map<string, number[]>();
+        for (
+          const row of versions.all(this.#namespace, partition) as {
+            name: string;
+            version: number;
+          }[]
+        ) {
+          const list = live.get(row.name) ?? [];
+          list.push(row.version);
+          live.set(row.name, list);
+        }
+        const marks = new Map(names.map((name) => [name.name, name]));
+        const snapshotNames = [];
+        for (const name of new Set([...marks.keys(), ...live.keys()])) {
+          const versionsOf = live.get(name) ?? [];
+          const mark = marks.get(name);
+          const highWater = Math.max(
+            mark?.highWater ?? 0,
+            maxOf(versionsOf) ?? 0,
+          );
+          if (highWater < 1) continue;
+          // Serve's marks are its partition's now: a version live at the
+          // compacted seq may have been removed since, and a snapshot never
+          // holds a version both live and removed.
+          let removed = VersionRanges.of(mark?.removed ?? []);
+          for (const version of versionsOf) removed = removed.delete(version);
+          snapshotNames.push({
+            name,
+            live: versionsOf,
+            highWater,
+            ...(removed.isEmpty ? {} : { removed: removed.toJSON() }),
+          });
+        }
+        const snapshot = {
+          v: 1,
+          partition,
+          seq,
+          records: (records.all(this.#namespace, partition) as {
+            record_key: string;
+            sha256: string;
+          }[]).map((row) => [row.record_key, row.sha256]),
+          names: snapshotNames,
+        };
+        upsertHead.run(this.#namespace, partition, seq);
+        upsertSnapshot.run(
+          this.#namespace,
+          partition,
+          seq,
+          JSON.stringify(snapshot),
+        );
+      }
+      db.exec("COMMIT");
+    } catch (error) {
+      rollbackQuietly(db);
+      throw error;
+    }
+  }
+
+  close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#db.close();
+  }
+
+  #assertOpen(): void {
+    if (this.#closed) throw new Error("The base staging file is closed");
+  }
+}
+
+/** Replaces every row of `table` with `rows`. */
+function copyRows(
+  db: DatabaseSync,
+  table: "writer_fence" | "datastore_owner",
+  rows: readonly Record<string, SQLInputValue>[],
+): void {
+  db.exec(`DELETE FROM ${table}`);
+  for (const row of rows) {
+    const columns = Object.keys(row);
+    db.prepare(
+      `INSERT INTO ${table} (${
+        columns.map(quoteIdentifier).join(", ")
+      }) VALUES (${columns.map(() => "?").join(", ")})`,
+    ).run(...columns.map((column) => row[column]));
+  }
+}
+
+/** Removes a SQLite database file and its journals, if there. */
+function removeDatabaseFiles(path: string): void {
+  for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+    try {
+      Deno.removeSync(path + suffix);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+  }
+}
+
 /** The page token {@link SqliteCompactedBase.readPage} hands out. */
 function parsePageToken(
   token: string | undefined,
 ): { section: number; key: (string | number)[] | undefined } {
   if (token === undefined) return { section: 0, key: undefined };
-  const value = JSON.parse(token) as { section?: unknown; key?: unknown };
+  let value: { section?: unknown; key?: unknown } | null;
+  try {
+    value = JSON.parse(token);
+  } catch {
+    throw new InvalidBasePageTokenError(token);
+  }
+  if (typeof value !== "object" || value === null) {
+    throw new InvalidBasePageTokenError(token);
+  }
   const section = value.section;
   const key = value.key;
   if (
@@ -3111,7 +3480,7 @@ function parsePageToken(
     key.length !== BASE_SECTIONS[section].keys.length ||
     !key.every((k) => typeof k === "string" || typeof k === "number")
   ) {
-    throw new Error(`Invalid compacted base page token: ${token}`);
+    throw new InvalidBasePageTokenError(token);
   }
   return { section, key: key as (string | number)[] };
 }

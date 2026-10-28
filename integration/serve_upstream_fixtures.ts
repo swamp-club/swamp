@@ -81,8 +81,13 @@ export interface Serve {
   readonly models: Readonly<Record<string, string>>;
   /** Serve's own checkout. */
   readonly serveRepo: string;
-  /** Every commit of serve's log, in order. */
+  /** Every commit of serve's log after its compaction point, in order. */
   log(): Promise<readonly ServeLogEntry[]>;
+  /**
+   * Compacts serve's whole log; with `claim`, serve claims its datastore
+   * first. Resolves with the compaction point.
+   */
+  compact(options?: { claim?: boolean }): Promise<number>;
   /**
    * Serve's own work: `count` saves of `dataName` on `web`, each under
    * serve's lock on it, as serve's method runs take it.
@@ -199,6 +204,7 @@ async function startServe(options: ServeOptions): Promise<Serve> {
   let failed: string | undefined;
   let stopped = false;
   let logReply: readonly ServeLogEntry[] | undefined;
+  let compactedPoint: number | undefined;
   let wroteReply:
     | { versions: readonly number[]; errors: readonly string[] }
     | undefined;
@@ -209,6 +215,7 @@ async function startServe(options: ServeOptions): Promise<Serve> {
     else if (message.kind === "failed") failed = message.error;
     else if (message.kind === "stopped") stopped = true;
     else if (message.kind === "wrote") wroteReply = message;
+    else if (message.kind === "compacted") compactedPoint = message.point;
     else logReply = message.entries;
   };
   worker.onerror = (event) => {
@@ -274,6 +281,20 @@ async function startServe(options: ServeOptions): Promise<Serve> {
       );
       if (logReply === undefined) throw new Error(`serve failed: ${failed}`);
       return logReply;
+    },
+    async compact(options = {}) {
+      compactedPoint = undefined;
+      worker.postMessage(
+        { kind: "compact", claim: options.claim } satisfies ServeWorkerRequest,
+      );
+      await waitFor(
+        () => compactedPoint !== undefined || failed !== undefined,
+        "serve's compaction",
+      );
+      if (compactedPoint === undefined) {
+        throw new Error(`serve failed: ${failed}`);
+      }
+      return compactedPoint;
     },
     async write(dataName, dataId, count) {
       wroteReply = undefined;

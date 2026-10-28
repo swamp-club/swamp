@@ -322,8 +322,8 @@ export class ServeCommitsCompactedError extends CommitsCompactedError {
   readonly status = 410;
   readonly code = "commits_compacted";
 
-  constructor(point: number, message: string) {
-    super(point, "");
+  constructor(point: number, message: string, compactedSeq?: number) {
+    super(point, "", compactedSeq);
     this.message = message;
     this.name = "ServeCommitsCompactedError";
   }
@@ -501,7 +501,7 @@ export function serveErrorFromReply(
   if (status === 410 && code === "commits_compacted") {
     const point = seqField(fields, "point");
     if (point !== undefined) {
-      return new ServeCommitsCompactedError(point, message);
+      return new ServeCommitsCompactedError(point, message, seq);
     }
   }
   if (status === 503 && seq !== undefined) {

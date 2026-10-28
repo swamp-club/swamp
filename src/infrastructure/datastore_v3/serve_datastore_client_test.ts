@@ -988,3 +988,96 @@ Deno.test("ServeDatastoreClient: a connection lost while reading an error body i
   );
   assertEquals(thrown.sent, "maybe");
 });
+
+Deno.test("ServeDatastoreClient.compactedBase: passes the token and limit and reads each entry", async () => {
+  const partition = modelPartition().toString();
+  const entry = {
+    kind: "partition" as const,
+    namespace: "ns",
+    partition,
+    seq: 2,
+    names: [],
+  };
+  const { client, requests } = clientWith(() =>
+    Response.json({ point: 9, entries: [entry], next: "tok-2" })
+  );
+  assertEquals(await client.compactedBase("tok-1", "ns", signal(), 50), {
+    point: 9,
+    entries: [entry],
+    next: "tok-2",
+  });
+  const url = new URL(requests[0].url);
+  assertEquals(url.pathname, "/api/v1/datastore/_default/base");
+  assertEquals(
+    [url.searchParams.get("after"), url.searchParams.get("limit")],
+    ["tok-1", "50"],
+  );
+
+  const { client: last, requests: first } = clientWith(() =>
+    Response.json({ point: 9, entries: [] })
+  );
+  assertEquals(
+    (await last.compactedBase(undefined, "ns", signal())).next,
+    undefined,
+  );
+  assertEquals(new URL(first[0].url).searchParams.has("after"), false);
+});
+
+Deno.test("ServeDatastoreClient.compactedBase: an entry of another namespace or shape refuses the whole page", async () => {
+  const partition = modelPartition().toString();
+  const replies = [
+    {
+      point: 9,
+      entries: [{
+        kind: "partition",
+        namespace: "other",
+        partition,
+        seq: 1,
+        names: [],
+      }],
+    },
+    { point: 9, entries: [{ kind: "commit", namespace: "ns" }] },
+    { point: "9", entries: [] },
+    { point: 9, entries: [], next: "" },
+  ];
+  for (const reply of replies) {
+    const { client } = clientWith(() => Response.json(reply));
+    const error = await assertRejects(
+      () => client.compactedBase(undefined, "ns", signal()),
+      ServeUpstreamError,
+    );
+    assertEquals(error.code, "invalid_response", JSON.stringify(reply));
+  }
+});
+
+Deno.test("ServeDatastoreClient.compactedBase: a page past its limit is refused and cancelled", async () => {
+  const feed = counted();
+  const { client } = clientWith(() =>
+    new Response(feed.stream, { status: 200 })
+  );
+  const error = await assertRejects(
+    () => client.compactedBase(undefined, "ns", signal(), 1000),
+    ServeReplyTooLargeError,
+  );
+  assertEquals(error.maxBytes, SERVE_PAGE_MAX_BYTES);
+  assertBounded(feed, SERVE_PAGE_MAX_BYTES);
+});
+
+Deno.test("ServeDatastoreClient.compactedBase: the log id is checked before the page is read", async () => {
+  const { client } = clientWith(() =>
+    Response.json({ point: 9, entries: [] }, {
+      headers: { [SERVE_DATASTORE_LOG_HEADER]: "log-b" },
+    })
+  );
+  const seen: (string | undefined)[] = [];
+  client.checkLog((logId) => {
+    seen.push(logId);
+    if (logId !== "log-a") throw new Error("another log");
+  });
+  await assertRejects(
+    () => client.compactedBase(undefined, "ns", signal()),
+    Error,
+    "another log",
+  );
+  assertEquals(seen, ["log-b"]);
+});

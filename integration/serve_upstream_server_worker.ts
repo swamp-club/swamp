@@ -28,6 +28,7 @@ import { acquireModelLocks } from "../src/cli/repo_context.ts";
 import { runCommandInRootUnit } from "../src/cli/command_root_unit.ts";
 import { Data } from "../src/domain/data/data.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
+import { DatastoreOwner } from "../src/domain/datastore_v3/datastore_owner.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { runInRootUnitOfWork } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
@@ -53,6 +54,11 @@ export type ServeWorkerRequest =
     readonly managedConfig?: boolean;
   }
   | { readonly kind: "log" }
+  /**
+   * Compacts serve's whole log (swamp-club#4006), and with `claim` has
+   * serve claim its datastore first, as `swamp datastore claim` does.
+   */
+  | { readonly kind: "compact"; readonly claim?: boolean }
   /**
    * Serve's own work: `count` saves of a version of `dataName` on behavior
    * `web`, one after another, each under serve's lock on it as serve's
@@ -88,6 +94,7 @@ export type ServeWorkerMessage =
     readonly serveRepo: string;
   }
   | { readonly kind: "log"; readonly entries: readonly ServeLogEntry[] }
+  | { readonly kind: "compacted"; readonly point: number }
   | {
     readonly kind: "wrote";
     readonly versions: readonly number[];
@@ -104,6 +111,11 @@ const logging = initializeLogging({});
 
 let stop: (() => void) | undefined;
 let log: (() => Promise<void>) | undefined;
+let compact:
+  | ((
+    request: Extract<ServeWorkerRequest, { kind: "compact" }>,
+  ) => Promise<void>)
+  | undefined;
 let write:
   | ((request: Extract<ServeWorkerRequest, { kind: "write" }>) => Promise<void>)
   | undefined;
@@ -137,7 +149,11 @@ async function start(
         models[name] = model.id;
       }
       log = async () => {
-        const changes = await server.v3.commitStore.changesSince(0, 100_000);
+        // The commits after the compaction point: those before are folded.
+        const changes = await server.v3.commitStore.changesSince(
+          await server.v3.commitStore.compactionPoint(),
+          100_000,
+        );
         self.postMessage(
           {
             kind: "log",
@@ -150,6 +166,30 @@ async function start(
                 "key" in op ? [op.key.toString()] : []
               ),
             })),
+          } satisfies ServeWorkerMessage,
+        );
+      };
+      compact = async ({ claim }) => {
+        const store = server.v3.commitStore;
+        const fence = store.writerFence();
+        if (claim === true) {
+          await store.claimOwner(
+            fence ?? 1,
+            DatastoreOwner.create({
+              address: new URL(server.url).origin,
+              claimedAt: new Date().toISOString(),
+              claimedAtCursor: store.highWaterMark().cursor,
+            }),
+          );
+        }
+        const report = await store.compactHistory(
+          store.highWaterMark().cursor,
+          fence !== undefined ? { fence } : {},
+        );
+        self.postMessage(
+          {
+            kind: "compacted",
+            point: report.point,
           } satisfies ServeWorkerMessage,
         );
       };
@@ -237,6 +277,10 @@ self.onmessage = (event: MessageEvent<ServeWorkerRequest>) => {
     );
   } else if (request.kind === "write") {
     (write ?? (() => Promise.reject(new Error("serve is not started"))))(
+      request,
+    ).catch(fail);
+  } else if (request.kind === "compact") {
+    (compact ?? (() => Promise.reject(new Error("serve is not started"))))(
       request,
     ).catch(fail);
   } else if (request.kind === "log") {
