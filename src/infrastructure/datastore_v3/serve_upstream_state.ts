@@ -19,7 +19,8 @@
 
 /**
  * The serve-mode state of a checkout whose v3 datastore's upstream is serve
- * (swamp-club#3985): the changes-feed cursor its copy has applied up to, the
+ * (swamp-club#3985): the changes-feed cursor its copy has applied up to and
+ * the commit it ended at (swamp-club#4049), the
  * head serve last reported for each partition, and a fingerprint of the
  * serve token the copy was built with (never the token). A file of its own beside
  * the checkout's copy of serve's commit log, so a solo checkout never opens
@@ -60,7 +61,24 @@ const MIGRATIONS: readonly string[] = [
      fingerprint TEXT NOT NULL,
      resetting INTEGER NOT NULL DEFAULT 0
    );`,
+  // The feed anchor (swamp-club#4049): the last commit of the last page
+  // applied, which serve must still hold for the cursor to mean anything.
+  `ALTER TABLE feed ADD COLUMN anchor_namespace TEXT;
+   ALTER TABLE feed ADD COLUMN anchor_partition TEXT;
+   ALTER TABLE feed ADD COLUMN anchor_seq INTEGER;
+   ALTER TABLE feed ADD COLUMN anchor_txn_id TEXT;`,
 ];
+
+/**
+ * A commit of serve's feed the copy has passed: its identity, which serve
+ * must still answer with at that partition and seq.
+ */
+export interface ServeFeedAnchor {
+  readonly namespace: string;
+  readonly partition: string;
+  readonly seq: number;
+  readonly txnId: string;
+}
 
 /**
  * The caller a copy was built for: the fingerprint of its serve token, and
@@ -109,16 +127,66 @@ export class ServeUpstreamState {
   }
 
   /**
-   * Records the feed cursor once the page it ends was applied. Never moves
-   * it back: two processes catching up the same checkout both land.
+   * Records the feed cursor once the page it ends was applied, with the
+   * page's last commit as the anchor; a page without commits keeps the
+   * anchor recorded. Never moves either back: two processes catching up the
+   * same checkout both land, and the anchor stays the recorded cursor's.
    */
-  advanceFeedCursor(cursor: number): void {
+  advanceFeedCursor(cursor: number, anchor?: ServeFeedAnchor): void {
     this.#assertOpen();
     assertSeqLike(cursor, "feed cursor");
+    if (anchor !== undefined) assertSeqLike(anchor.seq, "anchor seq");
     this.#db.prepare(
-      `INSERT INTO feed (id, cursor) VALUES (1, ?)
-       ON CONFLICT (id) DO UPDATE SET cursor = MAX(cursor, excluded.cursor)`,
-    ).run(cursor);
+      `INSERT INTO feed (id, cursor, anchor_namespace, anchor_partition,
+         anchor_seq, anchor_txn_id) VALUES (1, ?, ?, ?, ?, ?)
+       ON CONFLICT (id) DO UPDATE SET
+         anchor_namespace = CASE
+           WHEN excluded.cursor >= cursor AND excluded.anchor_seq IS NOT NULL
+           THEN excluded.anchor_namespace ELSE anchor_namespace END,
+         anchor_partition = CASE
+           WHEN excluded.cursor >= cursor AND excluded.anchor_seq IS NOT NULL
+           THEN excluded.anchor_partition ELSE anchor_partition END,
+         anchor_seq = CASE
+           WHEN excluded.cursor >= cursor AND excluded.anchor_seq IS NOT NULL
+           THEN excluded.anchor_seq ELSE anchor_seq END,
+         anchor_txn_id = CASE
+           WHEN excluded.cursor >= cursor AND excluded.anchor_seq IS NOT NULL
+           THEN excluded.anchor_txn_id ELSE anchor_txn_id END,
+         cursor = MAX(cursor, excluded.cursor)`,
+    ).run(
+      cursor,
+      anchor?.namespace ?? null,
+      anchor?.partition ?? null,
+      anchor?.seq ?? null,
+      anchor?.txnId ?? null,
+    );
+  }
+
+  /** The feed anchor; undefined before a page with a commit was applied. */
+  feedAnchor(): ServeFeedAnchor | undefined {
+    this.#assertOpen();
+    const row = this.#db.prepare(
+      `SELECT anchor_namespace, anchor_partition, anchor_seq, anchor_txn_id
+       FROM feed WHERE id = 1`,
+    ).get() as {
+      anchor_namespace: string | null;
+      anchor_partition: string | null;
+      anchor_seq: number | null;
+      anchor_txn_id: string | null;
+    } | undefined;
+    if (
+      row === undefined || row.anchor_namespace === null ||
+      row.anchor_partition === null || row.anchor_seq === null ||
+      row.anchor_txn_id === null
+    ) {
+      return undefined;
+    }
+    return {
+      namespace: row.anchor_namespace,
+      partition: row.anchor_partition,
+      seq: row.anchor_seq,
+      txnId: row.anchor_txn_id,
+    };
   }
 
   /** The head serve last reported for a partition; 0 when none was. */
@@ -166,8 +234,8 @@ export class ServeUpstreamState {
   }
 
   /**
-   * Starts a reset to another caller: forgets the feed cursor and serve's
-   * heads, which describe the old caller's view of serve, and marks the
+   * Starts a reset to another caller: forgets the feed cursor, its anchor
+   * and serve's heads, which describe the old caller's view of serve, and marks the
    * reset unfinished, so a reset cut short is run again whatever the
    * fingerprint says. The recorded fingerprint stays the old caller's.
    */

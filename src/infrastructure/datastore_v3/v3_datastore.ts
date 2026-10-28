@@ -926,7 +926,12 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     )
     : undefined;
   const serveCatchUp = serveClient !== undefined && serveState !== undefined
-    ? new ServeCatchUp({ client: serveClient, commitStore, state: serveState })
+    ? new ServeCatchUp({
+      client: serveClient,
+      commitStore,
+      state: serveState,
+      copyDir: dirname(commitsDbPath),
+    })
     : undefined;
   const serveSink = serveClient !== undefined && serveCatchUp !== undefined
     ? createServeCommitSink({

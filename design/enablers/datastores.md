@@ -6606,8 +6606,8 @@ writer-busy:
    (`datastore_v3_serve_copy_holds_unlanded`): they are the previous caller's
    writes, not yet settled with serve. A writing command with the previous
    token settles them.
-2. The serve-mode state forgets its cursor and serve's heads and is marked
-   resetting, so a reset cut short runs again on the next bind.
+2. The serve-mode state forgets its cursor, the feed anchor and serve's heads
+   and is marked resetting, so a reset cut short runs again on the next bind.
 3. `commits.db` and the outbox are removed, and the new fingerprint recorded.
 
 The chunk cache stays: it is content-addressed, and only chunks the new copy's
@@ -6773,6 +6773,45 @@ the partition is read from serve first (`partitions/{p}/commits?after=`). That
 brings back commits hidden from the caller before a grant changed, and records
 serve's head. A page that is filtered to nothing still moves on by its size,
 because serve's own log has no holes.
+
+**One serve's log.** The copy is keyed only by address and namespace. Its
+cursor is a position in one serve's log, so swamp-club#4049 checks that
+whatever answers at the address still serves that log. Without the check, a
+serve re-pointed at another bucket, a fresh deployment, or one restored from
+an older backup mixed silently into the copy:
+
+- **The feed anchor.** Each applied page records its last commit's identity
+  (namespace, partition, seq, `txnId`) beside the cursor in
+  `serve_upstream.db`. Before every feed catch-up, serve is asked for the
+  commit at that position (`partitions/{p}/commits?after=seq-1`, limit 1).
+  Commits already carry the `txnId`, so the commit log's schema is unchanged.
+- **The partition head.** A partition catch-up, on a write's stale seq or
+  when a recovery looks for a commit, reads from the copy's head commit
+  (`after=head-1`) in its first request and compares that commit's `txnId`.
+  This catches a serve restored to an earlier point within one log, where
+  the feed anchor's partition is still intact.
+- **Refused.** If serve's head is below the commit's seq, or serve holds
+  another `txnId` there, the command fails with `serve_upstream_diverged`.
+  That is a user error, not exit 75. The message names the address and the
+  copy's directory, and says to start a fresh copy by moving the directory
+  aside, so commits not yet sent stay in the moved copy's outbox. The copy is
+  never re-synced on its own: one that holds commits serve lost may be what a
+  restore needs. A commit that met the refusal after a stale seq never
+  landed, so its unit fails with the refusal rather than as a commit that
+  may land.
+- **Not checked.** Some cases cannot be told from a moved serve, so they are
+  not refused:
+  - a commit serve now withholds from the caller;
+  - a partition the caller may no longer read (404);
+  - an anchor serve has compacted (410), where the next page applied records
+    another anchor;
+  - a head whose `txnId` the copy has compacted, where only the seq is
+    compared;
+  - a copy whose feed has never carried a commit, which has no anchor and
+    nothing to mix.
+
+  A 410 at exactly the copy's head on a partition catch-up reads on from the
+  head without the check, so the check adds no 410 to the write path.
 
 **Run index.** The read model's catch-up rewrites run records directly, and
 the run index trusted itself while its count matched. So a run another

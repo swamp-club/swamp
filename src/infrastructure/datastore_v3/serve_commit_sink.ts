@@ -66,6 +66,7 @@ import {
   ServeChunksMissingError,
   ServeStaleSeqError,
   ServeUnreachableError,
+  ServeUpstreamDivergedError,
 } from "./serve_upstream_errors.ts";
 import type { SqliteCommitStore } from "./sqlite_commit_store.ts";
 
@@ -206,11 +207,20 @@ export function createServeCommitSink(
     } catch (error) {
       if (error instanceof ServeStaleSeqError) {
         catchUp.recordServeHead(commit.namespace, commit.partition, error.seq);
-        await catchUp.catchUpPartition(
-          commit.namespace,
-          commit.partition,
-          signal,
-        );
+        try {
+          await catchUp.catchUpPartition(
+            commit.namespace,
+            commit.partition,
+            signal,
+          );
+        } catch (caught) {
+          // Serve refused the commit, so it never landed: a recovery must
+          // not ask the serve it refused for it (swamp-club#4049).
+          if (caught instanceof ServeUpstreamDivergedError) {
+            neverSent.add(commit.txnId);
+          }
+          throw caught;
+        }
         throw new CommitRejectedError(
           "seq-gap",
           `Serve's partition ${commit.partition} is at seq ${error.seq}, ` +

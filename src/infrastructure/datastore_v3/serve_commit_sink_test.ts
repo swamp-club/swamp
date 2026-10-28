@@ -47,6 +47,7 @@ import {
 import {
   ServeChunksMissingError,
   ServeUnreachableError,
+  ServeUpstreamDivergedError,
 } from "./serve_upstream_errors.ts";
 import { ServeUpstreamState } from "./serve_upstream_state.ts";
 import {
@@ -90,6 +91,7 @@ async function withCheckout(fn: (c: Checkout) => Promise<void>) {
     client: serve,
     commitStore: store,
     state,
+    copyDir: dir,
   });
   const cache = new CachedServeStorage(
     join(dir, "datastore"),
@@ -489,5 +491,30 @@ Deno.test("createServeCommitSink: headIdentity is the copy's, with its txnId, wh
       seq: 1,
       txnId: "other-1",
     });
+  });
+});
+
+Deno.test("createServeCommitSink: a unit whose stale commit meets a serve behind the copy fails with the divergence and keeps no outbox entry", async () => {
+  await withCheckout(async ({ store, outbox, serve, catchUp, cache, sink }) => {
+    await otherWriter(serve);
+    await otherWriter(serve);
+    await catchUp.catchUp(new AbortController().signal);
+    assertEquals((await store.head("", MODEL)).seq, 2);
+    // Serve restored to an earlier point: its partition ends at seq 1.
+    serve.logs.get(MODEL.toString())!.splice(1);
+
+    const uow = createCommitLogUnitOfWork(
+      contextHook(),
+      unitOptions(sink, cache),
+    );
+    await uow.stageOp(blobChange("a"));
+    const error = await assertRejects(
+      () => uow.commit(),
+      ServeUpstreamDivergedError,
+    );
+    assertEquals(error.divergence, { kind: "behind", serveHead: 1 });
+    assertEquals(serve.head(MODEL), 1, "serve took nothing");
+    assertEquals((await store.head("", MODEL)).seq, 2);
+    assertEquals(await outbox.hasEntries(), false);
   });
 });

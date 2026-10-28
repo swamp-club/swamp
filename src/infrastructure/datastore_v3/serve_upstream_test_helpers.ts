@@ -38,8 +38,10 @@ import type {
 } from "./serve_datastore_client.ts";
 import {
   ServeChunksMissingError,
+  ServeCommitsCompactedError,
   ServeStaleSeqError,
   ServeUnreachableError,
+  ServeUpstreamError,
 } from "./serve_upstream_errors.ts";
 
 export const SERVE_URL = "http://serve.test:9090";
@@ -121,6 +123,10 @@ export class FakeServe implements Client {
   changesFault: Error | undefined;
   /** How many of the next partition reads fail as unreachable. */
   partitionFaults = 0;
+  /** The seq each partition is compacted through: a read from it is a 410. */
+  readonly compactedThrough = new Map<string, number>();
+  /** Partitions this caller may not read: a read of one is a 404. */
+  readonly unreadablePartitions = new Set<string>();
   /** Awaited at the start of every `changes` request. */
   changesGate: Promise<void> | undefined;
 
@@ -203,6 +209,21 @@ export class FakeServe implements Client {
     if (this.partitionFaults > 0) {
       this.partitionFaults--;
       return Promise.reject(this.#unreachable("maybe"));
+    }
+    const key = partition.toString();
+    if (this.unreadablePartitions.has(key)) {
+      return Promise.reject(
+        new ServeUpstreamError(404, "not_found", "No such partition"),
+      );
+    }
+    const compacted = this.compactedThrough.get(key) ?? 0;
+    if (after + 1 <= compacted) {
+      return Promise.reject(
+        new ServeCommitsCompactedError(
+          compacted,
+          `Partition ${key} is compacted through seq ${compacted}`,
+        ),
+      );
     }
     const max = Math.min(limit ?? FAKE_SERVE_MAX_PAGE, FAKE_SERVE_MAX_PAGE);
     const log = this.#log(partition.toString());

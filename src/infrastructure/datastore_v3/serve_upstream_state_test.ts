@@ -161,3 +161,96 @@ Deno.test("ServeUpstreamState.hasReadFeed: false until a page is applied, even a
     }
   });
 });
+
+const ANCHOR_A = {
+  namespace: "",
+  partition: "model/a",
+  seq: 3,
+  txnId: "txn-a3",
+};
+const ANCHOR_B = {
+  namespace: "",
+  partition: "model/b",
+  seq: 1,
+  txnId: "txn-b1",
+};
+
+Deno.test("ServeUpstreamState.feedAnchor: recorded with the cursor, kept by a page without commits, never moved back", async () => {
+  await withTempDir((dir) => {
+    const path = join(dir, "serve_upstream.db");
+    const state = ServeUpstreamState.open(path);
+    try {
+      assertEquals(state.feedAnchor(), undefined);
+      state.advanceFeedCursor(4, ANCHOR_A);
+      assertEquals(state.feedAnchor(), ANCHOR_A);
+      // A page that carried no commit moves the cursor and keeps the anchor.
+      state.advanceFeedCursor(6);
+      assertEquals(state.feedCursor(), 6);
+      assertEquals(state.feedAnchor(), ANCHOR_A);
+      // Another process that applied an older page lands neither.
+      state.advanceFeedCursor(5, ANCHOR_B);
+      assertEquals(state.feedCursor(), 6);
+      assertEquals(state.feedAnchor(), ANCHOR_A);
+      state.advanceFeedCursor(8, ANCHOR_B);
+      assertEquals(state.feedAnchor(), ANCHOR_B);
+    } finally {
+      state.close();
+    }
+    const reopened = ServeUpstreamState.open(path);
+    try {
+      assertEquals(reopened.feedCursor(), 8);
+      assertEquals(reopened.feedAnchor(), ANCHOR_B);
+    } finally {
+      reopened.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState.feedAnchor: a caller reset forgets it with the cursor", async () => {
+  await withTempDir((dir) => {
+    const state = ServeUpstreamState.open(join(dir, "serve_upstream.db"));
+    try {
+      state.stampCaller("aaa");
+      state.advanceFeedCursor(4, ANCHOR_A);
+      state.beginCallerReset();
+      assertEquals(state.feedAnchor(), undefined);
+      assertEquals(state.feedCursor(), 0);
+    } finally {
+      state.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState: a file at schema version 1 keeps its cursor and has no anchor", async () => {
+  await withTempDir((dir) => {
+    const path = join(dir, "serve_upstream.db");
+    const db = new DatabaseSync(path);
+    db.exec(`CREATE TABLE feed (
+       id INTEGER PRIMARY KEY CHECK (id = 1),
+       cursor INTEGER NOT NULL
+     );
+     CREATE TABLE serve_heads (
+       namespace TEXT NOT NULL,
+       partition TEXT NOT NULL,
+       seq INTEGER NOT NULL,
+       PRIMARY KEY (namespace, partition)
+     );
+     CREATE TABLE caller (
+       id INTEGER PRIMARY KEY CHECK (id = 1),
+       fingerprint TEXT NOT NULL,
+       resetting INTEGER NOT NULL DEFAULT 0
+     );
+     INSERT INTO feed (id, cursor) VALUES (1, 7);
+     PRAGMA user_version=1;`);
+    db.close();
+    const state = ServeUpstreamState.open(path);
+    try {
+      assertEquals(state.feedCursor(), 7);
+      assertEquals(state.feedAnchor(), undefined);
+      state.advanceFeedCursor(9, ANCHOR_A);
+      assertEquals(state.feedAnchor(), ANCHOR_A);
+    } finally {
+      state.close();
+    }
+  });
+});

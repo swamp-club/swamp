@@ -579,10 +579,11 @@ export interface Proxy {
 /**
  * Starts a {@link Proxy} that forwards every request to `target` (when
  * given) unless `answer` answers it first; without a target, unanswered
- * requests get a 401, as a serve that demands a token answers.
+ * requests get a 401, as a serve that demands a token answers. A function
+ * target is asked on every request: the address can move to another serve.
  */
 export function startProxy(
-  target: string | undefined,
+  target: string | undefined | (() => string | undefined),
   answer: (
     request: Request,
     forward: () => Promise<Response>,
@@ -602,14 +603,15 @@ export function startProxy(
         ? undefined
         : new Uint8Array(await request.arrayBuffer());
       const forward = async () => {
-        if (target === undefined) {
+        const origin = typeof target === "function" ? target() : target;
+        if (origin === undefined) {
           return Response.json({ code: "unauthorized", message: "no token" }, {
             status: 401,
           });
         }
         const headers = new Headers(request.headers);
         headers.delete("host");
-        const response = await fetch(`${target}${url.pathname}${url.search}`, {
+        const response = await fetch(`${origin}${url.pathname}${url.search}`, {
           method: request.method,
           headers,
           ...(body !== undefined

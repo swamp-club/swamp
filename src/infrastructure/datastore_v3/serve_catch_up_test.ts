@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertInstanceOf,
+  assertRejects,
+} from "@std/assert";
 import { join } from "@std/path";
 import type { Commit } from "../../domain/datastore_v3/commit.ts";
 import {
@@ -26,11 +31,16 @@ import {
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import { runPartition, runPut } from "./commit_log_test_helpers.ts";
 import { SERVE_PARTITION_PAGE, ServeCatchUp } from "./serve_catch_up.ts";
-import { ServeCommitsCompactedError } from "./serve_upstream_errors.ts";
+import {
+  SERVE_UPSTREAM_DIVERGED_CODE,
+  ServeCommitsCompactedError,
+  ServeUpstreamDivergedError,
+} from "./serve_upstream_errors.ts";
 import { ServeUpstreamState } from "./serve_upstream_state.ts";
 import {
   FakeServe,
   removeTempDir,
+  SERVE_URL,
   serveStamped,
 } from "./serve_upstream_test_helpers.ts";
 import { SqliteCommitStore } from "./sqlite_commit_store.ts";
@@ -68,7 +78,12 @@ async function withCheckout(fn: (c: Checkout) => Promise<void>) {
       store,
       state,
       serve,
-      catchUp: new ServeCatchUp({ client: serve, commitStore: store, state }),
+      catchUp: new ServeCatchUp({
+        client: serve,
+        commitStore: store,
+        state,
+        copyDir: dir,
+      }),
       appends,
     });
   } finally {
@@ -84,6 +99,30 @@ async function other(seq: number, partition = MODEL): Promise<Commit> {
     ? await savePut(`m${seq}`, 1)
     : await runPut(`run ${seq}`);
   return serveStamped(seq, [op], partition);
+}
+
+/**
+ * Another serve's commit at `seq` of `partition`: another log, so another
+ * txnId at the same seq.
+ */
+async function another(seq: number, partition = MODEL): Promise<Commit> {
+  const op = partition === MODEL
+    ? await savePut(`b${seq}`, 1)
+    : await runPut(`b run ${seq}`);
+  return serveStamped(seq, [op], partition, `another-${seq}`);
+}
+
+/** A catch-up of the same copy through `serve`, as the address now answers. */
+function through(
+  serve: FakeServe,
+  { dir, store, state }: Pick<Checkout, "dir" | "store" | "state">,
+): ServeCatchUp {
+  return new ServeCatchUp({
+    client: serve,
+    commitStore: store,
+    state,
+    copyDir: dir,
+  });
 }
 
 /** The seqs the copy holds of `partition`. */
@@ -150,6 +189,7 @@ Deno.test("ServeCatchUp.catchUp: replaying pages already applied appends nothing
         client: serve,
         commitStore: store,
         state: first,
+        copyDir: dir,
       })
         .catchUp(signal());
     } finally {
@@ -165,6 +205,7 @@ Deno.test("ServeCatchUp.catchUp: replaying pages already applied appends nothing
         client: serve,
         commitStore: store,
         state: fresh,
+        copyDir: dir,
       }).catchUp(signal());
       assertEquals(report, { applied: 0 });
       assertEquals(fresh.feedCursor(), 3);
@@ -316,4 +357,227 @@ Deno.test("ServeCatchUp.catchUp: an aborted signal reads nothing", async () => {
     );
     assertEquals(serve.requests.changes, 0);
   });
+});
+
+Deno.test("ServeCatchUp.catchUp: a serve without the feed anchor is refused before anything is read into the copy", async () => {
+  await withCheckout(async (checkout) => {
+    const { dir, store, state, serve, catchUp, appends } = checkout;
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    await catchUp.catchUp(signal());
+    const anchor = state.feedAnchor();
+    assertEquals(anchor?.seq, 3);
+
+    // The address now reaches another serve, with its own datastore.
+    const swapped = new FakeServe();
+    swapped.land(await another(1, OTHER));
+    swapped.land(await another(2, OTHER));
+    const error = await assertRejects(
+      () => through(swapped, checkout).catchUp(signal()),
+      ServeUpstreamDivergedError,
+    );
+
+    assertEquals(error.code, SERVE_UPSTREAM_DIVERGED_CODE);
+    assertEquals(error.serveUrl, SERVE_URL);
+    assertEquals(error.copyDir, dir);
+    assertEquals(error.divergence, { kind: "behind", serveHead: 0 });
+    assertEquals(swapped.requests.changes, 0, "the feed was never read");
+    assertEquals(appends, [1, 2, 3]);
+    assertEquals(await copySeqs(store, OTHER), []);
+    assertEquals(state.feedCursor(), 3);
+    assertEquals(state.feedAnchor(), anchor);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a serve with another commit at the anchor's seq is refused", async () => {
+  await withCheckout(async (checkout) => {
+    const { serve, catchUp } = checkout;
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    await catchUp.catchUp(signal());
+
+    const swapped = new FakeServe();
+    for (let seq = 1; seq <= 4; seq++) swapped.land(await another(seq));
+    const error = await assertRejects(
+      () => through(swapped, checkout).catchUp(signal()),
+      ServeUpstreamDivergedError,
+    );
+    assertEquals(error.commit.seq, 3);
+    assertEquals(error.commit.txnId, "other-3");
+    assertEquals(error.divergence, {
+      kind: "other-commit",
+      serveTxnId: "another-3",
+    });
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: the same serve passes the anchor check with one small read, and the anchor moves on", async () => {
+  await withCheckout(async ({ store, state, serve, catchUp }) => {
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    await catchUp.catchUp(signal());
+    assertEquals(serve.partitionReads, [], "a copy with no anchor checks none");
+
+    serve.land(await other(1, OTHER));
+    assertEquals(await catchUp.catchUp(signal()), { applied: 1 });
+
+    assertEquals(serve.partitionReads, [{ after: 2, limit: 1 }]);
+    assertEquals(await copySeqs(store, OTHER), [1]);
+    assertEquals(state.feedAnchor(), {
+      namespace: "",
+      partition: OTHER.toString(),
+      seq: 1,
+      txnId: "other-1",
+    });
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: an anchor serve withholds, may not show, or compacted cannot be checked and is not refused", async () => {
+  for (const hide of ["withheld", "not-found", "compacted"] as const) {
+    await withCheckout(async ({ store, state, serve, catchUp }) => {
+      for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+      await catchUp.catchUp(signal());
+      if (hide === "withheld") serve.hidden.add("other-3");
+      if (hide === "not-found") {
+        serve.unreadablePartitions.add(MODEL.toString());
+      }
+      if (hide === "compacted") serve.compactedThrough.set(MODEL.toString(), 3);
+      serve.land(await other(1, OTHER));
+
+      assertEquals(await catchUp.catchUp(signal()), { applied: 1 }, hide);
+      assertEquals(await copySeqs(store, OTHER), [1], hide);
+      // The page applied records an anchor that can be checked.
+      assertEquals(state.feedAnchor()?.partition, OTHER.toString(), hide);
+    });
+  }
+});
+
+Deno.test("ServeCatchUp.catchUp: a compaction that leaves the anchor alone passes the check", async () => {
+  await withCheckout(async ({ serve, catchUp }) => {
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    await catchUp.catchUp(signal());
+    serve.compactedThrough.set(MODEL.toString(), 2);
+    serve.land(await other(4));
+    assertEquals(await catchUp.catchUp(signal()), { applied: 1 });
+  });
+});
+
+Deno.test("ServeCatchUp.catchUpPartition: a serve behind the copy's head is refused, and nothing is read into the copy", async () => {
+  await withCheckout(async (checkout) => {
+    const { state, serve, catchUp, appends } = checkout;
+    for (let seq = 1; seq <= 5; seq++) serve.land(await other(seq));
+    await catchUp.catchUp(signal());
+
+    // Restored to an earlier point: the same log, cut at seq 3.
+    const restored = new FakeServe();
+    for (let seq = 1; seq <= 3; seq++) restored.land(await other(seq));
+    const error = await assertRejects(
+      () => through(restored, checkout).catchUpPartition("", MODEL, signal()),
+      ServeUpstreamDivergedError,
+    );
+    assertEquals(error.commit, {
+      namespace: "",
+      partition: MODEL.toString(),
+      seq: 5,
+      txnId: "other-5",
+    });
+    assertEquals(error.divergence, { kind: "behind", serveHead: 3 });
+    assertEquals(appends, [1, 2, 3, 4, 5]);
+    assertEquals(
+      state.serveHead("", MODEL.toString()),
+      0,
+      "the lower head is checked before it is recorded",
+    );
+  });
+});
+
+Deno.test("ServeCatchUp.catchUpPartition: another commit at the copy's head seq is refused", async () => {
+  await withCheckout(async (checkout) => {
+    const { serve, catchUp, appends } = checkout;
+    for (let seq = 1; seq <= 2; seq++) serve.land(await other(seq));
+    await catchUp.catchUp(signal());
+
+    const swapped = new FakeServe();
+    for (let seq = 1; seq <= 3; seq++) swapped.land(await another(seq));
+    const error = await assertRejects(
+      () => through(swapped, checkout).catchUpPartition("", MODEL, signal()),
+      ServeUpstreamDivergedError,
+    );
+    assertEquals(error.divergence, {
+      kind: "other-commit",
+      serveTxnId: "another-2",
+    });
+    assertEquals(appends, [1, 2]);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUpPartition: reads from the copy's head commit in the same request, and a withheld head checks the head only", async () => {
+  await withCheckout(async ({ store, serve, catchUp }) => {
+    for (let seq = 1; seq <= 2; seq++) serve.land(await other(seq));
+    await catchUp.catchUp(signal());
+    serve.land(await other(3));
+
+    assertEquals(await catchUp.catchUpPartition("", MODEL, signal()), 3);
+    assertEquals(serve.partitionReads.at(-1)?.after, 1);
+    assertEquals(await copySeqs(store), [1, 2, 3]);
+
+    serve.hidden.add("other-3");
+    serve.land(await other(4));
+    assertEquals(await catchUp.catchUpPartition("", MODEL, signal()), 4);
+    assertEquals(await copySeqs(store), [1, 2, 3, 4]);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUpPartition: serve compacted through exactly the copy's head reads on from it unchecked", async () => {
+  await withCheckout(async ({ store, serve, catchUp }) => {
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    await catchUp.catchUp(signal());
+    serve.land(await other(4));
+    serve.compactedThrough.set(MODEL.toString(), 3);
+    const before = serve.partitionReads.length;
+
+    assertEquals(await catchUp.catchUpPartition("", MODEL, signal()), 4);
+    assertEquals(serve.partitionReads.slice(before).map((r) => r.after), [
+      2,
+      3,
+    ]);
+    assertEquals(await copySeqs(store), [1, 2, 3, 4]);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUpPartition: a copy head on a page boundary still reads every page after it", async () => {
+  await withCheckout(async ({ store, serve, catchUp }) => {
+    serve.landUnreadable(MODEL, SERVE_PARTITION_PAGE - 1);
+    const end = 2 * SERVE_PARTITION_PAGE + 1;
+    for (let seq = SERVE_PARTITION_PAGE; seq <= end; seq++) {
+      serve.land(await other(seq));
+    }
+    // The copy holds serve's commit at the boundary, as a feed page left it.
+    await store.append(await other(SERVE_PARTITION_PAGE));
+
+    assertEquals(await catchUp.catchUpPartition("", MODEL, signal()), end);
+    const seqs = await copySeqs(store);
+    assertEquals(seqs.length, end - SERVE_PARTITION_PAGE + 1);
+    assertEquals(seqs.at(-1), end);
+  });
+});
+
+Deno.test("ServeUpstreamDivergedError: names the address, the copy and how to start a fresh one", () => {
+  const error = new ServeUpstreamDivergedError(
+    SERVE_URL,
+    "/repo/.swamp/_datastore_v3_copies/serve-abc",
+    { namespace: "", partition: "model/a", seq: 3, txnId: "t3" },
+    { kind: "behind", serveHead: 0 },
+  );
+  assertInstanceOf(error, ServeUpstreamDivergedError);
+  assertEquals(error.code, SERVE_UPSTREAM_DIVERGED_CODE);
+  for (
+    const part of [
+      SERVE_URL,
+      "/repo/.swamp/_datastore_v3_copies/serve-abc",
+      "commit 3 of partition model/a",
+      "head for that partition is 0",
+      "move /repo/.swamp/_datastore_v3_copies/serve-abc aside",
+      "outbox",
+    ]
+  ) {
+    assert(error.message.includes(part), part);
+  }
 });

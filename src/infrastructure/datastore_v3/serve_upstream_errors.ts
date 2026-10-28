@@ -45,7 +45,7 @@ import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import {
   V3_SERVE_UNREACHABLE_CODE,
 } from "../../domain/datastore_v3/writer_lease.ts";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 
 export { V3_SERVE_UNREACHABLE_CODE };
 
@@ -109,6 +109,62 @@ export class ServeNeverReadError extends UserError {
     );
     this.name = "ServeNeverReadError";
     this.cause = cause;
+  }
+}
+
+/** Error code for a serve that is not serving the log a copy follows. */
+export const SERVE_UPSTREAM_DIVERGED_CODE = "serve_upstream_diverged";
+
+/** A commit of a copy serve was checked against: see {@link ServeUpstreamDivergedError}. */
+export interface ServeDivergedCommit {
+  readonly namespace: string;
+  readonly partition: string;
+  readonly seq: number;
+  readonly txnId: string | undefined;
+}
+
+/**
+ * What serve answered for a commit the copy holds or followed: its head
+ * for the partition is below the commit's seq, or it holds another commit
+ * at that seq.
+ */
+export type ServeDivergence =
+  | { readonly kind: "behind"; readonly serveHead: number }
+  | { readonly kind: "other-commit"; readonly serveTxnId: string };
+
+/**
+ * Serve at a checkout's address is not serving the commit log the
+ * checkout's copy follows (swamp-club#4049): the address now reaches
+ * another serve or datastore, or one restored to an earlier point. The
+ * copy is never re-synced on its own, since a copy holding commits serve
+ * lost may be what a restore needs; a fresh copy starts once this one is
+ * moved aside.
+ */
+export class ServeUpstreamDivergedError extends UserError {
+  declare readonly code: typeof SERVE_UPSTREAM_DIVERGED_CODE;
+
+  constructor(
+    readonly serveUrl: string,
+    readonly copyDir: string,
+    readonly commit: ServeDivergedCommit,
+    readonly divergence: ServeDivergence,
+  ) {
+    const at = `commit ${commit.seq} of partition ${commit.partition}`;
+    const answer = divergence.kind === "behind"
+      ? `serve's head for that partition is ${divergence.serveHead}`
+      : `serve holds another commit at that seq`;
+    super(
+      `Serve at ${serveUrl} is not serving the datastore this checkout's ` +
+        `copy at ${copyDir} follows: the copy has ${at}, and ${answer}. ` +
+        `The address may now reach another serve or datastore, or one ` +
+        `restored from an earlier backup. Swamp does not re-sync the copy ` +
+        `on its own, since it may hold commits serve lost. To start a ` +
+        `fresh copy from this serve, move ${copyDir} aside; commits not ` +
+        `yet sent to serve stay in the moved copy's outbox.`,
+      SERVE_UPSTREAM_DIVERGED_CODE,
+    );
+    this.name = "ServeUpstreamDivergedError";
+    markErrorPaths(this, [copyDir]);
   }
 }
 
