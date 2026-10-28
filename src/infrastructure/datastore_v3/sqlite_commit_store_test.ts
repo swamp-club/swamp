@@ -1143,6 +1143,56 @@ Deno.test("SqliteCommitStore: a store with the chunk partition index is at a sch
   );
 });
 
+Deno.test("SqliteCommitStore.logId: minted once per log, kept across a reopen and by a copy of the file (swamp-club#4049)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const store = SqliteCommitStore.open(path);
+    const id = store.logId();
+    await store.close();
+    assert(/^[0-9a-f]{32}$/.test(id), id);
+
+    const reopened = SqliteCommitStore.open(path);
+    assertEquals(reopened.logId(), id);
+    await reopened.close();
+
+    // A restored or replicated copy of the file is the same log.
+    const copy = join(dir, "restored.db");
+    await Deno.copyFile(path, copy);
+    const restored = SqliteCommitStore.open(copy);
+    assertEquals(restored.logId(), id);
+    await restored.close();
+
+    // A fresh log is another.
+    const fresh = SqliteCommitStore.open(join(dir, "fresh.db"));
+    assert(fresh.logId() !== id);
+    await fresh.close();
+  });
+});
+
+Deno.test("SqliteCommitStore.logId: a store from before log ids gets one when it migrates, at a schema a schema-8 swamp refuses as newer (swamp-club#4049)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    await (SqliteCommitStore.open(path)).close();
+    // Take the file back to schema 8, as a swamp before log ids left it.
+    const db = new DatabaseSync(path);
+    try {
+      db.exec("DROP TABLE log_identity; PRAGMA user_version=8");
+    } finally {
+      db.close();
+    }
+    const migrated = SqliteCommitStore.open(path);
+    const id = migrated.logId();
+    await migrated.close();
+    assert(/^[0-9a-f]{32}$/.test(id), id);
+    assertEquals(
+      rawRows(path, "PRAGMA user_version")[0].user_version,
+      COMMIT_STORE_SCHEMA_VERSION,
+    );
+    // A swamp at schema 8 would serve this log without its id.
+    assertGreater(COMMIT_STORE_SCHEMA_VERSION, 8);
+  });
+});
+
 // Bounded txnIds in a cached partition (swamp-club#3915).
 
 Deno.test("SqliteCommitStore: a long-cached partition holds at most a snapshot interval of txnIds and still detects older duplicates", async () => {

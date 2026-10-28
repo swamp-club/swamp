@@ -124,21 +124,27 @@ export interface ServeDivergedCommit {
 }
 
 /**
- * What serve answered for a commit the copy holds or followed: its head
- * for the partition is below the commit's seq, or it holds another commit
- * at that seq.
+ * What serve answered that the copy does not follow: another commit log's
+ * id; or, for a commit the copy holds or followed, a head for its
+ * partition below the commit's seq, or another commit at that seq.
  */
 export type ServeDivergence =
+  | {
+    readonly kind: "other-log";
+    readonly copyLogId: string;
+    readonly serveLogId: string;
+  }
   | { readonly kind: "behind"; readonly serveHead: number }
   | { readonly kind: "other-commit"; readonly serveTxnId: string };
 
 /**
  * Serve at a checkout's address is not serving the commit log the
  * checkout's copy follows (swamp-club#4049): the address now reaches
- * another serve or datastore, or one restored to an earlier point. The
- * copy is never re-synced on its own, since a copy holding commits serve
- * lost may be what a restore needs; a fresh copy starts once this one is
- * moved aside.
+ * another serve or datastore (another log id), or one restored to an
+ * earlier point (a commit the copy holds, missing). `commit` is that
+ * commit, undefined for another log. The copy is never re-synced on its
+ * own, since a copy holding commits serve lost may be what a restore
+ * needs; a fresh copy starts once this one is moved aside.
  */
 export class ServeUpstreamDivergedError extends UserError {
   declare readonly code: typeof SERVE_UPSTREAM_DIVERGED_CODE;
@@ -146,16 +152,12 @@ export class ServeUpstreamDivergedError extends UserError {
   constructor(
     readonly serveUrl: string,
     readonly copyDir: string,
-    readonly commit: ServeDivergedCommit,
+    readonly commit: ServeDivergedCommit | undefined,
     readonly divergence: ServeDivergence,
   ) {
-    const at = `commit ${commit.seq} of partition ${commit.partition}`;
-    const answer = divergence.kind === "behind"
-      ? `serve's head for that partition is ${divergence.serveHead}`
-      : `serve holds another commit at that seq`;
     super(
       `Serve at ${serveUrl} is not serving the datastore this checkout's ` +
-        `copy at ${copyDir} follows: the copy has ${at}, and ${answer}. ` +
+        `copy at ${copyDir} follows: ${divergenceOf(commit, divergence)}. ` +
         `The address may now reach another serve or datastore, or one ` +
         `restored from an earlier backup. Swamp does not re-sync the copy ` +
         `on its own, since it may hold commits serve lost. To start a ` +
@@ -165,6 +167,49 @@ export class ServeUpstreamDivergedError extends UserError {
     );
     this.name = "ServeUpstreamDivergedError";
     markErrorPaths(this, [copyDir]);
+  }
+}
+
+function divergenceOf(
+  commit: ServeDivergedCommit | undefined,
+  divergence: ServeDivergence,
+): string {
+  if (divergence.kind === "other-log" || commit === undefined) {
+    return divergence.kind === "other-log"
+      ? `the copy follows commit log ${divergence.copyLogId}, and serve ` +
+        `answers with log ${divergence.serveLogId}`
+      : "serve does not hold the commits the copy follows";
+  }
+  const at =
+    `the copy has commit ${commit.seq} of partition ${commit.partition}`;
+  return divergence.kind === "behind"
+    ? `${at}, and serve's head for that partition is ${divergence.serveHead}`
+    : `${at}, and serve holds another commit at that seq`;
+}
+
+/** Error code for a serve too old to say which commit log it serves. */
+export const SERVE_UPSTREAM_UPGRADE_REQUIRED_CODE =
+  "serve_upstream_upgrade_required";
+
+/**
+ * Serve answered without the id of the commit log it serves
+ * (swamp-club#4049): a swamp too old to send it. The checkout cannot tell
+ * whether serve still serves the log its copy follows, so the reply is not
+ * used.
+ */
+export class ServeUpstreamUpgradeRequiredError extends UserError {
+  declare readonly code: typeof SERVE_UPSTREAM_UPGRADE_REQUIRED_CODE;
+
+  constructor(readonly serveUrl: string) {
+    super(
+      `Serve at ${serveUrl} did not say which commit log it serves, so ` +
+        `this checkout cannot tell whether serve still holds the datastore ` +
+        `its copy follows, and did not use the reply. Upgrade swamp on ` +
+        `serve to a version that reports it (this one does), then run the ` +
+        `command again.`,
+      SERVE_UPSTREAM_UPGRADE_REQUIRED_CODE,
+    );
+    this.name = "ServeUpstreamUpgradeRequiredError";
   }
 }
 

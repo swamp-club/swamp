@@ -64,14 +64,16 @@ const MIGRATIONS: readonly string[] = [
   // The feed anchor (swamp-club#4049): the last commit of the last page
   // applied, which serve must still hold for the cursor to mean anything.
   // And the copy's id, random per copy: a copy moved aside and started
-  // afresh at the same root is another view of serve.
+  // afresh at the same root is another view of serve; and the id of the
+  // commit log serve served it, which every later reply must name.
   `ALTER TABLE feed ADD COLUMN anchor_namespace TEXT;
    ALTER TABLE feed ADD COLUMN anchor_partition TEXT;
    ALTER TABLE feed ADD COLUMN anchor_seq INTEGER;
    ALTER TABLE feed ADD COLUMN anchor_txn_id TEXT;
    CREATE TABLE copy (
      id INTEGER PRIMARY KEY CHECK (id = 1),
-     copy_id TEXT NOT NULL
+     copy_id TEXT NOT NULL,
+     log_id TEXT
    );
    INSERT INTO copy (id, copy_id) VALUES (1, lower(hex(randomblob(16))));`,
 ];
@@ -227,6 +229,27 @@ export class ServeUpstreamState {
     }).copy_id;
   }
 
+  /** The id of the commit log the copy follows; undefined before serve named one. */
+  serveLogId(): string | undefined {
+    this.#assertOpen();
+    const row = this.#db.prepare("SELECT log_id FROM copy WHERE id = 1")
+      .get() as { log_id: string | null } | undefined;
+    return row?.log_id ?? undefined;
+  }
+
+  /**
+   * Records `logId` as the log the copy follows unless one is recorded
+   * already, and returns the one recorded: two processes recording at once
+   * agree on the first.
+   */
+  recordServeLogId(logId: string): string {
+    this.#assertOpen();
+    this.#db.prepare(
+      "UPDATE copy SET log_id = ? WHERE id = 1 AND log_id IS NULL",
+    ).run(logId);
+    return this.serveLogId()!;
+  }
+
   /** The caller the copy was built for; undefined before the first stamp. */
   caller(): ServeCopyCaller | undefined {
     this.#assertOpen();
@@ -252,15 +275,19 @@ export class ServeUpstreamState {
   }
 
   /**
-   * Starts a reset to another caller: forgets the feed cursor, its anchor
-   * and serve's heads, which describe the old caller's view of serve, and marks the
-   * reset unfinished, so a reset cut short is run again whatever the
-   * fingerprint says. The recorded fingerprint stays the old caller's.
+   * Starts a reset to another caller: forgets the feed cursor, its anchor,
+   * serve's heads and the log the copy follows, which describe the old
+   * caller's copy of serve, and marks the reset unfinished, so a reset cut
+   * short is run again whatever the fingerprint says. The recorded
+   * fingerprint stays the old caller's.
    */
   beginCallerReset(): void {
     this.#assertOpen();
     this.#transaction(() => {
-      this.#db.exec("DELETE FROM feed; DELETE FROM serve_heads;");
+      this.#db.exec(
+        "DELETE FROM feed; DELETE FROM serve_heads; " +
+          "UPDATE copy SET log_id = NULL;",
+      );
       this.#db.prepare(
         `INSERT INTO caller (id, fingerprint, resetting) VALUES (1, '', 1)
          ON CONFLICT (id) DO UPDATE SET resetting = 1`,

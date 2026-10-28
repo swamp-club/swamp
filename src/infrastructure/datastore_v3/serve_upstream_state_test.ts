@@ -206,14 +206,20 @@ Deno.test("ServeUpstreamState.feedAnchor: recorded with the cursor, kept by a pa
   });
 });
 
-Deno.test("ServeUpstreamState.feedAnchor: a caller reset forgets it with the cursor", async () => {
+Deno.test("ServeUpstreamState.feedAnchor: a caller reset forgets it and the log id with the cursor", async () => {
   await withTempDir((dir) => {
     const state = ServeUpstreamState.open(join(dir, "serve_upstream.db"));
     try {
       state.stampCaller("aaa");
       state.advanceFeedCursor(4, ANCHOR_A);
+      state.recordServeLogId("log-a");
       state.beginCallerReset();
       assertEquals(state.feedAnchor(), undefined);
+      assertEquals(
+        state.serveLogId(),
+        undefined,
+        "the reset copy follows none",
+      );
       assertEquals(state.feedCursor(), 0);
     } finally {
       state.close();
@@ -281,6 +287,20 @@ Deno.test("ServeUpstreamState.copyId: random per file, kept across a reopen", as
       assert(fresh.copyId() !== id);
     } finally {
       fresh.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState.recordServeLogId: the first log recorded stays", async () => {
+  await withTempDir((dir) => {
+    const state = ServeUpstreamState.open(join(dir, "serve_upstream.db"));
+    try {
+      assertEquals(state.serveLogId(), undefined);
+      assertEquals(state.recordServeLogId("log-a"), "log-a");
+      assertEquals(state.recordServeLogId("log-b"), "log-a");
+      assertEquals(state.serveLogId(), "log-a");
+    } finally {
+      state.close();
     }
   });
 });

@@ -30,11 +30,16 @@ import {
   savePut,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import { runPartition, runPut } from "./commit_log_test_helpers.ts";
-import { SERVE_PARTITION_PAGE, ServeCatchUp } from "./serve_catch_up.ts";
+import {
+  SERVE_PARTITION_PAGE,
+  ServeCatchUp,
+  serveLogCheck,
+} from "./serve_catch_up.ts";
 import {
   SERVE_UPSTREAM_DIVERGED_CODE,
   ServeCommitsCompactedError,
   ServeUpstreamDivergedError,
+  ServeUpstreamUpgradeRequiredError,
 } from "./serve_upstream_errors.ts";
 import { ServeUpstreamState } from "./serve_upstream_state.ts";
 import {
@@ -400,8 +405,8 @@ Deno.test("ServeCatchUp.catchUp: a serve with another commit at the anchor's seq
       () => through(swapped, checkout).catchUp(signal()),
       ServeUpstreamDivergedError,
     );
-    assertEquals(error.commit.seq, 3);
-    assertEquals(error.commit.txnId, "other-3");
+    assertEquals(error.commit?.seq, 3);
+    assertEquals(error.commit?.txnId, "other-3");
     assertEquals(error.divergence, {
       kind: "other-commit",
       serveTxnId: "another-3",
@@ -580,4 +585,41 @@ Deno.test("ServeUpstreamDivergedError: names the address, the copy and how to st
   ) {
     assert(error.message.includes(part), part);
   }
+});
+
+Deno.test("serveLogCheck: records the first log serve names, passes it again, and refuses another or none", async () => {
+  await withCheckout(({ dir, state }) => {
+    const check = serveLogCheck(state, SERVE_URL, dir);
+    assertEquals(state.serveLogId(), undefined);
+    check("log-a");
+    assertEquals(state.serveLogId(), "log-a");
+    check("log-a");
+
+    let error: unknown;
+    try {
+      check("log-b");
+    } catch (caught) {
+      error = caught;
+    }
+    assertInstanceOf(error, ServeUpstreamDivergedError);
+    assertEquals(error.code, SERVE_UPSTREAM_DIVERGED_CODE);
+    assertEquals(error.commit, undefined);
+    assertEquals(error.divergence, {
+      kind: "other-log",
+      copyLogId: "log-a",
+      serveLogId: "log-b",
+    });
+    assert(error.message.includes("log log-b"), error.message);
+    assertEquals(state.serveLogId(), "log-a", "the recorded log stays");
+
+    let missing: unknown;
+    try {
+      check(undefined);
+    } catch (caught) {
+      missing = caught;
+    }
+    assertInstanceOf(missing, ServeUpstreamUpgradeRequiredError);
+    assert(missing.message.includes("Upgrade swamp on serve"));
+    return Promise.resolve();
+  });
 });

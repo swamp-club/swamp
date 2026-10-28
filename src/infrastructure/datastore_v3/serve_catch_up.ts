@@ -52,12 +52,41 @@ import {
   type ServeDivergence,
   ServeUpstreamDivergedError,
   ServeUpstreamError,
+  ServeUpstreamUpgradeRequiredError,
 } from "./serve_upstream_errors.ts";
 import type {
   ServeFeedAnchor,
   ServeUpstreamState,
 } from "./serve_upstream_state.ts";
 import type { SqliteCommitStore } from "./sqlite_commit_store.ts";
+
+/**
+ * The check a copy's serve client runs on every reply
+ * (`ServeDatastoreClient.checkLog`): the first log id serve names is
+ * recorded as the log the copy follows, and a reply naming another is
+ * refused, as is a success naming none (a serve too old to send it). The
+ * anchor and head checks below still guard the first contact of a copy
+ * made before log ids, and a serve rolled back within the same log.
+ */
+export function serveLogCheck(
+  state: Pick<ServeUpstreamState, "recordServeLogId">,
+  serveUrl: string,
+  copyDir: string,
+): (logId: string | undefined) => void {
+  return (logId) => {
+    if (logId === undefined) {
+      throw new ServeUpstreamUpgradeRequiredError(serveUrl);
+    }
+    const recorded = state.recordServeLogId(logId);
+    if (recorded !== logId) {
+      throw new ServeUpstreamDivergedError(serveUrl, copyDir, undefined, {
+        kind: "other-log",
+        copyLogId: recorded,
+        serveLogId: logId,
+      });
+    }
+  };
+}
 
 /** The most commits one page of a partition read asks serve for. */
 export const SERVE_PARTITION_PAGE = 1000;

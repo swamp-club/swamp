@@ -91,7 +91,7 @@ import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { CatalogStore } from "../persistence/catalog_store.ts";
 import { writeDatastoreFormatMarker } from "../persistence/datastore_format_marker_writer.ts";
 import { FileSystemStorage } from "../persistence/fs_datastore_storage.ts";
-import { ServeCatchUp } from "./serve_catch_up.ts";
+import { ServeCatchUp, serveLogCheck } from "./serve_catch_up.ts";
 import {
   createServeCommitSink,
   type ServeUpstreamCommitStore,
@@ -930,6 +930,11 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       join(dirname(commitsDbPath), SERVE_UPSTREAM_STATE_FILE),
     )
     : undefined;
+  if (serveClient !== undefined && serveState !== undefined) {
+    serveClient.checkLog(
+      serveLogCheck(serveState, serveClient.baseUrl, dirname(commitsDbPath)),
+    );
+  }
   const serveCatchUp = serveClient !== undefined && serveState !== undefined
     ? new ServeCatchUp({
       client: serveClient,

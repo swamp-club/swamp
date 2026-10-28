@@ -6781,32 +6781,60 @@ because serve's own log has no holes.
 cursor is a position in one serve's log, so swamp-club#4049 checks that
 whatever answers at the address still serves that log. Without the check, a
 serve re-pointed at another bucket, a fresh deployment, or one restored from
-an older backup mixed silently into the copy:
+an older backup mixed silently into the copy. Two checks cover the two ways
+that happens.
 
-- **The feed anchor.** Each applied page records its last commit's identity
-  (namespace, partition, seq, `txnId`) beside the cursor in
-  `serve_upstream.db`. Before every feed catch-up, serve is asked for the
-  commit at that position (`partitions/{p}/commits?after=seq-1`, limit 1).
-  Commits already carry the `txnId`, so the commit log's schema is unchanged.
-- **The partition head.** A partition catch-up, on a write's stale seq or
-  when a recovery looks for a commit, reads from the copy's head commit
-  (`after=head-1`) in its first request and compares that commit's `txnId`.
-  This catches a serve restored to an earlier point within one log, where
-  the feed anchor's partition is still intact.
-- **Refused.** If serve's head is below the commit's seq, or serve holds
-  another `txnId` there, the command fails with `serve_upstream_diverged`.
-  That is a user error, not exit 75. The message names the address and the
-  copy's directory, and says to start a fresh copy by moving the directory
-  aside, so commits not yet sent stay in the moved copy's outbox. The fresh
-  copy has a new id, so the checkout's projection is rebuilt from it before
-  anything is read. The copy is never re-synced on its own: one that holds
-  commits serve lost may be what a restore needs. A commit that met the
-  refusal after a stale seq never landed, so its unit fails with the refusal
-  rather than as a commit that may land. A commit serve accepted, whose
-  catch-up then finds the divergence, has landed, so the command succeeds and
-  warns, and the next command is refused.
-- **Not checked.** Some cases cannot be told from a moved serve, so they are
-  not refused:
+- **The log id: another log.** `commits.db` holds a random id for its log,
+  minted when the log is created (schema 9, minted by the migration for an
+  existing log). It moves with the log, so a failover, a Litestream restore
+  and a restore from backup keep it, while a fresh deployment or another
+  bucket has another. Serve sends it on every datastore API reply to an
+  authenticated caller, refusals included, in the `x-swamp-datastore-log`
+  header. It says nothing of the log's content, so it goes to every caller,
+  whatever its grants.
+  - The copy records the first id serve names in `serve_upstream.db`.
+  - Every later reply is checked before it is read (`serveLogCheck`, on the
+    copy's serve client). Another id is refused, before anything is applied
+    or sent on.
+  - A success that names no id comes from a serve too old to send one. It is
+    refused with `serve_upstream_upgrade_required`, never left unchecked.
+  - A copy from before log ids records the first id it sees, and the anchor
+    checks below guard that first contact.
+  - A reset to another token clears the recorded id with the rest of the
+    copy.
+  - Only a log id can tell a moved serve from a revoked grant. Serve answers
+    404 both for a partition the caller may no longer read and for one it
+    has never heard of, and after a move, every partition of the old log is
+    one the new serve has never heard of.
+- **The feed anchor and partition head: the same log rolled back.** A
+  restore of the log to an earlier point keeps its id, so these checks catch
+  it.
+  - Each applied page records its last commit's identity (namespace,
+    partition, seq, `txnId`) beside the cursor in `serve_upstream.db`.
+    Before every feed catch-up, serve is asked for the commit at that
+    position (`partitions/{p}/commits?after=seq-1`, limit 1).
+  - A partition catch-up, on a write's stale seq or when a recovery looks
+    for a commit, reads from the copy's head commit (`after=head-1`) in its
+    first request and compares that commit's `txnId`. This catches a log
+    restored behind the copy in one partition, where the feed anchor's
+    partition is still intact.
+- **Refused.** Another log id, a head below the commit's seq, or another
+  `txnId` at that seq fails the command with `serve_upstream_diverged`.
+  - It is a user error, not exit 75.
+  - The message names the address and the copy's directory, and says to
+    start a fresh copy by moving the directory aside, so commits not yet sent
+    stay in the moved copy's outbox. The fresh copy has a new copy id, so
+    the checkout's projection is rebuilt from it before anything is read.
+  - The copy is never re-synced on its own: one that holds commits serve
+    lost may be what a restore needs.
+  - A commit that met the refusal after a stale seq never landed, so its
+    unit fails with the refusal rather than as a commit that may land.
+  - A commit serve accepted, whose catch-up then finds the divergence, has
+    landed, so the command succeeds and warns, and the next command is
+    refused.
+- **Not checked by the anchor and head checks.** Within one log, some cases
+  cannot be told from a rollback, so they are not refused. Another log is
+  still refused by its id.
   - a commit serve now withholds from the caller;
   - a partition the caller may no longer read (404);
   - an anchor serve has compacted (410), where the next page applied records
@@ -6818,6 +6846,11 @@ an older backup mixed silently into the copy:
 
   A 410 at exactly the copy's head on a partition catch-up reads on from the
   head without the check, so the check adds no 410 to the write path.
+- **Not checked at all.** Lock requests (`serve_lock.ts`) use a client of
+  their own, so their replies are not checked. A lock taken on another serve
+  changes no data, and the command's first catch-up or write is refused.
+  Restoring a log from a backup taken before its schema-9 migration mints a
+  new id, so that restore is refused as another log.
 
 **Run index.** The read model's catch-up rewrites run records directly, and
 the run index trusted itself while its count matched. So a run another
