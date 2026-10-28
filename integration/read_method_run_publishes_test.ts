@@ -54,7 +54,10 @@ import type {
   DistributedLock,
   LockOptions,
 } from "../src/domain/datastore/distributed_lock.ts";
-import { DataVersionConflictError } from "../src/domain/datastore/datastore_sync_service.ts";
+import {
+  type DatastoreSyncOptions,
+  DataVersionConflictError,
+} from "../src/domain/datastore/datastore_sync_service.ts";
 import { UserError } from "../src/domain/errors.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
@@ -77,6 +80,8 @@ interface Hooks {
   afterWrite?: () => Promise<void>;
 }
 let hooks: Hooks = {};
+/** While set, every clone's read of a `latest` marker fails. */
+let failLatestReads = false;
 
 function registerProbe(): ModelType {
   const type = ModelType.create(`test/read-publish-${crypto.randomUUID()}`);
@@ -192,9 +197,23 @@ async function initRepo(repoDir: string, typeName: string): Promise<void> {
 async function withClones(fn: (clones: Clones) => Promise<void>) {
   const remote = createInMemoryRemote();
   const locks = new LockTable();
-  const datastoreType = registerTestDatastoreType(remote, {
-    createLock: locks.lockFor,
-  });
+  const datastoreType = registerTestDatastoreType({
+    connect: (cacheDir, options) => {
+      const service = remote.connect(cacheDir, options);
+      return new Proxy(service, {
+        get(target, property) {
+          if (property === "fetchContent") {
+            return (relPath: string, fetchOptions?: DatastoreSyncOptions) =>
+              failLatestReads && relPath.endsWith("/latest")
+                ? Promise.reject(new Error("injected latest read failure"))
+                : target.fetchContent!(relPath, fetchOptions);
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    },
+  }, { createLock: locks.lockFor });
   const type = registerProbe();
   const dir = await Deno.makeTempDir({ prefix: "swamp-read-publish-" });
   try {
@@ -220,6 +239,7 @@ async function withClones(fn: (clones: Clones) => Promise<void>) {
     await fn({ remote, locks, repoA, repoB, type, definition });
   } finally {
     hooks = {};
+    failLatestReads = false;
     await flushDatastoreSync();
     modelRegistry.invalidateType(type);
     datastoreType.dispose();
@@ -371,6 +391,37 @@ Deno.test("model method run: a read method refuses to publish over a version ano
       await localValue(c.repoA, c, 1),
       "from-b",
       "A's cache holds the datastore's copy, not its refused version",
+    );
+    assertEquals(c.locks.held.size, 0, "the publish lock was released");
+  });
+});
+
+Deno.test("model method run: a refusal whose restore is incomplete pushes nothing, so the other clone's data is neither deleted nor rolled back (swamp-club#3934)", async () => {
+  await withClones(async (c) => {
+    let started!: () => void;
+    const aStarted = new Promise<void>((resolve) => started = resolve);
+    let resume!: () => void;
+    const bDone = new Promise<void>((resolve) => resume = resolve);
+    hooks = {
+      beforeWrite: async () => {
+        started();
+        await bDone;
+      },
+    };
+    const aRun = runMethod(c.repoA, "observe", "from-a");
+    await aStarted;
+    await runMethod(c.repoB, "write", "from-b");
+    // The refusal's restore cannot read the latest markers back.
+    failLatestReads = true;
+    resume();
+
+    await assertRejects(() => aRun, DataVersionConflictError);
+    failLatestReads = false;
+    assertEquals(remoteValue(c, 1), "from-b", "B's version is kept");
+    assertEquals(remoteLatest(c), "1", "B's latest marker is kept");
+    assert(
+      remoteFile(c, "/main/1/metadata.yaml"),
+      "B's metadata is not deleted",
     );
     assertEquals(c.locks.held.size, 0, "the publish lock was released");
   });

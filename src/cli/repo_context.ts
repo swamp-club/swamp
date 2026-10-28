@@ -3199,6 +3199,11 @@ interface FetchedMarker {
  * any failure keeps its marks. A sync service without `clearDirty` keeps
  * every mark, so the refusal warns once, naming the data names, that a
  * later push can delete or overwrite the other run's versions there.
+ *
+ * Returns whether every removed file and marker the datastore holds was put
+ * back. A push may follow only a complete restore: a file left removed is
+ * still marked dirty, and the push would delete the datastore's copy
+ * (swamp-club#3934).
  */
 async function discardRefusedVersions(
   refused: readonly WrittenVersion[],
@@ -3210,9 +3215,10 @@ async function discardRefusedVersions(
   cachePath: string,
   namespace: string | undefined,
   restore: DiscardRestoreOptions,
-): Promise<void> {
+): Promise<boolean> {
   const logger = getSwampLogger(["datastore", "lock"]);
   const repo = repoContext.unifiedDataRepo;
+  let complete = true;
   const content = new Set<string>();
   // Each removed marker's cache path, and its data-name directory.
   const markers = new Map<string, string>();
@@ -3264,6 +3270,7 @@ async function discardRefusedVersions(
   } catch (error) {
     discarded = false;
     logger.debug`Discarding the refused data versions failed: ${error}`;
+    complete = false;
   }
   if (!syncService.clearDirty && marked.size > 0) {
     const kept = [...marked.keys()].map((nameDir) => names.get(nameDir))
@@ -3272,7 +3279,8 @@ async function discardRefusedVersions(
       .warn`This datastore's extension cannot clear the dirty marks the refused push left on ${kept}, so a later push from this checkout can delete or overwrite the versions the other run wrote there (swamp-club#4091). Updating the datastore extension fixes this once a release implements clearDirty.`;
   }
   const fetchContent = syncService.fetchContent;
-  if (!fetchContent || (content.size === 0 && markers.size === 0)) return;
+  if (content.size === 0 && markers.size === 0) return complete;
+  if (!fetchContent) return false;
   const signal = AbortSignal.timeout(DISCARD_RESTORE_TIMEOUT_MS);
   const hasMetadata = (nameDir: string, version: number) =>
     exists(join(nameDir, String(version), "metadata.yaml"));
@@ -3296,6 +3304,7 @@ async function discardRefusedVersions(
       failed.add(nameDir);
       logger
         .debug`Restoring from the datastore after a refused push failed reading ${rel}: ${error}`;
+      complete = false;
       continue;
     }
     if (bytes === null) {
@@ -3332,6 +3341,7 @@ async function discardRefusedVersions(
       logger.debug`Restoring ${
         pending.length - i
       } file(s) from the datastore after a refused push failed at ${rel}: ${error}`;
+      complete = false;
       break;
     }
   }
@@ -3374,23 +3384,25 @@ async function discardRefusedVersions(
       failed.add(marker.nameDir);
       logger
         .debug`Restoring ${marker.rel} after a refused push failed: ${error}`;
+      complete = false;
     }
   }
 
   const clearDirty = syncService.clearDirty;
-  if (!clearDirty || !discarded) return;
+  if (!clearDirty || !discarded) return complete;
   const cleared: string[] = [];
   for (const [nameDir, rels] of marked) {
     if (failed.has(nameDir)) continue;
     for (const rel of rels) cleared.push(rel);
   }
-  if (cleared.length === 0) return;
+  if (cleared.length === 0) return complete;
   try {
     await clearDirty.call(syncService, cleared);
   } catch (error) {
     logger
       .debug`Clearing the marks a refused push left failed: ${error}`;
   }
+  return complete;
 }
 
 /**
@@ -4128,8 +4140,9 @@ export async function acquireModelLocks(
       const nameKey = (w: WrittenVersion) =>
         JSON.stringify([w.modelType, w.modelId, w.dataName]);
       const names = new Set(foreign.map(nameKey));
+      let restored: boolean;
       try {
-        await discardRefusedVersions(
+        restored = await discardRefusedVersions(
           stage.filter((w) => names.has(nameKey(w))),
           publishContext,
           syncService,
@@ -4141,6 +4154,10 @@ export async function acquireModelLocks(
         catalogStore?.invalidate();
       }
       conflict = new DataVersionConflictError(foreign);
+      // A file the restore could not put back is still marked dirty, and
+      // this push would delete or roll back the other clone's copy: push
+      // nothing (swamp-club#3934).
+      if (!restored) throw conflict;
       return stage.filter((w) => !names.has(nameKey(w)));
     };
     const publish = async () => {
@@ -4179,7 +4196,7 @@ export async function acquireModelLocks(
     try {
       await publish();
     } catch (error) {
-      if (conflict === undefined) throw error;
+      if (conflict === undefined || error === conflict) throw error;
       // The refusal is the error to act on; what else failed is logged.
       logger
         .warn`Publishing the versions left after a refusal failed: ${error}`;

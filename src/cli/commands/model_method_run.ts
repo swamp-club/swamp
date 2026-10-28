@@ -114,7 +114,6 @@ import {
   isUnpublishedDataError,
   type WrittenVersion,
 } from "../../domain/datastore/datastore_sync_service.ts";
-import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import {
   DEFAULT_STALE_TTL_MS,
   RunTrackerStore,
@@ -653,6 +652,9 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           // Why a read or list run's publish failed, other than a refusal,
           // which the root throws itself (swamp-club#3934).
           let publishFailure: { error: unknown } | undefined;
+          // Set once every input set ran and succeeded: only then does a
+          // failed publish fail the command; otherwise it is logged.
+          let runSucceeded = false;
           const finished = await runCommandInRootUnit(
             repoContext,
             {
@@ -661,6 +663,9 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               output: ctx.outputMode === "log" ? "live-until-outcome" : "held",
               push: locks ? () => pushWritten(locks) : publishTo
                 ? async () => {
+                  // A run that wrote no version waits on no lock
+                  // (swamp-club#1992).
+                  if (written.length === 0) return;
                   try {
                     // No pull: it would overwrite what the run wrote wherever
                     // another clone wrote the same version (swamp-club#3934).
@@ -696,8 +701,19 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                 : undefined,
               release: modelLocks?.release,
               onCleanupError: (releaseError) => {
-                // A failed publish fails the command below instead.
-                if (releaseError === publishFailure?.error) return;
+                if (releaseError === publishFailure?.error) {
+                  // A run that succeeded fails below instead.
+                  if (runSucceeded) return;
+                  ctx.logger.error(
+                    "This run's data was not published to the datastore: {error}",
+                    {
+                      error: releaseError instanceof Error
+                        ? releaseError.message
+                        : String(releaseError),
+                    },
+                  );
+                  return;
+                }
                 ctx.logger.warn(
                   "Failed to release locks during cleanup: {error}",
                   {
@@ -785,6 +801,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                     return false;
                   }
                 }
+                runSucceeded = true;
                 return true;
               } catch (error) {
                 if (error instanceof UserError) {
@@ -808,8 +825,9 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           if (!finished) return;
           if (publishFailure !== undefined) {
             const { error } = publishFailure;
-            // A lock timeout keeps its own code and exit status.
-            if (error instanceof LockTimeoutError) {
+            // A typed error (a lock timeout, an unpublished version) keeps
+            // its own code and exit status, as on a mutating run's push.
+            if (error instanceof UserError) {
               ctx.logger.error(
                 "This run's data was not published to the datastore",
               );
@@ -819,9 +837,9 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               ? error.message
               : String(error);
             throw new UserError(
-              `This run's data was not published to the datastore: ` +
-                `${message}. It is on this host only; run the method again ` +
-                `to write and publish it.`,
+              `This run's data was not published to the datastore ` +
+                `(${message.replace(/\.$/, "")}). It is on this host only; ` +
+                `run the method again to write and publish it.`,
               "datastore_publish_failed",
             );
           }

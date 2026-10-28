@@ -8008,8 +8008,16 @@ refreshes its resource does. `methodRunLockMode`
   name is discarded from this host, which gets the remote's copy back, the
   rest are published, and the push fails with `DataVersionConflictError`
   (`datastore_data_version_conflict`). A version holding the run's own data id
-  was uploaded by an earlier push and is published as usual. The CLI exits
-  non-zero; serve, which has answered its client before it publishes, logs it.
+  was uploaded by an earlier push and is published as usual. If the restore
+  cannot put every discarded file and marker back, the push is skipped
+  altogether: a file left removed is still marked dirty, and pushing it would
+  delete or roll back the other clone's copy. The CLI exits non-zero; serve,
+  which has answered its client before it publishes, logs it.
+- A run that wrote no data version takes no publish lock. When the CLI
+  publish fails other than by a refusal (a lock timeout, an unreadable
+  remote), a run that succeeded fails with that error, or with
+  `datastore_publish_failed` for an untyped one; a run that failed keeps its
+  own error and logs that its data was not published.
 - A sync service without `fetchContent` cannot tell its own version from
   another clone's, so there the run holds the lock throughout, as a mutating
   run does.

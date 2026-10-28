@@ -272,6 +272,8 @@ async function publishUnlockedRun(
   model: PublishedModel,
   written: readonly WrittenVersion[],
 ): Promise<void> {
+  // A run that wrote no version waits on no lock (swamp-club#1992).
+  if (written.length === 0) return;
   let publishLocks: ModelLockResult;
   try {
     publishLocks = await acquireModelLocks(
