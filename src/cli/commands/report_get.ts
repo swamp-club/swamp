@@ -26,6 +26,7 @@ import {
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
+import { findLatestReportData } from "../../infrastructure/persistence/catalog_report_adapter.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import { reportGet, type ReportGetDeps } from "../../libswamp/reports/get.ts";
@@ -143,9 +144,13 @@ export const reportGetCommand = withRemoteOptions(
   });
 
   const deps: ReportGetDeps = {
-    findAllGlobal: () => repoContext.unifiedDataRepo.findAllGlobal(),
-    findAllForModel: (type, modelId) =>
-      repoContext.unifiedDataRepo.findAllForModel(type, modelId),
+    findReportData: (owner) =>
+      findLatestReportData(
+        repoContext.dataQueryService,
+        repoContext.catalogStore,
+        repoContext.unifiedDataRepo,
+        { owner },
+      ),
     findDataByVersion: (type, modelId, dataName, version) =>
       repoContext.unifiedDataRepo.findByName(type, modelId, dataName, version),
     getContent: (type, modelId, dataName, version) =>

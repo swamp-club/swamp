@@ -18,10 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import {
+  mapBounded,
   type ReleaseScanPermit,
   type ScanKind,
   ScanPermits,
+  SEARCH_SCAN_SHARE,
+  withScanPermit,
 } from "./scan_permits.ts";
 
 /** An acquire whose grant a test can observe without awaiting it. */
@@ -176,4 +180,76 @@ Deno.test("ScanPermits: a permit handed over before its signal aborts stays held
   granted.release!();
   await settle();
   assertEquals(next.release !== undefined, true);
+});
+
+Deno.test("mapBounded: returns results in the items' order, at most limit at once", async () => {
+  let running = 0;
+  let peak = 0;
+  const results = await mapBounded([1, 2, 3, 4, 5, 6, 7], 3, async (n) => {
+    running++;
+    peak = Math.max(peak, running);
+    await Promise.resolve();
+    running--;
+    return n * 10;
+  });
+
+  assertEquals(results, [10, 20, 30, 40, 50, 60, 70]);
+  assertEquals(peak, 3);
+});
+
+Deno.test("mapBounded: starts no item after a failure and raises it once started calls settle", async () => {
+  const started: number[] = [];
+  const error = new Error("boom");
+
+  const raised = await assertRejects(() =>
+    mapBounded([1, 2, 3, 4], 1, (n) => {
+      started.push(n);
+      return n === 2 ? Promise.reject(error) : Promise.resolve(n);
+    })
+  );
+
+  assertEquals(raised, error);
+  assertEquals(started, [1, 2]);
+});
+
+Deno.test("withScanPermit: searches across callers share SEARCH_SCAN_SHARE permits, and a lookup still gets one", async () => {
+  const total = SEARCH_SCAN_SHARE + 4;
+  let started = 0;
+  let running = 0;
+  let peak = 0;
+  // Once set, a search that starts finishes at once, so the finally below can
+  // give back every permit the module-wide singleton holds for this test.
+  let draining = false;
+  const releases: Array<() => void> = [];
+  const calls = Array.from(
+    { length: total },
+    () =>
+      withScanPermit("search", async () => {
+        started++;
+        running++;
+        peak = Math.max(peak, running);
+        if (!draining) {
+          await new Promise<void>((resolve) => releases.push(resolve));
+        }
+        running--;
+      }),
+  );
+  try {
+    await waitFor(() => started === SEARCH_SCAN_SHARE, "the search share");
+
+    await withScanPermit("lookup", () => Promise.resolve());
+
+    for (let released = 1; released <= total; released++) {
+      releases.shift()!();
+      const expected = Math.min(total, SEARCH_SCAN_SHARE + released);
+      await waitFor(() => started === expected, `${expected} searches started`);
+    }
+    await Promise.all(calls);
+    assertEquals(peak, SEARCH_SCAN_SHARE);
+  } finally {
+    // A failure above must not leave permits held for later tests.
+    draining = true;
+    for (const release of releases.splice(0)) release();
+    await Promise.allSettled(calls);
+  }
 });
