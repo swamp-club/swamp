@@ -68,6 +68,8 @@ export interface AuthLogoutDeps {
     signal: AbortSignal,
   ) => Promise<RevokePresentingApiKeyResult>;
   deleteCredentials: () => Promise<void>;
+  /** Removes the API-key caches only; never the stored login. */
+  deleteCaches: () => Promise<void>;
   credentialsPath: () => string;
 }
 
@@ -116,6 +118,7 @@ export function createAuthLogoutDeps(
         configDir: options.repo?.configDir,
       }).clearAll().catch(() => {});
     },
+    deleteCaches: () => repo.deleteCaches(),
     credentialsPath: () => repo.getAuthPath(),
   };
 }
@@ -134,11 +137,13 @@ export async function* authLogout(
   const credentials = await deps.loadCredentials();
 
   if (!credentials) {
-    // An API-key run leaves its identity and scope caches and the gate's
-    // stamps without any login record, so they are cleared here too. Best
-    // effort: with no login there is nothing to log out, so a cache that
-    // cannot be removed does not fail the command.
-    await deps.deleteCredentials().catch(() => {});
+    // An API-key run leaves its identity and scope caches without any login
+    // record, so they are cleared here too. Only the caches: deleting
+    // auth.json here could remove a login another process just wrote, and
+    // the gate's stamps are bound to a key fingerprint. Best effort: with no
+    // login there is nothing to log out, so a cache that cannot be removed
+    // does not fail the command.
+    await deps.deleteCaches().catch(() => {});
     const data: AuthLogoutData = {
       loggedOut: false,
       reason: "not authenticated",

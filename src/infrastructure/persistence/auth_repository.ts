@@ -247,13 +247,26 @@ export class AuthRepository {
 
   /** Delete stored auth credentials and the scope and identity caches. */
   async delete(): Promise<void> {
-    for (
-      const path of [
-        this.getAuthPath(),
-        this.getScopeCachePath(),
-        this.getEnvIdentityCachePath(),
-      ]
-    ) {
+    await this.removeIfPresent([
+      this.getAuthPath(),
+      this.getScopeCachePath(),
+      this.getEnvIdentityCachePath(),
+    ]);
+  }
+
+  /**
+   * Delete the scope and identity caches but never auth.json, so it cannot
+   * remove a login another process writes meanwhile.
+   */
+  async deleteCaches(): Promise<void> {
+    await this.removeIfPresent([
+      this.getScopeCachePath(),
+      this.getEnvIdentityCachePath(),
+    ]);
+  }
+
+  private async removeIfPresent(paths: string[]): Promise<void> {
+    for (const path of paths) {
       try {
         await Deno.remove(path);
       } catch (error) {

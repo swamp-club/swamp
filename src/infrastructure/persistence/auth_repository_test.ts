@@ -780,6 +780,38 @@ Deno.test("AuthRepository - delete also removes scope_cache.json", async () => {
   }
 });
 
+Deno.test("AuthRepository - deleteCaches removes the caches and keeps auth.json", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = join(tmpDir, "swamp");
+    const repo = new AuthRepository({ configDir, getApiKey: () => undefined });
+    const fingerprint = await keyFingerprint("swamp_env_key_123");
+
+    await repo.save(TEST_CREDENTIALS);
+    await repo.saveScopeCache(fingerprint, ["serve:*"]);
+    await repo.saveIdentityCache(
+      "https://swamp-club.com",
+      "envuser",
+      ["envorg"],
+      fingerprint,
+    );
+    await repo.deleteCaches();
+    // Idempotent when the caches are already gone.
+    await repo.deleteCaches();
+
+    assertEquals(await repo.load(), TEST_CREDENTIALS);
+    assertEquals(await repo.loadScopeCache(fingerprint), undefined);
+    const envLoaded = await new AuthRepository({
+      configDir,
+      getApiKey: () => "swamp_env_key_123",
+      getServerUrl: () => undefined,
+    }).load();
+    assertEquals(envLoaded?.username, "");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 Deno.test("AuthRepository - default key lookup reads SWAMP_API_KEY_FILE", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
