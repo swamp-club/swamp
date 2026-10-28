@@ -2029,8 +2029,10 @@ trustedCollectives:
 ```
 
 Membership collectives are cached in `auth.json` during `auth login` and
-`auth whoami`. `trustMemberCollectives: true` trusts every collective you
-belong to (the old default); prefer trusting them one by one. Set
+`auth whoami`; a run authenticated by an API key source (`SWAMP_API_KEY`,
+`SWAMP_API_KEY_FILE` or `--club-api-key-file`) caches them in
+`env_identity_cache.json` instead. `trustMemberCollectives: true` trusts every
+collective you belong to (the old default); prefer trusting them one by one. Set
 `trustedCollectives` to `[]` to turn off automatic resolution.
 
 A trusted collective's extensions auto-resolve, but the installed version is

@@ -236,21 +236,19 @@ Deno.test("AuthRepository - empty SWAMP_API_KEY is treated as unset", async () =
   }
 });
 
-// ── SWAMP_API_KEY identity cache merging ────────────────────────────────
+// ── SWAMP_API_KEY identity cache ────────────────────────────────────────
 
 Deno.test("AuthRepository - load merges cached identity when fingerprint matches", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const configDir = join(tmpDir, "swamp");
-    const fileRepo = new AuthRepository({
-      configDir,
-      getApiKey: () => undefined,
-    });
-    await fileRepo.save({
-      ...TEST_CREDENTIALS,
-      apiKeyFingerprint: await keyFingerprint("swamp_env_key_123"),
-      collectives: ["myorg"],
-    });
+    await new AuthRepository({ configDir, getApiKey: () => undefined })
+      .saveIdentityCache(
+        "https://swamp-club.com",
+        "envuser",
+        ["myorg"],
+        await keyFingerprint("swamp_env_key_123"),
+      );
 
     const envRepo = new AuthRepository({
       configDir,
@@ -261,7 +259,7 @@ Deno.test("AuthRepository - load merges cached identity when fingerprint matches
 
     assertExists(loaded);
     assertEquals(loaded.apiKey, "swamp_env_key_123");
-    assertEquals(loaded.username, "testuser");
+    assertEquals(loaded.username, "envuser");
     assertEquals(loaded.collectives, ["myorg"]);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
@@ -272,15 +270,13 @@ Deno.test("AuthRepository - load does not merge when fingerprint mismatches (key
   const tmpDir = await Deno.makeTempDir();
   try {
     const configDir = join(tmpDir, "swamp");
-    const fileRepo = new AuthRepository({
-      configDir,
-      getApiKey: () => undefined,
-    });
-    await fileRepo.save({
-      ...TEST_CREDENTIALS,
-      apiKeyFingerprint: await keyFingerprint("swamp_old_key_000"),
-      collectives: ["stale-org"],
-    });
+    await new AuthRepository({ configDir, getApiKey: () => undefined })
+      .saveIdentityCache(
+        "https://swamp-club.com",
+        "envuser",
+        ["stale-org"],
+        await keyFingerprint("swamp_old_key_000"),
+      );
 
     const envRepo = new AuthRepository({
       configDir,
@@ -302,16 +298,14 @@ Deno.test("AuthRepository - load treats a legacy 12-char prefix fingerprint as s
   const tmpDir = await Deno.makeTempDir();
   try {
     const configDir = join(tmpDir, "swamp");
-    const fileRepo = new AuthRepository({
-      configDir,
-      getApiKey: () => undefined,
-    });
     // Written by CLIs that cached the key's first 12 characters.
-    await fileRepo.save({
-      ...TEST_CREDENTIALS,
-      apiKeyFingerprint: "swamp_env_ke",
-      collectives: ["myorg"],
-    });
+    await new AuthRepository({ configDir, getApiKey: () => undefined })
+      .saveIdentityCache(
+        "https://swamp-club.com",
+        "envuser",
+        ["myorg"],
+        "swamp_env_ke",
+      );
 
     const envRepo = new AuthRepository({
       configDir,
@@ -321,6 +315,32 @@ Deno.test("AuthRepository - load treats a legacy 12-char prefix fingerprint as s
     const loaded = await envRepo.load();
 
     assertExists(loaded);
+    assertEquals(loaded.username, "");
+    assertEquals(loaded.collectives, undefined);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("AuthRepository - load ignores identity in auth.json even when its fingerprint matches", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = join(tmpDir, "swamp");
+    // A login record an older CLI merged an env key's identity into.
+    await new AuthRepository({ configDir, getApiKey: () => undefined }).save({
+      ...TEST_CREDENTIALS,
+      apiKeyFingerprint: await keyFingerprint("swamp_env_key_123"),
+      collectives: ["myorg"],
+    });
+
+    const loaded = await new AuthRepository({
+      configDir,
+      getApiKey: () => "swamp_env_key_123",
+      getServerUrl: () => undefined,
+    }).load();
+
+    assertExists(loaded);
+    assertEquals(loaded.apiKey, "swamp_env_key_123");
     assertEquals(loaded.username, "");
     assertEquals(loaded.collectives, undefined);
   } finally {
@@ -355,7 +375,7 @@ Deno.test("AuthRepository - load does not merge when no fingerprint cached", asy
 
 // ── saveIdentityCache ──────────────────────────────────────────────────
 
-Deno.test("AuthRepository - saveIdentityCache preserves existing login apiKey/apiKeyId", async () => {
+Deno.test("AuthRepository - saveIdentityCache writes no auth.json when no login exists", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const configDir = join(tmpDir, "swamp");
@@ -364,21 +384,64 @@ Deno.test("AuthRepository - saveIdentityCache preserves existing login apiKey/ap
       getApiKey: () => undefined,
     });
 
-    await repo.save(TEST_CREDENTIALS);
     await repo.saveIdentityCache(
       "https://swamp-club.com",
-      "envuser",
-      ["envorg"],
-      "swamp_env_ke",
+      "newuser",
+      ["org1"],
+      await keyFingerprint("swamp_new_key_789"),
     );
 
-    const loaded = await repo.load();
+    let authFileExists = true;
+    try {
+      await Deno.stat(repo.getAuthPath());
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+      authFileExists = false;
+    }
+    assertEquals(authFileExists, false);
+    // Without a key source there is no credential at all.
+    assertEquals(await repo.load(), null);
+
+    const loaded = await new AuthRepository({
+      configDir,
+      getApiKey: () => "swamp_new_key_789",
+      getServerUrl: () => undefined,
+    }).load();
     assertExists(loaded);
-    assertEquals(loaded.apiKey, TEST_CREDENTIALS.apiKey);
-    assertEquals(loaded.apiKeyId, TEST_CREDENTIALS.apiKeyId);
-    assertEquals(loaded.username, "envuser");
-    assertEquals(loaded.collectives, ["envorg"]);
-    assertEquals(loaded.apiKeyFingerprint, "swamp_env_ke");
+    assertEquals(loaded.username, "newuser");
+    assertEquals(loaded.collectives, ["org1"]);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("AuthRepository - saveIdentityCache leaves a login for the same server byte-identical", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = join(tmpDir, "swamp");
+    const repo = new AuthRepository({
+      configDir,
+      getApiKey: () => undefined,
+    });
+    await repo.save({ ...TEST_CREDENTIALS, collectives: ["loginorg"] });
+    const before = await Deno.readTextFile(repo.getAuthPath());
+
+    await repo.saveIdentityCache(
+      "https://swamp-club.com",
+      "otheruser",
+      ["otherorg"],
+      await keyFingerprint("swamp_env_key_123"),
+    );
+
+    assertEquals(await Deno.readTextFile(repo.getAuthPath()), before);
+    const envLoaded = await new AuthRepository({
+      configDir,
+      getApiKey: () => "swamp_env_key_123",
+      getServerUrl: () => undefined,
+    }).load();
+    assertExists(envLoaded);
+    assertEquals(envLoaded.username, "otheruser");
+    assertEquals(envLoaded.collectives, ["otherorg"]);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
@@ -465,109 +528,34 @@ Deno.test("AuthRepository - load serves an env key's identity cached beside a lo
   }
 });
 
-Deno.test("AuthRepository - saveIdentityCache treats a login file without serverUrl as the default server", async () => {
+Deno.test("AuthRepository - load matches cached identity across the legacy domain and a trailing slash", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const configDir = join(tmpDir, "swamp");
-    const repo = new AuthRepository({
-      configDir,
-      getApiKey: () => undefined,
-    });
-    const legacy = { ...TEST_CREDENTIALS, serverUrl: "" };
-    await repo.save(legacy);
+    const repo = new AuthRepository({ configDir, getApiKey: () => undefined });
+    const fingerprint = await keyFingerprint("swamp_env_key_123");
 
-    await repo.saveIdentityCache(
-      "https://other.example.com",
-      "envuser",
-      ["envorg"],
-      "swamp_env_ke",
-    );
-
-    assertEquals(await repo.load(), legacy);
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
-  }
-});
-
-Deno.test("AuthRepository - saveIdentityCache treats the legacy URL as the same server", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  try {
-    const configDir = join(tmpDir, "swamp");
-    const repo = new AuthRepository({
-      configDir,
-      getApiKey: () => undefined,
-    });
-
-    await repo.save({ ...TEST_CREDENTIALS, serverUrl: "https://swamp.club" });
-    await repo.saveIdentityCache(
-      "https://swamp-club.com",
-      "envuser",
-      ["envorg"],
-      "swamp_env_ke",
-    );
-
-    const loaded = await repo.load();
-    assertExists(loaded);
-    assertEquals(loaded.apiKey, TEST_CREDENTIALS.apiKey);
-    assertEquals(loaded.serverUrl, "https://swamp-club.com");
-    assertEquals(loaded.username, "envuser");
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
-  }
-});
-
-Deno.test("AuthRepository - saveIdentityCache ignores a trailing slash when comparing servers", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  try {
-    const configDir = join(tmpDir, "swamp");
-    const repo = new AuthRepository({
-      configDir,
-      getApiKey: () => undefined,
-    });
-
-    await repo.save({
-      ...TEST_CREDENTIALS,
-      serverUrl: "https://swamp-club.com/",
-    });
-    await repo.saveIdentityCache(
-      "https://swamp-club.com",
-      "envuser",
-      ["envorg"],
-      "swamp_env_ke",
-    );
-
-    const loaded = await repo.load();
-    assertExists(loaded);
-    assertEquals(loaded.apiKey, TEST_CREDENTIALS.apiKey);
-    assertEquals(loaded.username, "envuser");
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
-  }
-});
-
-Deno.test("AuthRepository - saveIdentityCache creates file when none exists", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  try {
-    const configDir = join(tmpDir, "swamp");
-    const repo = new AuthRepository({
-      configDir,
-      getApiKey: () => undefined,
-    });
-
-    await repo.saveIdentityCache(
-      "https://swamp-club.com",
-      "newuser",
-      ["org1"],
-      "swamp_new_ke",
-    );
-
-    const loaded = await repo.load();
-    assertExists(loaded);
-    assertEquals(loaded.apiKey, "");
-    assertEquals(loaded.apiKeyId, "");
-    assertEquals(loaded.username, "newuser");
-    assertEquals(loaded.collectives, ["org1"]);
-    assertEquals(loaded.apiKeyFingerprint, "swamp_new_ke");
+    for (
+      const [cachedUrl, envUrl] of [
+        ["https://swamp.club", undefined],
+        ["https://swamp-club.com/", undefined],
+        ["https://swamp-club.com", "https://swamp-club.com/"],
+      ]
+    ) {
+      await repo.saveIdentityCache(
+        cachedUrl as string,
+        "envuser",
+        ["envorg"],
+        fingerprint,
+      );
+      const loaded = await new AuthRepository({
+        configDir,
+        getApiKey: () => "swamp_env_key_123",
+        getServerUrl: () => envUrl,
+      }).load();
+      assertExists(loaded);
+      assertEquals(loaded.username, "envuser");
+    }
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

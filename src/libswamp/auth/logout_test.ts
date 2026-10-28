@@ -234,11 +234,16 @@ Deno.test("authLogout: deletes credentials without a revoke when no key is store
 
 Deno.test("authLogout: yields completed with loggedOut false when not authenticated", async () => {
   let revokeCalled = false;
+  let deleteCalled = false;
   const deps = makeDeps({
     loadCredentials: () => Promise.resolve(null),
     revokeApiKey: () => {
       revokeCalled = true;
       return Promise.resolve({ kind: "revoked", id: "key-1" });
+    },
+    deleteCredentials: () => {
+      deleteCalled = true;
+      return Promise.resolve();
     },
   });
 
@@ -247,6 +252,8 @@ Deno.test("authLogout: yields completed with loggedOut false when not authentica
   );
 
   assertEquals(revokeCalled, false);
+  // An API-key run's caches have no login record but are still cleared.
+  assertEquals(deleteCalled, true);
   assertEquals(data.loggedOut, false);
   assertEquals(data.reason, "not authenticated");
 });

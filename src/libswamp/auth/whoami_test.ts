@@ -18,9 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { exists } from "@std/fs";
 import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
 import type { WhoamiResponse } from "../../infrastructure/http/swamp_club_client.ts";
 import { createLibSwampContext } from "../context.ts";
+import { noStoredLoginKey, notAuthenticated } from "../errors.ts";
 import { collect } from "../testing.ts";
 import {
   type AuthDeps,
@@ -115,7 +117,8 @@ Deno.test("whoami yields not_authenticated without contacting the server when th
   let fetchCalls = 0;
   const deps: AuthDeps = {
     ...makeDeps({}),
-    // The identity cache an env-key run leaves behind: no key of its own.
+    // The identity cache older versions left after an env-key run: no key of
+    // its own.
     loadCredentials: () =>
       Promise.resolve({
         serverUrl: "https://swamp-club.com",
@@ -139,6 +142,7 @@ Deno.test("whoami yields not_authenticated without contacting the server when th
   const last = events[1] as Extract<AuthWhoamiEvent, { kind: "error" }>;
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "not_authenticated");
+  assertEquals(last.error.message, noStoredLoginKey().message);
 });
 
 Deno.test("whoami: an env-key identity cache read without a key source is not authenticated", async () => {
@@ -170,6 +174,8 @@ Deno.test("whoami: an env-key identity cache read without a key source is not au
     >;
     assertEquals(last.kind, "error");
     assertEquals(last.error.code, "not_authenticated");
+    // The env-key run left no login record, so there is nothing to explain.
+    assertEquals(last.error.message, notAuthenticated().message);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
@@ -305,26 +311,22 @@ Deno.test("whoami does not persist credentials when saveCredentials is a no-op",
 Deno.test("createAuthDeps: saveCredentials caches identity when SWAMP_API_KEY is set", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
-    const deps = createAuthDeps({
-      repo: {
-        configDir: `${tmpDir}/swamp`,
-        getApiKey: () => "swamp_test_env_key",
-      },
-    });
+    const repo = {
+      configDir: `${tmpDir}/swamp`,
+      getApiKey: () => "swamp_test_env_key",
+    };
 
-    await deps.saveCredentials({
+    await createAuthDeps({ repo }).saveCredentials({
       ...testCredentials,
       collectives: ["myorg"],
     });
 
-    const raw = await Deno.readTextFile(`${tmpDir}/swamp/auth.json`);
-    const saved = JSON.parse(raw) as AuthCredentials;
-    assertEquals(saved.username, "adam");
-    assertEquals(saved.collectives, ["myorg"]);
-    assertEquals(saved.apiKeyFingerprint, "e439cb8a5820ad98");
-    // apiKey/apiKeyId should be empty — not the env var key
-    assertEquals(saved.apiKey, "");
-    assertEquals(saved.apiKeyId, "");
+    const loaded = await createAuthDeps({ repo }).loadCredentials();
+    assertEquals(loaded?.apiKey, "swamp_test_env_key");
+    assertEquals(loaded?.username, "adam");
+    assertEquals(loaded?.collectives, ["myorg"]);
+    // The identity is cached beside, never in, the login record.
+    assertEquals(await exists(`${tmpDir}/swamp/auth.json`), false);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
@@ -416,6 +418,35 @@ Deno.test("whoami: personal key response still saves credentials", async () => {
   await collect<AuthWhoamiEvent>(whoami(ctx, deps));
 
   assertEquals(saveCalled, true);
+});
+
+Deno.test("whoami: refresh rewrites a stored username that differs from the server's", async () => {
+  const ctx = createLibSwampContext();
+  const saved: AuthCredentials[] = [];
+  const stored = {
+    ...testCredentials,
+    // An older version merged an env key's identity over this login.
+    username: "otheruser",
+  };
+  for (
+    const [response, expected] of [
+      [testWhoamiResponse, "adam"],
+      [{ ...testWhoamiResponse, username: undefined }, "otheruser"],
+    ] as const
+  ) {
+    await collect<AuthWhoamiEvent>(whoami(ctx, {
+      loadCredentials: () => Promise.resolve(stored),
+      saveCredentials: (credentials) => {
+        saved.push(credentials);
+        return Promise.resolve();
+      },
+      fetchWhoami: () => Promise.resolve(response),
+    }));
+    const last = saved[saved.length - 1];
+    assertEquals(last.username, expected);
+    assertEquals(last.apiKey, testCredentials.apiKey);
+    assertEquals(last.apiKeyId, testCredentials.apiKeyId);
+  }
 });
 
 Deno.test("createAuthDeps: saveCredentials writes file when SWAMP_API_KEY is not set", async () => {
