@@ -261,3 +261,72 @@ Deno.test("serve evaluate: a restricted behavior type saves only for a caller wi
     assert(await cachedDefinition(repo, model));
   });
 });
+
+// A stored env tag that evaluates to prod: a grant conditioned on prod must
+// judge the stored text, not the value evaluation gives it (swamp-club#4090).
+const PLANTED_ENV = '${{ "prod" }}';
+
+Deno.test("serve evaluate: every behavior is saved only as its stored tags allow, as one behavior is (swamp-club#4090)", async () => {
+  await withServeRepo(async (repo) => {
+    const model = await saveModel(repo, "target", { env: PLANTED_ENV });
+    const prodRunner = createServeCtx(repo, [
+      grant({ actions: ["read"], resource: { kind: "model", pattern: "*" } }),
+      grant({
+        actions: ["run"],
+        resource: { kind: "model", pattern: "*" },
+        condition: 'tags.env == "prod"',
+      }),
+    ]);
+
+    const one = replyData(
+      await sendRequest(
+        prodRunner,
+        request("model.evaluate", { modelIdOrName: "target" }),
+      ),
+      "prod runner evaluate",
+    );
+    assertEquals(one.saved, false);
+    const all = replyData(
+      await sendRequest(prodRunner, request("model.evaluate", {})),
+      "prod runner evaluate all",
+    );
+    const items = all.items as Array<Record<string, unknown>>;
+    assertEquals(items.map((i) => [i.name, i.saved]), [["target", false]]);
+    assertEquals(await cachedDefinition(repo, model), null);
+
+    // A caller who may run it saves it, and the cache shows the tag evaluated.
+    const runner = createServeCtx(repo, RUNNER);
+    const ran = replyData(
+      await sendRequest(runner, request("model.evaluate", {})),
+      "runner evaluate all",
+    );
+    const ranItems = ran.items as Array<Record<string, unknown>>;
+    assertEquals(ranItems.map((i) => [i.name, i.saved]), [[
+      "target",
+      undefined,
+    ]]);
+    assertEquals((await cachedDefinition(repo, model))?.tags.env, "prod");
+  });
+});
+
+Deno.test("serve evaluate: every behavior returns only those its stored tags let the caller read (swamp-club#4090)", async () => {
+  await withServeRepo(async (repo) => {
+    const model = await saveModel(repo, "target", { env: PLANTED_ENV });
+    await saveModel(repo, "plain", { env: "prod" });
+    const prodReader = createServeCtx(repo, [
+      grant({
+        actions: ["read", "run"],
+        resource: { kind: "model", pattern: "*" },
+        condition: 'tags.env == "prod"',
+      }),
+    ]);
+
+    const all = replyData(
+      await sendRequest(prodReader, request("model.evaluate", {})),
+      "prod reader evaluate all",
+    );
+    const items = all.items as Array<Record<string, unknown>>;
+    assertEquals(items.map((i) => i.name), ["plain"]);
+    assertEquals(await cachedDefinition(repo, model), null);
+  });
+});
