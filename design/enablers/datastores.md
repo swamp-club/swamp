@@ -6662,7 +6662,7 @@ file locks under the root, whatever the datastore's type
   store's schema is unchanged and a solo checkout never opens it;
 - `_blobs/`, the chunk cache.
 
-**One copy per checkout, reset when the token changes.** Serve filters what
+**One copy per checkout, reset when the token or its access changes.** Serve filters what
 each caller may read, so a copy is one caller's view. `serve_upstream.db`
 records a fingerprint of the token the copy was built with (its SHA-256, never
 the token). Binding with another token resets the copy before anything
@@ -6682,6 +6682,111 @@ writer-busy:
 The chunk cache stays: it is content-addressed, and only chunks the new copy's
 commits name, which serve let this caller reference, are read from it.
 
+A reset also gives the copy a new id (below), so the checkout's projection is
+rebuilt from the new copy.
+
+**Reset when the caller's read access changes** (swamp-club#4089). A member's
+grants change more often than their token, and a copy built under old grants
+goes stale both ways: a widened grant never brings back the compacted records
+it now allows (they are in no commit to read again, and the base was loaded
+under the old grants), and a narrowed grant leaves records the member may no
+longer read in the copy and the checkout's files. So serve names the caller's
+read access on every datastore API reply to an authenticated caller, refusals
+included, in the `x-swamp-datastore-access` header:
+
+- It is a SHA-256 over what decides the caller's reads
+  (`GrantBasedAccessDecisionService.readAccessFingerprint`,
+  `src/domain/access/read_access_fingerprint.ts`): the principal, the
+  collectives and IdP groups it authenticated with, its groups in the policy
+  snapshot, and every grant for those subjects that names `read` or `admin`
+  (the only actions the read filter decides, and no other action implies
+  either), reduced to the fields a decision reads (id, state, subject,
+  effect, actions, selector, methods, condition) and sorted, and serve's
+  restricted behavior types (`--restricted-model-types`), whose definitions
+  only an admin may read: a restart with another list changes what a member
+  may read without changing a grant. Control-plane types are code constants,
+  so they change only with a release, which bumps the fingerprint's format.
+  Other subjects' grants, timestamps, authorship and the snapshot's version
+  are left out, so a reload that does not touch the caller keeps it. It is cached per caller
+  for each snapshot. Serve takes it before it answers the request, so a
+  reload while it answers shows as a change on the next reply (which resets
+  the copy), never as the access of a copy filtered under the old grants.
+  When it cannot be taken, the reply names none rather than failing.
+- With `--auth-mode none` it is the constant `unrestricted`; a caller with no
+  principal or policy gets `none`.
+
+The client reads it on every reply after the log id check
+(`ServeDatastoreClient.checkAccess`, `serveAccessCheck`), and
+`serve_upstream.db` records two values: the access the copy was built under
+(the first one a copy sees after it is made or reset) and the access serve
+sent. Once serve sends one other than the built one, that mismatch sticks
+until the copy is reset: the copy took that reply, so a later reply under the
+built access (replicas that disagree, in turn) does not make it current again.
+A value not shaped like a fingerprint is ignored. A different one does
+not interrupt the command that sees it, since serve already filters its
+replies: the command warns once that the next command rebuilds the copy (or,
+within the cooldown below, that a later one does); a later command whose
+binding already found the mismatch says why it waits instead.
+The next command's binding then resets the copy as a token switch does
+(`resetCopyForCaller`, `accessResetDue`), with these differences:
+
+- **Unlanded writes wait.** An outbox that still holds entries defers the
+  reset with a warning instead of refusing, since the member cannot return to
+  the old grants to settle them. A writing command lands them as it would
+  anyway, and the next command resets. An entry serve refuses with a 403 (a
+  narrowing that took the caller's `write`) is dropped by recovery like any
+  refused entry, so a refusal cannot hold the reset off for good; if an
+  earlier attempt landed it, the next catch-up brings it back.
+- **A busy checkout waits.** The reset takes the copy's writer lease without
+  waiting: when another command of the checkout is writing, this command
+  warns and reads the copy as it is, rather than waiting the lock timeout and
+  failing as writer-busy. The first command after that writer finishes
+  resets. A token switch still waits for the lease, since a copy built for
+  another caller is never read.
+- **A cooldown.** Serve replicas behind a load balancer hold their own policy
+  snapshot and reload it separately, so while two disagree a member's replies
+  name two fingerprints in turn. A change seen within
+  `ACCESS_RESET_COOLDOWN_MS` (10 minutes) of the last reset for access only
+  warns that the replicas may disagree; the first command after it resets if
+  the access still differs. A reset recorded in the future (the clock moved
+  back) holds nothing off. The cooldown applies to a narrowing too: one made
+  within 10 minutes of an earlier reset for access (a grant widened, then
+  narrowed again) leaves the records it revokes in the copy and the
+  checkout's files until the cooldown ends. Serve filters every reply under
+  the narrowed access meanwhile.
+
+A serve too old to send the header leaves both values unrecorded, and the
+copy behaves as before: only a token switch resets it. A copy that read the
+feed before any access was recorded (made by an older swamp, or through such a
+serve) records its build access as unknown when a fingerprint first arrives,
+so it is rebuilt once rather than adopting access it was not built under. This is freshness,
+not safety, so unlike the log id its absence is never refused. A grant change
+therefore takes effect in the copy from the second command after it: the
+first sees it, the second resets.
+
+**A reset never loses another command's pages.** A read-only command catches
+the copy up without the writer lease, so another command can reset the copy
+while it pages the feed: its commits then went into the replaced
+`commits.db`. Each `ServeUpstreamState` handle remembers the copy id it opened
+under, and every write of the catch-up (the feed cursor and anchor, serve's
+heads, a loaded base, the log id, the access seen) checks it in the same
+transaction. The handle opens before the copy's `commits.db`, so the files a
+command reads are never a newer copy's than the id it holds, and a handle
+opened while another command is partway through a reset holds no id at all:
+the files it opened may be the ones that reset removes. A copy reset since refuses them
+(`datastore_v3_serve_copy_replaced`): the command fails and says to run it
+again, and the new copy reads from the start.
+
+A reset removes what a narrowed grant no longer allows from this checkout's
+copy and files. Serve cannot reach copies made elsewhere before the
+narrowing, such as another checkout of the same member that has not run a
+command since, or files copied off the machine.
+
+Resource attributes decide reads too: a behavior renamed under a name-pattern
+grant, or a tag changed under a tag-conditioned grant. Those are content, not
+access, so no access fingerprint can see them, and a copy keeps what it
+already holds of such a behavior. Moving the copy aside loads it afresh.
+
 **The projection follows the view.** The projection, the v3 catalog and the
 read model's state are one per checkout, while the log they are built from
 changes with the token, the serve address or namespace (another root), or a
@@ -6693,7 +6798,9 @@ apply. So the checkout records the view its projection was built from in
 copy's id and the token fingerprint, or the solo datastore's path and
 namespace. The copy's id is random, made with the copy's `serve_upstream.db`
 (swamp-club#4049), so a copy moved aside and started afresh at the same root
-is another view. A view recorded before copies had ids is rebuilt once.
+is another view; every reset takes a new one (swamp-club#4089), so a reset for
+a change of access, which keeps the token, is another view too. A view
+recorded before copies had ids is rebuilt once.
 `v3RepositoryFactoryConfig` opens the handle (after the copy is current) and,
 before any recovery or catch-up, rebuilds the projection when the recorded
 view differs or a rebuild did not finish (`alignCheckoutView`):
@@ -6920,8 +7027,8 @@ that happens.
     refused with `serve_upstream_upgrade_required`, never left unchecked.
   - A copy from before log ids records the first id it sees, and the anchor
     checks below guard that first contact.
-  - A reset to another token clears the recorded id with the rest of the
-    copy.
+  - A reset, to another token or for a change of access, clears the recorded
+    id with the rest of the copy.
   - Only a log id can tell a moved serve from a revoked grant. Serve answers
     404 both for a partition the caller may no longer read and for one it
     has never heard of, and after a move, every partition of the old log is
@@ -7068,9 +7175,10 @@ than dropped as `head-moved`.
 
 - A base load has no bound on its number of pages, as the feed has none:
   a hostile serve can grow the staging file on disk.
-- A grant widened after a copy loaded the base does not bring back the
-  compacted records it now allows: they are in no commit to read again.
-  Moving the copy aside loads the base afresh.
+- A grant widened after a copy loaded the base brings back the compacted
+  records it now allows only through a reset of the copy (swamp-club#4089,
+  "Reset when the caller's read access changes" above): the second command
+  after the change, or later within the cooldown.
 - Offline writes are refused, not queued (`p5-offline`).
 - Per-model and workflow-run locks are serve's ("Model locks" above).
   `p5-leases` builds on those routes (fencing tokens, a lapse cancelling the

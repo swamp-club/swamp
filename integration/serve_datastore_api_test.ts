@@ -27,13 +27,21 @@ import { waitFor } from "@swamp-club/swamp-testing";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { Definition } from "../src/domain/definitions/definition.ts";
-import { handleDatastoreRequest } from "../src/serve/datastore_api.ts";
+import {
+  handleDatastoreRequest,
+  UNRESTRICTED_READ_ACCESS,
+} from "../src/serve/datastore_api.ts";
+import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import { matchDatastoreRoute } from "../src/serve/datastore_routes.ts";
 import { runInRootUnitOfWork } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
 import { partitionOf } from "../src/domain/datastore_v3/partition_key.ts";
 import type { Commit } from "../src/domain/datastore_v3/commit.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
-import { SERVE_DATASTORE_LOG_HEADER } from "../src/infrastructure/datastore_v3/serve_datastore_client.ts";
+import {
+  SERVE_DATASTORE_ACCESS_HEADER,
+  SERVE_DATASTORE_LOG_HEADER,
+} from "../src/infrastructure/datastore_v3/serve_datastore_client.ts";
+import { PolicySnapshot } from "../src/domain/access/policy_snapshot.ts";
 import { UploadLedger } from "../src/infrastructure/datastore_v3/upload_ledger.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import { grant } from "./serve_request_harness.ts";
@@ -1175,6 +1183,135 @@ Deno.test({
         status: 401,
         log: null,
       });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: every reply to an authenticated caller names its read access, which a reload changes only when the caller's grants change (swamp-club#4089)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const grants = member();
+    await withServer(grants, async (server) => {
+      const get = async (url: string, token?: string) => {
+        const response = await fetch(url, {
+          headers: token === undefined
+            ? {}
+            : { authorization: `Bearer ${token}` },
+        });
+        await response.body?.cancel();
+        return {
+          status: response.status,
+          access: response.headers.get(SERVE_DATASTORE_ACCESS_HEADER),
+        };
+      };
+      const changes = `${server.url}/changes?cursor=0`;
+      const first = await get(changes, "alice-token");
+      assertEquals(first.status, 200);
+      assert(first.access !== null && /^[0-9a-f]{64}$/.test(first.access));
+      // A refusal names it too; a caller serve does not know learns nothing.
+      assertEquals(
+        await get(
+          `${server.url.replace(/_default$/, "other")}/changes?cursor=0`,
+          "alice-token",
+        ),
+        { status: 404, access: first.access },
+      );
+      assertEquals(await get(changes), { status: 401, access: null });
+      // Another caller has another view.
+      const bob = await get(changes, "bob-token");
+      assert(bob.access !== null && bob.access !== first.access);
+
+      const service = server.ctx.policySnapshotLoader!.decisionService;
+      // A reload that changes only bob's grants keeps alice's.
+      service.snapshot = new PolicySnapshot([
+        ...grants,
+        grant({
+          subject: { kind: "user", name: "bob" },
+          actions: ["read"],
+          resource: { kind: "data", pattern: "*" },
+        }),
+      ], []);
+      assertEquals(await get(changes, "alice-token"), first);
+      assert((await get(changes, "bob-token")).access !== bob.access);
+      // A widened grant changes it, and putting it back restores it.
+      service.snapshot = new PolicySnapshot([
+        ...grants,
+        grant({
+          actions: ["admin"],
+          resource: { kind: "access", pattern: "*" },
+        }),
+      ], []);
+      const widened = await get(changes, "alice-token");
+      assert(widened.access !== first.access);
+      service.snapshot = new PolicySnapshot(grants, []);
+      assertEquals(await get(changes, "alice-token"), first);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: with authorization off every reply names the unrestricted read access (swamp-club#4089)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(member(), async (server) => {
+      (server.ctx as { authConfig: ConnectionContext["authConfig"] })
+        .authConfig = { ...server.ctx.authConfig, mode: "none" };
+      const response = await fetch(`${server.url}/changes?cursor=0`);
+      await response.body?.cancel();
+      assertEquals(response.status, 200);
+      assertEquals(
+        response.headers.get(SERVE_DATASTORE_ACCESS_HEADER),
+        UNRESTRICTED_READ_ACCESS,
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a reply names the read access serve held when it began answering, so a reload while it answers rebuilds the copy rather than hiding the change (swamp-club#4089)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const grants = member();
+    await withServer(grants, async (server) => {
+      const get = async () => {
+        const response = await fetch(`${server.url}/changes?cursor=0`, {
+          headers: { authorization: "Bearer alice-token" },
+        });
+        await response.body?.cancel();
+        assertEquals(response.status, 200);
+        return response.headers.get(SERVE_DATASTORE_ACCESS_HEADER);
+      };
+      const before = await get();
+      const service = server.ctx.policySnapshotLoader!.decisionService;
+      const narrowed = new PolicySnapshot(grants.slice(0, 1), []);
+      // A reload lands while serve answers: as it reads the log.
+      const store = server.v3.commitStore;
+      const changesSince = store.changesSince.bind(store);
+      let swapped = false;
+      (store as { changesSince: typeof store.changesSince }).changesSince = (
+        ...args
+      ) => {
+        if (!swapped) {
+          swapped = true;
+          service.snapshot = narrowed;
+        }
+        return changesSince(...args);
+      };
+      try {
+        const during = await get();
+        assert(swapped, "the reload landed while serve answered");
+        assertEquals(during, before, "the access it began answering under");
+        assert(await get() !== before, "the next reply names the new access");
+      } finally {
+        delete (store as { changesSince?: unknown }).changesSince;
+      }
     });
   },
 });

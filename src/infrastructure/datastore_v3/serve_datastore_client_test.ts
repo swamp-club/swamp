@@ -52,6 +52,7 @@ import {
   MAX_HAS_HASHES,
   MAX_PUT_OP_REPLY_BYTES,
   MAX_WRITTEN_COMMIT_REPLY_BYTES,
+  SERVE_DATASTORE_ACCESS_HEADER,
   SERVE_DATASTORE_LOG_HEADER,
   SERVE_ERROR_BODY_MAX_BYTES,
   SERVE_PAGE_MAX_BYTES,
@@ -752,6 +753,51 @@ Deno.test("ServeDatastoreClient.checkLog: every reply's log id is checked before
   );
 
   assertEquals(seen, ["log-a", undefined, "log-b"]);
+});
+
+Deno.test("ServeDatastoreClient.checkAccess: every reply naming the caller's read access reports it once the log check passed, a refusal too; one naming none does not (swamp-club#4089)", async () => {
+  const replies: Response[] = [
+    Response.json({ held: [] }, {
+      headers: {
+        [SERVE_DATASTORE_LOG_HEADER]: "log-a",
+        [SERVE_DATASTORE_ACCESS_HEADER]: "a1",
+      },
+    }),
+    Response.json({ held: [] }, {
+      headers: { [SERVE_DATASTORE_LOG_HEADER]: "log-a" },
+    }),
+    Response.json({ code: "not_found", message: "No such" }, {
+      status: 404,
+      headers: {
+        [SERVE_DATASTORE_LOG_HEADER]: "log-a",
+        [SERVE_DATASTORE_ACCESS_HEADER]: "b2",
+      },
+    }),
+    Response.json({ held: [] }, {
+      headers: {
+        [SERVE_DATASTORE_LOG_HEADER]: "log-b",
+        [SERVE_DATASTORE_ACCESS_HEADER]: "c3",
+      },
+    }),
+  ];
+  const { client } = clientWith((_req, call) => replies[call - 1]);
+  client.checkLog((logId) => {
+    if (logId === "log-b") throw new Error("another log");
+  });
+  const seen: string[] = [];
+  client.checkAccess((fingerprint) => seen.push(fingerprint));
+  const hash = ["a".repeat(64)];
+
+  await client.hasChunks(hash, signal());
+  await client.hasChunks(hash, signal());
+  await assertRejects(() => client.hasChunks(hash, signal()));
+  await assertRejects(
+    () => client.hasChunks(hash, signal()),
+    Error,
+    "another log",
+  );
+
+  assertEquals(seen, ["a1", "b2"]);
 });
 
 /** The bytes a stream hands out per pull in the bounded-read tests. */

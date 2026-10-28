@@ -109,7 +109,10 @@ import type {
   UploadLedger,
   UploadReservation,
 } from "../infrastructure/datastore_v3/upload_ledger.ts";
-import { SERVE_DATASTORE_LOG_HEADER } from "../infrastructure/datastore_v3/serve_datastore_client.ts";
+import {
+  SERVE_DATASTORE_ACCESS_HEADER,
+  SERVE_DATASTORE_LOG_HEADER,
+} from "../infrastructure/datastore_v3/serve_datastore_client.ts";
 import type { V3Datastore } from "../infrastructure/datastore_v3/v3_datastore.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
@@ -200,7 +203,11 @@ const catchUps = new WeakMap<V3Datastore, CatchUpCoalescer>();
  * ({@link SERVE_DATASTORE_LOG_HEADER}): a checkout's copy refuses a serve
  * that answers with another log's (swamp-club#4049). It says nothing of
  * the log's content, so it goes to every authenticated caller, whatever
- * its grants.
+ * its grants. Every reply to an authenticated caller also carries a
+ * fingerprint of what the caller may read
+ * ({@link SERVE_DATASTORE_ACCESS_HEADER}): a checkout's copy is rebuilt
+ * when it changes, so a widened or narrowed grant refreshes what the copy
+ * holds (swamp-club#4089).
  */
 export async function handleDatastoreRequest(
   req: Request,
@@ -210,14 +217,56 @@ export async function handleDatastoreRequest(
 ): Promise<Response> {
   const authenticated = await authenticateCaller(req, sourceIp, deps);
   if (authenticated instanceof Response) return authenticated;
+  // Taken before the reply is answered: a reload while it is answered then
+  // shows as a change on the next reply, which rebuilds the copy, never as
+  // the access a copy filtered under the old grants was built with.
+  const access = callerReadAccess(authenticated, deps.ctx);
   const response = await answerDatastoreRequest(
     req,
     route,
     authenticated,
     deps,
   );
+  const headers: [string, string][] = access === undefined
+    ? []
+    : [[SERVE_DATASTORE_ACCESS_HEADER, access]];
   const logId = logIdOf(deps.v3);
-  return logId === undefined ? response : withHeader(response, logId);
+  if (logId !== undefined) headers.push([SERVE_DATASTORE_LOG_HEADER, logId]);
+  return withHeaders(response, headers);
+}
+
+/** The read-access fingerprint of a caller with no authorization to apply. */
+export const UNRESTRICTED_READ_ACCESS = "unrestricted";
+
+/** The read-access fingerprint of a caller that may read nothing. */
+export const NO_READ_ACCESS = "none";
+
+/**
+ * The fingerprint of what `caller` may read, as the read filter decides it
+ * (`callerResourceDecider`): everything when authorization is off, nothing
+ * without a principal or a policy, else the decision service's
+ * fingerprint of the caller's grants and serve's restricted behavior types,
+ * which only an admin may read. Undefined, so the reply names none,
+ * when it cannot be taken: it is freshness, never a reason to fail a reply.
+ */
+function callerReadAccess(
+  caller: ApiCaller,
+  ctx: Pick<ConnectionContext, "authConfig" | "policySnapshotLoader">,
+): string | undefined {
+  if (ctx.authConfig.mode === "none") return UNRESTRICTED_READ_ACCESS;
+  const loader = ctx.policySnapshotLoader;
+  const { principal, collectives, groups } = caller.access;
+  if (!loader || !principal) return NO_READ_ACCESS;
+  try {
+    return loader.decisionService.readAccessFingerprint(
+      { principal, collectives, groups },
+      ctx.authConfig.restrictedModelTypes,
+    );
+  } catch (error) {
+    logger
+      .warn`Could not fingerprint a datastore caller's read access: ${error}`;
+    return undefined;
+  }
 }
 
 /** The log's id; undefined when there is no v3 log, or it is closing. */
@@ -229,18 +278,21 @@ function logIdOf(v3: V3Datastore | undefined): string | undefined {
   }
 }
 
-/** `response` with the log header set; a copy when its headers are fixed. */
-function withHeader(response: Response, logId: string): Response {
+/** `response` with `headers` set; a copy when its headers are fixed. */
+function withHeaders(
+  response: Response,
+  headers: readonly [string, string][],
+): Response {
   try {
-    response.headers.set(SERVE_DATASTORE_LOG_HEADER, logId);
+    for (const [name, value] of headers) response.headers.set(name, value);
     return response;
   } catch {
-    const headers = new Headers(response.headers);
-    headers.set(SERVE_DATASTORE_LOG_HEADER, logId);
+    const copied = new Headers(response.headers);
+    for (const [name, value] of headers) copied.set(name, value);
     return new Response(response.body, {
       status: response.status,
       statusText: response.statusText,
-      headers,
+      headers: copied,
     });
   }
 }

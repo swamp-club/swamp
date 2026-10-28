@@ -37,6 +37,7 @@ import {
   BASE_LOAD_ATTEMPTS,
   OBSERVED_BASE_STAGING_PREFIX,
   SERVE_PARTITION_PAGE,
+  serveAccessCheck,
   ServeCatchUp,
   serveLogCheck,
 } from "./serve_catch_up.ts";
@@ -48,7 +49,10 @@ import {
   ServeUpstreamError,
   ServeUpstreamUpgradeRequiredError,
 } from "./serve_upstream_errors.ts";
-import { ServeUpstreamState } from "./serve_upstream_state.ts";
+import {
+  ServeCopyReplacedError,
+  ServeUpstreamState,
+} from "./serve_upstream_state.ts";
 import {
   FakeServe,
   removeTempDir,
@@ -1164,5 +1168,128 @@ Deno.test("ServeCatchUp.catchUp: after a base load, the next page's anchor still
       ServeUpstreamDivergedError,
     );
     assertEquals(error.divergence.kind, "other-commit");
+  });
+});
+
+Deno.test("serveAccessCheck: records each access serve sends, warns once when it differs from the copy's, ignores what is not a fingerprint and never throws (swamp-club#4089)", async () => {
+  await withCheckout(async ({ state }) => {
+    const captured: LogRecord[] = [];
+    await configure({
+      sinks: { capture: (record: LogRecord) => captured.push(record) },
+      loggers: [
+        {
+          category: ["datastore", "v3", "serve"],
+          lowestLevel: "warning",
+          sinks: ["capture"],
+        },
+        { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+      ],
+      reset: true,
+    });
+    try {
+      const check = serveAccessCheck(state, SERVE_URL);
+      check("a1");
+      check("a1");
+      assertEquals(state.access(), { built: "a1", seen: "a1" });
+      assertEquals(captured.length, 0);
+      check("b2");
+      check("c3");
+      check("b2");
+      assertEquals(state.access(), { built: "a1", seen: "b2" });
+      assertEquals(captured.length, 1, "warned once");
+      assertStringIncludes(
+        captured[0].message.map((part) => String(part)).join(""),
+        "the next command rebuilds",
+      );
+      // Not a fingerprint: ignored.
+      check("Not A Fingerprint");
+      check("x".repeat(129));
+      assertEquals(state.access().seen, "b2");
+      // A state that cannot record is no reason to fail the reply.
+      serveAccessCheck({
+        access: () => ({}),
+        recordAccessSeen: () => {
+          throw new Error("database is locked");
+        },
+      }, SERVE_URL)("d4");
+    } finally {
+      await reset();
+    }
+  });
+});
+
+Deno.test("serveAccessCheck: warns only for a mismatch the reply records, and within the cooldown says the rebuild waits (swamp-club#4089)", async () => {
+  await withCheckout(async ({ state }) => {
+    const captured: LogRecord[] = [];
+    await configure({
+      sinks: { capture: (record: LogRecord) => captured.push(record) },
+      loggers: [
+        {
+          category: ["datastore", "v3", "serve"],
+          lowestLevel: "warning",
+          sinks: ["capture"],
+        },
+        { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+      ],
+      reset: true,
+    });
+    const texts = () =>
+      captured.map((record) => record.message.map(String).join(""));
+    try {
+      state.stampCaller("token-a");
+      state.recordAccessSeen("a1");
+      state.beginCallerReset();
+      state.finishCallerReset("token-a", 1_000);
+      state.recordAccessSeen("a1");
+      // Within the cooldown of that reset: the rebuild waits, and it says so.
+      serveAccessCheck(state, SERVE_URL, () => 2_000)("b2");
+      assertEquals(texts().length, 1);
+      assertStringIncludes(texts()[0], "changed again within 10 minutes");
+      assert(!texts()[0].includes("the next command rebuilds"));
+      // A later command whose binding found the mismatch says nothing more.
+      serveAccessCheck(state, SERVE_URL, () => 3_000)("b2");
+      serveAccessCheck(state, SERVE_URL, () => 3_000)("c3");
+      assertEquals(texts().length, 1);
+    } finally {
+      await reset();
+    }
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a reset of the copy by another command while this one pages the feed refuses the rest, so the new copy is never told it holds pages it does not (swamp-club#4089)", async () => {
+  await withCheckout(async ({ state, serve, catchUp }) => {
+    serve.feedPageSize = 2;
+    for (let seq = 1; seq <= 5; seq++) serve.land(await other(seq));
+    // Another command resets the copy between this one's first and second
+    // pages, as an access change does.
+    let reads = 0;
+    serve.tooLarge = (route) => {
+      if (route === "changes" && ++reads === 2) {
+        const other = ServeUpstreamState.open(state.path);
+        try {
+          other.beginCallerReset();
+          other.finishCallerReset("token-a", 1_000);
+        } finally {
+          other.close();
+        }
+      }
+      return false;
+    };
+
+    await assertRejects(
+      () => catchUp.catchUp(signal()),
+      ServeCopyReplacedError,
+    );
+    const reset = ServeUpstreamState.open(state.path);
+    try {
+      assertEquals(
+        reset.feedCursor(),
+        0,
+        "the reset copy reads from the start",
+      );
+      assertEquals(reset.feedAnchor(), undefined);
+    } finally {
+      reset.close();
+    }
   });
 });

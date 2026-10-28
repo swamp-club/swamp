@@ -75,9 +75,12 @@ import {
   ServeUpstreamError,
   ServeUpstreamUpgradeRequiredError,
 } from "./serve_upstream_errors.ts";
-import type {
-  ServeFeedAnchor,
-  ServeUpstreamState,
+import {
+  ACCESS_RESET_COOLDOWN_MS,
+  accessResetDue,
+  type ServeCopyAccess,
+  type ServeFeedAnchor,
+  type ServeUpstreamState,
 } from "./serve_upstream_state.ts";
 import {
   ObservedBaseStaging,
@@ -111,6 +114,61 @@ export function serveLogCheck(
         copyLogId: recorded,
         serveLogId: logId,
       });
+    }
+  };
+}
+
+/** The shape of a read-access fingerprint serve sends: a short token. */
+const ACCESS_FINGERPRINT = /^[0-9a-z]{1,128}$/;
+
+/**
+ * The check a copy's serve client runs on every reply that names the
+ * caller's read access (`ServeDatastoreClient.checkAccess`,
+ * swamp-club#4089). A fingerprint it has not seen in this process is
+ * recorded (`ServeUpstreamState.recordAccessSeen`); the first a copy sees
+ * is the one it was built under. When a reply records a mismatch the copy
+ * did not have, a warning says once what follows: the next command rebuilds
+ * the copy, or, within the cooldown of the last rebuild for access, a
+ * command after it. This command goes on, since serve filters its replies
+ * under the new access. A mismatch recorded before this command was
+ * reported by its binding. It never throws: a value not shaped like a
+ * fingerprint is ignored, and a failure to record one only delays the
+ * rebuild.
+ */
+export function serveAccessCheck(
+  state: Pick<ServeUpstreamState, "access" | "recordAccessSeen">,
+  serveUrl: string,
+  now: () => number = Date.now,
+): (fingerprint: string) => void {
+  let last: string | undefined;
+  let warned = false;
+  return (fingerprint) => {
+    if (fingerprint === last || !ACCESS_FINGERPRINT.test(fingerprint)) {
+      return;
+    }
+    let before: ServeCopyAccess;
+    let after: ServeCopyAccess;
+    try {
+      before = state.access();
+      after = state.recordAccessSeen(fingerprint);
+    } catch (error) {
+      logger.debug`Could not record the read access serve sent: ${error}`;
+      return;
+    }
+    last = fingerprint;
+    const mismatched = (access: ServeCopyAccess) =>
+      access.built !== undefined && access.seen !== undefined &&
+      access.seen !== access.built;
+    if (warned || mismatched(before) || !mismatched(after)) return;
+    warned = true;
+    if (accessResetDue(after, now()) === "cooling") {
+      logger
+        .warn`Your access to the datastore at serve ${serveUrl} changed again within ${
+        ACCESS_RESET_COOLDOWN_MS / 60_000
+      } minutes of this checkout's copy being rebuilt for the last change. This command reads it under your new access; serve's replicas may disagree on it, so the copy is rebuilt by a command after that if your access still differs.`;
+    } else {
+      logger
+        .warn`Your access to the datastore at serve ${serveUrl} changed. This command reads it under your new access; the next command rebuilds this checkout's copy of it to match, or says why it waits.`;
     }
   };
 }

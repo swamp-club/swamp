@@ -22,8 +22,10 @@ import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import { UserError } from "../../domain/errors.ts";
 import {
+  SERVE_COPY_REPLACED_CODE,
   SERVE_UPSTREAM_STATE_SCHEMA_NEWER_CODE,
   SERVE_UPSTREAM_STATE_SCHEMA_VERSION,
+  ServeCopyReplacedError,
   ServeUpstreamState,
 } from "./serve_upstream_state.ts";
 
@@ -337,6 +339,197 @@ Deno.test("ServeUpstreamState.recordBaseLoaded: the feed reads on from exactly t
       assertEquals(state.basePoint(), 0);
     } finally {
       state.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState.recordAccessSeen: the first access seen is the one the copy was built under (swamp-club#4089)", async () => {
+  await withTempDir((dir) => {
+    const state = ServeUpstreamState.open(join(dir, "serve_upstream.db"));
+    try {
+      assertEquals(state.access(), {});
+      assertEquals(state.recordAccessSeen("a1"), { built: "a1", seen: "a1" });
+      assertEquals(state.recordAccessSeen("b2"), { built: "a1", seen: "b2" });
+      assertEquals(state.access(), { built: "a1", seen: "b2" });
+    } finally {
+      state.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState: a reset forgets the access, takes a new copy id, and an access reset records its time (swamp-club#4089)", async () => {
+  await withTempDir((dir) => {
+    const state = ServeUpstreamState.open(join(dir, "serve_upstream.db"));
+    try {
+      state.stampCaller("token-a");
+      state.recordAccessSeen("a1");
+      state.recordAccessSeen("b2");
+      const id = state.copyId();
+      state.beginCallerReset();
+      assertEquals(state.access(), {});
+      assert(state.copyId() !== id, "a reset copy is another view");
+      state.finishCallerReset("token-a", 1_000);
+      assertEquals(state.caller(), {
+        fingerprint: "token-a",
+        resetting: false,
+      });
+      assertEquals(state.access(), { resetAt: 1_000 });
+      assertEquals(state.recordAccessSeen("b2"), {
+        built: "b2",
+        seen: "b2",
+        resetAt: 1_000,
+      });
+      // A token reset keeps the time of the last access reset.
+      state.beginCallerReset();
+      state.finishCallerReset("token-b");
+      assertEquals(state.access(), { resetAt: 1_000 });
+    } finally {
+      state.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState: a file at schema version 3 upgrades with no access recorded (swamp-club#4089)", async () => {
+  await withTempDir((dir) => {
+    const path = join(dir, "serve_upstream.db");
+    const made = ServeUpstreamState.open(path);
+    const id = made.copyId();
+    made.close();
+    const db = new DatabaseSync(path);
+    db.exec(`ALTER TABLE copy DROP COLUMN access_built;
+       ALTER TABLE copy DROP COLUMN access_seen;
+       ALTER TABLE copy DROP COLUMN access_reset_at;
+       PRAGMA user_version=3;`);
+    db.close();
+    const state = ServeUpstreamState.open(path);
+    try {
+      assertEquals(state.copyId(), id);
+      assertEquals(state.access(), {});
+      assertEquals(state.recordAccessSeen("a1"), { built: "a1", seen: "a1" });
+    } finally {
+      state.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState.recordAccessSeen: a mismatch sticks until a reset, so replies that alternate never hide it (swamp-club#4089)", async () => {
+  await withTempDir((dir) => {
+    const state = ServeUpstreamState.open(join(dir, "serve_upstream.db"));
+    try {
+      state.stampCaller("token-a");
+      state.recordAccessSeen("a1");
+      // Replicas that disagree: one reply under other access, then the
+      // copy's own again. The copy took the other reply's page.
+      assertEquals(state.recordAccessSeen("b2").seen, "b2");
+      assertEquals(state.recordAccessSeen("a1"), { built: "a1", seen: "b2" });
+      assertEquals(state.recordAccessSeen("c3").seen, "b2");
+      state.beginCallerReset();
+      state.finishCallerReset("token-a", 1_000);
+      assertEquals(state.recordAccessSeen("a1"), {
+        built: "a1",
+        seen: "a1",
+        resetAt: 1_000,
+      });
+    } finally {
+      state.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState: a handle refuses to record its catch-up into a copy another handle reset since it opened (swamp-club#4089)", async () => {
+  await withTempDir((dir) => {
+    const path = join(dir, "serve_upstream.db");
+    const stale = ServeUpstreamState.open(path);
+    const resetter = ServeUpstreamState.open(path);
+    try {
+      stale.stampCaller("token-a");
+      stale.advanceFeedCursor(3, ANCHOR_A);
+      resetter.beginCallerReset();
+      resetter.finishCallerReset("token-a", 1_000);
+      const refused = [
+        () => stale.advanceFeedCursor(9, ANCHOR_A),
+        () => stale.recordServeHead("", "p", 9),
+        () => stale.recordBaseLoaded(9, []),
+        () => stale.recordServeLogId("log-a"),
+        () => stale.recordAccessSeen("a1"),
+      ];
+      for (const write of refused) {
+        const error = assertThrows(write, ServeCopyReplacedError);
+        assertEquals(error.code, SERVE_COPY_REPLACED_CODE);
+      }
+      // The reset copy kept none of it; the resetting handle writes on.
+      assertEquals(resetter.feedCursor(), 0);
+      assertEquals(resetter.serveHead("", "p"), 0);
+      assertEquals(resetter.serveLogId(), undefined);
+      assertEquals(resetter.access(), { resetAt: 1_000 });
+      assert(resetter.advanceFeedCursor(2, ANCHOR_A));
+      assertEquals(resetter.feedCursor(), 2);
+    } finally {
+      stale.close();
+      resetter.close();
+    }
+    const reopened = ServeUpstreamState.open(path);
+    try {
+      assert(reopened.advanceFeedCursor(4, ANCHOR_A));
+    } finally {
+      reopened.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState.recordAccessSeen: a copy that read the feed before any access was recorded is rebuilt once (swamp-club#4089)", async () => {
+  await withTempDir((dir) => {
+    const state = ServeUpstreamState.open(join(dir, "serve_upstream.db"));
+    try {
+      // Read through a serve that named no access, or by an older swamp.
+      state.advanceFeedCursor(5, ANCHOR_A);
+      assertEquals(state.recordAccessSeen("a1"), { built: "", seen: "a1" });
+      // Its reset makes the next access the one it was built under.
+      state.beginCallerReset();
+      state.finishCallerReset("token-a", 1_000);
+      assertEquals(state.recordAccessSeen("a1"), {
+        built: "a1",
+        seen: "a1",
+        resetAt: 1_000,
+      });
+    } finally {
+      state.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState: a handle opened while another resets the copy records nothing, and one opened after records again (swamp-club#4089)", async () => {
+  await withTempDir((dir) => {
+    const path = join(dir, "serve_upstream.db");
+    const resetter = ServeUpstreamState.open(path);
+    try {
+      resetter.stampCaller("token-a");
+      resetter.beginCallerReset();
+      // Opened between the reset's start and its end: the copy's files may
+      // be the ones the reset removes.
+      const during = ServeUpstreamState.open(path);
+      try {
+        assertThrows(
+          () => during.advanceFeedCursor(4, ANCHOR_A),
+          ServeCopyReplacedError,
+        );
+        assertThrows(
+          () => during.recordAccessSeen("a1"),
+          ServeCopyReplacedError,
+        );
+      } finally {
+        during.close();
+      }
+      resetter.finishCallerReset("token-a", 1_000);
+      assertEquals(resetter.feedCursor(), 0);
+      const after = ServeUpstreamState.open(path);
+      try {
+        assert(after.advanceFeedCursor(4, ANCHOR_A));
+      } finally {
+        after.close();
+      }
+    } finally {
+      resetter.close();
     }
   });
 });
