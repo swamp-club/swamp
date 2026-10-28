@@ -272,8 +272,9 @@ The client looks for the token in this order:
 3. the `SWAMP_SERVER_TOKEN_FILE` env var (read from a file), only when the
    `--server` flag, `SWAMP_SERVE_URL` or `SWAMP_SERVER_URL` names the address.
    A `serverAddress` from a cloned repository's `.swamp.yaml` alone never
-   receives it: the CLI warns once that the file was not sent and how to send
-   it, and a 401 from that server says the same before the login hint;
+   receives it. When no other source supplies a token either, the CLI warns
+   once that the file was not sent and how to send it, and a 401 from that
+   server says the same before the login hint;
 4. the `SWAMP_SERVER_TOKEN` env var, scoped by `SWAMP_SERVER_URL` (both must be
    set; both accept `ws(s)://` or `http(s)://` URLs). A `SWAMP_SERVER_URL` that
    is not a valid `ws(s)://` or `http(s)://` URL matches no server: the CLI

@@ -6592,9 +6592,10 @@ is unchanged.
 names it, and `SWAMP_SERVER_TOKEN_FILE` only when an environment address names
 it. A `serverAddress` in a cloned repository's `.swamp.yaml` never receives a
 token that was meant for another server; when `SWAMP_SERVER_TOKEN_FILE` is set
-but withheld, the CLI warns once and serve's 401 says why. A missing token sends no header, so
-serve's 401 gives the `swamp auth server-login` hint, and `--auth-mode none`
-works without one.
+but withheld and no other source has a token, the CLI warns once and serve's 401
+says why, naming `SWAMP_SERVE_URL` as the way to send it. A missing token sends
+no header, so serve's 401 gives the `swamp auth server-login` hint, and
+`--auth-mode none` works without one.
 
 **The binding.** Serve mode is decided from `.swamp.yaml` before the config
 resolves, so an extension datastore's type is never resolved or installed and

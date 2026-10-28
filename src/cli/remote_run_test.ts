@@ -1397,6 +1397,29 @@ Deno.test("resolveServerTokenFromOptions: a bound or unset token file does not w
   });
 });
 
+Deno.test("resolveServerTokenFromOptions: an unbound token file does not warn when a stored credential supplies the token", async () => {
+  await withTokenFileEnv("file.secret", {}, async () => {
+    const repo: ServerCredentialRepository = {
+      ...NO_CREDENTIALS,
+      get: (url: string): Promise<ServerCredential | null> =>
+        Promise.resolve({
+          serverUrl: url,
+          tokenName: "stored",
+          token: "stored.credential",
+          principalId: "user:test",
+          obtainedAt: "2026-06-18T00:00:00Z",
+        }),
+    };
+    const warnings = await captureRemoteRunWarnings(async () => {
+      assertEquals(
+        await resolveServerTokenFromOptions("https://marker.test", {}, repo),
+        "stored.credential",
+      );
+    });
+    assertEquals(warnings, []);
+  });
+});
+
 Deno.test({
   name:
     "remote run: a 401 after the token file was withheld says why before the login hint",

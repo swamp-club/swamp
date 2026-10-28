@@ -53,6 +53,7 @@ import {
   recordWithheldTokenFile,
   serverLoginHint,
   withheldTokenFileMessage,
+  type WithheldTokenFileRemedy,
 } from "../domain/auth/server_login_hint.ts";
 import { quoteShellWord } from "../domain/shell_word.ts";
 import { processLockHolderMarker } from "../domain/datastore/lock_holder_marker.ts";
@@ -292,12 +293,17 @@ export function tokenFileBoundTo(
 
 /**
  * Warns, once per address, that `SWAMP_SERVER_TOKEN_FILE` was not sent to
- * `key`, and records it so a 401 from that address says why. Names the
- * normalized address only, never the file's path or contents.
+ * `key` and no other source supplied a token, and records it so a 401 from
+ * that address says why. Names the normalized address only, never the
+ * file's path or contents. Callers call it only when no token was found, so
+ * a stored credential that authenticates raises no warning.
  */
-export function warnWithheldTokenFile(key: string): void {
-  if (recordWithheldTokenFile(key)) {
-    logger.warn(withheldTokenFileMessage(key));
+export function warnWithheldTokenFile(
+  key: string,
+  remedy: WithheldTokenFileRemedy,
+): void {
+  if (recordWithheldTokenFile(key, remedy)) {
+    logger.warn(withheldTokenFileMessage(key, remedy));
   }
 }
 
@@ -338,10 +344,13 @@ export async function resolveServerToken(
       Deno.env.get("SWAMP_SERVER_URL"),
     ]);
     if (bound) return readTokenFile(envTokenFile, "SWAMP_SERVER_TOKEN_FILE");
-    warnWithheldTokenFile(key);
   }
   const repo = credentialRepo ?? new FileServerCredentialRepository();
   const credential = await repo.get(serverUrl);
+  // A set token file that reached here was not bound to the address.
+  if (!credential?.token && envTokenFile) {
+    warnWithheldTokenFile(key, "flag-or-env");
+  }
   return credential?.token;
 }
 

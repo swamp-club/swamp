@@ -293,8 +293,9 @@ export interface ResolveServeUpstreamOptions {
  *
  * 1. `SWAMP_SERVER_TOKEN_FILE`, only when `SWAMP_SERVE_URL` or
  *    `SWAMP_SERVER_URL` is set and normalizes to the resolved address.
- *    A marker-only address never reads it, and warns once that it was
- *    not sent ({@link warnWithheldTokenFile}).
+ *    A marker-only address never reads it; when no other source supplies
+ *    a token either, it warns once that the file was not sent
+ *    ({@link warnWithheldTokenFile}).
  * 2. The credential repository: `SWAMP_SERVER_TOKEN` when
  *    `SWAMP_SERVER_URL` normalizes to the address, else the stored
  *    credential for the address in servers.json.
@@ -326,6 +327,10 @@ export async function resolveServeUpstream(
     const credential = await repo.get(key);
     token = credential?.token || undefined;
   }
+  // A set token file that left no token was not bound to the address.
+  if (token === undefined && Deno.env.get("SWAMP_SERVER_TOKEN_FILE")) {
+    warnWithheldTokenFile(key, "env");
+  }
 
   const caCerts = (opts.getCaCerts ?? getEnvCaCerts)();
 
@@ -345,9 +350,6 @@ async function boundTokenFileToken(key: string): Promise<string | undefined> {
     Deno.env.get("SWAMP_SERVE_URL"),
     Deno.env.get("SWAMP_SERVER_URL"),
   ]);
-  if (!bound) {
-    warnWithheldTokenFile(key);
-    return undefined;
-  }
+  if (!bound) return undefined;
   return await readTokenFile(tokenFile, "SWAMP_SERVER_TOKEN_FILE");
 }

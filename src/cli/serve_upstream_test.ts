@@ -239,6 +239,9 @@ Deno.test("resolveServeUpstream: a marker-only address warns once that the token
       assertEquals(warnings.length, 1);
       assertStringIncludes(warnings[0], "SWAMP_SERVER_TOKEN_FILE was not sent");
       assertStringIncludes(warnings[0], "http://elsewhere.test:9090");
+      assertStringIncludes(warnings[0], "SWAMP_SERVE_URL");
+      // --server would run the command on serve, not bind its datastore.
+      assertEquals(warnings[0].includes("--server"), false);
       assertEquals(warnings[0].includes(tokenFile), false);
       assertEquals(warnings[0].includes("leaked.secret"), false);
       const auth = new ServeAuthFailedError(
