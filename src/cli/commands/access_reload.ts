@@ -35,6 +35,7 @@ import {
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
+  TOKEN_FILE_DESCRIPTION,
 } from "../../cli/remote_run.ts";
 import type { AccessReloadResponse } from "../../serve/protocol.ts";
 import { createAccessReloadRenderer } from "../../presentation/renderers/access_reload.ts";
@@ -66,7 +67,7 @@ export const accessReloadCommand = new Command()
   )
   .option(
     "--token-file <path:string>",
-    "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
+    TOKEN_FILE_DESCRIPTION,
   )
   .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
   .action(async function (options: AnyOptions) {

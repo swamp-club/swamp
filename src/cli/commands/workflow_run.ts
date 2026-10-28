@@ -121,6 +121,7 @@ import {
   resolveServerTokenFromOptions,
   resolveServeUrl,
   runWorkflowOverServer,
+  TOKEN_FILE_DESCRIPTION,
 } from "../remote_run.ts";
 import { redactServerUrl } from "../../domain/auth/server_url.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
@@ -275,7 +276,7 @@ export const workflowRunCommand = new Command()
   )
   .option(
     "--token-file <path:string>",
-    "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
+    TOKEN_FILE_DESCRIPTION,
   )
   .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
   .option(

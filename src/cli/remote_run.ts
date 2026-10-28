@@ -33,6 +33,7 @@
  */
 
 import type { Command } from "@cliffy/command";
+import { getLogger } from "@logtape/logtape";
 import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
 import type {
   ModelMethodRunPayload,
@@ -55,6 +56,8 @@ import {
   gutterLine,
   STATUS_COLORS,
 } from "../presentation/output/console_writer.ts";
+
+const logger = getLogger(["swamp", "cli", "remote-run"]);
 
 let _cachedMarkerServerAddress: string | undefined;
 
@@ -313,15 +316,15 @@ export async function resolveServerToken(
   const key = parseServerFlag(serverUrl);
   if (explicitToken) return explicitToken;
   const envTokenFile = Deno.env.get("SWAMP_SERVER_TOKEN_FILE");
-  if (
-    envTokenFile &&
-    tokenFileBoundTo(key, [
+  if (envTokenFile) {
+    const bound = tokenFileBoundTo(key, [
       serverFlag,
       Deno.env.get("SWAMP_SERVE_URL"),
       Deno.env.get("SWAMP_SERVER_URL"),
-    ])
-  ) {
-    return readTokenFile(envTokenFile, "SWAMP_SERVER_TOKEN_FILE");
+    ]);
+    if (bound) return readTokenFile(envTokenFile, "SWAMP_SERVER_TOKEN_FILE");
+    logger
+      .debug`SWAMP_SERVER_TOKEN_FILE not used for ${key}: no --server, SWAMP_SERVE_URL or SWAMP_SERVER_URL names it`;
   }
   const repo = credentialRepo ?? new FileServerCredentialRepository();
   const credential = await repo.get(serverUrl);
@@ -947,6 +950,9 @@ type AnyCommand = Command<any, any, any, any, any, any, any, any>;
  * (swamp-club#2360).
  */
 export const CA_CERT_FLAG = "--ca-cert <path:string>";
+/** `--token-file` help, shared by every command that resolves a server token. */
+export const TOKEN_FILE_DESCRIPTION =
+  "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE, used only for the server named by --server, SWAMP_SERVE_URL or SWAMP_SERVER_URL)";
 export const CA_CERT_DESCRIPTION =
   "Path to PEM-encoded CA certificate to trust for TLS connections to the server (env: SWAMP_CA_CERT)";
 
@@ -968,7 +974,7 @@ export function withRemoteOptions<T extends AnyCommand>(command: T): T {
     )
     .option(
       "--token-file <path:string>",
-      "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE, sent only to the address --server, SWAMP_SERVE_URL or SWAMP_SERVER_URL names)",
+      TOKEN_FILE_DESCRIPTION,
     )
     .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION) as T;
 }

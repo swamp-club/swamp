@@ -103,6 +103,7 @@ import {
   resolveServerTokenFromOptions,
   resolveServeUrl,
   runModelMethodOverServer,
+  TOKEN_FILE_DESCRIPTION,
 } from "../remote_run.ts";
 import { SERVE_CAPABILITY_LITERAL_INPUTS } from "../../serve/protocol.ts";
 import { redactServerUrl } from "../../domain/auth/server_url.ts";
@@ -330,7 +331,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
     )
     .option(
       "--token-file <path:string>",
-      "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
+      TOKEN_FILE_DESCRIPTION,
     )
     .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
     .option(
