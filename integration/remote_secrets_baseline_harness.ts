@@ -64,6 +64,7 @@ import {
 } from "../src/domain/models/worker/enrollment_token_model.ts";
 import { sweepStaleRecords } from "../src/serve/boot_reconciliation.ts";
 import { RpcChannel } from "../src/domain/remote/rpc_channel.ts";
+import type { SessionCredentialService } from "../src/domain/remote/session_credential.ts";
 import {
   type EnrollResult,
   REMOTE_PROTOCOL_VERSION,
@@ -227,6 +228,13 @@ async function initRepo(repoDir: string): Promise<void> {
   );
 }
 
+export interface BaselineOrchestratorOptions {
+  /** The gateway's credential service, for an injected clock and timers. */
+  sessionCredentials?: SessionCredentialService;
+  /** Wraps the vault the data plane reads, so a test can hold its reads. */
+  wrapDataPlaneVault?: (vault: VaultService) => VaultService;
+}
+
 /**
  * A real orchestrator assembly over a temp repo with a local_encryption
  * vault: gateway, capability service (allowlist enforced), dispatch service
@@ -234,6 +242,7 @@ async function initRepo(repoDir: string): Promise<void> {
  */
 export async function startBaselineOrchestrator(
   repoDir: string,
+  options: BaselineOrchestratorOptions = {},
 ): Promise<BaselineOrchestrator> {
   await initRepo(repoDir);
   const repoContext = createRepositoryContext({ repoDir });
@@ -281,6 +290,7 @@ export async function startBaselineOrchestrator(
     repoDir,
     repoContext,
     capabilityService,
+    sessionCredentials: options.sessionCredentials,
     graceWindowMs: 1_000,
     onWorkerIdle: (worker) => dispatchService.notifyWorkerIdle(worker),
     onGraceExpired: (worker) => dispatchService.notifyGraceExpired(worker),
@@ -288,6 +298,7 @@ export async function startBaselineOrchestrator(
     onWorkerDraining: (worker) => dispatchService.notifyWorkerDraining(worker),
   });
   dispatchService.bindGateway(gateway);
+  const wrapDataPlaneVault = options.wrapDataPlaneVault;
   const dataPlane = new DataPlane({
     repoDir,
     repoContext,
@@ -295,6 +306,12 @@ export async function startBaselineOrchestrator(
     dispatches,
     bundles,
     onFirstWrite: (dispatch) => dispatchService.recordFirstWrite(dispatch),
+    ...(wrapDataPlaneVault
+      ? {
+        createVaultService: async () =>
+          wrapDataPlaneVault(await VaultService.fromRepository(repoDir)),
+      }
+      : {}),
   });
   dispatchService.setOnDispatchEnd((id) => dataPlane.releaseDispatch(id));
 

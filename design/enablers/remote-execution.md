@@ -474,7 +474,9 @@ negotiate. Shipping the swamp binary is meant to keep orchestrator and worker in
 version lockstep, so the capability interfaces match. Enrollment enforces only
 `protocolVersion` (already on `ExecutionRequest`), which rejects an
 incompatible worker at enrollment rather than mid-run; `swampVersion` is
-recorded but not compared (`src/serve/worker_gateway.ts`). The
+recorded but not compared (`src/serve/worker_gateway.ts`). From
+typed-secrets 5.2 enrollment accepts protocol versions 5 and 6 for a
+deprecation window that 5.3 ends (see the protected load route below). The
 `sessionCredential` is the short-lived bearer token for the worker's
 data-plane HTTP/2 requests. The pool addresses a worker by its token name (the
 positional `<name>` given to `swamp worker token create`) and its
@@ -807,6 +809,7 @@ verbs (`RemoteMethod.capability.*` in `src/domain/remote/protocol.ts`, served by
 | resource delete  | `DELETE /data/resource`                                                               | h2        |                                                                                                                   |
 | file write       | `POST /data/writers` (open) → `/content` (stream + finalize) or `/line` + `/finalize` | h2        | `writeLine` lands per request (live logs). The open carries the writer's `overrides`, validated at serve          |
 | extension assets | `GET /bundle/{fingerprint}`, `GET /bundle/{fingerprint}/file/{relPath}`               | h2        | Cacheable by fingerprint                                                                                          |
+| secret load      | `POST /data/secrets` → `vaultService.get` (`DispatchSecretLoads`)                     | h2        | Dispatch credential only; the dispatch's bag or a verified claim, while the lease holds; `no-store` (below)       |
 | `log` / `event`  | run-event stream                                                                      | ws        | `rpc.stream` frames; flows to client and the run log (below)                                                      |
 
 A resource write or file writer open the writer refuses (an undeclared spec, a
@@ -1294,7 +1297,9 @@ on a cache miss. Plain request/response is enough, with no server push.
   the byte-heavy work. That is reading artifact content
   (`GET /data/{type}/{modelId}/{dataName}/{version}`), writing it
   (`POST /data/resource` → `repo.save()`), and fetching a bundle on a cache
-  miss (`GET /bundle/{fingerprint}`). HTTP/2's multiplexing and per-stream flow
+  miss (`GET /bundle/{fingerprint}`). One small protected route sits beside
+  them: `POST /data/secrets` loads the references of the dispatch's own bag
+  (typed-secrets Phase 5, below). HTTP/2's multiplexing and per-stream flow
   control replace the chunking, credit accounting and priority queues we would
   otherwise hand-write. Deno streams request and response bodies, so memory
   stays bounded on both ends.
@@ -1632,6 +1637,31 @@ credentials and extensions onto workers:
   of the protocol, though: when the prefix grew to 128 bits (swamp-club#3558)
   the version went to 5, so a worker on either side of that change is refused
   at enrollment rather than failing on its first secret-bearing dispatch.
+
+  **The protected load route (typed-secrets 5.1).** `POST /data/secrets`
+  (`src/serve/dispatch_secret_loads.ts`) answers a list of vault references with
+  their values, so that from typed-secrets 5.2 a runner loads its step's bag
+  itself and the dispatch carries references only
+  (design/enablers/typed-secrets.md Section 9). It accepts the per-dispatch
+  credential alone, with none of the sole-dispatch fallback the other data
+  routes take. It answers only for references in the dispatch's bag
+  (`ActiveDispatch.bagReferences`, the references the step's arguments carry),
+  or for one a verified resource claim admits, the same claim `resolveSecret`
+  checks (`ResourceClaimVerifier` in
+  `src/serve/dispatch_secret_authorization.ts`), at most 16 distinct resources
+  per request. A legacy untagged record admits nothing until typed-secrets 5.2
+  settles its schema fallback. The reserved vaults and keys stay refused. A bad
+  credential is `unauthenticated` (401) and an ended dispatch `access_ended`
+  (410). The reads run under the dispatching run's vault access, each value
+  joins the dispatch's redactor, and after the reads serve checks again that the
+  credential and the registration still hold, so a read in flight when the
+  dispatch ends gets 410 and no value. Every reply is `no-store`, and serve
+  audit records one metadata-only event per request. In 5.1 nothing calls the
+  route, so `REMOTE_PROTOCOL_VERSION` stays 5 and every dispatch keeps the frame
+  above. From 5.2 serve enrolls protocol versions 5 and 6: a version 6 worker
+  receives references only, and a version 5 worker keeps this frame, with its
+  plaintext, until 5.3 removes it. A version 6 worker under a version 5 serve is
+  still refused at enrollment.
 
   **Secret redaction.** Vault-derived values must be scrubbed from all persisted
   output (log resources, result resources and workflow-run records) before they

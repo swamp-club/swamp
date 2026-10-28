@@ -97,6 +97,9 @@ record's `_swamp.sensitiveFields` tag names.
    in [expressions](./expressions.md) is unchanged.
 
 Remote dispatch is the one exception to items 2 and 3 until Phase 5 (Section 9).
+From typed-secrets 5.2 the exception narrows to a dispatch to a protocol
+version 5 worker during the deprecation window Section 9 records, and
+typed-secrets 5.3 removes it.
 
 Plaintext exists in vault storage and vault providers, in a step's loaded bag
 during its delivery attempt, and in trusted consumers. The trusted consumers are
@@ -1182,7 +1185,16 @@ Until Phase 5, remote dispatch keeps today's protocol. The orchestrator loads
 the step's bag and ships its entries with the resolved arguments. For runs that
 serve executes itself, serve audit follows Section 7.1 from Phase 3.
 
-Phase 5 removes plaintext from dispatch:
+Phase 5 removes plaintext from dispatch. It ships in three parts (Section 11):
+5.1 adds the protected route below with no caller, 5.2 moves the load to the
+worker for protocol version 6, and 5.3 removes the version 5 frame.
+
+- **Compatibility window.** From 5.2, serve accepts workers on protocol versions
+  5 and 6 at enrollment. A version 6 worker receives references only. A version
+  5 worker keeps today's plaintext frame, the documented and time-boxed
+  exception to the Section 1.1 contract, until 5.3 removes it. A version 6
+  worker under a version 5 serve still fails at enrollment, because a version 5
+  serve requires an exact match.
 
 - Dispatch carries the arguments with sentinels in place. Its bag entries carry
   a reference, an encoding and a data-origin flag. It carries no `secretValues`,
@@ -1194,20 +1206,71 @@ Phase 5 removes plaintext from dispatch:
   `RunVaultAccess`, and only while the attempt holds its lease. Completion,
   revocation, reassignment and expiry end access, including for reads in flight.
   Replies carry `Cache-Control: no-store`. Serve audit records only metadata for
-  this route, at every detail level.
+  this route, at every detail level, and in fail-secure mode the route refuses
+  with 503 (`audit_unavailable`) before any vault read while audit cannot
+  durably record ([serve-audit](./serve-audit.md)).
+- **The route** is `POST /data/secrets` (`DISPATCH_SECRETS_PATH`), with its wire
+  contract in `src/domain/remote/protocol.ts`. A request names up to 256
+  references (`MAX_DISPATCH_SECRET_LOADS`), each a vault name of at most 256
+  characters and a key of at most 1024, optionally with a resource claim whose
+  name is at most 512. One request claims at most 16 distinct resources
+  (`MAX_DISPATCH_SECRET_CLAIMS`), which bounds the record reads it costs and
+  keeps it from emptying the bounded claim cache; a request over the cap is
+  refused as `malformed_request` (400) before any record read. Serve reads at
+  most 4 MiB of body (`MAX_DISPATCH_SECRET_LOAD_BODY_BYTES`), which fits the
+  largest request the schema admits, and refuses a longer one with 413 before
+  any vault read. The reply holds one value per distinct reference, in order of
+  first occurrence. It is all or nothing: one refused reference returns no
+  value. A refusal names its code (`DISPATCH_SECRET_LOAD_REFUSALS`) and the
+  reference, never a value, and a vault provider's own message is neither echoed
+  nor logged.
+- **The credential** must be a dispatch credential. A worker's control
+  credential is refused, with none of the sole-dispatch fallback the other data
+  routes take, and a forged, revoked or expired one is refused alike, with 401
+  and the code `unauthenticated`. A dispatch that has ended is `access_ended`
+  (410), so a client can tell the two apart.
+- **The bag** is the set of references behind the sentinels of the step's
+  arguments (`VaultSecretBag.referencesFor`), which serve registers on the
+  dispatch as `ActiveDispatch.bagReferences`. It is narrower than every entry a
+  dispatch ships: a sentinel a bag issued for a method the dispatch does not run
+  is not in it. A dynamic reference never widens it, and an empty bag admits
+  nothing but a verified resource claim. The reserved vaults and keys stay
+  refused even when the bag holds them.
+- **Vault scope.** The reads run under the dispatching run's `RunVaultAccess`.
+  A read is unscoped exactly when the dispatching run had none, as for
+  `resolveSecret` and a local run.
+- **Reads in flight.** After its vault reads and before it forms the reply, the
+  route checks again that the same credential verifies to the same dispatch and
+  that serve still holds that dispatch's registration. Otherwise it answers 410
+  with no value. This covers every end of access because the gateway revokes a
+  dispatch credential when its dispatch call settles, before the dispatch
+  service ends the lease and unregisters the dispatch, and because a
+  reassignment is a new attempt with a new dispatch id and credential. A reply
+  formed after that check while access ends in the same instant is answered.
+- Each value the route serves joins the dispatch's `SecretRedactor` before the
+  reply leaves, as a `resolveSecret` delivery does (swamp-club#3527).
 - The worker builds the loaded bag in memory and runs the step through the same
   method execution service as a local run. Arguments are merged and validated
   once, on the worker.
-- `REMOTE_PROTOCOL_VERSION` goes up by one. Enrollment and dispatch already
-  require an exact match, so serve and workers upgrade together.
+- `REMOTE_PROTOCOL_VERSION` goes up by one in 5.2, when a worker starts calling
+  the route; 5.1 leaves it at 5, since nothing calls the route yet. Until 5.3,
+  serve also enrolls version 5 workers (the compatibility window above).
 - The dispatch's own bag stays the allowlist, as the legacy repair of
   swamp-club#3529 made it: the references travel on the dispatch frame rather
   than the in-process request, and a dynamic reference no longer turns the
   allowlist off because every reference reaches serve as a reference.
 - `readResource` keeps its own authorization, the resource claim serve verifies
   against the record's tagged fields (swamp-club#3529), and uses the same route
-  for those fields and the resource-schema fallback for a legacy untagged
-  record from the verified bundle's definition (swamp-club#3530).
+  for those fields. In 5.1 the route verifies tagged fields only, exactly as
+  `resolveSecret` does, and refuses a claim on a legacy untagged record. The
+  resource-schema fallback for such a record from the verified bundle's
+  definition (swamp-club#3530) is decided in 5.2. A record old enough to have no
+  `_swamp.kind` tag predates the writer guards the writer-version tag attests,
+  so a reference in one of its schema-sensitive fields may be text a method
+  wrote and nobody vaulted. Admitting it by the spec alone would hand the worker
+  a key that is neither in its bag nor reachable through `resolveSecret`. 5.2
+  either narrows the fallback to references the legacy writer itself generated,
+  or keeps such records on `resolveSecret` and the argument allowlist.
 
 Redaction stays after the trusted boundary. Worker result errors are already
 scrubbed on both hops, by the runner before the result frame and by serve
@@ -1749,14 +1812,45 @@ coverage. Public manual and release publication are tracked separately.
 
 Implement Section 9. Update [remote-execution](./remote-execution.md), and the
 remote baseline tests, which change on purpose. Then delete the plaintext
-dispatch fields.
+dispatch fields. Phase 5 ships as 5.1, 5.2 and 5.3 below.
 
-**Exit:** dispatch and control frames, the runner bootstrap, lease records, logs
-and failure files hold no plaintext. Only the protected data-plane replies and
-trusted consumers carry it. Protocol mismatches fail at enrollment and dispatch.
-Revoked, reassigned, expired and forged credentials cannot read a value.
-swamp-uat passes on the supported OS and shell targets with matching serve and
-worker versions.
+**Exit:** a version 6 dispatch, its control frames, the runner bootstrap, lease
+records, logs and failure files hold no plaintext. Only the protected data-plane
+replies and trusted consumers carry it. A version 5 dispatch is the documented,
+time-boxed exception of Section 9's compatibility window. A version 6 worker
+under a version 5 serve fails at enrollment. Revoked, reassigned, expired and
+forged credentials cannot read a value. swamp-uat passes on the supported OS and
+shell targets with matching serve and worker versions.
+
+### Phase 5.1: the protected load route
+
+Add the protected data-plane route of Section 9 with no caller, so the protocol
+version stays 5 and no existing dispatch behavior changes. The resource claim
+check and the reserved vaults and keys move into
+`src/serve/dispatch_secret_authorization.ts`, which `resolveSecret` and the
+route share. The route verifies tagged resource claims only; the legacy untagged
+schema fallback moves to 5.2 (Section 9).
+
+**Exit:** integration tests with a port-0 serve: an in-bag reference loads under
+a live lease; an out-of-bag reference, a reference outside the run's vault
+access, and revoked, reassigned, expired and forged credentials cannot read a
+value; a read in flight when the lease ends gets no value; audit records at
+every detail level and serve logs hold no canary.
+
+### Phase 5.2: version 6 dispatches references
+
+`REMOTE_PROTOCOL_VERSION` goes to 6. Serve enrolls versions 5 and 6. A version
+6 dispatch carries references only, and its worker loads each value through the
+route; a version 5 worker keeps today's frame. The route's resource claim gains
+the legacy untagged schema fallback only in a form that admits no reference a
+writer did not generate (Section 9), so a version 6 `readResource` of such a
+record reads as a version 5 one does.
+
+### Phase 5.3: sunset version 5
+
+Serve stops enrolling version 5 workers, and the plaintext dispatch fields
+(`secretValues`, the `secretBag` entry values and the resolved method args) are
+deleted.
 
 ## 12. Verification strategy
 
@@ -1832,7 +1926,7 @@ verification workflows in `agent-constraints/verification-conventions.md`.
 | Method boundary and checks | `src/domain/models/method_execution_service.ts` (`deliverStepSecrets`, `unresolvedArgumentsOf`), `method_context.ts`, `model.ts` (`refuseSecretDestinations`, `SecretDestinationArgs`), `model_output.ts` (`executionErrorFrom`) |
 | Nested invocations and triggers               | `src/domain/models/model_invocation_service.ts` (an independent registry per invocation, `SecretBagRegistry.independent`), `src/domain/workflows/trigger_input_resolver.ts` (no bag, no vault: a typed evaluator refuses a `Secret` result) |
 | Workflow execution and forEach                | `src/domain/workflows/execution_service.ts` (every pass through `passEvaluatorFor`; guards and asserts under the predicate destination; in a typed run the records a step wrote are kept as stored and each step context carries its output sources, and `resume` takes a sensitive-value record as `run` does, restoring a stored run's references as references on a typed registry), `model_method_result.ts` (the stored record `model.method` returns in a typed run, by data name; `isJsonMediaType` in `src/domain/data/content_type.ts`), `for_each_expansion_service.ts` (`ForEachEvaluator.prepare`, a refusal fails expansion), `expression_evaluators.ts` (`stepNameSanitizer`: a step name the run-start pass resolves keeps the identifier stand-in), `persisted_workflow.ts` (`forEachNameWithoutSecrets`), `src/domain/secrets/run_sensitive_values.ts` (`withForEachStandIns`), `src/libswamp/workflows/evaluate.ts` (every pass through `passEvaluatorFor`), `integration/typed_workflow_passes_test.ts` and `typed_workflow_harness.ts` |
-| Remote execution                              | `src/domain/remote/protocol.ts`, `src/serve/dispatch_service.ts`, `src/serve/data_plane.ts`, `src/worker/remote_method_context.ts`, `src/worker/exec_dispatch.ts` (the bundle's resource specs for `readResource`)                                                                                                                                                                                                                                    |
+| Remote execution                              | `src/domain/remote/protocol.ts` (`DISPATCH_SECRETS_PATH`, the load route's schemas and limits), `src/serve/dispatch_service.ts`, `src/serve/dispatch_registry.ts` (`bagReferences`), `src/serve/data_plane.ts`, `src/serve/dispatch_secret_loads.ts` (`DispatchSecretLoads`, the protected load route), `src/serve/dispatch_secret_authorization.ts` (`ResourceClaimVerifier`, the reserved vaults and keys), `src/worker/remote_method_context.ts`, `src/worker/exec_dispatch.ts` (the bundle's resource specs for `readResource`), `integration/remote_secrets_load_route_test.ts` |
 | Sink inventory and canaries                   | `integration/secret_sink_inventory.json`, `secret_sink_inventory_rules_test.ts`, `canary_values.ts`, `secret_canary_boundaries_test.ts`                                                                                                                                                                                                                               |
 | Remote baseline                               | `integration/remote_secrets_baseline_harness.ts`, `remote_secrets_baseline_*_test.ts`                                                                                                                                                                                                                                                                                 |
 | Runner stderr sanitisation (swamp-club#3526)  | `src/infrastructure/logging/run_file_sink.ts` (`registerRedactor`, `redactActive`), `logger.ts` (`createStderrSink`), `src/domain/models/console_guard.ts`, `src/worker/exec_dispatch.ts` (`runDispatchRunner`), `dispatch_handler.ts` (`scrubRunnerStderr`) |
