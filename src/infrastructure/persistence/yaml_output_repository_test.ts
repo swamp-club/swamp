@@ -33,9 +33,7 @@ import { assertPathStringIncludes } from "./path_test_helpers.ts";
 import { ensureDir } from "@std/fs";
 import { basename, dirname, join, SEPARATOR } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
-import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { waitFor } from "@swamp-club/swamp-testing";
-import { initializeLogging } from "../logging/logger.ts";
 import {
   createModelOutputId,
   type ExecutionProvenance,
@@ -3359,32 +3357,6 @@ async function assertScanPermitsFree(reads: HeldReads): Promise<void> {
   });
 }
 
-/** Runs `fn` and returns the warnings the output repository logged. */
-async function captureOutputRepoWarnings(
-  fn: () => Promise<void>,
-): Promise<string[]> {
-  const records: LogRecord[] = [];
-  await configure({
-    sinks: { capture: (record: LogRecord) => records.push(record) },
-    loggers: [
-      {
-        category: ["output-repo"],
-        lowestLevel: "warning",
-        sinks: ["capture"],
-      },
-      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
-    ],
-    reset: true,
-  });
-  try {
-    await fn();
-  } finally {
-    await reset();
-    await initializeLogging({});
-  }
-  return records.map((record) => record.message.map(String).join(""));
-}
-
 Deno.test(
   "findHistoryByDefinition: a scan aborted while it waits for a permit rejects with the reason and reads nothing, and the scan queued behind it gets its permits",
   async () => {
@@ -3456,7 +3428,7 @@ Deno.test(
       );
 
       await withHeldReads(async (reads) => {
-        const warnings = await captureOutputRepoWarnings(async () => {
+        const warnings = await captureUnreadableWarnings(async () => {
           reads.hold();
           const holding = holder.findHistoryByDefinition(
             registeredType,
@@ -3481,7 +3453,7 @@ Deno.test(
           assertEquals((await holding).length, 8);
           assertEquals(reads.started, startedAtAbort);
           assertEquals(reads.inFlight, 0);
-        });
+        }, ["output-repo"]);
         assertEquals(
           warnings.filter((warning) =>
             warning.includes("Skipping unreadable output record")

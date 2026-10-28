@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import {
   comparePathsBySegment,
@@ -57,26 +57,6 @@ Deno.test("readDirSorted: returns files and directories in name order", async ()
       "zebra",
     ]);
     assertEquals(entries.map((e) => e.isDirectory), [false, false, true]);
-  } finally {
-    if (Deno.build.os === "windows") {
-      await Deno.remove(dir, { recursive: true }).catch(() => {});
-    } else {
-      await Deno.remove(dir, { recursive: true });
-    }
-  }
-});
-
-Deno.test("readDirSorted: an aborted signal rejects with its reason instead of listing", async () => {
-  const dir = await Deno.makeTempDir({ prefix: "swamp-sorted-dir-" });
-  try {
-    await Deno.writeTextFile(join(dir, "apple.yaml"), "");
-    const controller = new AbortController();
-    const reason = new DOMException("request cancelled", "AbortError");
-    controller.abort(reason);
-    const error = await assertRejects(() =>
-      readDirSorted(dir, controller.signal)
-    );
-    assertEquals(error, reason);
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(dir, { recursive: true }).catch(() => {});

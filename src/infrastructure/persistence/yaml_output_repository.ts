@@ -466,8 +466,9 @@ export class YamlOutputRepository implements OutputRepository {
    * otherwise it is read. Every record read is checked against the window
    * again.
    *
-   * Once `signal` aborts, the scan stops and rejects with its reason
-   * (swamp-club#4070).
+   * Once `signal` aborts, the scan starts no further listing or read and
+   * rejects with its reason (swamp-club#4070); one that had already started
+   * its last read returns as usual.
    */
   async findHistoryByDefinition(
     type: ModelType,
@@ -517,7 +518,7 @@ export class YamlOutputRepository implements OutputRepository {
    * a file whose name it refuses is skipped without being read. With
    * `unnamedSince`, a file whose name is not in {@link getPath}'s form and
    * whose mtime is before it is skipped after a stat. Once `signal` aborts,
-   * the scan stops and rejects with its reason.
+   * the scan starts no further listing or read and rejects with its reason.
    */
   private async readAll(
     type: ModelType,
@@ -532,7 +533,7 @@ export class YamlOutputRepository implements OutputRepository {
     let methodEntries: Deno.DirEntry[];
     try {
       methodEntries = await withScanPermit(
-        () => readDirSorted(typeDir, signal),
+        () => readDirSorted(typeDir),
         signal,
       );
     } catch (error) {
@@ -559,7 +560,7 @@ export class YamlOutputRepository implements OutputRepository {
         let entries: Deno.DirEntry[];
         try {
           entries = await withScanPermit(
-            () => readDirSorted(methodDir, signal),
+            () => readDirSorted(methodDir),
             signal,
           );
         } catch (error) {
@@ -635,7 +636,9 @@ export class YamlOutputRepository implements OutputRepository {
 
   /**
    * Every output of every registered type. Once `signal` aborts, the scan
-   * stops and rejects with its reason (swamp-club#4070).
+   * starts no further listing or read and rejects with its reason
+   * (swamp-club#4070); one that had already started its last read returns
+   * as usual.
    */
   async findAllGlobal(signal?: AbortSignal): Promise<
     { output: ModelOutput; type: ModelType; method: string }[]
@@ -692,8 +695,9 @@ export class YamlOutputRepository implements OutputRepository {
    * Inside a diagnostic phase the scan is counted (directories, entries,
    * names skipped, stats, reads) into that phase's tally.
    *
-   * Once `signal` aborts, the scan stops and rejects with its reason
-   * (swamp-club#4070).
+   * Once `signal` aborts, the scan starts no further listing or read and
+   * rejects with its reason (swamp-club#4070); one that had already started
+   * its last read returns as usual.
    */
   async findAllGlobalSince(
     cutoff: Date,
@@ -717,7 +721,7 @@ export class YamlOutputRepository implements OutputRepository {
         const typeDir = this.getTypeDir(modelType);
         try {
           const methodEntries = await withScanPermit(
-            () => readDirSorted(typeDir, signal),
+            () => readDirSorted(typeDir),
             signal,
           );
           tally.add("type_dirs");
@@ -744,7 +748,7 @@ export class YamlOutputRepository implements OutputRepository {
         let entries: Deno.DirEntry[];
         try {
           entries = await withScanPermit(
-            () => readDirSorted(dir, signal),
+            () => readDirSorted(dir),
             signal,
           );
         } catch (error) {

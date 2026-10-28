@@ -1811,6 +1811,52 @@ Deno.test("handleModelOutputSearch: a model's search skips its outputs named out
   });
 });
 
+Deno.test("handleModelMethodHistorySearch: a search cancelled before its scan replies cancelled (swamp-club#4070)", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const watched = await saveEditModel(definitionRepo, "watched");
+    await outputRepo.save(
+      EDIT_TEST_TYPE,
+      "execute",
+      ModelOutput.create({
+        definitionId: watched.id,
+        methodName: "execute",
+        status: "succeeded",
+        provenance: {
+          definitionHash: "h",
+          modelVersion: "1",
+          triggeredBy: "manual",
+        },
+      }),
+    );
+    const ctx = {
+      ...createEditCtx(dir, definitionRepo),
+      repoContext: {
+        definitionRepo,
+        outputRepo,
+        workflowRepo: new YamlWorkflowRepository(dir),
+      } as unknown as ConnectionContext["repoContext"],
+    };
+    const socket = createMockSocket();
+    const controller = new AbortController();
+    controller.abort();
+
+    await handleModelMethodHistorySearch(
+      socket,
+      ctx,
+      "req-1",
+      controller,
+      null,
+      {},
+    );
+
+    const [response] = frames(socket);
+    assertEquals(response.type, "error");
+    assertEquals(response.error.code, "cancelled");
+  });
+});
+
 Deno.test("handleModelOutputSearch: a search cancelled during its scan stops reading and replies cancelled (swamp-club#4070)", async () => {
   await withTempDir(async (dir) => {
     const definitionRepo = new YamlDefinitionRepository(dir);

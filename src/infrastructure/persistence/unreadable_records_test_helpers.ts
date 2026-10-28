@@ -74,16 +74,20 @@ export function fakeUnreadableLookup(paths: readonly string[]) {
   return { lookup, errors, stats };
 }
 
-/** Runs `fn` and returns the unreadable-record warnings it logged. */
+/**
+ * Runs `fn` and returns the warnings it logged under `category`, by default
+ * the unreadable-record warnings.
+ */
 export async function captureUnreadableWarnings(
   fn: () => Promise<void>,
+  category: string[] = ["swamp", "persistence", "unreadable-records"],
 ): Promise<string[]> {
   const records: LogRecord[] = [];
   await configure({
     sinks: { capture: (record: LogRecord) => records.push(record) },
     loggers: [
       {
-        category: ["swamp", "persistence", "unreadable-records"],
+        category,
         lowestLevel: "warning",
         sinks: ["capture"],
       },

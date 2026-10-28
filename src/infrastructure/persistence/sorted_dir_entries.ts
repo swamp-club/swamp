@@ -37,21 +37,10 @@ export function sortDirEntriesByName<T extends { name: string }>(
   return [...entries].sort((a, b) => compareCodeUnits(a.name, b.name));
 }
 
-/**
- * {@link sortDirEntriesByName} of `dir`; NotFound propagates. With `signal`,
- * the listing stops at the next entry once it aborts and rejects with its
- * reason, so a cancelled scan does not list a large directory to the end.
- */
-export async function readDirSorted(
-  dir: string,
-  signal?: AbortSignal,
-): Promise<Deno.DirEntry[]> {
-  signal?.throwIfAborted();
+/** {@link sortDirEntriesByName} of `dir`; NotFound propagates. */
+export async function readDirSorted(dir: string): Promise<Deno.DirEntry[]> {
   const entries: Deno.DirEntry[] = [];
-  for await (const entry of Deno.readDir(dir)) {
-    signal?.throwIfAborted();
-    entries.push(entry);
-  }
+  for await (const entry of Deno.readDir(dir)) entries.push(entry);
   return sortDirEntriesByName(entries);
 }
 
