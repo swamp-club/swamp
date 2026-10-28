@@ -36,7 +36,7 @@ import {
   DEFAULT_SESSION_TTL_MS,
   SessionCredentialService,
 } from "../domain/remote/session_credential.ts";
-import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
+import { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
 import type { AuditEvent } from "../domain/serve_audit/audit_event.ts";
 import { SecretRedactor } from "../domain/secrets/secret_redactor.ts";
 import {
@@ -515,17 +515,74 @@ Deno.test("DispatchSecretLoads: every request is audited with metadata only", as
   assertFalse(JSON.stringify(f.events).includes(SECRET));
 });
 
-Deno.test("DispatchSecretLoads: the audit event carries the request id the data plane validated", async () => {
+Deno.test("DispatchSecretLoads: a worker reusing a denied request id cannot hide its loads from audit", async () => {
   const f = fixture();
-  const requestId = crypto.randomUUID();
-  const response = await f.loads.handle(
-    request({ references: [IN_BAG] }, f.credential),
-    "127.0.0.1",
-    (_caller, fn) => fn(),
-    requestId,
-  );
-  await response.body?.cancel();
-  assertEquals(f.events[0].requestId, requestId);
+  const events: AuditEvent[] = [];
+  const emitter = new AuditEmitter([{
+    name: "capture",
+    durable: true,
+    write: (batch: readonly AuditEvent[]) => {
+      events.push(...batch);
+      return Promise.resolve();
+    },
+    flush: () => Promise.resolve(),
+    close: () => Promise.resolve(),
+  }]);
+  const loads = new DispatchSecretLoads({
+    sessions: f.sessions,
+    dispatches: f.dispatches,
+    vault: () =>
+      Promise.resolve({ get: () => Promise.resolve(SECRET) } as never),
+    repoFor: () => ({} as UnifiedDataRepository),
+    audit: () => ({ emitter, instanceId: "serve-1" }),
+  });
+  const reused = { "x-swamp-request-id": crypto.randomUUID() };
+  for (
+    const references of [[{ vaultName: "default", key: "nope" }], [IN_BAG]]
+  ) {
+    const response = await loads.handle(
+      request({ references }, f.credential, { headers: reused }),
+      "127.0.0.1",
+      (_caller, fn) => fn(),
+    );
+    await response.body?.cancel();
+  }
+  await emitter.flush();
+  assertEquals(events.map((e) => e.outcome), ["denied", "success"]);
+  assert(events.every((e) => e.requestId !== reused["x-swamp-request-id"]));
+  assert(events[0].requestId !== events[1].requestId);
+  await emitter.close();
+});
+
+Deno.test("DispatchSecretLoads: in fail-secure mode, with audit unable to record, the route refuses before any read", async () => {
+  const f = fixture();
+  let refusing = true;
+  const loads = new DispatchSecretLoads({
+    sessions: f.sessions,
+    dispatches: f.dispatches,
+    vault: () => Promise.reject(new Error("not reached")),
+    repoFor: () => ({} as UnifiedDataRepository),
+    audit: () => ({
+      emitter: {
+        emit: (e: AuditEvent) => f.events.push(e),
+      } as unknown as AuditEmitter,
+      instanceId: "serve-1",
+      refuseRequests: () => refusing,
+    }),
+  });
+  const handle = () =>
+    loads.handle(
+      request({ references: [IN_BAG] }, f.credential),
+      "127.0.0.1",
+      (_caller, fn) => fn(),
+    );
+  const refused = await refusalOf(await handle());
+  assertEquals([refused.status, refused.code], [503, "audit_unavailable"]);
+  assertEquals(f.events.map((e) => e.outcome), ["failure"]);
+  // Once audit records again, so does the route (here, up to the vault).
+  refusing = false;
+  const next = await refusalOf(await handle());
+  assertEquals(next.code, "internal_error");
 });
 
 Deno.test("DispatchSecretLoads: a request claiming too many distinct resources is refused before any lookup", async () => {

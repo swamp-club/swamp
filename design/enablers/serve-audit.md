@@ -404,8 +404,16 @@ principal kind `worker` and id the worker name whenever the dispatch credential
 verified, whatever else was wrong with the request (`anonymous` when it did
 not), outcome `success`, `denied` (an unverified credential, an ended dispatch
 or a refused reference) or `failure` (a malformed or oversized request, or a
-vault error), the caller's address and the request id. Its `detail` holds only
-the refusal code (or `loaded`) and the number of references requested.
+vault error), the caller's address and a request id serve generates for the
+event. Serve never takes that id from the worker: the emitter drops a success
+event whose id it has seen denied, so a worker reusing one could otherwise hide
+its loads. Its `detail` holds only the refusal code (or `loaded`) and the number
+of references requested.
+
+The route passes the same fail-secure gate as every other audited request. When
+`failOpen` is off and the WAL is full, has dropped events, or durable delivery
+has stalled, it answers 503 (`audit_unavailable`) before any vault read, so it
+never serves a value whose event may be lost.
 
 The event carries metadata only, at every detail level: no reference, request
 body, response body or value reaches it, whatever the policy picks, and a

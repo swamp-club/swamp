@@ -318,7 +318,6 @@ export class DataPlane {
     // The protected secret route authenticates the dispatch credential
     // itself, with no sole-dispatch fallback, and needs no unit of work.
     if (isDispatchSecretsRoute(segments)) {
-      const requestId = req.headers.get("x-swamp-request-id");
       return await this.#secretLoads.handle(
         req,
         sourceIp,
@@ -330,7 +329,6 @@ export class DataPlane {
             dataPlaneOperation(req.method, segments),
             fn,
           ),
-        validRequestId(requestId) ? requestId! : undefined,
       );
     }
 

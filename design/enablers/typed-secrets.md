@@ -1206,14 +1206,17 @@ worker for protocol version 6, and 5.3 removes the version 5 frame.
   `RunVaultAccess`, and only while the attempt holds its lease. Completion,
   revocation, reassignment and expiry end access, including for reads in flight.
   Replies carry `Cache-Control: no-store`. Serve audit records only metadata for
-  this route, at every detail level.
+  this route, at every detail level, and in fail-secure mode the route refuses
+  with 503 (`audit_unavailable`) before any vault read while audit cannot
+  durably record ([serve-audit](./serve-audit.md)).
 - **The route** is `POST /data/secrets` (`DISPATCH_SECRETS_PATH`), with its
   wire contract in `src/domain/remote/protocol.ts`. A request names up to 256
   references (`MAX_DISPATCH_SECRET_LOADS`), each a vault name of at most 256
   characters and a key of at most 1024, optionally with a resource claim whose
   name is at most 512. One request claims at most 16 distinct resources
   (`MAX_DISPATCH_SECRET_CLAIMS`), which bounds the record reads it costs and
-  keeps it from emptying the bounded claim cache. Serve reads at most 4 MiB of body
+  keeps it from emptying the bounded claim cache; a request over the cap is
+  refused as `malformed_request` (400) before any record read. Serve reads at most 4 MiB of body
   (`MAX_DISPATCH_SECRET_LOAD_BODY_BYTES`), which fits the largest request the
   schema admits, and refuses a longer one with 413 before any vault read. The
   reply holds one value per distinct reference, in order of first occurrence.

@@ -5087,14 +5087,22 @@ export const serveCommand = new Command()
     auditTakenSignals(connectionCtx);
     // The protected secret load route records metadata-only events through
     // the same emitter, once one is configured.
-    dataPlane.setAudit(() =>
-      connectionCtx.auditEmitter && connectionCtx.instanceId !== undefined
-        ? {
-          emitter: connectionCtx.auditEmitter,
-          instanceId: connectionCtx.instanceId,
-        }
-        : undefined
-    );
+    dataPlane.setAudit(() => {
+      const emitter = connectionCtx.auditEmitter;
+      if (emitter === undefined || connectionCtx.instanceId === undefined) {
+        return undefined;
+      }
+      return {
+        emitter,
+        instanceId: connectionCtx.instanceId,
+        // The fail-secure gate every other audited request passes.
+        refuseRequests: () =>
+          connectionCtx.auditFailOpen === false &&
+          (connectionCtx.auditWal?.isFull === true ||
+            connectionCtx.auditWal?.hasDroppedEvents === true ||
+            emitter.durableStalled),
+      };
+    });
 
     const ac = new AbortController();
 

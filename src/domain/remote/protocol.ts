@@ -634,6 +634,7 @@ export const DISPATCH_SECRET_LOAD_REFUSALS = [
   "vault_access_denied",
   "vault_error",
   "access_ended",
+  "audit_unavailable",
   "internal_error",
 ] as const;
 

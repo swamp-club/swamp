@@ -77,6 +77,12 @@ export const DISPATCH_SECRET_LOAD_AUDIT_ACTION = "worker.secrets.load";
 export interface DispatchSecretLoadsAudit {
   emitter: AuditEmitter;
   instanceId: string;
+  /**
+   * True while serve audit runs fail-secure and cannot durably record
+   * events, as every other audited request checks, so the route refuses
+   * rather than serve a value whose audit event may be lost.
+   */
+  refuseRequests?: () => boolean;
 }
 
 export interface DispatchSecretLoadsOptions {
@@ -196,17 +202,16 @@ export class DispatchSecretLoads {
     });
   }
 
-  /**
-   * Answers one request to the route. Never throws. `requestId` is the
-   * caller's validated request id, for the audit event; one is generated
-   * when it is absent.
-   */
+  /** Answers one request to the route. Never throws. */
   async handle(
     req: Request,
     sourceIp: string,
     trace: DispatchSecretLoadTrace,
-    requestId: string = crypto.randomUUID(),
   ): Promise<Response> {
+    // Serve's own id, never the worker's: the emitter drops a success event
+    // whose id it saw denied, so a worker reusing one could hide its loads.
+    const requestId = crypto.randomUUID();
+    const audit = this.#options.audit?.();
     let caller: DispatchSecretLoadCaller | null = null;
     let reply: Reply;
     try {
@@ -231,6 +236,13 @@ export class DispatchSecretLoads {
         );
       } else if (req.method !== "POST") {
         reply = refusal(405, "malformed_request", "Use POST", 0);
+      } else if (audit?.refuseRequests?.() === true) {
+        reply = refusal(
+          503,
+          "audit_unavailable",
+          "Request rejected: audit subsystem cannot durably record events (fail-secure mode)",
+          0,
+        );
       } else {
         const authenticated = caller;
         let traced: Reply | undefined;
@@ -242,12 +254,16 @@ export class DispatchSecretLoads {
       }
     } catch (error) {
       logger.error(
-        "Dispatch secret load failed: {errorName}",
-        { errorName: error instanceof Error ? error.name : typeof error },
+        "Dispatch secret load {requestId} for dispatch {dispatchId} failed: {errorName}",
+        {
+          requestId,
+          dispatchId: caller?.dispatchId ?? "unknown",
+          errorName: error instanceof Error ? error.name : typeof error,
+        },
       );
       reply = refusal(500, "internal_error", "Internal server error", 0);
     }
-    this.#audit(requestId, sourceIp, caller, reply);
+    this.#audit(audit, requestId, sourceIp, caller, reply);
     return reply.response;
   }
 
@@ -445,12 +461,12 @@ export class DispatchSecretLoads {
 
   /** One metadata-only event per request, at every audit level. */
   #audit(
+    audit: DispatchSecretLoadsAudit | undefined,
     requestId: string,
     sourceIp: string,
     caller: DispatchSecretLoadCaller | null,
     reply: Reply,
   ): void {
-    const audit = this.#options.audit?.();
     if (audit === undefined) return;
     audit.emitter.emit(buildAuditEvent({
       instanceId: audit.instanceId,
