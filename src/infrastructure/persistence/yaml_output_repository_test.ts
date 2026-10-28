@@ -3336,6 +3336,16 @@ async function withHeldReads<T>(
 }
 
 /**
+ * Resolves once the shared scans of the calls just made have started: a
+ * shared scan starts on the microtask after the call that created it
+ * (swamp-club#4074), and asks for its first listing's permit without
+ * awaiting first.
+ */
+async function sharedScansStarted(): Promise<void> {
+  await Promise.resolve();
+}
+
+/**
  * Asserts every shared scan permit is free: a lookup of 16 records gets all
  * 16 of its reads in flight at once, and a search of 16 gets its share of
  * 12 (swamp-club#4073). A permit a scan kept would leave one of them short.
@@ -3393,8 +3403,6 @@ Deno.test(
 
         const controller = new AbortController();
         const reason = new DOMException("request cancelled", "AbortError");
-        // Each joins the permit queue before its call returns: the history
-        // scan asks for its first listing's permit without awaiting first.
         const abortedScan = aborted.findHistoryByDefinition(
           registeredType,
           abortedId,
@@ -3405,6 +3413,8 @@ Deno.test(
           registeredType,
           behindId,
         );
+        // Each joins the permit queue once its shared scan starts.
+        await sharedScansStarted();
         let settled = false;
         const abortedOutcome = assertRejects(() => abortedScan).finally(() => {
           settled = true;
@@ -3489,14 +3499,15 @@ Deno.test(
       await withHeldReads(async (reads) => {
         const controller = new AbortController();
         const reason = new DOMException("request cancelled", "AbortError");
-        // The scan takes a free permit for its first listing before this
-        // call returns, and the abort lands before that permit is used.
         const scan = repo.findHistoryByDefinition(
           registeredType,
           definitionId,
           undefined,
           controller.signal,
         );
+        // The scan takes a free permit for its first listing as it starts,
+        // and the abort lands before that permit is used.
+        await sharedScansStarted();
         controller.abort(reason);
         assertEquals(await assertRejects(() => scan), reason);
         assertEquals(reads.started, 0);
@@ -3670,6 +3681,273 @@ Deno.test(
             assertEquals(found.length, 1);
           }
         });
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findHistoryByDefinition: identical concurrent searches share one scan that reads each file once, and the searches that joined it count scans_joined (swamp-club#4074)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      await saveHistory(repo, definitionId, 5);
+
+      await withObservedSpans(async (spans) => {
+        const found = await withDiagnosticArea(
+          "output_search",
+          () =>
+            Promise.all(
+              Array.from({ length: 4 }, () =>
+                observeDiagnosticPhase(
+                  "candidate_scan",
+                  {},
+                  () =>
+                    repo.findHistoryByDefinition(registeredType, definitionId),
+                )),
+            ),
+        );
+        for (const outputs of found) assertEquals(outputs.length, 5);
+        // Each search gets its own array of the same outputs.
+        assert(found[0] !== found[1]);
+        assert(found[0][0] === found[1][0]);
+
+        const scans = diagnosticPhases(spans, "candidate_scan");
+        assertEquals(scans.length, 4);
+        const total = (key: string) =>
+          scans.reduce(
+            (sum, span) =>
+              sum + Number(span.attributes[`swamp.diagnostic.${key}`] ?? 0),
+            0,
+          );
+        assertEquals(total("files_read"), 5);
+        assertEquals(total("scans_joined"), 3);
+        // The search that started the scan counts its reads and no join.
+        const started = scans.filter((span) =>
+          span.attributes["swamp.diagnostic.scans_joined"] === undefined
+        );
+        assertEquals(started.length, 1);
+        assertEquals(started[0].attributes["swamp.diagnostic.files_read"], 5);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findHistoryByDefinition: searches that arrive while a scan runs share one more scan, which sees a save made before they arrived (swamp-club#4074)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      await saveHistory(repo, definitionId, 3);
+
+      await withHeldReads(async (reads) => {
+        reads.hold();
+        const first = repo.findHistoryByDefinition(
+          registeredType,
+          definitionId,
+        );
+        await waitFor(() => reads.inFlight === 3, "the first scan's reads");
+
+        // The running scan has listed its directory, so it cannot see this.
+        await repo.save(
+          registeredType,
+          "run",
+          historyOutput(definitionId, new Date()),
+        );
+        const later = [
+          repo.findHistoryByDefinition(registeredType, definitionId),
+          repo.findHistoryByDefinition(registeredType, definitionId),
+        ];
+        reads.release();
+
+        assertEquals((await first).length, 3);
+        for (const outputs of await Promise.all(later)) {
+          assertEquals(outputs.length, 4);
+        }
+        // The first scan's three reads, then one shared scan of four.
+        assertEquals(reads.started, 3 + 4);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findHistoryByDefinition: a save between two searches is visible to the second (swamp-club#4074)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      await saveHistory(repo, definitionId, 2);
+      assertEquals(
+        (await repo.findHistoryByDefinition(registeredType, definitionId))
+          .length,
+        2,
+      );
+      await repo.save(
+        registeredType,
+        "run",
+        historyOutput(definitionId, new Date()),
+      );
+      assertEquals(
+        (await repo.findHistoryByDefinition(registeredType, definitionId))
+          .length,
+        3,
+      );
+    });
+  },
+);
+
+Deno.test(
+  "findHistoryByDefinition: searches with different windows share one scan of their union, and each gets only its own window (swamp-club#4074)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      const now = Date.now();
+      // Started 0, 1, ... 5 hours ago.
+      for (let i = 0; i < 6; i++) {
+        await repo.save(
+          registeredType,
+          "run",
+          historyOutput(definitionId, new Date(now - i * HOUR_MS)),
+        );
+      }
+
+      await withHeldReads(async (reads) => {
+        const [recent, wider, older] = await Promise.all([
+          repo.findHistoryByDefinition(registeredType, definitionId, {
+            since: new Date(now - 2.5 * HOUR_MS),
+          }),
+          repo.findHistoryByDefinition(registeredType, definitionId, {
+            since: new Date(now - 4.5 * HOUR_MS),
+          }),
+          repo.findHistoryByDefinition(registeredType, definitionId, {
+            since: new Date(now - 4.5 * HOUR_MS),
+            until: new Date(now - 1.5 * HOUR_MS),
+          }),
+        ]);
+        assertEquals(recent.length, 3);
+        assertEquals(wider.length, 5);
+        assertEquals(older.length, 3);
+        // One scan of the union: since 4.5 hours ago, no until.
+        assertEquals(reads.started, 5);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: concurrent calls share one scan from the earliest cutoff, and each keeps only its own (swamp-club#4074)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const now = Date.now();
+      for (let i = 0; i < 4; i++) {
+        await makeOutput(repo, new Date(now - i * DAY_MS));
+      }
+
+      await withHeldReads(async (reads) => {
+        const [day, week] = await Promise.all([
+          repo.findAllGlobalSince(new Date(now - 1.5 * DAY_MS)),
+          repo.findAllGlobalSince(new Date(now - 7 * DAY_MS)),
+        ]);
+        assertEquals(day.length, 2);
+        assertEquals(week.length, 4);
+        assertEquals(reads.started, 4);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobal: concurrent calls share one scan, and each gets its own array (swamp-club#4074)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      await saveHistory(repo, createDefinitionId(crypto.randomUUID()), 3);
+
+      await withHeldReads(async (reads) => {
+        const [one, two] = await Promise.all([
+          repo.findAllGlobal(),
+          repo.findAllGlobal(),
+        ]);
+        assertEquals(reads.started, 3);
+        one.pop();
+        assertEquals(one.length, 2);
+        assertEquals(two.length, 3);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findHistoryByDefinition: a search cancelled on a shared scan rejects with its reason, and the others get every output (swamp-club#4074)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      await saveHistory(repo, definitionId, 3);
+
+      await withHeldReads(async (reads) => {
+        reads.hold();
+        const controller = new AbortController();
+        const reason = new DOMException("request cancelled", "AbortError");
+        const cancelled = repo.findHistoryByDefinition(
+          registeredType,
+          definitionId,
+          undefined,
+          controller.signal,
+        );
+        const kept = repo.findHistoryByDefinition(
+          registeredType,
+          definitionId,
+        );
+        const cancelledOutcome = assertRejects(() => cancelled);
+        await waitFor(() => reads.inFlight === 3, "the shared scan's reads");
+        controller.abort(reason);
+        assertEquals(await cancelledOutcome, reason);
+
+        reads.release();
+        assertEquals((await kept).length, 3);
+        assertEquals(reads.started, 3);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findHistoryByDefinition: a shared scan every search cancelled stops, starts no further read, and gives back its permits (swamp-club#4074)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      await saveHistory(repo, definitionId, 20);
+
+      await withHeldReads(async (reads) => {
+        reads.hold();
+        const reason = new DOMException("request cancelled", "AbortError");
+        const controllers = [new AbortController(), new AbortController()];
+        const outcomes = controllers.map((controller) =>
+          assertRejects(() =>
+            repo.findHistoryByDefinition(
+              registeredType,
+              definitionId,
+              undefined,
+              controller.signal,
+            )
+          )
+        );
+        await waitFor(() => reads.inFlight === 12, "its share of 12 reads");
+        const startedAtAbort = reads.started;
+        for (const controller of controllers) controller.abort(reason);
+        for (const outcome of outcomes) assertEquals(await outcome, reason);
+
+        reads.release();
+        await waitFor(() => reads.inFlight === 0, "the held reads to settle");
+        assertEquals(reads.started, startedAtAbort);
+        await assertScanPermitsFree(reads);
       });
     });
   },

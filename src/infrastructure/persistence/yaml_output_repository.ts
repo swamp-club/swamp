@@ -50,6 +50,7 @@ import { assertSafePath } from "./safe_path.ts";
 import { isIoError } from "./io_errors.ts";
 import { readDirSorted } from "./sorted_dir_entries.ts";
 import { type ScanKind, ScanPermits } from "./scan_permits.ts";
+import { SharedScans } from "./shared_scans.ts";
 import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import type {
@@ -118,6 +119,57 @@ function nameStampOf(instant: Date | undefined): string | undefined {
   return /^\d{4}-/.test(stamp) ? stamp : undefined;
 }
 
+/** An output with the type and method it was found under. */
+type GlobalOutput = { output: ModelOutput; type: ModelType; method: string };
+
+/** The window of a definition's history search. */
+interface HistoryWindow {
+  since?: Date;
+  until?: Date;
+}
+
+/**
+ * Whether a file name's stamp, or an output's start, is in `window`: at or
+ * after `since` and before `until`.
+ */
+function historyWindowOf(window: HistoryWindow | undefined): {
+  stampIn: (stamp: string) => boolean;
+  startedIn: (startedAt: Date) => boolean;
+} {
+  const sinceMs = window?.since?.getTime();
+  const untilMs = window?.until?.getTime();
+  // A bound outside years 0000-9999 has a stamp no name can be compared
+  // with, so it skips no file by name.
+  const sinceStamp = nameStampOf(window?.since);
+  const untilStamp = nameStampOf(window?.until);
+  return {
+    stampIn: (stamp) =>
+      (sinceStamp === undefined || stamp >= sinceStamp) &&
+      (untilStamp === undefined || stamp < untilStamp),
+    startedIn: (startedAt) => {
+      const startedMs = startedAt.getTime();
+      return (sinceMs === undefined || startedMs >= sinceMs) &&
+        (untilMs === undefined || startedMs < untilMs);
+    },
+  };
+}
+
+/** The window covering `a` and `b`: unbounded on a side either is. */
+function widenHistoryWindow(a: HistoryWindow, b: HistoryWindow): HistoryWindow {
+  return {
+    since: a.since === undefined || b.since === undefined
+      ? undefined
+      : earlier(a.since, b.since),
+    until: a.until === undefined || b.until === undefined
+      ? undefined
+      : (a.until.getTime() >= b.until.getTime() ? a.until : b.until),
+  };
+}
+
+function earlier(a: Date, b: Date): Date {
+  return a.getTime() <= b.getTime() ? a : b;
+}
+
 /** The definition id and `startedAt` stamp an output file's name carries. */
 function parseOutputFileName(
   path: string,
@@ -135,8 +187,9 @@ function parseOutputFileName(
  * listing of a large directory takes dozens of event-loop turns, and a read
  * one more, so awaiting them one at a time made a busy serve's scan as slow as
  * its turns added up. The bound is shared, not per scan, because concurrent
- * requests each scan: 16 per scan ran a serve under a low hard open-file limit
- * out of descriptors. Lookups that open one file at a time (findById,
+ * requests for different scans each scan: 16 per scan ran a serve under a low
+ * hard open-file limit out of descriptors. Identical requests share one scan
+ * (swamp-club#4074), so the bound caps descriptors and sharing caps memory. Lookups that open one file at a time (findById,
  * findByIds and the like) do not take a permit, so the process holds at most
  * 16 scan descriptors plus one or two per such lookup, beside the definition
  * index's 32. Every repository in the process shares the permits, so scans of
@@ -250,6 +303,22 @@ export class YamlOutputRepository implements OutputRepository {
    * baseDir when outputs are stored in a datastore.
    */
   private readonly localOutputsDir: string;
+
+  /**
+   * Concurrent identical history, `since` and full searches share one read
+   * (swamp-club#4074), so the memory they take together is bounded by the
+   * repository's size rather than by how many clients poll.
+   */
+  private readonly historyScans = new SharedScans<
+    HistoryWindow,
+    ModelOutput[]
+  >(widenHistoryWindow);
+  private readonly sinceScans = new SharedScans<Date, GlobalOutput[]>(
+    earlier,
+  );
+  private readonly allScans = new SharedScans<undefined, GlobalOutput[]>(
+    () => undefined,
+  );
 
   /**
    * `unreadableContent` tells an output record a v3 read model could not
@@ -482,36 +551,33 @@ export class YamlOutputRepository implements OutputRepository {
    * otherwise it is read. Every record read is checked against the window
    * again.
    *
-   * Once `signal` aborts, the scan starts no further listing or read and
-   * rejects with its reason (swamp-club#4070); one that had already started
-   * its last read returns as usual.
+   * Concurrent searches of the definition share one scan (swamp-club#4074):
+   * a search joins one that has not started yet, widening its window to
+   * cover its own, and keeps only its own window of what it reads. The
+   * outputs are shared with those searches, so callers must not mutate
+   * them. A search that joined another's counts `scans_joined`; the reads
+   * are counted by the search that started the scan.
+   *
+   * Once `signal` aborts, the search rejects with its reason, and a scan no
+   * other search waits on starts no further listing or read
+   * (swamp-club#4070); one that had already started its last read returns
+   * as usual.
    */
   async findHistoryByDefinition(
     type: ModelType,
     definitionId: DefinitionId,
-    window?: { since?: Date; until?: Date },
+    window?: HistoryWindow,
     signal?: AbortSignal,
   ): Promise<ModelOutput[]> {
-    const sinceMs = window?.since?.getTime();
-    const untilMs = window?.until?.getTime();
-    // A bound outside years 0000-9999 has a stamp no name can be compared
-    // with, so it skips no file by name.
-    const sinceStamp = nameStampOf(window?.since);
-    const untilStamp = nameStampOf(window?.until);
-    const inWindow = (stamp: string) =>
-      (sinceStamp === undefined || stamp >= sinceStamp) &&
-      (untilStamp === undefined || stamp < untilStamp);
-    const outputs = await this.readAll(
-      type,
-      "search",
-      (name) => {
-        const match = OUTPUT_FILE_NAME.exec(name);
-        if (match === null) return true;
-        return match[1] === definitionId && inWindow(match[2]);
-      },
-      window?.since,
+    const { value: outputs, joined } = await this.historyScans.run(
+      JSON.stringify([type.normalized, definitionId]),
+      window ?? {},
+      (scanWindow, scanSignal) =>
+        this.readHistory(type, definitionId, scanWindow, scanSignal),
       signal,
     );
+    if (joined) currentDiagnosticTally().add("scans_joined");
+    const { stampIn, startedIn } = historyWindowOf(window);
     // Only the ones whose file name says they are this definition's and
     // started in the window, as the listing's own pre-filter would.
     await warnUnreadableLeftOut(
@@ -519,15 +585,37 @@ export class YamlOutputRepository implements OutputRepository {
       this.getTypeDir(type),
       (entry) => {
         const name = parseOutputFileName(entry.path);
-        return name?.definitionId === definitionId && inWindow(name.stamp);
+        return name?.definitionId === definitionId && stampIn(name.stamp);
       },
     );
-    return outputs.filter((output) => {
-      if (output.definitionId !== definitionId) return false;
-      const startedMs = output.startedAt.getTime();
-      return (sinceMs === undefined || startedMs >= sinceMs) &&
-        (untilMs === undefined || startedMs < untilMs);
-    });
+    return outputs.filter((output) =>
+      output.definitionId === definitionId && startedIn(output.startedAt)
+    );
+  }
+
+  /**
+   * The scan {@link findHistoryByDefinition} shares: the type's outputs,
+   * skipping unread every file whose name is another definition's or is
+   * stamped outside `window`.
+   */
+  private readHistory(
+    type: ModelType,
+    definitionId: DefinitionId,
+    window: HistoryWindow,
+    signal: AbortSignal,
+  ): Promise<ModelOutput[]> {
+    const { stampIn } = historyWindowOf(window);
+    return this.readAll(
+      type,
+      "search",
+      (name) => {
+        const match = OUTPUT_FILE_NAME.exec(name);
+        if (match === null) return true;
+        return match[1] === definitionId && stampIn(match[2]);
+      },
+      window.since,
+      signal,
+    );
   }
 
   /**
@@ -658,14 +746,28 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   /**
-   * Every output of every registered type. Once `signal` aborts, the scan
-   * starts no further listing or read and rejects with its reason
+   * Every output of every registered type. Concurrent calls share one scan
+   * as {@link findHistoryByDefinition}'s do (swamp-club#4074): each gets its
+   * own array, but the outputs in it are shared, so callers must not mutate
+   * them. Once `signal` aborts, the call rejects with its reason, and a scan
+   * no other call waits on starts no further listing or read
    * (swamp-club#4070); one that had already started its last read returns
    * as usual.
    */
-  async findAllGlobal(signal?: AbortSignal): Promise<
-    { output: ModelOutput; type: ModelType; method: string }[]
-  > {
+  async findAllGlobal(signal?: AbortSignal): Promise<GlobalOutput[]> {
+    const { value, joined } = await this.allScans.run(
+      "all",
+      undefined,
+      (_, scanSignal) => this.readAllGlobal(scanSignal),
+      signal,
+    );
+    if (joined) currentDiagnosticTally().add("scans_joined");
+    await warnUnreadableLeftOut(this.unreadableContent, this.baseDir);
+    return [...value];
+  }
+
+  /** The scan {@link findAllGlobal} shares. */
+  private async readAllGlobal(signal: AbortSignal): Promise<GlobalOutput[]> {
     // Output directories are found by walking the registered model types. The
     // CLI configures the extension loader but does not run it, so a command
     // that never loaded the registry would walk only built-in types and miss
@@ -674,8 +776,7 @@ export class YamlOutputRepository implements OutputRepository {
     // output get) pay nothing.
     await modelRegistry.ensureLoaded();
 
-    const results: { output: ModelOutput; type: ModelType; method: string }[] =
-      [];
+    const results: GlobalOutput[] = [];
 
     // Iterate over all registered model types
     for (const modelType of modelRegistry.types()) {
@@ -694,8 +795,6 @@ export class YamlOutputRepository implements OutputRepository {
         });
       }
     }
-    await warnUnreadableLeftOut(this.unreadableContent, this.baseDir);
-
     return results;
   }
 
@@ -719,14 +818,55 @@ export class YamlOutputRepository implements OutputRepository {
    * Inside a diagnostic phase the scan is counted (directories, entries,
    * names skipped, stats, reads) into that phase's tally.
    *
-   * Once `signal` aborts, the scan starts no further listing or read and
-   * rejects with its reason (swamp-club#4070); one that had already started
-   * its last read returns as usual.
+   * Concurrent calls share one scan as {@link findHistoryByDefinition}'s
+   * do (swamp-club#4074): a call joining a scan that has not started moves
+   * its cutoff back to its own if that is earlier, and keeps only the
+   * outputs at or after its own. Each gets its own array, but the outputs in
+   * it are shared, so callers must not mutate them.
+   *
+   * Once `signal` aborts, the call rejects with its reason, and a scan no
+   * other call waits on starts no further listing or read
+   * (swamp-club#4070); one that had already started its last read returns
+   * as usual.
    */
   async findAllGlobalSince(
     cutoff: Date,
     signal?: AbortSignal,
-  ): Promise<{ output: ModelOutput; type: ModelType; method: string }[]> {
+  ): Promise<GlobalOutput[]> {
+    const { value, joined } = await this.sinceScans.run(
+      "since",
+      cutoff,
+      (scanCutoff, scanSignal) =>
+        this.readAllGlobalSince(scanCutoff, scanSignal),
+      signal,
+    );
+    if (joined) currentDiagnosticTally().add("scans_joined");
+    const cutoffMs = cutoff.getTime();
+    // A cutoff outside years 0000-9999 has a signed stamp, which sorts
+    // before every name's.
+    const cutoffStamp = fileStamp(cutoff);
+
+    // Only the ones whose file name says they started at or after the
+    // cutoff, as this listing's own pre-filter would; one whose name does
+    // not say is named too.
+    await warnUnreadableLeftOut(
+      this.unreadableContent,
+      this.baseDir,
+      (entry) =>
+        (parseOutputFileName(entry.path)?.stamp ?? cutoffStamp) >=
+          cutoffStamp,
+    );
+
+    return value.filter((found) =>
+      found.output.startedAt.getTime() >= cutoffMs
+    );
+  }
+
+  /** The scan {@link findAllGlobalSince} shares. */
+  private async readAllGlobalSince(
+    cutoff: Date,
+    signal: AbortSignal,
+  ): Promise<GlobalOutput[]> {
     // Load extension types before walking them; see findAllGlobal.
     await modelRegistry.ensureLoaded();
 
@@ -857,20 +997,7 @@ export class YamlOutputRepository implements OutputRepository {
       },
       signal,
     );
-    const results = read.filter((found) => found !== undefined);
-
-    // Only the ones whose file name says they started at or after the
-    // cutoff, as this listing's own pre-filter would; one whose name does
-    // not say is named too.
-    await warnUnreadableLeftOut(
-      this.unreadableContent,
-      this.baseDir,
-      (entry) =>
-        (parseOutputFileName(entry.path)?.stamp ?? cutoffStamp) >=
-          cutoffStamp,
-    );
-
-    return results;
+    return read.filter((found) => found !== undefined);
   }
 
   async save(
