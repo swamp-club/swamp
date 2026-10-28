@@ -23,7 +23,6 @@ import {
   resolveServeUpstream,
   serveUpstreamAppliesTo,
   serveUpstreamRunsLocally,
-  tokenFileBoundTo,
 } from "./serve_upstream.ts";
 import { resetMarkerServerAddress } from "./remote_run.ts";
 import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
@@ -248,30 +247,6 @@ Deno.test("resolveServeUpstream: a matching env address uses SWAMP_SERVER_TOKEN_
       );
     }
   });
-});
-
-Deno.test("tokenFileBoundTo: a mismatched, empty or unparseable env address does not bind the token file", () => {
-  const key = "http://serve.test:9090";
-  assertEquals(tokenFileBoundTo(key, ["http://other.test:9090"]), false);
-  assertEquals(
-    tokenFileBoundTo(key, [
-      "http://serve.test:9091",
-      "https://serve.test:9090",
-    ]),
-    false,
-  );
-  assertEquals(tokenFileBoundTo(key, [undefined, ""]), false);
-  assertEquals(tokenFileBoundTo(key, ["not a url"]), false);
-  assertEquals(tokenFileBoundTo(key, []), false);
-});
-
-Deno.test("tokenFileBoundTo: either env address naming the key binds the token file", () => {
-  const key = "http://serve.test:9090";
-  assertEquals(tokenFileBoundTo(key, ["ws://SERVE.test:9090/"]), true);
-  assertEquals(
-    tokenFileBoundTo(key, ["http://other.test:9090", "http://serve.test:9090"]),
-    true,
-  );
 });
 
 Deno.test("resolveServeUpstream: an invalid address fails without echoing it", async () => {

@@ -263,11 +263,38 @@ export async function readTokenFile(
 }
 
 /**
+ * Whether `SWAMP_SERVER_TOKEN_FILE` is bound to `key`: one of the addresses
+ * the user named (the `--server` flag, `SWAMP_SERVE_URL`,
+ * `SWAMP_SERVER_URL`) normalizes to it. An unset, empty or unparseable
+ * address names nothing, so a `.swamp.yaml` serverAddress alone never binds
+ * it.
+ */
+export function tokenFileBoundTo(
+  key: string,
+  addresses: readonly (string | undefined)[],
+): boolean {
+  return addresses.some((value) => {
+    if (!value) return false;
+    try {
+      return normalizeServerUrlForCredentials(value) === key;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
  * Resolves the server token for authentication. Precedence:
  * 1. Explicit token value (from `--token` flag or `--token-file` read)
- * 2. `SWAMP_SERVER_TOKEN_FILE` env var (read from file)
+ * 2. `SWAMP_SERVER_TOKEN_FILE` env var (read from file), only when
+ *    `serverFlag`, `SWAMP_SERVE_URL` or `SWAMP_SERVER_URL` normalizes to
+ *    `serverUrl`
  * 3. `SWAMP_SERVER_TOKEN` env var (via ServerCredentialRepository)
  * 4. Stored credential in `~/.config/swamp/servers.json`
+ *
+ * `serverFlag` is the raw `--server` value as the user typed it, never the
+ * resolved URL: a `.swamp.yaml` serverAddress passed there would receive a
+ * token file meant for another server (swamp-club#4012).
  *
  * The server URL is validated first, whichever source supplies the token,
  * so an unsupported scheme or unparseable value fails with a UserError
@@ -281,11 +308,19 @@ export async function resolveServerToken(
   serverUrl: string,
   explicitToken?: string,
   credentialRepo?: ServerCredentialRepository,
+  serverFlag?: string,
 ): Promise<string | undefined> {
-  parseServerFlag(serverUrl);
+  const key = parseServerFlag(serverUrl);
   if (explicitToken) return explicitToken;
   const envTokenFile = Deno.env.get("SWAMP_SERVER_TOKEN_FILE");
-  if (envTokenFile) {
+  if (
+    envTokenFile &&
+    tokenFileBoundTo(key, [
+      serverFlag,
+      Deno.env.get("SWAMP_SERVE_URL"),
+      Deno.env.get("SWAMP_SERVER_URL"),
+    ])
+  ) {
     return readTokenFile(envTokenFile, "SWAMP_SERVER_TOKEN_FILE");
   }
   const repo = credentialRepo ?? new FileServerCredentialRepository();
@@ -298,10 +333,12 @@ export async function resolveServerToken(
  * Handles `--token` / `--token-file` mutual exclusivity and reads the
  * token from file when `--token-file` is provided, then delegates to
  * `resolveServerToken()` for env var and stored credential fallbacks.
+ * `options.server` must be the `--server` flag as parsed, not overwritten
+ * with the resolved URL: it is what binds `SWAMP_SERVER_TOKEN_FILE`.
  */
 export async function resolveServerTokenFromOptions(
   serverUrl: string,
-  options: { token?: unknown; tokenFile?: unknown },
+  options: { server?: unknown; token?: unknown; tokenFile?: unknown },
   credentialRepo?: ServerCredentialRepository,
 ): Promise<string | undefined> {
   const token = options.token as string | undefined;
@@ -314,7 +351,12 @@ export async function resolveServerTokenFromOptions(
   const explicitToken = tokenFile
     ? await readTokenFile(tokenFile, "--token-file")
     : token;
-  return resolveServerToken(serverUrl, explicitToken, credentialRepo);
+  return resolveServerToken(
+    serverUrl,
+    explicitToken,
+    credentialRepo,
+    options.server as string | undefined,
+  );
 }
 
 /**
@@ -926,7 +968,7 @@ export function withRemoteOptions<T extends AnyCommand>(command: T): T {
     )
     .option(
       "--token-file <path:string>",
-      "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
+      "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE, sent only to the address --server, SWAMP_SERVE_URL or SWAMP_SERVER_URL names)",
     )
     .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION) as T;
 }

@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
-import { normalizeServerUrl } from "../domain/auth/server_url.ts";
 import { resolveExtraHeaders } from "../domain/auth/extra_headers.ts";
 import type { DatastoreEngine } from "../domain/datastore/datastore_format.ts";
 import { ServeUpstreamTarget } from "../domain/datastore_v3/serve_upstream.ts";
@@ -27,6 +26,7 @@ import {
   getEnvCaCerts,
   implicitServeUrl,
   readTokenFile,
+  tokenFileBoundTo,
 } from "./remote_run.ts";
 
 /** Whether serve is a command's datastore upstream, and why. */
@@ -332,30 +332,6 @@ export async function resolveServeUpstream(
     token,
     caCerts,
     extraHeaders: resolveExtraHeaders(),
-  });
-}
-
-/**
- * Whether `SWAMP_SERVER_TOKEN_FILE` is bound to `key`: one of the
- * environment addresses (`SWAMP_SERVE_URL`, `SWAMP_SERVER_URL`) normalizes
- * to it. An unset, empty or unparseable environment address names nothing,
- * so a marker-only address is never bound.
- *
- * Today `implicitServeUrl` prefers the environment over the marker, so a set
- * environment address is the resolved one; this check keeps the token
- * file bound if that precedence ever changes.
- */
-export function tokenFileBoundTo(
-  key: string,
-  envAddresses: readonly (string | undefined)[],
-): boolean {
-  return envAddresses.some((value) => {
-    if (!value) return false;
-    try {
-      return normalizeServerUrl(value) === key;
-    } catch {
-      return false;
-    }
   });
 }
 

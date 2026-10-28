@@ -346,7 +346,8 @@ export const workflowRunCommand = new Command()
       }
       await runWorkflowViaServer(
         ctx,
-        { ...options, server },
+        server,
+        options,
         workflowIdOrName,
         formatCommandTarget({ server: options.server as string | undefined }),
       );
@@ -825,6 +826,7 @@ export const workflowRunCommand = new Command()
  */
 async function runWorkflowViaServer(
   ctx: ReturnType<typeof createContext>,
+  server: string,
   options: AnyOptions,
   workflowIdOrName: string,
   commandTarget: string,
@@ -861,7 +863,7 @@ async function runWorkflowViaServer(
     : [cliInputs];
 
   const token = await resolveServerTokenFromOptions(
-    options.server as string,
+    server,
     options,
   );
 
@@ -875,7 +877,7 @@ async function runWorkflowViaServer(
           .info`Running workflow ${workflowIdOrName} [${
           i + 1
         }/${inputSets.length}] via ${
-          redactServerUrl(options.server as string) ?? "(invalid URL)"
+          redactServerUrl(server) ?? "(invalid URL)"
         }`;
       }
       const renderer = options.junit
@@ -894,7 +896,7 @@ async function runWorkflowViaServer(
       let accepted: { runId: string; workflowName: string } | undefined;
       await consumeStream(
         runWorkflowOverServer({
-          server: options.server as string,
+          server,
           token,
           signal: abort.signal,
           detach,
