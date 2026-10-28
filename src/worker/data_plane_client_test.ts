@@ -30,7 +30,15 @@ import {
   createDataPlaneFetch,
   DataPlaneClient,
   dataPlaneUrlFromConnectUrl,
+  DispatchSecretLoadError,
 } from "./data_plane_client.ts";
+import {
+  DISPATCH_SECRETS_PATH,
+  DispatchSecretLoadRequestSchema,
+  MAX_DISPATCH_SECRET_CLAIMS,
+  MAX_DISPATCH_SECRET_LOADS,
+} from "../domain/remote/protocol.ts";
+import { secretReadKey } from "../domain/vaults/secret_loader.ts";
 
 interface RecordedRequest {
   method: string;
@@ -478,4 +486,98 @@ Deno.test("DataPlaneClient: caller cancellation during the response body preserv
       uninstallExecutionObserver();
     }
   });
+});
+
+Deno.test("DataPlaneClient.loadSecrets: asks for each distinct reference once, in requests the route admits, and keys the values by reference", async () => {
+  const { client, requests } = clientWith((req) => {
+    const { references } = JSON.parse(req.body!) as {
+      references: { vaultName: string; key: string }[];
+    };
+    return Response.json({
+      values: references.map(({ vaultName, key }) => ({
+        vaultName,
+        key,
+        value: `${key}-value`,
+      })),
+    });
+  });
+  const references = [
+    ...Array.from(
+      { length: MAX_DISPATCH_SECRET_LOADS + 2 },
+      (_, i) => ({ vaultName: "v", key: `k${i}` }),
+    ),
+    { vaultName: "v", key: "k0" },
+    // More claimed resources than one request may name.
+    ...Array.from({ length: MAX_DISPATCH_SECRET_CLAIMS + 1 }, (_, i) => ({
+      vaultName: "w",
+      key: `field${i}`,
+      resource: { name: `state-${i}`, version: 1 },
+    })),
+  ];
+  const values = await client.loadSecrets(references);
+
+  assertEquals(values.size, MAX_DISPATCH_SECRET_LOADS + 2 + 17);
+  assertEquals(
+    values.get(secretReadKey({ vaultName: "v", key: "k0" })),
+    "k0-value",
+  );
+  assertEquals(
+    requests.every((r) => r.url.endsWith(DISPATCH_SECRETS_PATH)),
+    true,
+  );
+  assertEquals(requests.every((r) => r.method === "POST"), true);
+  assertEquals(
+    requests.every((r) => r.authorization === "Bearer cred-1"),
+    true,
+  );
+  for (const request of requests) {
+    const parsed = DispatchSecretLoadRequestSchema.safeParse(
+      JSON.parse(request.body!),
+    );
+    assertEquals(parsed.success, true);
+  }
+  const asked = requests.flatMap((r) =>
+    (JSON.parse(r.body!) as { references: unknown[] }).references
+  );
+  assertEquals(asked.length, MAX_DISPATCH_SECRET_LOADS + 2 + 17);
+});
+
+Deno.test("DataPlaneClient.loadSecrets: a refusal names its code and reference, never the reply's text or a value", async () => {
+  for (
+    const [status, body, code] of [
+      [403, {
+        error: "leaked-text",
+        code: "not_in_dispatch",
+        reference: { vaultName: "v", key: "k" },
+      }, "not_in_dispatch"],
+      [410, { error: "leaked-text", code: "access_ended" }, "access_ended"],
+      [
+        401,
+        { error: "leaked-text", code: "unauthenticated" },
+        "unauthenticated",
+      ],
+      [500, { error: "leaked-text", unexpected: true }, "malformed_reply"],
+    ] as const
+  ) {
+    const { client } = clientWith(() => Response.json(body, { status }));
+    const error = await assertRejects(
+      () => client.loadSecrets([{ vaultName: "v", key: "k" }]),
+      DispatchSecretLoadError,
+    );
+    assertEquals(error.code, code);
+    assertEquals(error.status, status);
+    assertEquals(error.message.includes("leaked-text"), false);
+    if (code === "not_in_dispatch") {
+      assertEquals(error.reference, { vaultName: "v", key: "k" });
+      assertStringIncludes(error.message, "secret 'k' from vault 'v'");
+    }
+  }
+  const { client } = clientWith(() =>
+    Response.json({ values: [{ vaultName: "v", key: "k" }] })
+  );
+  const malformed = await assertRejects(
+    () => client.loadSecrets([{ vaultName: "v", key: "k" }]),
+    DispatchSecretLoadError,
+  );
+  assertEquals(malformed.code, "malformed_reply");
 });

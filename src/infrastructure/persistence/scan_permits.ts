@@ -142,7 +142,9 @@ export class ScanPermits {
  * permits, so scans of a slow filesystem can delay scans of another. A scan
  * given an AbortSignal (a serve request's) stops waiting for permits once it
  * aborts, starts no further listing or read, and gives back each permit it
- * holds as that listing or read settles (swamp-club#4070).
+ * holds as that listing or read settles (swamp-club#4070). Workflow approvals
+ * and superseding pass findByStatus their request's or run's signal
+ * (swamp-club#4088).
  *
  * A listing holds its permit for its whole `Deno.readDir` iteration, and its
  * directory stays open throughout, so the permit cannot be given back

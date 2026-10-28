@@ -51,6 +51,7 @@ import { setRemoteStepDispatcher } from "../src/domain/remote/remote_dispatch.ts
 import {
   type DispatchParams,
   type DispatchResult,
+  LEGACY_PLAINTEXT_PROTOCOL_VERSION,
   WorkerMethod,
 } from "../src/domain/remote/protocol.ts";
 import type { ActiveDispatch } from "../src/serve/dispatch_registry.ts";
@@ -279,7 +280,15 @@ for (const argumentSource of ["method", "global"] as const) {
           await o.repoContext.definitionRepo.save(type, definition);
 
           const workerName = `w-${crypto.randomUUID().slice(0, 8)}`;
-          const worker = await connectInMemoryWorker(o, workerName);
+          // A version 5 worker, whose frame carries the resolved arguments
+          // this test pins; the reference-only frame a version 6 worker
+          // receives is pinned in remote_secrets_mixed_fleet_test.ts.
+          const worker = await connectInMemoryWorker(
+            o,
+            workerName,
+            undefined,
+            LEGACY_PLAINTEXT_PROTOCOL_VERSION,
+          );
           const seen: Array<{
             methodArgs: Record<string, unknown>;
             globalArgs: Record<string, unknown>;
@@ -640,7 +649,15 @@ Deno.test({
 
         const type = registerReaderType(true);
         const workerName = `w-${crypto.randomUUID().slice(0, 8)}`;
-        const worker = await connectInMemoryWorker(o, workerName);
+        // Claims reach resolveSecret from a version 5 worker; a version 6
+        // one claims through the load route, which verifies them alike
+        // (remote_secrets_load_route_test.ts).
+        const worker = await connectInMemoryWorker(
+          o,
+          workerName,
+          undefined,
+          LEGACY_PLAINTEXT_PROTOCOL_VERSION,
+        );
         interface Observed {
           tags: Record<string, string>;
           content: Record<string, unknown>;
@@ -747,7 +764,9 @@ Deno.test({
         await o.dispatchService.executeRemote(
           {
             ...remoteRequest(type, { value: "plain" }),
-            secretValues: ["known-secret"],
+            // Masked by serve's dispatch redactor, as a sensitive literal
+            // the step's arguments hold is.
+            redactorSeeds: ["known-secret"],
           },
         );
 

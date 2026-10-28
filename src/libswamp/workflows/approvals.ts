@@ -132,8 +132,13 @@ export type WorkflowApprovalsEvent =
 export interface WorkflowApprovalsDeps {
   workflowRepo: WorkflowRepository;
   runRepo: WorkflowRunRepository;
+  /**
+   * The workflow's suspended runs. The listing passes its context's signal,
+   * so a cancelled request stops reading them (swamp-club#4088).
+   */
   findSuspendedRuns?: (
     workflowId: WorkflowId,
+    signal?: AbortSignal,
   ) => Promise<WorkflowRun[]>;
   findEvaluatedWorkflow?: (
     workflowId: WorkflowId,
@@ -145,6 +150,7 @@ export function createWorkflowApprovalsDeps(
   runRepo: WorkflowRunRepository,
   findSuspendedRuns?: (
     workflowId: WorkflowId,
+    signal?: AbortSignal,
   ) => Promise<WorkflowRun[]>,
   findEvaluatedWorkflow?: (
     workflowId: WorkflowId,
@@ -154,7 +160,7 @@ export function createWorkflowApprovalsDeps(
 }
 
 export async function* workflowApprovals(
-  _ctx: LibSwampContext,
+  ctx: LibSwampContext,
   deps: WorkflowApprovalsDeps,
 ): AsyncIterable<WorkflowApprovalsEvent> {
   yield* withGeneratorSpan(
@@ -197,7 +203,7 @@ export async function* workflowApprovals(
 
       for (const workflow of workflows) {
         const runs = deps.findSuspendedRuns
-          ? await deps.findSuspendedRuns(workflow.id)
+          ? await deps.findSuspendedRuns(workflow.id, ctx.signal)
           : await deps.runRepo.findAllByWorkflowId(workflow.id);
 
         let evaluatedWorkflow: Workflow | null | undefined;

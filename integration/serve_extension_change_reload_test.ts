@@ -98,6 +98,7 @@ const worker: WorkerSnapshot = {
   platform: "linux",
   arch: "x86_64",
   swampVersion: "1.0.0",
+  protocolVersion: 6,
   status: "idle",
   connected: true,
   capacity: 1,

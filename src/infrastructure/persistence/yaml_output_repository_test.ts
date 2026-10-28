@@ -3582,8 +3582,13 @@ Deno.test(
           reads.release();
           assertEquals(await assertRejects(() => scan), reason);
           assertEquals((await holding).length, 6);
+          // The aborted caller rejects at once (swamp-club#4074); the scan's
+          // own released reads settle after it.
+          await waitFor(
+            () => reads.inFlight === 0,
+            "the aborted scan's reads to settle",
+          );
           assertEquals(reads.started, startedAtAbort);
-          assertEquals(reads.inFlight, 0);
         }, ["output-repo"]);
         assertEquals(
           warnings.filter((warning) =>

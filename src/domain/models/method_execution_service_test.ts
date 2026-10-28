@@ -37,6 +37,7 @@ import {
   assertThrows,
 } from "@std/assert";
 import {
+  type LegacyStepDelivery,
   type RemoteStepRequest,
   setRemoteOnlyMode,
   setRemoteStepDispatcher,
@@ -4903,12 +4904,17 @@ Deno.test("executeWorkflow - an uncoded UserError a method throws comes back as 
   assertEquals(error instanceof UserError, false);
 });
 
+/** A remote request, with the frame a version 5 worker would receive. */
+type CapturedRemoteRequest = RemoteStepRequest & {
+  legacy?: LegacyStepDelivery;
+};
+
 async function captureRemoteRequest(
   secretBag: VaultSecretBag | undefined,
   methodArgs: Record<string, unknown>,
   secretLoader?: SecretLoader,
   globalArguments: Record<string, unknown> = {},
-): Promise<RemoteStepRequest> {
+): Promise<CapturedRemoteRequest> {
   const service = new DefaultMethodExecutionService();
   const model = createTestModel({});
   const definition = Definition.create({
@@ -4916,16 +4922,18 @@ async function captureRemoteRequest(
     globalArguments,
     methods: { start: { arguments: methodArgs } },
   });
-  const captured: RemoteStepRequest[] = [];
+  const captured: CapturedRemoteRequest[] = [];
   setRemoteStepDispatcher({
-    executeRemote: (request) => {
-      captured.push(request);
-      return Promise.resolve({
+    executeRemote: async (request) => {
+      // A version 6 worker is sent the request's own arguments; a version 5
+      // one the frame its legacy delivery builds, as serve asks for it.
+      captured.push({ ...request, legacy: await request.legacyDelivery?.() });
+      return {
         outputs: [],
         logs: [],
         durationMs: 1,
         workerName: "w1",
-      });
+      };
     },
     releaseAffinity: () => {},
   });
@@ -4957,19 +4965,28 @@ Deno.test("executeWorkflow - placed step ships its secret bag and unresolved arg
     value: `token ${sentinel}`,
   }, loader);
 
-  // The orchestrator loads the bag before dispatch, once.
+  // A version 6 worker is sent the sentinel and the reference behind it.
+  assertEquals(request.methodArgs.value, `token ${sentinel}`);
+  assertEquals(request.referenceBag, [{
+    sentinel,
+    reference: { vaultName: "v", key: "token" },
+    encoding: "raw",
+    dataOrigin: false,
+    location: "methods.start.arguments.value",
+  }]);
+  // The orchestrator loads the bag for a version 5 worker only, once.
   assertEquals(reads, ["token"]);
-  // Resolved args still travel for workers that predate the bag fields.
-  assertEquals(request.methodArgs.value, "token s3cret-value");
-  assertEquals(request.unresolvedMethodArgs?.value, `token ${sentinel}`);
-  assertEquals(request.secretBag, [{
+  const legacy = request.legacy!;
+  assertEquals(legacy.methodArgs.value, "token s3cret-value");
+  assertEquals(legacy.unresolvedMethodArgs?.value, `token ${sentinel}`);
+  assertEquals(legacy.secretBag, [{
     sentinel,
     value: "s3cret-value",
     dataOrigin: false,
   }]);
-  assertEquals(request.secretValues?.includes("s3cret-value"), true);
-  // The reference behind the shipped entry, for serve's allowlist: the
-  // shipped args hold the value, not the expression (swamp-club#3529).
+  assertEquals(legacy.secretValues?.includes("s3cret-value"), true);
+  // The reference behind the shipped entry, for serve's allowlist and its
+  // load route (swamp-club#3529).
   assertEquals(request.secretReferences, [{ vaultName: "v", key: "token" }]);
 });
 
@@ -4987,24 +5004,29 @@ Deno.test("executeWorkflow - a placed step ships a JSON-value data reference wit
     value: `p-${sentinel}`,
   }, loader);
 
-  assertEquals(request.methodArgs.counter, 8080);
-  assertEquals(request.methodArgs.value, "p-8080");
-  assertEquals(request.unresolvedMethodArgs?.counter, sentinel);
-  assertEquals(request.secretBag, [{
+  assertEquals(request.methodArgs.counter, sentinel);
+  assertEquals(request.referenceBag?.[0].jsonValue, true);
+  const legacy = request.legacy!;
+  assertEquals(legacy.methodArgs.counter, 8080);
+  assertEquals(legacy.methodArgs.value, "p-8080");
+  assertEquals(legacy.unresolvedMethodArgs?.counter, sentinel);
+  assertEquals(legacy.secretBag, [{
     sentinel,
     value: "8080",
     dataOrigin: true,
     jsonValue: true,
   }]);
-  assertEquals(request.secretValues?.includes("8080"), true);
+  assertEquals(legacy.secretValues?.includes("8080"), true);
 });
 
 Deno.test("executeWorkflow - placed step without secrets ships no bag fields", async () => {
   const request = await captureRemoteRequest(undefined, { value: "plain" });
   assertEquals(request.methodArgs.value, "plain");
-  assertEquals(request.unresolvedMethodArgs, undefined);
-  assertEquals(request.secretBag, undefined);
+  assertEquals(request.referenceBag, undefined);
   assertEquals(request.secretReferences, undefined);
+  assertEquals(request.legacy?.methodArgs.value, "plain");
+  assertEquals(request.legacy?.unresolvedMethodArgs, undefined);
+  assertEquals(request.legacy?.secretBag, undefined);
 });
 
 Deno.test("executeWorkflow: a placed step retains references found only in global arguments", async () => {
@@ -5025,7 +5047,8 @@ Deno.test("executeWorkflow: a placed step retains references found only in globa
     loader,
     { value: sentinel },
   );
-  assertEquals(request.globalArgs, { value: "global-secret" });
+  assertEquals(request.globalArgs, { value: sentinel });
+  assertEquals(request.legacy?.globalArgs, { value: "global-secret" });
   assertEquals(request.secretReferences, [{ vaultName: "v", key: "token" }]);
 });
 
@@ -5455,15 +5478,18 @@ Deno.test("executeWorkflow - a placed step ships the run's entries its arguments
 
   // A reference the step's arguments do not carry is never loaded.
   assertEquals(reads, []);
-  assertEquals(request.methodArgs.value, "token early-s3cret");
-  assertEquals(request.unresolvedMethodArgs?.value, `token ${early}`);
-  assertEquals(request.secretBag, [{
+  // A version 6 worker loads the data entry by its reference.
+  assertEquals(request.referenceBag?.map((entry) => entry.reference), [REF]);
+  const legacy = request.legacy!;
+  assertEquals(legacy.methodArgs.value, "token early-s3cret");
+  assertEquals(legacy.unresolvedMethodArgs?.value, `token ${early}`);
+  assertEquals(legacy.secretBag, [{
     sentinel: early,
     value: "early-s3cret",
     dataOrigin: true,
   }]);
-  assertEquals(request.secretValues?.includes("early-s3cret"), true);
-  assertEquals(request.secretValues?.includes("unrelated-s3cret"), false);
+  assertEquals(legacy.secretValues?.includes("early-s3cret"), true);
+  assertEquals(legacy.secretValues?.includes("unrelated-s3cret"), false);
 });
 
 // ---------- Loading vault references at delivery (typed-secrets 2.3) ----------
@@ -6436,14 +6462,16 @@ Deno.test("executeWorkflow: a placed step calls onArgumentsValidated once its ar
     return Promise.resolve();
   };
   setRemoteStepDispatcher({
-    executeRemote: () => {
+    executeRemote: async (request) => {
+      // As serve dispatches to a version 5 worker.
+      await request.legacyDelivery?.();
       order.push("dispatched");
-      return Promise.resolve({
+      return {
         outputs: [],
         logs: [],
         durationMs: 1,
         workerName: "w1",
-      });
+      };
     },
     releaseAffinity: () => {},
   });
@@ -7227,11 +7255,14 @@ Deno.test("executeWorkflow: a placed step ships what a transform enclosing a sen
     setRemoteStepDispatcher(null);
   }
   assertEquals(captured.length, 1);
-  assertEquals(captured[0].secretValues?.includes("HUNTER2-LONG"), true);
-  assertEquals(captured[0].secretValues?.includes("hunter2-long"), true);
+  const { secretValues } = await captured[0].legacyDelivery!();
+  assertEquals(secretValues?.includes("HUNTER2-LONG"), true);
+  assertEquals(secretValues?.includes("hunter2-long"), true);
   // The plain region the transform passed through is not a worker secret,
   // as it is not a local one (swamp-club#3754).
-  assertEquals(captured[0].secretValues?.includes("eu-west-1"), false);
+  assertEquals(secretValues?.includes("eu-west-1"), false);
+  // Serve's own redactor masks the authored literal for a version 6 worker.
+  assertEquals(captured[0].redactorSeeds, ["hunter2-long"]);
 });
 
 Deno.test("execute: a refused parse registers the sensitive value with the run's redactor and leaves the plain values beside it out, for method and global arguments alike (swamp-club#3753)", async () => {
@@ -7468,4 +7499,532 @@ Deno.test("executeWorkflow: under the untrusted policy a sensitive global argume
       assertStringIncludes(error.message, "Global arguments validation failed");
     }
   });
+});
+
+// ---------- Protocol version 6 delivery (typed-secrets 5.2) ----------
+
+/** A model whose method records its arguments and the shell's merge. */
+function dispatchedModel(): {
+  model: ModelDefinition;
+  seen: {
+    args: Record<string, unknown>[];
+    unresolved: (Record<string, unknown> | undefined)[];
+    hook: number;
+  };
+} {
+  const seen = {
+    args: [] as Record<string, unknown>[],
+    unresolved: [] as (Record<string, unknown> | undefined)[],
+    hook: 0,
+  };
+  const model: ModelDefinition = {
+    type: ModelType.create("test/dispatched"),
+    version: "2026.10.28.1",
+    globalArguments: z.object({
+      endpoint: z.string().url(),
+      command: z.string(),
+    }),
+    methods: {
+      create: {
+        description: "Records what it receives",
+        arguments: z.object({
+          workingDir: z.string().meta({ secrets: "refuse" }).optional(),
+        }),
+        execute: (args, context) => {
+          seen.args.push({ ...(args as object), ...context.globalArgs });
+          seen.unresolved.push(context.unresolvedMethodArgs);
+          return Promise.resolve({});
+        },
+        refuseSecretDestinations: () => {
+          seen.hook++;
+        },
+      },
+    },
+  };
+  return { model, seen };
+}
+
+Deno.test("executeDispatched: a version 6 runner loads through its own loader, validates the globals, places a global secret through the merge and runs no refusal serve already ran (typed-secrets 5.2)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const { model, seen } = dispatchedModel();
+  // The worker rebuilds the bag from the shipped references.
+  const serveBag = new VaultSecretBag(new SecretBagRegistry());
+  const endpoint = serveBag.addSecret(
+    { vaultName: "v", key: "endpoint" },
+    "globalArguments.endpoint",
+  );
+  const token = serveBag.addSecret(
+    { vaultName: "v", key: "token" },
+    "globalArguments.command",
+  );
+  const dir = serveBag.addSecret(
+    { vaultName: "v", key: "dir" },
+    "methods.create.arguments.workingDir",
+  );
+  const globalArguments = { endpoint, command: `deploy ${token}` };
+  const methodArguments = { workingDir: dir };
+  const bag = VaultSecretBag.fromReferenceEntries(
+    serveBag.referenceEntriesFor({ globalArguments, methodArguments }),
+  );
+  const { loader, reads } = mockLoader({
+    endpoint: "https://api.example.com",
+    token: "s3cret-token",
+    dir: "/srv",
+  });
+  let validated = 0;
+  const { context } = createTestContext({
+    modelType: model.type,
+    methodName: "create",
+    vaultSecrets: bag,
+  });
+  await service.executeDispatched(
+    Definition.create({
+      name: "d",
+      globalArguments,
+      methods: { create: { arguments: methodArguments } },
+    }),
+    model,
+    "create",
+    context,
+    {
+      secretLoader: loader,
+      onArgumentsValidated: () => {
+        validated++;
+        return Promise.resolve();
+      },
+    },
+  );
+  assertEquals(reads.toSorted(), ["dir", "endpoint", "token"]);
+  assertEquals(seen.args, [{
+    workingDir: "/srv",
+    endpoint: "https://api.example.com",
+    command: "deploy s3cret-token",
+  }]);
+  // A secret authored under globalArguments reaches the shell's merge as its
+  // sentinel, so it is placed through the environment (swamp-club#3627).
+  assertEquals(seen.unresolved[0]?.command, `deploy ${token}`);
+  assertEquals(validated, 1);
+  // Serve refused before dispatch; the runner does not ask again.
+  assertEquals(seen.hook, 0);
+
+  // A global the schema refuses fails on the worker, before the method.
+  const { context: refused } = createTestContext({
+    modelType: model.type,
+    methodName: "create",
+    vaultSecrets: VaultSecretBag.fromReferenceEntries([]),
+  });
+  await assertRejects(
+    () =>
+      service.executeDispatched(
+        Definition.create({
+          name: "d",
+          globalArguments: { endpoint: "not a url", command: "x" },
+          methods: { create: { arguments: {} } },
+        }),
+        model,
+        "create",
+        refused,
+        { secretLoader: mockLoader({}).loader },
+      ),
+    Error,
+    "Global arguments validation failed",
+  );
+  assertEquals(seen.args.length, 1);
+});
+
+Deno.test("executeWorkflow: a remotely placed step loads nothing before dispatch, and its definition hash is the same on every run (typed-secrets 5.2)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createTestModel({});
+  const hashes: string[] = [];
+  const outputRepository = {
+    save: (_type: ModelType, _method: string, output: ModelOutput) => {
+      if (output.status === "running") {
+        hashes.push(output.provenance.definitionHash);
+      }
+      return Promise.resolve();
+    },
+  } as unknown as OutputRepository;
+  setRemoteStepDispatcher({
+    executeRemote: () =>
+      Promise.resolve({
+        outputs: [],
+        logs: [],
+        durationMs: 1,
+        workerName: "w1",
+      }),
+    releaseAffinity: () => {},
+  });
+  const { loader, reads } = mockLoader({ token: "s3cret-value" });
+  // One definition, evaluated on two runs.
+  const base = Definition.create({ name: "remote-hash", globalArguments: {} });
+  try {
+    for (let run = 0; run < 2; run++) {
+      // Each run issues its own sentinel for the same reference.
+      const bag = new VaultSecretBag(new SecretBagRegistry());
+      const sentinel = bag.addSecret(
+        { vaultName: "v", key: "token" },
+        "methods.start.arguments.value",
+      );
+      const { context } = createTestContext({
+        modelType: model.type,
+        placement: { labels: { tier: "remote" } },
+        vaultSecrets: bag,
+        outputRepository,
+      });
+      await service.executeWorkflow(
+        Definition.fromData({
+          ...base.toData(),
+          methods: { start: { arguments: { value: `t ${sentinel}` } } },
+        }),
+        model,
+        "start",
+        context,
+        { secretLoader: loader },
+      );
+    }
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
+  assertEquals(reads, []);
+  assertEquals(hashes.length, 2);
+  assertEquals(hashes[0], hashes[1]);
+});
+
+Deno.test("executeWorkflow: a remote attempt calls onArgumentsValidated once, whichever workers report it (swamp-club#3681)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createTestModel({});
+  let calls = 0;
+  setRemoteStepDispatcher({
+    executeRemote: async (request) => {
+      // A version 5 worker's frame, then two version 6 workers after it.
+      await request.legacyDelivery?.();
+      await request.onArgumentsValidated?.();
+      await request.onArgumentsValidated?.();
+      return { outputs: [], logs: [], durationMs: 1, workerName: "w1" };
+    },
+    releaseAffinity: () => {},
+  });
+  try {
+    const { context } = createTestContext({
+      modelType: model.type,
+      placement: { labels: { tier: "remote" } },
+    });
+    await service.executeWorkflow(
+      Definition.create({
+        name: "once",
+        methods: { start: { arguments: { value: "x" } } },
+      }),
+      model,
+      "start",
+      context,
+      {
+        onArgumentsValidated: () => {
+          calls++;
+          return Promise.resolve();
+        },
+      },
+    );
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
+  assertEquals(calls, 1);
+});
+
+Deno.test("executeWorkflow: a remotely placed step whose arguments hold no secret is refused before it is scheduled, and the dispatcher is never asked for a worker", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model: ModelDefinition = {
+    type: ModelType.create("test/fail-fast-placed"),
+    version: "2026.10.28.1",
+    globalArguments: z.object({ region: z.enum(["us", "eu"]).optional() }),
+    methods: {
+      write: {
+        description: "Runs on a worker",
+        arguments: z.object({ message: z.string().min(1) }),
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+  let scheduled = 0;
+  let validated = 0;
+  setRemoteStepDispatcher({
+    // As serve schedules for a version 6 worker: no legacy delivery.
+    executeRemote: () => {
+      scheduled++;
+      return Promise.resolve({
+        outputs: [],
+        logs: [],
+        durationMs: 1,
+        workerName: "w1",
+      });
+    },
+    releaseAffinity: () => {},
+  });
+  const hook = () => {
+    validated++;
+    return Promise.resolve();
+  };
+  try {
+    const { context } = createTestContext({
+      modelType: model.type,
+      placement: { labels: { tier: "remote" } },
+    });
+    await assertRejects(
+      () =>
+        service.executeWorkflow(
+          Definition.create({
+            name: "bad-method-arg",
+            methods: { write: { arguments: { message: "" } } },
+          }),
+          model,
+          "write",
+          context,
+          { onArgumentsValidated: hook },
+        ),
+      Error,
+      "Method arguments validation failed",
+    );
+    await assertRejects(
+      () =>
+        service.executeWorkflow(
+          Definition.create({
+            name: "bad-global-arg",
+            globalArguments: { region: "mars" },
+            methods: { write: { arguments: { message: "hi" } } },
+          }),
+          model,
+          "write",
+          context,
+          { onArgumentsValidated: hook },
+        ),
+      Error,
+      "Global arguments validation failed",
+    );
+    assertEquals(scheduled, 0);
+    assertEquals(validated, 0);
+
+    // A valid step is validated before it is scheduled, as before.
+    await service.executeWorkflow(
+      Definition.create({
+        name: "valid",
+        globalArguments: { region: "eu" },
+        methods: { write: { arguments: { message: "hi" } } },
+      }),
+      model,
+      "write",
+      context,
+      { onArgumentsValidated: hook },
+    );
+    assertEquals(scheduled, 1);
+    assertEquals(validated, 1);
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
+});
+
+Deno.test("executeWorkflow: a remotely placed step holding a secret has its other arguments checked before it is scheduled, reading no vault, and leaves the secret's field to the worker", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model: ModelDefinition = {
+    type: ModelType.create("test/fail-fast-placed-secret"),
+    version: "2026.10.28.1",
+    globalArguments: z.object({
+      // A sentinel is not a URL, so this field can only be checked once
+      // its value is loaded.
+      endpoint: z.string().url().optional(),
+      region: z.enum(["us", "eu"]).optional(),
+    }),
+    methods: {
+      write: {
+        description: "Runs on a worker",
+        arguments: z.object({
+          token: z.string().startsWith("tok-"),
+          count: z.number(),
+        }),
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+  let scheduled = 0;
+  let validatedBeforeScheduling = 0;
+  let validated = 0;
+  setRemoteStepDispatcher({
+    executeRemote: () => {
+      scheduled++;
+      validatedBeforeScheduling += validated;
+      return Promise.resolve({
+        outputs: [],
+        logs: [],
+        durationMs: 1,
+        workerName: "w1",
+      });
+    },
+    releaseAffinity: () => {},
+  });
+  const { loader, reads } = mockLoader({
+    endpoint: "https://api.example.com",
+    token: "tok-123",
+  });
+  const run = (
+    globalArguments: Record<string, unknown>,
+    methodArguments: (token: string) => Record<string, unknown>,
+  ) => {
+    const bag = new VaultSecretBag(new SecretBagRegistry());
+    const endpoint = bag.addSecret(
+      { vaultName: "v", key: "endpoint" },
+      "globalArguments.endpoint",
+    );
+    const token = bag.addSecret(
+      { vaultName: "v", key: "token" },
+      "methods.write.arguments.token",
+    );
+    const { context } = createTestContext({
+      modelType: model.type,
+      placement: { labels: { tier: "remote" } },
+      vaultSecrets: bag,
+    });
+    return service.executeWorkflow(
+      Definition.create({
+        name: "placed",
+        globalArguments: { endpoint, ...globalArguments },
+        methods: { write: { arguments: methodArguments(token) } },
+      }),
+      model,
+      "write",
+      context,
+      {
+        secretLoader: loader,
+        onArgumentsValidated: () => {
+          validated++;
+          return Promise.resolve();
+        },
+      },
+    );
+  };
+  try {
+    await assertRejects(
+      () => run({}, (token) => ({ token, count: { nested: true } })),
+      Error,
+      "Method arguments validation failed",
+    );
+    await assertRejects(
+      () => run({ region: "mars" }, (token) => ({ token, count: 1 })),
+      Error,
+      "Global arguments validation failed",
+    );
+    assertEquals(scheduled, 0);
+
+    // The fields holding sentinels pass to the worker unchecked, and the
+    // hook waits for the parse that reads their values.
+    await run({ region: "us" }, (token) => ({ token, count: 1 }));
+    assertEquals(scheduled, 1);
+    assertEquals(validatedBeforeScheduling, 0);
+    assertEquals(reads, []);
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
+});
+
+Deno.test("executeWorkflow: a remotely placed step holding a secret fails before it is scheduled when a method argument holds an unreadable stored reference (swamp-club#3806)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const { unread, reference } = unreadTicket();
+  const calls: unknown[] = [];
+  const model = ticketModel(calls);
+  let scheduled = 0;
+  setRemoteStepDispatcher({
+    executeRemote: () => {
+      scheduled++;
+      return Promise.resolve({
+        outputs: [],
+        logs: [],
+        durationMs: 1,
+        workerName: "w1",
+      });
+    },
+    releaseAffinity: () => {},
+  });
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addSecret(
+    { vaultName: "v", key: "api" },
+    "globalArguments.api",
+  );
+  const { context } = createTestContext({
+    modelType: model.type,
+    placement: { labels: { tier: "remote" } },
+    vaultSecrets: bag,
+  });
+  try {
+    const error = await assertRejects(
+      () =>
+        service.executeWorkflow(
+          Definition.create({
+            name: "placed",
+            globalArguments: { api: sentinel },
+            methods: { run: { arguments: { token: `Bearer ${reference}` } } },
+          }),
+          model,
+          "run",
+          context,
+          { unreadReferences: unread },
+        ),
+      Error,
+      "Could not read methodArguments.token",
+    );
+    assertStringIncludes(error.message, "op: command not found");
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
+  assertEquals(scheduled, 0);
+  assertEquals(calls, []);
+});
+
+Deno.test("executeWorkflow: a hook that fails on a version 6 worker's report, while the method runs, is logged as a warning and the step keeps the method's outcome", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createTestModel({});
+  setRemoteStepDispatcher({
+    executeRemote: async (request) => {
+      // As serve calls it on a version 6 worker's arguments_validated event.
+      await request.onArgumentsValidated?.();
+      return { outputs: [], logs: [], durationMs: 1, workerName: "w1" };
+    },
+    releaseAffinity: () => {},
+  });
+  const warnings: string[] = [];
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addSecret(
+    { vaultName: "v", key: "token" },
+    "methods.start.arguments.value",
+  );
+  const { context } = createTestContext({
+    modelType: model.type,
+    placement: { labels: { tier: "remote" } },
+    vaultSecrets: bag,
+  });
+  // The test logger, with its warnings captured.
+  const logger: MethodContext["logger"] = Object.assign(
+    Object.create(context.logger),
+    {
+      warn: (message: string, props?: Record<string, unknown>) => {
+        warnings.push(message.replace("{error}", String(props?.error ?? "")));
+      },
+    },
+  );
+  try {
+    await service.executeWorkflow(
+      Definition.create({
+        name: "placed",
+        methods: { start: { arguments: { value: sentinel } } },
+      }),
+      model,
+      "start",
+      { ...context, logger },
+      {
+        onArgumentsValidated: () =>
+          Promise.reject(new Error("evaluation not saved")),
+      },
+    );
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
+  assertEquals(warnings, [
+    "Could not record the arguments the worker validated: evaluation not saved",
+  ]);
 });

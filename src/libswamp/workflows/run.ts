@@ -957,12 +957,16 @@ export async function* workflowRun(
             )
             : undefined;
           if (supersedeInputs && deps.supersede) {
+            // A run cancelled while its suspended runs are read supersedes
+            // none of them, and is recorded as cancelled by the run below
+            // (swamp-club#4088).
             const { cancelledRunIds, skippedRuns, ...nested } =
               await supersedeSuspendedRuns(
                 workflow,
                 supersedeInputs,
                 deps.supersede,
                 deps.runRepo,
+                ctx.signal,
               );
             if (cancelledRunIds.length > 0 || skippedRuns.length > 0) {
               yield {

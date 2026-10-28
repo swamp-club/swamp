@@ -64,11 +64,19 @@ export interface ActiveDispatch {
   bagReferences?: ReadonlySet<string>;
   /**
    * Per-dispatch redactor. Seeded with the secret values the step was
-   * dispatched with, and grown with every value `resolveSecret` delivers to
-   * the dispatch afterwards (swamp-club#3527). The data plane scrubs the
+   * dispatched with (none for a version 6 dispatch, beyond the sensitive
+   * literals its arguments hold), and grown with every value
+   * `resolveSecret` or the protected load route delivers to the dispatch
+   * afterwards (swamp-club#3527). The data plane scrubs the
    * dispatch's resource writes with it.
    */
   redactor?: SecretRedactor;
+  /**
+   * The protocol version of the frame this work was dispatched with. A
+   * version 6 dispatch carries references only, so `resolveSecret` reads no
+   * value for it: its runner loads through the protected route.
+   */
+  protocolVersion?: number;
   /**
    * W3C trace headers of the span that dispatched this work. The data plane
    * runs the dispatch's requests in this trace. Recorded by serve, so a

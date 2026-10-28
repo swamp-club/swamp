@@ -50,9 +50,12 @@ import {
   stripWorkerCredentials,
 } from "../domain/remote/environment_snapshot.ts";
 import {
+  ARGUMENTS_VALIDATED_EVENT,
   type DispatchParams,
   DispatchParamsSchema,
   type DispatchResult,
+  plaintextFieldsOf,
+  shipsReferencesOnly,
   WorkerMethod,
 } from "../domain/remote/protocol.ts";
 import {
@@ -68,7 +71,10 @@ import {
 import { basename, fromFileUrl } from "@std/path";
 import { bridgeCapabilityVerbs } from "./runner_bridge.ts";
 import type { RunnerBootstrapParams } from "./runner_protocol.ts";
-import { RUNNER_CANCEL_GRACE_MS } from "./runner_protocol.ts";
+import {
+  RUNNER_ARGUMENTS_VALIDATED,
+  RUNNER_CANCEL_GRACE_MS,
+} from "./runner_protocol.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { SecretRedactor } from "../domain/secrets/mod.ts";
 import { dispatchRedactor } from "./remote_method_context.ts";
@@ -172,6 +178,18 @@ export function registerDispatchHandler(
         );
       }
       const dispatch = DispatchParamsSchema.parse(rawParams);
+      // A version 6 dispatch carries vault references only. One that carries
+      // a plaintext field is refused before its frame reaches a runner.
+      const plaintext = shipsReferencesOnly(dispatch.execution.protocolVersion)
+        ? plaintextFieldsOf(dispatch)
+        : [];
+      if (plaintext.length > 0) {
+        throw new Error(
+          `Refusing a protocol version ${dispatch.execution.protocolVersion} dispatch that carries ${
+            plaintext.join(", ")
+          }: such a dispatch carries vault references only`,
+        );
+      }
       return await runDetached(() =>
         observeExecutionWork(
           "worker.dispatch",
@@ -421,6 +439,13 @@ async function runDispatch(
     ctx.stream({ kind: "method_event", event: p.event });
     return Promise.resolve({});
   });
+  // The runner's own report that the arguments passed their schema, which
+  // serve answers with the caller's hook (typed-secrets 5.2). A method's
+  // events travel inside method_event above, so they cannot pass for it.
+  childChannel.register(RUNNER_ARGUMENTS_VALIDATED, () => {
+    ctx.stream({ kind: ARGUMENTS_VALIDATED_EVENT });
+    return Promise.resolve({});
+  });
 
   // Start reading from the child's stdout and stderr BEFORE sending
   // the bootstrap frame. If the child responds before the supervisor
@@ -481,7 +506,9 @@ async function runDispatch(
 
     const durationMs = performance.now() - start;
 
-    // Log child stderr, scrubbed of the dispatch's shipped secrets.
+    // Log child stderr, scrubbed of the dispatch's shipped secrets. A
+    // version 6 dispatch ships none: its runner masks what it loads before a
+    // line leaves (swamp-club#3526), so this pass has nothing to add.
     if (stderrChunks.length > 0) {
       const stderr = new TextDecoder().decode(concatChunks(stderrChunks));
       const redactor = dispatchRedactor(params.secretValues);

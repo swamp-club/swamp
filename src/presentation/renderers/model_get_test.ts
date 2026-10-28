@@ -28,6 +28,8 @@ import type {
 import { UserError } from "../../domain/errors.ts";
 import {
   createModelGetRenderer,
+  formatMethodKind,
+  formatMethodLines,
   formatSchemaAttributes,
   formatSchemaType,
 } from "./model_get.ts";
@@ -349,5 +351,49 @@ Deno.test("LogModelGetRenderer - the behavior surface names the behavior type", 
   assertEquals(
     withoutWarning(await renderLog(staleData, "behavior")),
     withoutWarning(await renderLog(staleData)),
+  );
+});
+
+Deno.test("formatMethodLines: shows a declared kind, marks an inferred one, and shows nothing for none", () => {
+  const args = { type: "object", properties: {} };
+  const lines = formatMethodLines([
+    {
+      name: "probe",
+      description: "Probe it",
+      arguments: args,
+      kind: "read",
+      kindSource: "declared",
+    },
+    {
+      name: "delete",
+      description: "Delete it",
+      arguments: args,
+      kind: "delete",
+      kindSource: "inferred",
+    },
+    {
+      name: "sync",
+      description: "Sync it",
+      arguments: args,
+      kindSource: "none",
+    },
+  ]).map(stripAnsiCode);
+
+  assertEquals(lines, [
+    "  probe (read) - Probe it",
+    "  delete (delete, inferred) - Delete it",
+    "  sync - Sync it",
+  ]);
+});
+
+Deno.test("formatMethodKind: is empty when the method has no kind", () => {
+  assertEquals(
+    formatMethodKind({
+      name: "sync",
+      description: "Sync it",
+      arguments: {},
+      kindSource: "none",
+    }),
+    "",
   );
 });

@@ -27,7 +27,12 @@ import { UserError } from "../errors.ts";
 import { RefreshHook } from "./refresh_hook.ts";
 import { RunVaultAccess, runWithVaultAccess } from "./run_vault_access.ts";
 import { SecretBagRegistry } from "./secret_bag_registry.ts";
-import { LOAD_PURPOSE, SecretLoader } from "./secret_loader.ts";
+import {
+  LOAD_PURPOSE,
+  SecretLoader,
+  type SecretRead,
+  secretReadKey,
+} from "./secret_loader.ts";
 import { checkSecretReference } from "./secret_reference_check.ts";
 import { VaultSecretBag } from "./vault_secret_bag.ts";
 import { VaultService } from "./vault_service.ts";
@@ -216,4 +221,52 @@ Deno.test("SecretLoader.load: a failed data-origin load names the vault, the key
     `Failed to load secret 'missing' from vault 'v' (at ${location}): `,
   );
   assertEquals(error.message.includes("other-s3cret"), false);
+});
+
+Deno.test("SecretLoader.fromSource: hands the source each distinct reference once, in order, and every value it answers joins the redactor", async () => {
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const a1 = bag.addSecret({ vaultName: "v", key: "a" }, "globalArguments.a");
+  const b = bag.addDataReference({ vaultName: "w", key: "b" }, "record.field");
+  const a2 = bag.addSecret({ vaultName: "v", key: "a" }, "methods.run.x");
+  const calls: SecretRead[][] = [];
+  const redacted: string[] = [];
+  const loader = SecretLoader.fromSource({
+    read(reads) {
+      calls.push([...reads]);
+      return Promise.resolve(
+        new Map(reads.map((read) => [
+          secretReadKey(read.reference),
+          `${read.reference.vaultName}-${read.reference.key}-value`,
+        ])),
+      );
+    },
+  }, { addSecret: (value) => redacted.push(value) });
+
+  const view = await loader.load(bag, { x: `${a1} ${b}`, y: [a2] });
+
+  assertEquals(calls, [[
+    { reference: { vaultName: "v", key: "a" }, location: "globalArguments.a" },
+    { reference: { vaultName: "w", key: "b" }, location: "record.field" },
+  ]]);
+  assertEquals(redacted, ["v-a-value", "w-b-value"]);
+  assertEquals(
+    view.resolveRaw(`${a1} ${b} ${a2}`),
+    "v-a-value w-b-value v-a-value",
+  );
+});
+
+Deno.test("SecretLoader.fromSource: a source that answers no value for a reference fails the load naming it, and delivers nothing", async () => {
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const a = bag.addSecret({ vaultName: "v", key: "a" }, "methods.run.x");
+  const redacted: string[] = [];
+  const loader = SecretLoader.fromSource(
+    { read: () => Promise.resolve(new Map()) },
+    { addSecret: (value) => redacted.push(value) },
+  );
+  await assertRejects(
+    () => loader.load(bag, { x: a }),
+    Error,
+    "Failed to load secret 'a' from vault 'v' (at methods.run.x)",
+  );
+  assertEquals(redacted, []);
 });

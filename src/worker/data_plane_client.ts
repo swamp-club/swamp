@@ -39,6 +39,16 @@ import type {
   FileWriterOverrides,
   ResourceWriteOverrides,
 } from "../domain/models/model.ts";
+import {
+  DISPATCH_SECRETS_PATH,
+  type DispatchSecretLoadReference,
+  type DispatchSecretLoadRefusal,
+  DispatchSecretLoadRefusalSchema,
+  DispatchSecretLoadResponseSchema,
+  MAX_DISPATCH_SECRET_CLAIMS,
+  MAX_DISPATCH_SECRET_LOADS,
+} from "../domain/remote/protocol.ts";
+import { secretReadKey } from "../domain/vaults/secret_loader.ts";
 
 const logger = getSwampLogger(["worker", "data-plane"]);
 
@@ -61,6 +71,65 @@ export interface RemoteDataHandle {
   version: number;
   size: number;
   tags: Record<string, string>;
+}
+
+/**
+ * Why the protected load route gave no value for a dispatch's references
+ * (design/enablers/typed-secrets.md Section 9): its refusal code, and the
+ * reference it names when one caused it. It never carries a value, nor the
+ * reply's own text.
+ */
+export class DispatchSecretLoadError extends Error {
+  readonly code: DispatchSecretLoadRefusal | "malformed_reply";
+  readonly status: number;
+  readonly reference?: { vaultName: string; key: string };
+
+  constructor(
+    status: number,
+    code: DispatchSecretLoadRefusal | "malformed_reply",
+    reference?: { vaultName: string; key: string },
+  ) {
+    super(
+      reference
+        ? `Serve refused to load secret '${reference.key}' from vault '${reference.vaultName}' for this dispatch (${code}, HTTP ${status})`
+        : `Serve refused to load this dispatch's secrets (${code}, HTTP ${status})`,
+    );
+    this.name = "DispatchSecretLoadError";
+    this.status = status;
+    this.code = code;
+    this.reference = reference;
+  }
+}
+
+/**
+ * `references` split into requests the load route admits: at most
+ * {@link MAX_DISPATCH_SECRET_LOADS} references, claiming at most
+ * {@link MAX_DISPATCH_SECRET_CLAIMS} distinct resources, each.
+ */
+function loadChunks(
+  references: readonly DispatchSecretLoadReference[],
+): DispatchSecretLoadReference[][] {
+  const chunks: DispatchSecretLoadReference[][] = [];
+  let chunk: DispatchSecretLoadReference[] = [];
+  let claims = new Set<string>();
+  for (const reference of references) {
+    const claim = reference.resource
+      ? `${reference.resource.name}\u0000${reference.resource.version}`
+      : undefined;
+    const newClaim = claim !== undefined && !claims.has(claim);
+    if (
+      chunk.length >= MAX_DISPATCH_SECRET_LOADS ||
+      (newClaim && claims.size >= MAX_DISPATCH_SECRET_CLAIMS)
+    ) {
+      chunks.push(chunk);
+      chunk = [];
+      claims = new Set();
+    }
+    chunk.push(reference);
+    if (claim !== undefined) claims.add(claim);
+  }
+  if (chunk.length > 0) chunks.push(chunk);
+  return chunks;
 }
 
 export interface DataPlaneClientOptions {
@@ -120,6 +189,11 @@ export class DataPlaneClient {
       /** A unary write: bounded by the write timeout, not the read one. */
       write?: boolean;
       headers?: Record<string, string>;
+      /**
+       * Hand back a reply that is not OK rather than throw on it, for a
+       * caller that reads the refusal body itself and must never echo it.
+       */
+      refusalsToCaller?: boolean;
     },
   ): Promise<Response> {
     const url = new URL(path, this.#options.baseUrl);
@@ -176,6 +250,11 @@ export class DataPlaneClient {
         );
       }
       throw error;
+    }
+    if (!response.ok && init?.refusalsToCaller) {
+      observation.attributes({ "http.response.status_code": response.status });
+      observation.end("error");
+      return response;
     }
     if (!response.ok) {
       const detail = await response.text().catch(() => "");
@@ -237,6 +316,60 @@ export class DataPlaneClient {
       statusText: response.statusText,
       headers: response.headers,
     });
+  }
+
+  /**
+   * Loads the values behind a dispatch's references through the protected
+   * route (`POST /data/secrets`, design/enablers/typed-secrets.md Section
+   * 9), with the dispatch credential this client presents. Each distinct
+   * reference is asked for once, in requests the route admits, and the
+   * values come back keyed by {@link secretReadKey}. The route answers all
+   * or nothing, so a refusal throws a {@link DispatchSecretLoadError} that
+   * names its code and reference and never a value. Nothing is cached.
+   */
+  async loadSecrets(
+    references: readonly DispatchSecretLoadReference[],
+    signal?: AbortSignal,
+  ): Promise<Map<string, string>> {
+    const distinct = new Map<string, DispatchSecretLoadReference>();
+    for (const reference of references) {
+      const id = secretReadKey(reference);
+      // A claim only widens what serve admits, so the first one is kept.
+      if (!distinct.has(id)) distinct.set(id, reference);
+    }
+    const values = new Map<string, string>();
+    for (const chunk of loadChunks([...distinct.values()])) {
+      const response = await this.#request("POST", DISPATCH_SECRETS_PATH, {
+        body: JSON.stringify({ references: chunk }),
+        headers: { "content-type": "application/json" },
+        signal,
+        refusalsToCaller: true,
+      });
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        throw new DispatchSecretLoadError(response.status, "malformed_reply");
+      }
+      if (!response.ok) {
+        const refusal = DispatchSecretLoadRefusalSchema.safeParse(body);
+        throw refusal.success
+          ? new DispatchSecretLoadError(
+            response.status,
+            refusal.data.code,
+            refusal.data.reference,
+          )
+          : new DispatchSecretLoadError(response.status, "malformed_reply");
+      }
+      const reply = DispatchSecretLoadResponseSchema.safeParse(body);
+      if (!reply.success) {
+        throw new DispatchSecretLoadError(response.status, "malformed_reply");
+      }
+      for (const { vaultName, key, value } of reply.data.values) {
+        values.set(secretReadKey({ vaultName, key }), value);
+      }
+    }
+    return values;
   }
 
   /** Read artifact bytes by data-plane content path; cached forever. */

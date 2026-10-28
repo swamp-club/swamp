@@ -39,20 +39,52 @@ import {
 import { errorPaths, userErrorCode } from "../errors.ts";
 import { z } from "zod";
 import { boundedRecord } from "../untrusted_parse.ts";
-import { SENTINEL_EXACT } from "../vaults/secret_bag_registry.ts";
+import {
+  SECRET_ENCODINGS,
+  SENTINEL_EXACT,
+} from "../vaults/secret_bag_registry.ts";
 
 /**
  * Version of the remote-execution protocol. Negotiated at enrollment: a
- * worker whose protocol version does not match is rejected before any
- * dispatch, never mid-run. Also pins the capability-verb inventory and the
- * sentinel format a dispatch's secret bag is validated against — any change
- * to the verbs below or to `SENTINEL_EXACT` requires a version bump. An
- * optional parameter added to an existing verb does not: a worker that
+ * worker whose protocol version serve does not support is rejected before
+ * any dispatch, never mid-run. Also pins the capability-verb inventory and
+ * the sentinel format a dispatch's secret bag is validated against — any
+ * change to the verbs below or to `SENTINEL_EXACT` requires a version bump.
+ * An optional parameter added to an existing verb does not: a worker that
  * predates it leaves it out, and serve answers the omission as it did
  * before (the `resource` claim on `resolveSecret` is one, swamp-club#3529).
  * Version 5: sentinels carry a 128-bit prefix (swamp-club#3558).
+ * Version 6: a dispatch carries vault references only, and the runner
+ * loads each value through {@link DISPATCH_SECRETS_PATH} (typed-secrets
+ * 5.2, design/enablers/typed-secrets.md Section 9).
  */
-export const REMOTE_PROTOCOL_VERSION = 5;
+export const REMOTE_PROTOCOL_VERSION = 6;
+
+/**
+ * The protocol version whose dispatch frame still carries plaintext: the
+ * resolved arguments, `secretValues` and the bag entry values. Serve
+ * enrolls it for the deprecation window typed-secrets 5.3 ends.
+ */
+export const LEGACY_PLAINTEXT_PROTOCOL_VERSION = 5;
+
+/** The protocol versions serve enrolls: the current one and the legacy one. */
+export const SUPPORTED_REMOTE_PROTOCOL_VERSIONS: readonly number[] = [
+  LEGACY_PLAINTEXT_PROTOCOL_VERSION,
+  REMOTE_PROTOCOL_VERSION,
+];
+
+/** Whether serve enrolls a worker that speaks `version`. */
+export function isSupportedRemoteProtocolVersion(version: number): boolean {
+  return SUPPORTED_REMOTE_PROTOCOL_VERSIONS.includes(version);
+}
+
+/**
+ * Whether a dispatch to a worker on `version` carries references only, so
+ * its runner loads every value through the protected route.
+ */
+export function shipsReferencesOnly(version: number): boolean {
+  return version > LEGACY_PLAINTEXT_PROTOCOL_VERSION;
+}
 
 // ── RPC framing ──────────────────────────────────────────────────────────
 
@@ -294,6 +326,45 @@ export type DispatchExecution = z.infer<typeof DispatchExecutionSchema>;
 /** Bounds on a dispatch's `lockHolder`, which a worker writes to an env. */
 const MAX_LOCK_HOLDER_HOSTNAME_LENGTH = 255;
 
+/** Longest vault name a load request may name. */
+export const MAX_DISPATCH_SECRET_VAULT_NAME_LENGTH = 256;
+/** Longest secret key a load request may name. */
+export const MAX_DISPATCH_SECRET_KEY_LENGTH = 1024;
+/** Longest location a reference entry names, for a load's errors. */
+const MAX_DISPATCH_REFERENCE_LOCATION_LENGTH = 4096;
+
+/**
+ * A bag entry of a version 6 dispatch: the reference behind a sentinel the
+ * step's arguments carry, with no value. The runner loads the value through
+ * {@link DISPATCH_SECRETS_PATH} and delivers it in the entry's encoding, as
+ * a local run delivers a reference-only entry. `location` names where the
+ * reference was written or read from, for a load's errors.
+ */
+export const DispatchReferenceEntrySchema = z.object({
+  sentinel: z.string().regex(SENTINEL_EXACT),
+  reference: z.object({
+    vaultName: z.string().min(1).max(MAX_DISPATCH_SECRET_VAULT_NAME_LENGTH),
+    key: z.string().min(1).max(MAX_DISPATCH_SECRET_KEY_LENGTH),
+  }),
+  encoding: z.enum(SECRET_ENCODINGS),
+  dataOrigin: z.boolean(),
+  // The vault value is JSON text a whole-value delivery parses.
+  jsonValue: z.literal(true).optional(),
+  location: z.string().max(MAX_DISPATCH_REFERENCE_LOCATION_LENGTH),
+});
+
+export type DispatchReferenceEntry = z.infer<
+  typeof DispatchReferenceEntrySchema
+>;
+
+/**
+ * The stream event a version 6 runner sends once its parse of the step's
+ * arguments passed, so serve calls the caller's `onArgumentsValidated`
+ * (swamp-club#3681). The runner sends it itself, never inside a
+ * `method_event`, so a method's own events cannot pass for it.
+ */
+export const ARGUMENTS_VALIDATED_EVENT = "arguments_validated";
+
 export const DispatchParamsSchema = z.object({
   /** Unique id for this dispatch; cancel and leases reference it. */
   dispatchId: z.string().min(1),
@@ -338,7 +409,8 @@ export const DispatchParamsSchema = z.object({
    * SecretRedactor before executing the method body. The orchestrator
    * extracts these from sensitive argument fields; the worker adds them
    * so stdout/stderr redaction catches secrets injected through args.
-   * Optional for backward compatibility with older workers.
+   * Carried by a version 5 dispatch only, until typed-secrets 5.3 removes
+   * it with that version.
    */
   secretValues: z.array(z.string()).optional(),
   /**
@@ -347,10 +419,14 @@ export const DispatchParamsSchema = z.object({
    * the way a local run does (to a `command/shell` step as environment
    * variables, never in its command line). `execution.methodArgs` still
    * carries the resolved args, so an older worker that drops both fields
-   * runs as before. Absent when the step has no secrets.
+   * runs as before. Absent when the step has no secrets, and from every
+   * version 6 dispatch, whose `execution.methodArgs` keep their sentinels.
    */
   unresolvedMethodArgs: z.record(z.string(), z.unknown()).optional(),
-  /** The step's vault secret bag entries; see {@link unresolvedMethodArgs}. */
+  /**
+   * The step's vault secret bag entries, with their values; see
+   * {@link unresolvedMethodArgs}. A version 5 dispatch only.
+   */
   secretBag: z.array(z.object({
     sentinel: z.string().regex(SENTINEL_EXACT),
     value: z.string(),
@@ -359,6 +435,14 @@ export const DispatchParamsSchema = z.object({
     // worker drops it and delivers the text.
     jsonValue: z.literal(true).optional(),
   })).optional(),
+  /**
+   * A version 6 dispatch's bag: one reference-only entry per sentinel its
+   * arguments carry, which `execution.globalArgs` and `execution.methodArgs`
+   * hold in place. It replaces {@link secretValues}, {@link secretBag} and
+   * {@link unresolvedMethodArgs}, which a version 6 dispatch never carries
+   * (see {@link plaintextFieldsOf}). Absent when the step holds no secret.
+   */
+  referenceBag: z.array(DispatchReferenceEntrySchema).optional(),
   /**
    * The per-model locks held for this step's run: the orchestrator's pid
    * and hostname, and the lock-file nonces of the locks it holds for the
@@ -377,6 +461,21 @@ export const DispatchParamsSchema = z.object({
 });
 
 export type DispatchParams = z.infer<typeof DispatchParamsSchema>;
+
+/**
+ * The plaintext-bearing fields a dispatch carries, by name. A dispatch whose
+ * `execution.protocolVersion` ships references only must carry none of
+ * them, and a runner refuses one that does before it reads any.
+ */
+export function plaintextFieldsOf(params: DispatchParams): string[] {
+  const fields: string[] = [];
+  if (params.secretValues !== undefined) fields.push("secretValues");
+  if (params.secretBag !== undefined) fields.push("secretBag");
+  if (params.unresolvedMethodArgs !== undefined) {
+    fields.push("unresolvedMethodArgs");
+  }
+  return fields;
+}
 
 /**
  * A persisted-output reference in a dispatch result. Workers persist all
@@ -541,17 +640,13 @@ export type ResolveSecretParams = z.infer<typeof ResolveSecretParamsSchema>;
 /**
  * The protected data-plane route a runner loads its dispatch's references
  * through (design/enablers/typed-secrets.md Section 9). A data-plane route,
- * not a capability verb, so adding it leaves REMOTE_PROTOCOL_VERSION
- * unchanged; typed-secrets 5.2 raises the version when workers call it.
+ * not a capability verb; typed-secrets 5.2 raised the version to 6 when
+ * workers began calling it.
  */
 export const DISPATCH_SECRETS_PATH = "/data/secrets";
 
 /** Most references one load request may name. */
 export const MAX_DISPATCH_SECRET_LOADS = 256;
-/** Longest vault name a load request may name. */
-export const MAX_DISPATCH_SECRET_VAULT_NAME_LENGTH = 256;
-/** Longest secret key a load request may name. */
-export const MAX_DISPATCH_SECRET_KEY_LENGTH = 1024;
 /** Longest resource name a load request's claim may name. */
 export const MAX_DISPATCH_SECRET_RESOURCE_NAME_LENGTH = 512;
 /**

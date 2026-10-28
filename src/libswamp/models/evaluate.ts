@@ -98,14 +98,17 @@ export interface ModelEvaluateInput {
    * Without a model, saves and reports only the models this accepts. Every
    * model is still evaluated, since evaluation orders them all in one
    * dependency graph, but the evaluated definitions of the others are
-   * neither written nor returned.
+   * neither written nor returned. Decided on the stored definition, before
+   * evaluation.
    */
   include?: (entry: { definition: Definition; type: ModelType }) => boolean;
   /**
    * Saves only the evaluated definitions this accepts; the others are
    * evaluated and returned unsaved, with no output path. A later
    * `--last-evaluated` run replays what is saved, so serve saves only what
-   * the caller may run (swamp-club#3940). Absent, everything is saved.
+   * the caller may run (swamp-club#3940). Decided on the stored definition,
+   * before evaluation, for one model and for all. Absent, everything is
+   * saved.
    */
   persist?: (entry: { definition: Definition; type: ModelType }) => boolean;
 }
@@ -291,19 +294,28 @@ async function* evaluateAll(
     () => true,
 ): AsyncIterable<ModelEvaluateEvent> {
   const sensitiveValues = new RunSensitiveValues();
-  const results = (await deps.evaluateAllDefinitions(sensitiveValues)).filter(
-    include,
+  // Decided on each stored definition, the one that would be saved, as the
+  // single path decides: a tag can hold an expression, and evaluation must
+  // not change what the caller may read or save.
+  const results = (await deps.evaluateAllDefinitions(sensitiveValues)).flatMap(
+    (result) => {
+      const stored = {
+        definition: result.sourceDefinition ?? result.definition,
+        type: result.type,
+      };
+      return include(stored) ? [{ result, save: persist(stored) }] : [];
+    },
   );
   const items: ModelEvaluateItemData[] = [];
 
-  for (const result of results) {
+  for (const { result, save } of results) {
     const item: ModelEvaluateItemData = {
       id: result.definition.id,
       name: result.definition.name,
       type: result.type.normalized,
       hadExpressions: result.hadExpressions,
     };
-    if (persist(result)) {
+    if (save) {
       await saveWithoutSecrets(deps, result, sensitiveValues);
       item.outputPath = deps.getEvaluatedPath(
         result.type,
@@ -320,7 +332,8 @@ async function* evaluateAll(
     data: {
       items,
       total: results.length,
-      evaluated: results.filter((r) => r.hadExpressions).length,
+      evaluated: results.filter(({ result }) => result.hadExpressions)
+        .length,
     },
   };
 }

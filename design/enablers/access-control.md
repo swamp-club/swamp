@@ -984,11 +984,14 @@ resources is authorized as `*` (swamp-club#2675):
   that fails to parse is judged on the name it declares with no tags, since its
   tags cannot be read, so a tag-conditioned deny does not hide it.
   `model.evaluate` without a name evaluates every behavior, since evaluation
-  orders them all in one dependency graph, but returns only the readable ones.
+  orders them all in one dependency graph, but returns only the readable ones,
+  each judged on its stored definition before evaluation, as a named
+  `model.evaluate` is (swamp-club#4090): a tag can hold an expression.
 - `model.evaluate` and `workflow.evaluate` are admitted on `read` but save an
   evaluation only when the caller may `run` the behavior or workflow, as the
   runs that write the same files are decided (swamp-club#3940): `admin` for a
-  restricted or control-plane behavior type. A
+  restricted or control-plane behavior type. With or without a name, the
+  decision is made on the stored definition, before evaluation. A
   `--last-evaluated` run replays the saved file, and a workflow's records the
   inputs it was evaluated with, so a reader could otherwise choose what a
   runner executes. A reader gets the evaluation back with `saved: false` and no

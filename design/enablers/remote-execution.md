@@ -475,8 +475,15 @@ version lockstep, so the capability interfaces match. Enrollment enforces only
 `protocolVersion` (already on `ExecutionRequest`), which rejects an
 incompatible worker at enrollment rather than mid-run; `swampVersion` is
 recorded but not compared (`src/serve/worker_gateway.ts`). From
-typed-secrets 5.2 enrollment accepts protocol versions 5 and 6 for a
-deprecation window that 5.3 ends (see the protected load route below). The
+typed-secrets 5.2 enrollment accepts protocol versions 5 and 6
+(`SUPPORTED_REMOTE_PROTOCOL_VERSIONS`) for a deprecation window that 5.3 ends,
+and refuses any other with `protocol_mismatch`. The gateway keeps each worker's
+enrolled version on its pool entry and snapshot, and serve builds every
+dispatch for the version of the worker it goes to (see secret delivery below).
+A version 5 enrollment logs a warning naming the worker and the 5.3 sunset. The
+version is what the worker declares: during the window a holder of a valid
+token can enroll at version 5 and so receive plaintext dispatches, the
+documented exception typed-secrets 5.3 removes. The
 `sessionCredential` is the short-lived bearer token for the worker's
 data-plane HTTP/2 requests. The pool addresses a worker by its token name (the
 positional `<name>` given to `swamp worker token create`) and its
@@ -1119,7 +1126,7 @@ path, plus crash isolation and clean environment handling.
 
 Phase 4b adds `--concurrency N` (or `"auto"` for CPU count) to
 `worker connect`. The worker advertises its capacity in
-`resourceLimits.capacity` at enrollment (protocol version 4). The scheduler
+`resourceLimits.capacity` at enrollment (since protocol version 4). The scheduler
 picks the worker with the most free slots, then by name for determinism
 (`scheduleStep` in `src/domain/remote/scheduler.ts`). The `DispatchRegistry`
 tracks N active dispatches per worker, keyed by `(workerName, dispatchId)`.
@@ -1617,11 +1624,54 @@ credentials and extensions onto workers:
   step that needs them, as in the out-of-process resolution pattern of the
   removed execution-drivers design.
 
-  **Secret delivery on the worker.** The orchestrator loads the step's
-  `vault.get()` values once per attempt before it dispatches
-  (design/enablers/typed-secrets.md Section 3.3, until Phase 5 moves the load to
-  the worker); a re-dispatch of the same request after a lost worker reuses
-  them. Beside the resolved args, the dispatch carries the step's
+  **Secret delivery on the worker (protocol version 6).** Serve loads nothing
+  before it dispatches. The dispatch carries the step's global and method
+  arguments with their sentinels in place (`execution.globalArgs`,
+  `execution.methodArgs`) and one reference-only entry per sentinel they carry
+  (`referenceBag`: sentinel, vault reference, encoding, data-origin flag,
+  JSON-value mark and location, from `VaultSecretBag.referenceEntriesFor`). It
+  carries no `secretValues`, no entry values and no resolved arguments, and
+  the runner and the supervisor both refuse a version 6 frame that does
+  (`plaintextFieldsOf`). The same computation gives serve the dispatch's bag
+  (`ActiveDispatch.bagReferences`), so what serve admits is what the worker
+  loads. The runner rebuilds the bag (`VaultSecretBag.fromReferenceEntries`)
+  and runs the step through `DefaultMethodExecutionService.executeDispatched`,
+  the delivery prelude a local run takes: it loads every reference the
+  arguments carry once, through the protected load route below with the
+  dispatch credential (`SecretLoader.fromSource` over
+  `DataPlaneClient.loadSecrets`), then resolves and validates the global
+  arguments, lays them under the merge a `command/shell` step fills from
+  (swamp-club#3627), and parses the method arguments once. The arguments are
+  validated in full only on the worker. The destination refusals ran on serve
+  before scheduling and are not repeated, as did a check of every argument
+  holding no sentinel, so a bad one fails the step without waiting for a worker
+  (design/enablers/typed-secrets.md Section 9). When the parse passes, the
+  runner reports it to the supervisor (`runner.argumentsValidated`), which
+  streams an `arguments_validated` event to serve, outside any
+  `method_event`; serve calls the caller's `onArgumentsValidated` on it, at
+  most once per attempt and only before the result (swamp-club#3681). A
+  re-dispatch after a lost worker builds the frame again for the new worker,
+  so a version 6 attempt always loads its own values. Because the frame is
+  chosen per worker, serve picks the worker first and builds the frame after:
+  `gateway.dispatch` refuses with `version_changed` and sends nothing when the
+  worker re-enrolled at another version in between, and the step is
+  scheduled again.
+
+  `readResource` on a version 6 worker reads a tagged sensitive field through
+  the load route with its resource claim; a method's own vault read by name
+  (`context.vaultService.get`) still takes `resolveSecret`, held to the
+  dispatch's allowlist as on version 5, and serve refuses a resource claim on
+  `resolveSecret` from a version 6 dispatch. Annotations and `putSecret` take
+  the capability verbs on both versions.
+
+  **Secret delivery on the worker (protocol version 5).** For a version 5
+  worker, serve builds today's frame once it has chosen that worker: it loads
+  the step's `vault.get()` values once per attempt
+  (design/enablers/typed-secrets.md Section 3.3), validates the arguments and
+  calls `onArgumentsValidated`, and a re-dispatch of the same attempt to
+  another version 5 worker reuses them. A frame that cannot be built (a vault
+  error, a refused parse) fails the step before any lease or registration,
+  not as a lost worker. Beside the resolved args, the dispatch carries the step's
   `VaultSecretBag` entries (`secretBag`: sentinel, value, data-origin flag) that
   the attempt holds values for, and its method args with the sentinels intact
   (`unresolvedMethodArgs`). A worker that receives both rebuilds the bag
@@ -1640,8 +1690,8 @@ credentials and extensions onto workers:
 
   **The protected load route (typed-secrets 5.1).** `POST /data/secrets`
   (`src/serve/dispatch_secret_loads.ts`) answers a list of vault references with
-  their values, so that from typed-secrets 5.2 a runner loads its step's bag
-  itself and the dispatch carries references only
+  their values, so a version 6 runner loads its step's bag itself and the
+  dispatch carries references only
   (design/enablers/typed-secrets.md Section 9). It accepts the per-dispatch
   credential alone, with none of the sole-dispatch fallback the other data
   routes take. It answers only for references in the dispatch's bag
@@ -1649,47 +1699,63 @@ credentials and extensions onto workers:
   or for one a verified resource claim admits, the same claim `resolveSecret`
   checks (`ResourceClaimVerifier` in
   `src/serve/dispatch_secret_authorization.ts`), at most 16 distinct resources
-  per request. A legacy untagged record admits nothing until typed-secrets 5.2
-  settles its schema fallback. The reserved vaults and keys stay refused. A bad
+  per request. A claim is verified against tagged fields only: typed-secrets 5.2
+  adds no schema fallback for a legacy untagged record on serve, so such a
+  record's reference loads when the dispatch's bag holds it and is refused
+  otherwise (design/enablers/typed-secrets.md Section 9). The reserved vaults
+  and keys stay refused. A bad
   credential is `unauthenticated` (401) and an ended dispatch `access_ended`
   (410). The reads run under the dispatching run's vault access, each value
   joins the dispatch's redactor, and after the reads serve checks again that the
   credential and the registration still hold, so a read in flight when the
   dispatch ends gets 410 and no value. Every reply is `no-store`, and serve
-  audit records one metadata-only event per request. In 5.1 nothing calls the
-  route, so `REMOTE_PROTOCOL_VERSION` stays 5 and every dispatch keeps the frame
-  above. From 5.2 serve enrolls protocol versions 5 and 6: a version 6 worker
-  receives references only, and a version 5 worker keeps this frame, with its
-  plaintext, until 5.3 removes it. A version 6 worker under a version 5 serve is
-  still refused at enrollment.
+  audit records one metadata-only event per request. Typed-secrets 5.1 added it
+  with no caller; 5.2 made version 6 runners its callers and raised
+  `REMOTE_PROTOCOL_VERSION` to 6. A version 5 worker keeps its plaintext frame
+  until 5.3 removes it, and a version 6 worker under a version 5 serve is still
+  refused at enrollment.
 
   **Secret redaction.** Vault-derived values must be scrubbed from all persisted
   output (log resources, result resources and workflow-run records) before they
   reach durable storage or the WS event stream. Two layers enforce this:
 
-  1. **Worker-side (source redaction):** the orchestrator extracts resolved
-     secret values from sensitive argument fields and ships them in the
-     dispatch params (`secretValues`). The runner seeds one `SecretRedactor`
-     per dispatch with them from the first frame, shares it with the method
-     context, whose vault proxy adds every value `resolveSecret` returns while
-     the method runs, and registers it as an active process redactor for the
-     runner process's lifetime (including buffered tracing shutdown), so
+  1. **Worker-side (source redaction):** the runner keeps one
+     `SecretRedactor` per dispatch, registered as an active process redactor
+     from the first frame for the runner process's lifetime (including
+     buffered tracing shutdown), and shares it with the method context. For a
+     version 6 dispatch it starts empty and grows with every value the load
+     route returns, before the method receives it; for a version 5 dispatch it
+     is seeded from the values the orchestrator ships (`secretValues`). On
+     both, the vault proxy adds every value `resolveSecret` returns and the
+     method's parse adds the sensitive values it delivers, so
      `writeResource` data, the streamed output events,
      the result frame (the console capture, swamp-club#3080, and the error
      message, swamp-club#3525) and the runner's own stderr (its LogTape sink
      and both console writers) are all masked before they leave the
-     runner. The worker supervisor scrubs the shipped values from runner
-     stderr once more before re-logging it at debug (swamp-club#3526).
+     runner. For a version 5 dispatch the worker supervisor scrubs the
+     shipped values from runner stderr once more before re-logging it at debug
+     (swamp-club#3526). A version 6 dispatch ships none, so that second pass
+     has nothing to add: runner output that bypasses the runner's own
+     redaction (a Deno panic or a V8 fatal error after a load) is re-logged
+     unscrubbed.
   2. **Serve (defense in depth):** the orchestrator stores a per-dispatch
-     `SecretRedactor` on the `ActiveDispatch` registration, seeded with
-     `secretValues` and grown with every value `resolveSecret` delivers to
-     that dispatch; a step dispatched without secrets gets its redactor on the
-     first delivery (swamp-club#3527). When the data plane persists a worker's
+     `SecretRedactor` on the `ActiveDispatch` registration, seeded with the
+     values a version 5 frame ships, or for a version 6 frame with the
+     sensitive literals its arguments hold as authored, and grown with every
+     value `resolveSecret` or the load route delivers to that dispatch; a step
+     dispatched without secrets gets its redactor on the first delivery
+     (swamp-club#3527). When the data plane persists a worker's
      `writeResource` call, it passes this redactor to `createResourceWriter`,
      catching any value the worker side missed. A failed dispatch's
      `result.error` goes through the same redactor before the step-lease fail
      record and the step's error (swamp-club#3525), so a worker that predates
      the runner-side scrub cannot put a value in a durable lease record.
+     The output lines of streamed `method_event` events and the result's
+     console capture go through it too before they reach the run log and the
+     WS stream, with each event's type, stream and level left as sent. It is
+     read as each line arrives, so it holds every value delivered so far: a
+     version 6 run loads nothing on serve, so the run's own redactor never
+     sees the step's values and this is the second scrub of that output.
      **Known limit:** the file-writer path (`POST /data/writers` and its
      `line`/`content` requests) does not get the redactor (`#openWriter` in
      `src/serve/data_plane.ts`), so file outputs rely on the worker-side layer

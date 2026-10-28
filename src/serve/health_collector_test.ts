@@ -90,6 +90,7 @@ Deno.test("HealthCollector: includes worker snapshots", async () => {
         platform: "darwin",
         arch: "arm64",
         swampVersion: "1.0.0",
+        protocolVersion: 6,
         status: "idle" as const,
         connected: true,
         capacity: 1,

@@ -69,7 +69,9 @@ import {
   type DispatchParams,
   type GetDataResult,
   RemoteMethod,
+  shipsReferencesOnly,
 } from "../domain/remote/protocol.ts";
+import { SecretLoader, secretReadKey } from "../domain/vaults/secret_loader.ts";
 import type { DataPlaneClient, RemoteDataHandle } from "./data_plane_client.ts";
 
 const logger = getSwampLogger(["worker", "method-context"]);
@@ -278,10 +280,40 @@ function createRemoteDataRepository(
 }
 
 /**
+ * Whether `dispatch` carries vault references only, so its runner loads
+ * every value through the protected route (typed-secrets 5.2).
+ */
+export function loadsOwnSecrets(dispatch: DispatchParams): boolean {
+  return shipsReferencesOnly(dispatch.execution.protocolVersion);
+}
+
+/**
+ * The loader a protocol version 6 runner delivers its dispatch's references
+ * through: one request to the protected route per attempt
+ * (`POST /data/secrets`, design/enablers/typed-secrets.md Section 9), under
+ * the dispatch credential `client` presents. Each value joins `redactor`
+ * before the method receives it.
+ */
+export function dispatchSecretLoader(
+  client: DataPlaneClient,
+  redactor: SecretRedactor,
+  signal?: AbortSignal,
+): SecretLoader {
+  return SecretLoader.fromSource({
+    read: (reads) =>
+      client.loadSecrets(reads.map(({ reference }) => reference), signal),
+  }, redactor);
+}
+
+/**
  * The vault proxy over the capability verbs. With `resource`, every value
  * read carries that claim: the reference is a tagged sensitive field of the
  * dispatch's own resource, which serve verifies against the record before
- * it answers (swamp-club#3529). A method's own vault reads carry none.
+ * it answers (swamp-club#3529); a version 6 dispatch reads such a field
+ * through the protected load route instead of `resolveSecret`
+ * (design/enablers/typed-secrets.md Section 9). A method's own vault reads
+ * carry no claim and take `resolveSecret` on either version, held to the
+ * dispatch's allowlist as before.
  */
 function createRemoteVaultService(
   options: RemoteContextOptions,
@@ -295,15 +327,25 @@ function createRemoteVaultService(
     });
   const putSecret = (params: Record<string, unknown>) =>
     channel.call<{ ok: boolean }>(RemoteMethod.putSecret, params, { signal });
+  const loadSecret = async (vaultName: string, key: string) => {
+    const values = await options.client.loadSecrets(
+      [{ vaultName, key, ...(resource ? { resource } : {}) }],
+      signal,
+    );
+    return values.get(secretReadKey({ vaultName, key }));
+  };
+  const claimsThroughRoute = resource !== undefined &&
+    loadsOwnSecrets(options.dispatch);
 
   const proxy = {
     get: async (vaultName: string, secretKey: string) => {
-      const result = await resolveSecret({
-        vaultName,
-        secretKey,
-        ...(resource ? { resource } : {}),
-      });
-      const value = result.value as string;
+      const value = claimsThroughRoute
+        ? await loadSecret(vaultName, secretKey)
+        : (await resolveSecret({
+          vaultName,
+          secretKey,
+          ...(resource ? { resource } : {}),
+        })).value as string;
       // The worker has now received this value, so its redactor must know it
       // before the method does: output lines and console output are scrubbed
       // with it before they leave the worker (swamp-club#3527).
@@ -747,7 +789,12 @@ export function createRemoteMethodContext(
     outputRepository,
     vaultService,
     redactor,
-    vaultSecrets: shipsSecretBag(dispatch)
+    // A version 6 dispatch ships its bag as references, which the runner
+    // loads before the method's parse (`executeDispatched`); a version 5
+    // one ships the values (swamp-club#2760).
+    vaultSecrets: loadsOwnSecrets(dispatch)
+      ? VaultSecretBag.fromReferenceEntries(dispatch.referenceBag ?? [])
+      : shipsSecretBag(dispatch)
       ? VaultSecretBag.fromEntries(dispatch.secretBag)
       : undefined,
     dataQueryService,

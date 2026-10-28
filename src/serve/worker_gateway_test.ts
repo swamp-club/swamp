@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
@@ -233,16 +235,104 @@ Deno.test("WorkerGateway: enrollment runs in a gateway-tail span (swamp-club#375
 });
 
 Deno.test("WorkerGateway: protocol mismatch is rejected before any transition", async () => {
+  for (const protocolVersion of [4, 7, 99]) {
+    const h = createHarness();
+    const { workerChannel } = connectWorkerSocket(h.gateway);
+    const error = await assertRejects(
+      () => enroll(workerChannel, { ...enrollParams, protocolVersion }),
+      RpcError,
+    );
+    assertEquals(error.code, "protocol_mismatch");
+    assertEquals(h.transitions.length, 0);
+    assertEquals(h.gateway.workers().length, 0);
+  }
+});
+
+Deno.test("WorkerGateway: enrolls protocol versions 5 and 6, keeps each worker's version, and warns about version 5 only (typed-secrets 5.2)", async () => {
+  for (const protocolVersion of [5, 6]) {
+    const h = createHarness();
+    const { workerChannel } = connectWorkerSocket(h.gateway);
+    const logs = await capturingGatewayLogs(async () => {
+      const result = await enroll(workerChannel, {
+        ...enrollParams,
+        protocolVersion,
+      });
+      assertEquals(result.protocolVersion, protocolVersion);
+    });
+    assertEquals(
+      h.gateway.worker("ci-runner-3")?.protocolVersion,
+      protocolVersion,
+    );
+    const enrolled = h.transitions.find((t) => t.methodName === "enroll");
+    assertEquals(enrolled?.inputs.protocolVersion, protocolVersion);
+    const warnings = logs.filter((l) =>
+      l.level === "warning" && l.message.includes("deprecated protocol")
+    );
+    if (protocolVersion === 5) {
+      assertEquals(warnings.length, 1);
+      assertStringIncludes(warnings[0].message, "ci-runner-3");
+      assertStringIncludes(warnings[0].message, "typed-secrets 5.3");
+    } else {
+      assertEquals(warnings, []);
+    }
+  }
+});
+
+Deno.test("WorkerGateway: a dispatch built for another protocol version than the worker's is refused before anything is sent", async () => {
   const h = createHarness();
   const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel, { ...enrollParams, protocolVersion: 5 });
+  let received = 0;
+  workerChannel.register(WorkerMethod.dispatch, () => {
+    received++;
+    return Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
   const error = await assertRejects(
-    () => enroll(workerChannel, { ...enrollParams, protocolVersion: 99 }),
-    RpcError,
+    () => h.gateway.dispatch("ci-runner-3", dispatchParams()),
+    WorkerNotDispatchableError,
   );
-  assertEquals(error.code, "protocol_mismatch");
-  assertEquals(h.transitions.length, 0);
-  assertEquals(h.gateway.workers().length, 0);
+  assertEquals(error.reason, "version_changed");
+  assertEquals(received, 0);
+  assertEquals(h.gateway.worker("ci-runner-3")?.activeDispatchIds, []);
+  assertEquals(
+    h.transitions.filter((t) => t.methodName === "set_status").length,
+    0,
+  );
 });
+
+/** Runs `fn` with the gateway's logs captured, as level and text. */
+async function capturingGatewayLogs(
+  fn: () => Promise<void>,
+): Promise<Array<{ level: string; message: string }>> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["serve", "worker-gateway"],
+        lowestLevel: "debug",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await reset();
+    await initializeLogging({});
+  }
+  return records.map((record) => ({
+    level: record.level,
+    message: record.message.map(String).join(""),
+  }));
+}
 
 Deno.test("WorkerGateway: oversized enrollment labels are refused before the token is redeemed", async () => {
   const h = createHarness();
