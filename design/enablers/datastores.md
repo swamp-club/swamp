@@ -6701,9 +6701,13 @@ included, in the `x-swamp-datastore-access` header:
   snapshot, and every grant for those subjects that names `read` or `admin`
   (the only actions the read filter decides, and no other action implies
   either), reduced to the fields a decision reads (id, state, subject,
-  effect, actions, selector, methods, condition) and sorted. Other subjects'
-  grants, timestamps, authorship and the snapshot's version are left out, so
-  a reload that does not touch the caller keeps it. It is cached per caller
+  effect, actions, selector, methods, condition) and sorted, and serve's
+  restricted behavior types (`--restricted-model-types`), whose definitions
+  only an admin may read: a restart with another list changes what a member
+  may read without changing a grant. Control-plane types are code constants,
+  so they change only with a release, which bumps the fingerprint's format.
+  Other subjects' grants, timestamps, authorship and the snapshot's version
+  are left out, so a reload that does not touch the caller keeps it. It is cached per caller
   for each snapshot. Serve takes it before it answers the request, so a
   reload while it answers shows as a change on the next reply (which resets
   the copy), never as the access of a copy filtered under the old grants.
@@ -6754,6 +6758,11 @@ A reset removes what a narrowed grant no longer allows from this checkout's
 copy and files. Serve cannot reach copies made elsewhere before the
 narrowing, such as another checkout of the same member that has not run a
 command since, or files copied off the machine.
+
+Resource attributes decide reads too: a behavior renamed under a name-pattern
+grant, or a tag changed under a tag-conditioned grant. Those are content, not
+access, so no access fingerprint can see them, and a copy keeps what it
+already holds of such a behavior. Moving the copy aside loads it afresh.
 
 **The projection follows the view.** The projection, the v3 catalog and the
 read model's state are one per checkout, while the log they are built from

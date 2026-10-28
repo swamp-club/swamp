@@ -33,6 +33,10 @@
  * - its groups in the snapshot;
  * - every grant for those subjects that names `read` or `admin`, reduced
  *   to the fields a decision reads.
+ * - serve's restricted behavior types (`--restricted-model-types`), which
+ *   only an admin may read: a restart with another list changes what a
+ *   member may read without changing a grant. Control-plane types are code
+ *   constants, so they change only with a release, which bumps the format.
  *
  * Grants of other subjects, timestamps, authorship and the snapshot's
  * version are left out, so a reload that does not touch the principal
@@ -48,21 +52,23 @@ import type { Action } from "./action.ts";
 import { principalToString } from "./principal.ts";
 
 /** Bumped when the inputs change shape, so old and new never compare equal. */
-const FINGERPRINT_FORMAT = 1;
+const FINGERPRINT_FORMAT = 2;
 
 /** The actions serve's read filter decides. */
 const READ_ACTIONS: readonly Action[] = ["read", "admin"];
 
 /**
  * The read-access fingerprint of `principal`, whose groups in the policy
- * snapshot are `localGroups` and whose subjects hold `grants`: a lowercase
- * hex SHA-256 digest. `GrantBasedAccessDecisionService.readAccessFingerprint`
- * resolves the groups and grants as its decisions do.
+ * snapshot are `localGroups` and whose subjects hold `grants`, under serve's
+ * `restrictedTypes`: a lowercase hex SHA-256 digest.
+ * `GrantBasedAccessDecisionService.readAccessFingerprint` resolves the
+ * groups and grants as its decisions do.
  */
 export function readAccessFingerprint(
   principal: AccessPrincipal,
   localGroups: readonly string[],
   grants: readonly Grant[],
+  restrictedTypes: readonly string[],
 ): string {
   const canonical = JSON.stringify([
     FINGERPRINT_FORMAT,
@@ -76,6 +82,7 @@ export function readAccessFingerprint(
       )
       .map(decisionFields)
       .sort(compareJson),
+    [...new Set(restrictedTypes)].sort(),
   ]);
   return createHash("sha256").update(canonical).digest("hex");
 }

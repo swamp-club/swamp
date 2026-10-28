@@ -123,8 +123,8 @@ Deno.test("readAccessFingerprint property: an unchanged fingerprint means unchan
         const before = serviceOf(grants);
         const after = serviceOf([...grants, added]);
         if (
-          before.readAccessFingerprint(ADAM) ===
-            after.readAccessFingerprint(ADAM)
+          before.readAccessFingerprint(ADAM, []) ===
+            after.readAccessFingerprint(ADAM, [])
         ) {
           assertEquals(readDecisions(after), readDecisions(before));
         }
@@ -141,8 +141,8 @@ Deno.test("readAccessFingerprint property: other subjects' grants never change i
       fc.array(grantArb(OTHER_SUBJECTS), { minLength: 1, maxLength: 6 }),
       (own, others) => {
         assertEquals(
-          serviceOf([...own, ...others]).readAccessFingerprint(ADAM),
-          serviceOf(own).readAccessFingerprint(ADAM),
+          serviceOf([...own, ...others]).readAccessFingerprint(ADAM, []),
+          serviceOf(own).readAccessFingerprint(ADAM, []),
         );
       },
     ),
@@ -159,8 +159,8 @@ Deno.test("readAccessFingerprint property: one of adam's read or admin grants al
       ),
       (grants, added) => {
         assert(
-          serviceOf([...grants, added]).readAccessFingerprint(ADAM) !==
-            serviceOf(grants).readAccessFingerprint(ADAM),
+          serviceOf([...grants, added]).readAccessFingerprint(ADAM, []) !==
+            serviceOf(grants).readAccessFingerprint(ADAM, []),
         );
       },
     ),
@@ -176,8 +176,8 @@ Deno.test("readAccessFingerprint property: grant order never changes it", () => 
       }),
       (grants) => {
         assertEquals(
-          serviceOf([...grants].reverse()).readAccessFingerprint(ADAM),
-          serviceOf(grants).readAccessFingerprint(ADAM),
+          serviceOf([...grants].reverse()).readAccessFingerprint(ADAM, []),
+          serviceOf(grants).readAccessFingerprint(ADAM, []),
         );
       },
     ),

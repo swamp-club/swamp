@@ -61,6 +61,11 @@ export type ServeWorkerRequest =
    */
   | { readonly kind: "grants"; readonly grants: readonly GrantSpec[] }
   /**
+   * Replaces serve's restricted behavior types, as a restart with another
+   * `--restricted-model-types` does (swamp-club#4089).
+   */
+  | { readonly kind: "restrict"; readonly types: readonly string[] }
+  /**
    * Compacts serve's whole log (swamp-club#4006), and with `claim` has
    * serve claim its datastore first, as `swamp datastore claim` does.
    */
@@ -102,6 +107,7 @@ export type ServeWorkerMessage =
   | { readonly kind: "log"; readonly entries: readonly ServeLogEntry[] }
   | { readonly kind: "compacted"; readonly point: number }
   | { readonly kind: "granted" }
+  | { readonly kind: "restricted" }
   | {
     readonly kind: "wrote";
     readonly versions: readonly number[];
@@ -118,6 +124,9 @@ const logging = initializeLogging({});
 
 let stop: (() => void) | undefined;
 let log: (() => Promise<void>) | undefined;
+let restrict:
+  | ((request: Extract<ServeWorkerRequest, { kind: "restrict" }>) => void)
+  | undefined;
 let setGrants:
   | ((request: Extract<ServeWorkerRequest, { kind: "grants" }>) => void)
   | undefined;
@@ -194,6 +203,11 @@ async function start(
         server.ctx.policySnapshotLoader!.decisionService.snapshot =
           new PolicySnapshot(grants.map(toGrant), []);
         self.postMessage({ kind: "granted" } satisfies ServeWorkerMessage);
+      };
+      restrict = ({ types }) => {
+        (server.ctx.authConfig as { restrictedModelTypes: string[] })
+          .restrictedModelTypes = [...types];
+        self.postMessage({ kind: "restricted" } satisfies ServeWorkerMessage);
       };
       compact = async ({ claim }) => {
         const store = server.v3.commitStore;
@@ -309,6 +323,13 @@ self.onmessage = (event: MessageEvent<ServeWorkerRequest>) => {
     (compact ?? (() => Promise.reject(new Error("serve is not started"))))(
       request,
     ).catch(fail);
+  } else if (request.kind === "restrict") {
+    try {
+      if (restrict === undefined) throw new Error("serve is not started");
+      restrict(request);
+    } catch (error) {
+      fail(error);
+    }
   } else if (request.kind === "grants") {
     try {
       if (setGrants === undefined) throw new Error("serve is not started");

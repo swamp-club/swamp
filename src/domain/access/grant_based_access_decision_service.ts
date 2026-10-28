@@ -357,11 +357,15 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
 
   /**
    * A fingerprint of everything `principal` may read under the current
-   * snapshot (swamp-club#4089; see `read_access_fingerprint.ts`): it
-   * changes whenever a read decision for the principal could, and a reload
-   * that leaves the principal's groups and grants alone keeps it.
+   * snapshot and serve's `restrictedTypes` (swamp-club#4089; see
+   * `read_access_fingerprint.ts`): it changes whenever a read decision for
+   * the principal could, and a reload that leaves the principal's groups
+   * and grants alone keeps it.
    */
-  readAccessFingerprint(principal: AccessPrincipal): string {
+  readAccessFingerprint(
+    principal: AccessPrincipal,
+    restrictedTypes: readonly string[],
+  ): string {
     const snapshot = this.#snapshot;
     let cache = this.#fingerprints.get(snapshot);
     if (cache === undefined) {
@@ -373,6 +377,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
       principalKey,
       principal.collectives,
       principal.groups,
+      restrictedTypes,
     ]);
     const cached = cache.get(key);
     if (cached !== undefined) return cached;
@@ -381,6 +386,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
       principal,
       localGroups,
       snapshot.grantsForSubjects(resolveSubjects(principal, localGroups)),
+      restrictedTypes,
     );
     if (cache.size >= MAX_CACHED_FINGERPRINTS) cache.clear();
     cache.set(key, fingerprint);

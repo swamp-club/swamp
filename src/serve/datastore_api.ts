@@ -245,7 +245,8 @@ export const NO_READ_ACCESS = "none";
  * The fingerprint of what `caller` may read, as the read filter decides it
  * (`callerResourceDecider`): everything when authorization is off, nothing
  * without a principal or a policy, else the decision service's
- * fingerprint of the caller's grants. Undefined, so the reply names none,
+ * fingerprint of the caller's grants and serve's restricted behavior types,
+ * which only an admin may read. Undefined, so the reply names none,
  * when it cannot be taken: it is freshness, never a reason to fail a reply.
  */
 function callerReadAccess(
@@ -257,11 +258,10 @@ function callerReadAccess(
   const { principal, collectives, groups } = caller.access;
   if (!loader || !principal) return NO_READ_ACCESS;
   try {
-    return loader.decisionService.readAccessFingerprint({
-      principal,
-      collectives,
-      groups,
-    });
+    return loader.decisionService.readAccessFingerprint(
+      { principal, collectives, groups },
+      ctx.authConfig.restrictedModelTypes,
+    );
   } catch (error) {
     logger
       .warn`Could not fingerprint a datastore caller's read access: ${error}`;

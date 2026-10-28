@@ -32,6 +32,10 @@ import { join } from "@std/path";
 import { configure, type LogRecord } from "@logtape/logtape";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import type { ModelType } from "../src/domain/models/model_type.ts";
+import {
+  Definition,
+  type DefinitionId,
+} from "../src/domain/definitions/definition.ts";
 import { serveUpstreamLocalRoot } from "../src/infrastructure/datastore_v3/serve_upstream_binding.ts";
 import { SERVE_DATASTORE_ACCESS_HEADER } from "../src/infrastructure/datastore_v3/serve_datastore_client.ts";
 import {
@@ -60,6 +64,7 @@ await initializeLogging({});
 
 const VPC_ID = "4c1f0b6e-2d6a-4a9b-8f3e-1b2c3d4e5f60";
 const KEY_ID = "4c1f0b6e-2d6a-4a9b-8f3e-1b2c3d4e5f61";
+const API_ID = "4c1f0b6e-2d6a-4a9b-8f3e-1b2c3d4e5f62" as DefinitionId;
 
 /** Alice is a member; bob may read behavior web and its data. */
 const BOB_WEB: readonly GrantSpec[] = [
@@ -497,6 +502,58 @@ Deno.test({
         vpc: { version: 1, content: "1" },
         key: { version: 1, content: "1" },
       });
+      assert(copyState(bob, serve).copyId !== built.copyId);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve access: a restart that restricts a behavior type removes its definitions from a member's copy, whose grants did not change",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({
+        grants: [
+          ...BOB_WEB,
+          { user: "bob", actions: ["read"], kind: "model", pattern: "api" },
+        ],
+        managedConfig: true,
+      });
+      const bucket = scratch.bucket();
+      const alice = await scratch.client("a", { bucket, managedConfig: true });
+      const type = serve.modelType;
+      await writeCommand(
+        scratch,
+        alice,
+        serveEnv(serve, "alice-token"),
+        (repos) =>
+          repos.definitionRepo.save(
+            type,
+            Definition.create({ id: API_ID, name: "api", globalArguments: {} }),
+          ),
+      );
+      await serve.compact();
+
+      const bob = await scratch.client("b", { bucket, managedConfig: true });
+      const bobEnv = serveEnv(serve, "bob-token");
+      // Only an admin may read the definitions of a restricted type.
+      const api = () =>
+        readCommand(
+          scratch,
+          bob,
+          bobEnv,
+          async (repos) =>
+            (await repos.definitionRepo.findById(type, API_ID))?.name ?? null,
+        );
+      assertEquals(await api(), "api");
+      const built = copyState(bob, serve);
+
+      // Bob's grants are unchanged: only serve's restricted list moves.
+      await serve.restrict([type.normalized]);
+      await api();
+      assertEquals(await api(), null);
       assert(copyState(bob, serve).copyId !== built.copyId);
     });
   },

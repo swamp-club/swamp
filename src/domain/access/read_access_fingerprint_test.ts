@@ -62,7 +62,7 @@ function fingerprintOf(
 ): string {
   return new GrantBasedAccessDecisionService(
     new PolicySnapshot(grants, groups),
-  ).readAccessFingerprint(principal);
+  ).readAccessFingerprint(principal, []);
 }
 
 const READ_DATA = makeGrant({ id: "g-read" });
@@ -201,8 +201,8 @@ Deno.test("GrantBasedAccessDecisionService.readAccessFingerprint: follows a snap
   const service = new GrantBasedAccessDecisionService(
     new PolicySnapshot([READ_DATA], []),
   );
-  const before = service.readAccessFingerprint(ADAM);
-  assertEquals(service.readAccessFingerprint(ADAM), before);
+  const before = service.readAccessFingerprint(ADAM, []);
+  assertEquals(service.readAccessFingerprint(ADAM, []), before);
   service.snapshot = new PolicySnapshot(
     [
       READ_DATA,
@@ -210,14 +210,36 @@ Deno.test("GrantBasedAccessDecisionService.readAccessFingerprint: follows a snap
     ],
     [],
   );
-  assertEquals(service.readAccessFingerprint(ADAM), before);
+  assertEquals(service.readAccessFingerprint(ADAM, []), before);
   service.snapshot = new PolicySnapshot([], []);
-  assertNotEquals(service.readAccessFingerprint(ADAM), before);
+  assertNotEquals(service.readAccessFingerprint(ADAM, []), before);
 });
 
 Deno.test("readAccessFingerprint: the pure function matches the service", () => {
   assertEquals(
-    readAccessFingerprint(ADAM, [], [READ_DATA]),
+    readAccessFingerprint(ADAM, [], [READ_DATA], []),
     fingerprintOf([READ_DATA]),
   );
+});
+
+Deno.test("readAccessFingerprint: serve's restricted behavior types change it, in any order", () => {
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([READ_DATA], []),
+  );
+  const none = service.readAccessFingerprint(ADAM, []);
+  const one = service.readAccessFingerprint(ADAM, ["@acme/secret"]);
+  assertNotEquals(one, none);
+  assertNotEquals(
+    service.readAccessFingerprint(ADAM, ["@acme/secret", "@acme/vault"]),
+    one,
+  );
+  assertEquals(
+    service.readAccessFingerprint(ADAM, ["@acme/vault", "@acme/secret"]),
+    service.readAccessFingerprint(ADAM, [
+      "@acme/secret",
+      "@acme/vault",
+      "@acme/secret",
+    ]),
+  );
+  assertEquals(service.readAccessFingerprint(ADAM, []), none);
 });
