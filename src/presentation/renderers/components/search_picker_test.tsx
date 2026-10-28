@@ -264,3 +264,91 @@ Deno.test({
     assertEquals(selected[0], "bravo");
   },
 });
+
+const LONG_PREVIEW_ROWS = 200;
+
+/**
+ * A picker whose preview is far taller than any terminal, while its
+ * scrollback is one line, as a preview that wraps can be.
+ */
+function renderLongPreview(
+  previewLineCount:
+    | ((item: string, detail: unknown, width: number) => number)
+    | undefined,
+  widths: { preview: number[] },
+) {
+  return render(
+    <SearchPicker<string>
+      items={["alpha"]}
+      initialQuery=""
+      selector={(item) => item}
+      renderResultLine={(item) => <Text>{item}</Text>}
+      renderPreview={(_item, _detail, width) => {
+        widths.preview.push(width);
+        return (
+          <Box flexDirection="column">
+            {Array.from(
+              { length: LONG_PREVIEW_ROWS },
+              (_, i) => <Text key={i}>row-{i}.</Text>,
+            )}
+          </Box>
+        );
+      }}
+      renderScrollback={() => "alpha"}
+      previewLineCount={previewLineCount}
+      itemLabel="items"
+      onSelect={() => {}}
+      onCancel={() => {}}
+    />,
+  );
+}
+
+Deno.test({
+  name:
+    "SearchPicker: previewLineCount lets the preview scroll to its last row",
+  ...inkTestOptions,
+  fn: async () => {
+    const widths = { preview: [] as number[], counted: [] as number[] };
+    const picker = renderLongPreview((_item, _detail, width) => {
+      widths.counted.push(width);
+      return LONG_PREVIEW_ROWS;
+    }, widths);
+    await waitFor(
+      () => (picker.lastFrame() ?? "").includes("row-0."),
+      "the preview to draw",
+    );
+    const last = `row-${LONG_PREVIEW_ROWS - 1}.`;
+    for (let i = 0; i < LONG_PREVIEW_ROWS; i++) {
+      if ((picker.lastFrame() ?? "").includes(last)) break;
+      const frames = picker.frames.length;
+      picker.stdin.write("\x04"); // Ctrl-d
+      await waitFor(() => picker.frames.length > frames, "a scrolled frame");
+    }
+    assertStringIncludes(picker.lastFrame() ?? "", last);
+    // Counted at the width the preview renders at.
+    assertEquals(widths.counted.at(-1), widths.preview.at(-1));
+  },
+});
+
+Deno.test({
+  name:
+    "SearchPicker: without previewLineCount the scrollback's line count bounds the scroll",
+  ...inkTestOptions,
+  fn: async () => {
+    const picker = renderLongPreview(undefined, { preview: [] });
+    await waitFor(
+      () => (picker.lastFrame() ?? "").includes("row-0."),
+      "the preview to draw",
+    );
+    const before = picker.lastFrame();
+    picker.stdin.write("\x04"); // Ctrl-d
+    picker.stdin.write("a");
+    await waitFor(
+      () => (picker.lastFrame() ?? "").includes("a▏"),
+      "the next frame",
+    );
+    // A one-line scrollback leaves nothing to scroll: row 0 still shows.
+    assertStringIncludes(picker.lastFrame() ?? "", "row-0.");
+    assertEquals(before?.includes("row-0."), true);
+  },
+});

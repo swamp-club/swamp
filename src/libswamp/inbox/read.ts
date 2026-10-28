@@ -22,7 +22,10 @@ import {
   keyFingerprint,
 } from "../../domain/auth/auth_credentials.ts";
 import { applyPollOutcome } from "../../domain/inbox/inbox_policy.ts";
-import type { InboxState } from "../../domain/inbox/inbox_state.ts";
+import {
+  InboxCacheKey,
+  type InboxState,
+} from "../../domain/inbox/inbox_state.ts";
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import type { InboxSummaryResult } from "../../infrastructure/http/inbox_schemas.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
@@ -37,6 +40,12 @@ import {
   toMessageView,
 } from "./list.ts";
 import { toPollOutcome } from "./poll_outcome.ts";
+
+/**
+ * How many pages of unread messages `inbox read` lists while every entry on
+ * them breaks the contract, before it reports nothing to read.
+ */
+export const MAX_INBOX_READ_PAGES = 5;
 
 /**
  * How long the summary call that follows marking read may take. The marking
@@ -61,8 +70,8 @@ export interface InboxReadDeps {
     apiKey: string,
     signal: AbortSignal,
   ) => Promise<InboxSummaryResult>;
-  loadInboxState: (fingerprint: string) => Promise<InboxState>;
-  saveInboxState: (fingerprint: string, state: InboxState) => Promise<void>;
+  loadInboxState: (key: InboxCacheKey) => Promise<InboxState>;
+  saveInboxState: (key: InboxCacheKey, state: InboxState) => Promise<void>;
   /** Whether this process may write the swamp config directory. */
   ownsConfigDir: () => boolean;
   now: () => number;
@@ -91,8 +100,8 @@ export function createInboxReadDeps(
     // No etag: a 304 would keep the unread count from before the marking.
     inboxSummary: (serverUrl, apiKey, signal) =>
       client(serverUrl).inboxSummary(apiKey, null, signal),
-    loadInboxState: (fingerprint) => cache.load(fingerprint),
-    saveInboxState: (fingerprint, state) => cache.save(fingerprint, state),
+    loadInboxState: (key) => cache.load(key),
+    saveInboxState: (key, state) => cache.save(key, state),
     ownsConfigDir: processOwnsConfigDir,
     now: () => Date.now(),
     serverUrlOverride: options.serverUrlOverride,
@@ -154,8 +163,9 @@ function isAbort(error: unknown): error is DOMException {
 
 /**
  * Asks for the unread count once more and stores it in the key's inbox
- * cache, so the notice stops now rather than at the next poll. Never throws:
- * the messages are already read, and the next poll corrects the cache.
+ * cache for the server it asked, so the notice stops now rather than at the
+ * next poll. Never throws: the messages are already read, and the next poll
+ * corrects the cache.
  */
 async function refreshInboxCache(
   ctx: LibSwampContext,
@@ -164,6 +174,7 @@ async function refreshInboxCache(
 ): Promise<void> {
   if (!deps.ownsConfigDir()) return;
   try {
+    const sentAt = deps.now();
     const result = await deps.inboxSummary(
       session.serverUrl,
       session.apiKey,
@@ -175,11 +186,14 @@ async function refreshInboxCache(
       ctx.logger.debug`Inbox summary refresh failed: ${result.reason}`;
       return;
     }
-    const fingerprint = await keyFingerprint(session.apiKey);
-    const state = await deps.loadInboxState(fingerprint);
+    const key = InboxCacheKey.of(
+      session.serverUrl,
+      await keyFingerprint(session.apiKey),
+    );
+    const state = await deps.loadInboxState(key);
     await deps.saveInboxState(
-      fingerprint,
-      applyPollOutcome(state, toPollOutcome(result), deps.now()),
+      key,
+      applyPollOutcome(state, toPollOutcome(result, sentAt), deps.now()),
     );
   } catch (error: unknown) {
     ctx.logger.debug`Could not refresh the inbox cache: ${error}`;
@@ -242,13 +256,30 @@ export async function* inboxReadNext(
   const session = yield* openSession(deps);
   if (!session) return;
   try {
-    // Two, so the second tells whether more are waiting.
-    const page = await deps.listMessages(
+    // Two, so the second tells whether more are waiting. A page whose
+    // entries were all dropped says nothing about what lies behind it, so
+    // listing goes on past it, a few pages at most.
+    let page = await deps.listMessages(
       session.serverUrl,
       session.apiKey,
       { status: "unread", limit: 2 },
       ctx.signal,
     );
+    let dropped = page.dropped;
+    for (
+      let pages = 1;
+      page.messages.length === 0 && page.nextCursor !== null &&
+      pages < MAX_INBOX_READ_PAGES;
+      pages++
+    ) {
+      page = await deps.listMessages(
+        session.serverUrl,
+        session.apiKey,
+        { status: "unread", limit: 2, before: page.nextCursor },
+        ctx.signal,
+      );
+      dropped += page.dropped;
+    }
     const [newest] = page.messages;
     if (newest === undefined) {
       yield {
@@ -256,8 +287,9 @@ export async function* inboxReadNext(
         view: {
           message: null,
           marked: false,
-          moreUnread: false,
-          dropped: page.dropped,
+          // Listing stopped at the page cap with older messages left.
+          moreUnread: page.nextCursor !== null,
+          dropped,
         },
       };
       return;
@@ -275,8 +307,10 @@ export async function* inboxReadNext(
           readAt: marked ? new Date(deps.now()).toISOString() : null,
         },
         marked,
-        moreUnread: page.messages.length > 1 || page.nextCursor !== null,
-        dropped: page.dropped,
+        // A dropped entry is an unread message this CLI could not show.
+        moreUnread: page.messages.length > 1 || page.nextCursor !== null ||
+          dropped > 0,
+        dropped,
       },
     };
   } catch (error: unknown) {

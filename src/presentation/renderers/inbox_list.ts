@@ -70,6 +70,13 @@ function listLines(view: InboxListView): string[] {
   return lines;
 }
 
+/** The line naming the command that lists the page older than this one. */
+export function olderPageLine(nextCursor: string, all: boolean): string {
+  return `${yellow("To see older:")}  swamp inbox${
+    all ? " --all" : ""
+  } --before ${nextCursor}`;
+}
+
 class LogInboxListRenderer implements Renderer<InboxListEvent> {
   handlers(): EventHandlers<InboxListEvent> {
     return {
@@ -78,12 +85,7 @@ class LogInboxListRenderer implements Renderer<InboxListEvent> {
       completed: ({ view }) => {
         const lines = listLines(view);
         if (view.nextCursor !== null) {
-          const all = view.status === "all" ? " --all" : "";
-          lines.push(
-            `${
-              yellow("To see older:")
-            }  swamp inbox${all} --before ${view.nextCursor}`,
-          );
+          lines.push(olderPageLine(view.nextCursor, view.status === "all"));
         }
         writeOutput(lines.join("\n"));
 

@@ -25,6 +25,8 @@ import type {
 import { MAX_ETAG_LENGTH } from "../../domain/inbox/inbox_state.ts";
 import { toPollOutcome } from "./poll_outcome.ts";
 
+const SENT_AT = Date.parse("2026-10-27T11:05:00Z");
+
 const summary: InboxSummary = {
   unread: 3,
   newestId: "01JBQ0000000000000000000AA",
@@ -32,23 +34,23 @@ const summary: InboxSummary = {
   pollAfterSeconds: 1800,
 };
 
-Deno.test("toPollOutcome: ok carries the summary and etag as the snapshot", () => {
-  assertEquals(toPollOutcome({ kind: "ok", summary, etag: '"e1"' }), {
+Deno.test("toPollOutcome: ok carries the summary, etag and send time as the snapshot", () => {
+  assertEquals(toPollOutcome({ kind: "ok", summary, etag: '"e1"' }, SENT_AT), {
     kind: "ok",
-    snapshot: { ...summary, etag: '"e1"' },
+    snapshot: { ...summary, etag: '"e1"', fetchedAt: SENT_AT },
   });
 });
 
 Deno.test("toPollOutcome: ok with no etag keeps it null", () => {
-  assertEquals(toPollOutcome({ kind: "ok", summary, etag: null }), {
+  assertEquals(toPollOutcome({ kind: "ok", summary, etag: null }, SENT_AT), {
     kind: "ok",
-    snapshot: { ...summary, etag: null },
+    snapshot: { ...summary, etag: null, fetchedAt: SENT_AT },
   });
 });
 
 Deno.test("toPollOutcome: an etag the cache cannot store is dropped", () => {
   for (const etag of ['"' + "x".repeat(MAX_ETAG_LENGTH) + '"', '"a\tb"']) {
-    const outcome = toPollOutcome({ kind: "ok", summary, etag });
+    const outcome = toPollOutcome({ kind: "ok", summary, etag }, SENT_AT);
     assertEquals(outcome.kind === "ok" ? outcome.snapshot.etag : "", null);
   }
 });
@@ -59,13 +61,13 @@ Deno.test("toPollOutcome: an over-long newestAt is dropped", () => {
     kind: "ok",
     summary: { ...summary, newestAt },
     etag: null,
-  });
+  }, SENT_AT);
   assertEquals(outcome.kind === "ok" ? outcome.snapshot.newestAt : "", null);
 });
 
 Deno.test("toPollOutcome: every result kind maps to its poll outcome", () => {
   const cases: [InboxSummaryResult, ReturnType<typeof toPollOutcome>][] = [
-    [{ kind: "not_modified" }, { kind: "not_modified" }],
+    [{ kind: "not_modified" }, { kind: "not_modified", sentAt: SENT_AT }],
     [{ kind: "unsupported" }, { kind: "unsupported" }],
     [{ kind: "unavailable" }, { kind: "unavailable" }],
     [{ kind: "rejected" }, { kind: "rejected" }],
@@ -80,6 +82,6 @@ Deno.test("toPollOutcome: every result kind maps to its poll outcome", () => {
     ],
   ];
   for (const [result, expected] of cases) {
-    assertEquals(toPollOutcome(result), expected);
+    assertEquals(toPollOutcome(result, SENT_AT), expected);
   }
 });

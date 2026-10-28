@@ -20,6 +20,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
 import {
+  LINK_REMOVED,
   renderMarkdownPlain,
   renderMarkdownToTerminal,
   renderUntrustedMarkdownToTerminal,
@@ -127,12 +128,126 @@ Deno.test("renderUntrustedMarkdownToTerminal: a link shows its target beside its
   assert(!result.includes(OSC_8));
 });
 
-Deno.test("renderUntrustedMarkdownToTerminal: any scheme is shown, not hidden or dropped", () => {
-  const result = renderUntrustedMarkdownToTerminal(
-    "[click](javascript:alert(1))",
+Deno.test("renderUntrustedMarkdownToTerminal: a link that is not https prints its text and link removed", () => {
+  for (
+    const href of [
+      "javascript:alert(1)",
+      "http://swamp-club.com/update",
+      "/relative/path",
+      "mailto:a@evil.example",
+    ]
+  ) {
+    const result = stripAnsiCode(
+      renderUntrustedMarkdownToTerminal(`[click](${href})`),
+    );
+    assertStringIncludes(result, `click ${LINK_REMOVED}`, href);
+    assert(!result.includes(href), href);
+  }
+});
+
+Deno.test("renderUntrustedMarkdownToTerminal: a bare www or email autolink prints as written", () => {
+  const result = stripAnsiCode(
+    renderUntrustedMarkdownToTerminal(
+      "Visit www.swamp-club.com or write to team@swamp-club.com.",
+    ),
   );
-  assertStringIncludes(stripAnsiCode(result), "click (javascript:alert(1))");
-  assert(!result.includes(OSC_8));
+  assertStringIncludes(
+    result,
+    "Visit www.swamp-club.com or write to team@swamp-club.com.",
+  );
+  assert(!result.includes(LINK_REMOVED));
+  assert(!result.includes("http://"));
+  assert(!result.includes("mailto:"));
+});
+
+Deno.test("renderUntrustedMarkdownToTerminal: a bare www autolink with a look-alike host prints as punycode", () => {
+  const result = stripAnsiCode(
+    renderUntrustedMarkdownToTerminal(
+      "Visit www.sw\u0430mp-club.com/update now.",
+    ),
+  );
+  assertStringIncludes(result, "Visit www.xn--swmp-club-1yh.com/update now.");
+  assert(!result.includes("\u0430"));
+});
+
+Deno.test("renderUntrustedMarkdownToTerminal: an email link whose address is not plain ASCII is removed", () => {
+  // GFM links only an ASCII bare address, so the written-out form is the one
+  // that reaches the renderer with a look-alike host.
+  const address = "team@sw\u0430mp-club.com";
+  const result = stripAnsiCode(
+    renderUntrustedMarkdownToTerminal(
+      `Write to [${address}](mailto:${address}).`,
+    ),
+  );
+  assertStringIncludes(result, LINK_REMOVED);
+  assert(!result.includes("mailto:"));
+});
+
+Deno.test("renderUntrustedMarkdownToTerminal: an http link whose text differs from its target is still removed", () => {
+  const result = stripAnsiCode(
+    renderUntrustedMarkdownToTerminal(
+      "[www.swamp-club.com](http://evil.example)",
+    ),
+  );
+  assertStringIncludes(result, `www.swamp-club.com ${LINK_REMOVED}`);
+  assert(!result.includes("evil.example"));
+});
+
+Deno.test("renderUntrustedMarkdownToTerminal: a look-alike host prints as punycode", () => {
+  const result = stripAnsiCode(
+    renderUntrustedMarkdownToTerminal(
+      "[Update](https://sw\u0430mp-club.com/update)",
+    ),
+  );
+  assertStringIncludes(
+    result,
+    "Update (https://xn--swmp-club-1yh.com/update)",
+  );
+  assert(!result.includes("\u0430"));
+});
+
+Deno.test("renderUntrustedMarkdownToTerminal: a link with a username or password is removed", () => {
+  for (
+    const md of [
+      "<https://swamp-club.com@evil.example>",
+      "[x](https://swamp-club.com@evil.example/)",
+      "[x](https://u:p@evil.example/)",
+    ]
+  ) {
+    const result = stripAnsiCode(renderUntrustedMarkdownToTerminal(md));
+    assertStringIncludes(result, LINK_REMOVED, md);
+    assert(!result.includes("evil.example/"), md);
+  }
+});
+
+Deno.test("renderUntrustedMarkdownToTerminal: a zero-width character in a host never prints", () => {
+  const result = renderUntrustedMarkdownToTerminal(
+    "[x](https://swamp\u200b-club.com)",
+  );
+  assert(!result.includes("\u200b"));
+});
+
+Deno.test("renderUntrustedMarkdownToTerminal: a reference link follows the same rule", () => {
+  const removed = stripAnsiCode(
+    renderUntrustedMarkdownToTerminal(
+      "[x][r]\n\n[r]: http://evil.example/a",
+    ),
+  );
+  assertStringIncludes(removed, `x ${LINK_REMOVED}`);
+  const kept = stripAnsiCode(
+    renderUntrustedMarkdownToTerminal(
+      "[x][r]\n\n[r]: https://sw\u0430mp-club.com/a",
+    ),
+  );
+  assertStringIncludes(kept, "x (https://xn--swmp-club-1yh.com/a)");
+});
+
+Deno.test("renderUntrustedMarkdownToTerminal: an autolink with a look-alike host prints as punycode", () => {
+  const result = stripAnsiCode(
+    renderUntrustedMarkdownToTerminal("<https://sw\u0430mp-club.com/a>"),
+  );
+  assertStringIncludes(result, "https://xn--swmp-club-1yh.com/a");
+  assert(!result.includes("\u0430"));
 });
 
 Deno.test("renderUntrustedMarkdownToTerminal: an autolink prints its URL once", () => {
@@ -157,6 +272,20 @@ Deno.test("renderUntrustedMarkdownToTerminal: an image shows its source", () => 
     renderUntrustedMarkdownToTerminal("![logo](https://x.example/logo.png)"),
   );
   assertStringIncludes(result, "https://x.example/logo.png");
+});
+
+Deno.test("renderUntrustedMarkdownToTerminal: an image follows the link rule", () => {
+  const removed = stripAnsiCode(
+    renderUntrustedMarkdownToTerminal("![logo](http://evil.example/l.png)"),
+  );
+  assertStringIncludes(removed, LINK_REMOVED);
+  assert(!removed.includes("evil.example"));
+  const punycode = stripAnsiCode(
+    renderUntrustedMarkdownToTerminal(
+      "![logo](https://sw\u0430mp-club.com/l.png)",
+    ),
+  );
+  assertStringIncludes(punycode, "https://xn--swmp-club-1yh.com/l.png");
 });
 
 Deno.test("renderUntrustedMarkdownToTerminal: wraps to the given width", () => {

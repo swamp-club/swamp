@@ -17,10 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { basename, join } from "@std/path";
 import { z } from "zod";
 import {
   INBOX_ID_PATTERN,
+  type InboxCacheKey,
   type InboxCacheRepository,
   InboxState,
   isStorableEtag,
@@ -30,7 +31,15 @@ import {
 import { getSwampConfigDir } from "../persistence/paths.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
 
-const CACHE_DIR_NAME = "inbox";
+/**
+ * `inbox/` held one file per fingerprint, shared by every server. Files here
+ * are named per server and fingerprint, a breaking layout change, so older
+ * swamps keep `inbox/` to themselves.
+ */
+const CACHE_DIR_NAME = "inbox-v2";
+
+/** The first layout's directory: only ever removed from, on logout. */
+const LEGACY_CACHE_DIR_NAME = "inbox";
 
 /**
  * Version 1 changes are additive only, and every added field must be safe to
@@ -39,13 +48,30 @@ const CACHE_DIR_NAME = "inbox";
  */
 const FORMAT_VERSION = 1;
 
+/** Owner read and write only, as `auth.json` is. */
+const CACHE_FILE_MODE = 0o600;
+
 const MAX_FILE_BYTES = 4096;
 
 /** How many API keys keep state; the least recently saved is dropped. */
 const MAX_KEYS = 8;
 
 const FINGERPRINT_PATTERN = /^[0-9a-f]{16}$/;
-const CACHE_FILE_PATTERN = /^[0-9a-f]{16}\.json$/;
+const CACHE_FILE_PATTERN = /^[0-9a-f]{32}\.json$/;
+
+/**
+ * The file name stem for a key: a hash of the origin and the fingerprint,
+ * so the name holds neither the server's URL nor anything of the key.
+ */
+async function cacheFileStem(key: InboxCacheKey): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(`${key.origin}\0${key.fingerprint}`),
+  );
+  return Array.from(new Uint8Array(digest).slice(0, 16))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
 
 /** An ISO 8601 time exactly as `Date.prototype.toISOString` writes it. */
 const isoTime = z.string().refine((s) => {
@@ -63,6 +89,7 @@ const cacheFileSchema = z.object({
     newestAt: z.string().max(MAX_NEWEST_AT_LENGTH).nullable(),
     pollAfterSeconds: z.number(),
     etag: z.string().refine(isStorableEtag).nullable(),
+    fetchedAt: isoTime.optional(),
   }).nullable(),
   schedule: z.object({
     lastPolledAt: isoTime.nullable(),
@@ -84,10 +111,19 @@ function fromIso(iso: string | null): number | null {
 }
 
 function toCacheFile(state: InboxState): CacheFile {
-  const { schedule, announcement } = state;
+  const { snapshot, schedule, announcement } = state;
   return {
     version: FORMAT_VERSION,
-    snapshot: state.snapshot,
+    snapshot: snapshot === null ? null : {
+      unread: snapshot.unread,
+      newestId: snapshot.newestId,
+      newestAt: snapshot.newestAt,
+      pollAfterSeconds: snapshot.pollAfterSeconds,
+      etag: snapshot.etag,
+      ...(snapshot.fetchedAt !== undefined
+        ? { fetchedAt: new Date(snapshot.fetchedAt).toISOString() }
+        : {}),
+    },
     schedule: {
       lastPolledAt: toIso(schedule.lastPolledAt),
       nextPollAt: toIso(schedule.nextPollAt),
@@ -103,9 +139,18 @@ function toCacheFile(state: InboxState): CacheFile {
 }
 
 function fromCacheFile(file: CacheFile): InboxState {
-  const { schedule, announcement } = file;
+  const { snapshot, schedule, announcement } = file;
   return {
-    snapshot: file.snapshot,
+    snapshot: snapshot === null ? null : {
+      unread: snapshot.unread,
+      newestId: snapshot.newestId,
+      newestAt: snapshot.newestAt,
+      pollAfterSeconds: snapshot.pollAfterSeconds,
+      etag: snapshot.etag,
+      ...(snapshot.fetchedAt !== undefined
+        ? { fetchedAt: Date.parse(snapshot.fetchedAt) }
+        : {}),
+    },
     schedule: {
       lastPolledAt: fromIso(schedule.lastPolledAt),
       nextPollAt: fromIso(schedule.nextPollAt),
@@ -120,22 +165,27 @@ function fromCacheFile(file: CacheFile): InboxState {
 }
 
 /**
- * Keeps each API key's inbox state in its own file, `inbox/<fingerprint>.json`
- * under the swamp config directory, so saving one key never touches another.
- * Only the fingerprint is stored, never the key. Whether this process may write
- * the config directory is the caller's decision.
+ * Keeps each API key's inbox state per server in its own file,
+ * `inbox-v2/<hash>.json` under the swamp config directory, so saving one key
+ * never touches another. Neither the key nor the server's URL is stored, and
+ * files are readable by their owner only. Whether this process may write the
+ * config directory is the caller's decision.
  */
 export class InboxCacheFileRepository implements InboxCacheRepository {
   private readonly dir: string;
+  private readonly legacyDir: string;
 
-  constructor(dir?: string) {
-    this.dir = dir ?? join(getSwampConfigDir(), CACHE_DIR_NAME);
+  /** `configDir` defaults to the swamp config directory. */
+  constructor(configDir?: string) {
+    const base = configDir ?? getSwampConfigDir();
+    this.dir = join(base, CACHE_DIR_NAME);
+    this.legacyDir = join(base, LEGACY_CACHE_DIR_NAME);
   }
 
-  async load(fingerprint: string): Promise<InboxState> {
-    if (!FINGERPRINT_PATTERN.test(fingerprint)) return InboxState.empty();
+  async load(key: InboxCacheKey): Promise<InboxState> {
+    if (!FINGERPRINT_PATTERN.test(key.fingerprint)) return InboxState.empty();
     try {
-      const path = this.pathFor(fingerprint);
+      const path = await this.pathFor(key);
       const info = await Deno.stat(path);
       if (!info.isFile || info.size > MAX_FILE_BYTES) {
         return InboxState.empty();
@@ -150,8 +200,8 @@ export class InboxCacheFileRepository implements InboxCacheRepository {
     }
   }
 
-  async save(fingerprint: string, state: InboxState): Promise<void> {
-    if (!FINGERPRINT_PATTERN.test(fingerprint)) {
+  async save(key: InboxCacheKey, state: InboxState): Promise<void> {
+    if (!FINGERPRINT_PATTERN.test(key.fingerprint)) {
       throw new Error("Inbox cache key is not an API-key fingerprint");
     }
     let content: string | undefined;
@@ -169,20 +219,59 @@ export class InboxCacheFileRepository implements InboxCacheRepository {
       throw new Error("Inbox state is outside what the cache can store");
     }
     await Deno.mkdir(this.dir, { recursive: true });
-    await atomicWriteTextFile(this.pathFor(fingerprint), content);
-    await this.evictBeyondCap(fingerprint);
+    const path = await this.pathFor(key);
+    await atomicWriteTextFile(path, content, { mode: CACHE_FILE_MODE });
+    await this.evictBeyondCap(basename(path));
   }
 
-  private pathFor(fingerprint: string): string {
-    return join(this.dir, `${fingerprint}.json`);
+  /**
+   * Removes the key's file, and the first layout's file for its
+   * fingerprint, which held the same key's state for every server.
+   */
+  async delete(key: InboxCacheKey): Promise<void> {
+    // Never a path built from anything but a fingerprint.
+    if (!FINGERPRINT_PATTERN.test(key.fingerprint)) return;
+    const paths = [
+      await this.pathFor(key),
+      join(this.legacyDir, `${key.fingerprint}.json`),
+    ];
+    for (const path of paths) {
+      try {
+        await Deno.remove(path);
+      } catch (error: unknown) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
+    }
+  }
+
+  /**
+   * Whether this process can write the cache: creates the directory if it
+   * is missing, then creates and removes a file there. The file's name never
+   * matches a cache file, so eviction never counts it. Never throws.
+   */
+  async canWrite(): Promise<boolean> {
+    try {
+      await Deno.mkdir(this.dir, { recursive: true });
+      const probe = await Deno.makeTempFile({
+        dir: this.dir,
+        prefix: ".probe-",
+      });
+      await Deno.remove(probe);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async pathFor(key: InboxCacheKey): Promise<string> {
+    return join(this.dir, `${await cacheFileStem(key)}.json`);
   }
 
   /**
    * Best effort: a key evicted by mistake, or by a concurrent process, only
    * loads as empty and costs one extra poll.
    */
-  private async evictBeyondCap(saved: string): Promise<void> {
-    const savedName = `${saved}.json`;
+  private async evictBeyondCap(savedName: string): Promise<void> {
     const others: { name: string; modifiedAt: number }[] = [];
     try {
       for await (const entry of Deno.readDir(this.dir)) {

@@ -61,6 +61,12 @@ export interface SearchPickerProps<T, D = T> {
   ) => React.ReactElement;
   /** Produces plain-text scrollback output on selection. */
   renderScrollback: (item: T, detail: D | undefined) => string;
+  /**
+   * How many rows the preview renders at `width`, the width `renderPreview`
+   * is given. Sets how far the preview scrolls; without it the scrollback's
+   * line count stands in, which undercounts a preview that wraps.
+   */
+  previewLineCount?: (item: T, detail: D | undefined, width: number) => number;
   /** Async function to fetch full detail for preview. Optional. */
   fetchPreview?: (item: T) => Promise<D>;
   /** Extracts a stable cache key for the LRU preview cache. */
@@ -99,6 +105,7 @@ export function SearchPicker<T, D = T>(
     renderResultLine,
     renderPreview,
     renderScrollback,
+    previewLineCount,
     fetchPreview,
     previewKeyFn,
     itemLabel,
@@ -146,16 +153,25 @@ export function SearchPicker<T, D = T>(
     previewKeyFn,
   );
 
-  // Estimate actual content height from scrollback text (mirrors preview content).
-  // This prevents scrolling past the end into empty space.
-  const scrollbackText = useMemo(
-    () => highlightedItem ? renderScrollback(highlightedItem, detail) : "",
-    [highlightedItem, detail, renderScrollback],
+  // The preview's content height, so scrolling stops at its last row rather
+  // than short of it or past it into empty space. Without a line count, the
+  // scrollback text stands in for the preview content.
+  const contentLines = useMemo(
+    () => {
+      if (!highlightedItem) return 0;
+      return previewLineCount
+        ? previewLineCount(highlightedItem, detail, layout.previewWidth)
+        : renderScrollback(highlightedItem, detail).split("\n").length;
+    },
+    [
+      highlightedItem,
+      detail,
+      renderScrollback,
+      previewLineCount,
+      layout.previewWidth,
+    ],
   );
-  const previewContentHeight = Math.max(
-    layout.previewHeight,
-    scrollbackText.split("\n").length,
-  );
+  const previewContentHeight = Math.max(layout.previewHeight, contentLines);
   const { scrollOffset, scrollUp, scrollDown } = usePreviewScroll(
     previewContentHeight,
     layout.previewHeight,
@@ -428,6 +444,11 @@ export async function renderInteractivePicker<T, D = T>(
   renderScrollback: (item: T, detail: D | undefined) => string,
   itemLabel: string,
   options?: {
+    previewLineCount?: (
+      item: T,
+      detail: D | undefined,
+      width: number,
+    ) => number;
     fetchPreview?: (item: T) => Promise<D>;
     previewKeyFn?: (item: T) => unknown;
     commandName?: string;
@@ -456,6 +477,7 @@ export async function renderInteractivePicker<T, D = T>(
         renderResultLine={renderResultLine}
         renderPreview={renderPreview}
         renderScrollback={renderScrollback}
+        previewLineCount={options?.previewLineCount}
         fetchPreview={options?.fetchPreview}
         previewKeyFn={options?.previewKeyFn}
         itemLabel={itemLabel}

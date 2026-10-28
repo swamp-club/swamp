@@ -22,7 +22,12 @@
  * functions; `now` is always epoch milliseconds passed in by the caller.
  */
 
-import type { InboxState, PollOutcome } from "./inbox_state.ts";
+import type {
+  InboxSnapshot,
+  InboxState,
+  PollOutcome,
+  PollStop,
+} from "./inbox_state.ts";
 
 /** The server can lengthen the gap between polls but never shorten it below this. */
 export const MIN_POLL_INTERVAL_SECONDS = 900;
@@ -73,6 +78,40 @@ export function shouldPoll(state: InboxState, now: number): boolean {
   return sinceLast >= pollIntervalMs(state.snapshot?.pollAfterSeconds);
 }
 
+/**
+ * The stop left after a successful answer: cleared, unless the request was
+ * sent before the stop was recorded. Such an answer predates whatever stopped
+ * the key, so it says nothing about whether the key works now.
+ */
+function stopAfterSuccess(
+  stop: PollStop | null,
+  sentAt: number | undefined,
+): PollStop | null {
+  if (stop === null || sentAt === undefined) return null;
+  return sentAt < stop.at ? stop : null;
+}
+
+/**
+ * Whichever snapshot was fetched later. A stored snapshot wins only when it
+ * was fetched after the new one and not in the future: a clock that went
+ * back must not freeze the cache, and a snapshot from before `fetchedAt`
+ * existed orders first.
+ */
+function newerSnapshot(
+  stored: InboxSnapshot | null,
+  fetched: InboxSnapshot,
+  now: number,
+): InboxSnapshot {
+  const storedAt = stored?.fetchedAt;
+  if (
+    stored === null || storedAt === undefined || storedAt > now ||
+    fetched.fetchedAt === undefined
+  ) {
+    return fetched;
+  }
+  return storedAt > fetched.fetchedAt ? stored : fetched;
+}
+
 /** The state after a poll. Every outcome counts as a poll, `failed` included. */
 export function applyPollOutcome(
   state: InboxState,
@@ -81,9 +120,24 @@ export function applyPollOutcome(
 ): InboxState {
   const schedule = { ...state.schedule, lastPolledAt: now, nextPollAt: null };
   switch (outcome.kind) {
+    // The key works, so a stop from an earlier answer no longer holds.
     case "ok":
-      return { ...state, snapshot: outcome.snapshot, schedule };
+      return {
+        ...state,
+        snapshot: newerSnapshot(state.snapshot, outcome.snapshot, now),
+        schedule: {
+          ...schedule,
+          stop: stopAfterSuccess(schedule.stop, outcome.snapshot.fetchedAt),
+        },
+      };
     case "not_modified":
+      return {
+        ...state,
+        schedule: {
+          ...schedule,
+          stop: stopAfterSuccess(schedule.stop, outcome.sentAt),
+        },
+      };
     case "failed":
       return { ...state, schedule };
     case "backoff":
@@ -122,7 +176,9 @@ export function applyPollOutcome(
 /**
  * The notice to print after a command, or null. Shown for unread messages
  * newer than the last one announced, and again for the same message until
- * 24 hours after it first showed.
+ * 24 hours after it first showed. An announcement dated after now means the
+ * clock went back; it counts as retired rather than showing until the clock
+ * catches up.
  */
 export function noticeToShow(
   state: InboxState,
@@ -136,7 +192,8 @@ export function noticeToShow(
     return { unread: snapshot.unread };
   }
   if (
-    newestId === announcement.id && now - announcement.at < NOTICE_LIFETIME_MS
+    newestId === announcement.id && announcement.at <= now &&
+    now - announcement.at < NOTICE_LIFETIME_MS
   ) {
     return { unread: snapshot.unread };
   }

@@ -17,10 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
-import { join } from "@std/path";
+import { assert, assertEquals, assertRejects } from "@std/assert";
+import { basename, join } from "@std/path";
 import fc from "fast-check";
 import {
+  type InboxCacheKey,
   type InboxSnapshot,
   InboxState,
   MAX_ETAG_LENGTH,
@@ -30,6 +31,22 @@ import { InboxCacheFileRepository } from "./inbox_cache_file_repository.ts";
 
 const FP_A = "0123456789abcdef";
 const FP_B = "fedcba9876543210";
+const PRODUCTION = "https://swamp-club.com";
+const STAGING = "https://staging.swamp-club.com";
+const KEY_A: InboxCacheKey = { origin: PRODUCTION, fingerprint: FP_A };
+const KEY_B: InboxCacheKey = { origin: PRODUCTION, fingerprint: FP_B };
+
+/** Where the repository keeps a key's file under a config dir. */
+async function cachePath(dir: string, key: InboxCacheKey): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(`${key.origin}\0${key.fingerprint}`),
+  );
+  const stem = Array.from(new Uint8Array(digest).slice(0, 16))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  return join(dir, "inbox-v2", `${stem}.json`);
+}
 const T0 = Date.UTC(2026, 9, 27, 12, 0, 0);
 const ID_A = "01JBQ0000000000000000000AA";
 
@@ -71,24 +88,24 @@ async function listNames(dir: string): Promise<string[]> {
 
 Deno.test("InboxCacheFileRepository: round-trips a full state", async () => {
   await withTempDir(async (dir) => {
-    const repo = new InboxCacheFileRepository(join(dir, "inbox"));
-    await repo.save(FP_A, fullState);
-    assertEquals(await repo.load(FP_A), fullState);
+    const repo = new InboxCacheFileRepository(dir);
+    await repo.save(KEY_A, fullState);
+    assertEquals(await repo.load(KEY_A), fullState);
   });
 });
 
 Deno.test("InboxCacheFileRepository: a missing file or directory loads as empty", async () => {
   await withTempDir(async (dir) => {
-    const repo = new InboxCacheFileRepository(join(dir, "inbox"));
-    assertEquals(await repo.load(FP_A), InboxState.empty());
+    const repo = new InboxCacheFileRepository(dir);
+    assertEquals(await repo.load(KEY_A), InboxState.empty());
   });
 });
 
 Deno.test("InboxCacheFileRepository: corrupt, over-size and unrecognised files load as empty", async () => {
   await withTempDir(async (dir) => {
     const repo = new InboxCacheFileRepository(dir);
-    await repo.save(FP_A, fullState);
-    const path = join(dir, `${FP_A}.json`);
+    await repo.save(KEY_A, fullState);
+    const path = await cachePath(dir, KEY_A);
     const valid = JSON.parse(await Deno.readTextFile(path));
     const bad: string[] = [
       "not json",
@@ -101,7 +118,7 @@ Deno.test("InboxCacheFileRepository: corrupt, over-size and unrecognised files l
     ];
     for (const content of bad) {
       await Deno.writeTextFile(path, content);
-      assertEquals(await repo.load(FP_A), InboxState.empty(), content);
+      assertEquals(await repo.load(KEY_A), InboxState.empty(), content);
     }
   });
 });
@@ -109,8 +126,8 @@ Deno.test("InboxCacheFileRepository: corrupt, over-size and unrecognised files l
 Deno.test("InboxCacheFileRepository: a field outside its bounds loads as empty", async () => {
   await withTempDir(async (dir) => {
     const repo = new InboxCacheFileRepository(dir);
-    await repo.save(FP_A, fullState);
-    const path = join(dir, `${FP_A}.json`);
+    await repo.save(KEY_A, fullState);
+    const path = await cachePath(dir, KEY_A);
     const valid = JSON.parse(await Deno.readTextFile(path));
     const variants: unknown[] = [
       { ...valid, snapshot: { ...valid.snapshot, unread: -1 } },
@@ -149,7 +166,7 @@ Deno.test("InboxCacheFileRepository: a field outside its bounds loads as empty",
     for (const variant of variants) {
       await Deno.writeTextFile(path, JSON.stringify(variant));
       assertEquals(
-        await repo.load(FP_A),
+        await repo.load(KEY_A),
         InboxState.empty(),
         JSON.stringify(variant),
       );
@@ -159,8 +176,7 @@ Deno.test("InboxCacheFileRepository: a field outside its bounds loads as empty",
 
 Deno.test("InboxCacheFileRepository: a malformed fingerprint loads as empty, refuses to save and writes nothing", async () => {
   await withTempDir(async (dir) => {
-    const cacheDir = join(dir, "inbox");
-    const repo = new InboxCacheFileRepository(cacheDir);
+    const repo = new InboxCacheFileRepository(dir);
     for (
       const fingerprint of [
         "",
@@ -172,8 +188,10 @@ Deno.test("InboxCacheFileRepository: a malformed fingerprint loads as empty, ref
         "a\\b",
       ]
     ) {
-      assertEquals(await repo.load(fingerprint), InboxState.empty());
-      await assertRejects(() => repo.save(fingerprint, fullState));
+      const key = { origin: PRODUCTION, fingerprint };
+      assertEquals(await repo.load(key), InboxState.empty());
+      await assertRejects(() => repo.save(key, fullState));
+      await repo.delete(key);
     }
     assertEquals(await listNames(dir), []);
   });
@@ -182,36 +200,40 @@ Deno.test("InboxCacheFileRepository: a malformed fingerprint loads as empty, ref
 Deno.test("InboxCacheFileRepository: keys keep independent state", async () => {
   await withTempDir(async (dir) => {
     const repo = new InboxCacheFileRepository(dir);
-    await repo.save(FP_A, fullState);
-    const before = await Deno.readTextFile(join(dir, `${FP_A}.json`));
+    await repo.save(KEY_A, fullState);
+    const before = await Deno.readTextFile(await cachePath(dir, KEY_A));
     const other = { ...InboxState.empty(), snapshot: snapshot({ unread: 9 }) };
-    await repo.save(FP_B, other);
-    assertEquals(await repo.load(FP_A), fullState);
-    assertEquals(await repo.load(FP_B), other);
-    assertEquals(await Deno.readTextFile(join(dir, `${FP_A}.json`)), before);
+    await repo.save(KEY_B, other);
+    assertEquals(await repo.load(KEY_A), fullState);
+    assertEquals(await repo.load(KEY_B), other);
+    assertEquals(await Deno.readTextFile(await cachePath(dir, KEY_A)), before);
   });
 });
 
 Deno.test("InboxCacheFileRepository: keeps at most 8 keys, dropping the oldest and never the one just saved", async () => {
   await withTempDir(async (dir) => {
     const repo = new InboxCacheFileRepository(dir);
-    const keys = Array.from(
+    const cacheDir = join(dir, "inbox-v2");
+    const keys: InboxCacheKey[] = Array.from(
       { length: 9 },
-      (_, i) => i.toString(16).padStart(16, "0"),
+      (_, i) => ({
+        origin: PRODUCTION,
+        fingerprint: i.toString(16).padStart(16, "0"),
+      }),
     );
     for (const [i, key] of keys.slice(0, 8).entries()) {
       await repo.save(key, fullState);
       // The first key is the oldest; the rest are newer than the ninth.
       const at = new Date(i === 0 ? T0 - 1_000_000 : T0 + 1_000_000 + i);
-      await Deno.utime(join(dir, `${key}.json`), at, at);
+      await Deno.utime(await cachePath(dir, key), at, at);
     }
-    await Deno.writeTextFile(join(dir, ".leftover.tmp"), "{}");
+    await Deno.writeTextFile(join(cacheDir, ".leftover.tmp"), "{}");
     await repo.save(keys[8], fullState);
-    const names = await listNames(dir);
-    assertEquals(
-      names,
-      [".leftover.tmp", ...keys.slice(1).map((k) => `${k}.json`)].sort(),
+    const names = await listNames(cacheDir);
+    const kept = await Promise.all(
+      keys.slice(1).map(async (k) => basename(await cachePath(dir, k))),
     );
+    assertEquals(names, [".leftover.tmp", ...kept].sort());
     assertEquals(await repo.load(keys[0]), InboxState.empty());
     assertEquals(await repo.load(keys[8]), fullState);
   });
@@ -231,7 +253,7 @@ Deno.test("InboxCacheFileRepository: refuses a state it could not load back", as
       { ...fullState, announcement: { id: "not-a-ulid", at: T0 } },
     ];
     for (const state of unstorable) {
-      await assertRejects(() => repo.save(FP_A, state));
+      await assertRejects(() => repo.save(KEY_A, state));
     }
     assertEquals(await listNames(dir), []);
   });
@@ -240,12 +262,15 @@ Deno.test("InboxCacheFileRepository: refuses a state it could not load back", as
 Deno.test("InboxCacheFileRepository: a save leaves no temp file and stores no API key", async () => {
   await withTempDir(async (dir) => {
     const repo = new InboxCacheFileRepository(dir);
-    await repo.save(FP_A, fullState);
-    await repo.save(FP_A, fullState);
-    assertEquals(await listNames(dir), [`${FP_A}.json`]);
-    const content = await Deno.readTextFile(join(dir, `${FP_A}.json`));
+    await repo.save(KEY_A, fullState);
+    await repo.save(KEY_A, fullState);
+    const path = await cachePath(dir, KEY_A);
+    assertEquals(await listNames(join(dir, "inbox-v2")), [basename(path)]);
+    const content = await Deno.readTextFile(path);
     assertEquals(content.includes("apiKey"), false);
     assertEquals(content.includes("swamp_"), false);
+    assertEquals(content.includes(PRODUCTION), false);
+    assertEquals(content.includes(FP_A), false);
   });
 });
 
@@ -264,6 +289,11 @@ const storableState: fc.Arbitrary<InboxState> = fc.record({
       etag: fc.option(
         fc.stringMatching(/^[\x20-\x7e]{1,256}$/),
       ),
+      fetchedAt: fc.option(time, { nil: undefined }),
+    }).map((snap) => {
+      // An absent fetchedAt is left out, as a file without the field loads.
+      const { fetchedAt, ...rest } = snap;
+      return fetchedAt === undefined ? rest : { ...rest, fetchedAt };
     }),
   ),
   schedule: fc.record({
@@ -281,10 +311,109 @@ Deno.test("InboxCacheFileRepository (property): every storable state loads back 
     const repo = new InboxCacheFileRepository(dir);
     await fc.assert(
       fc.asyncProperty(storableState, async (state) => {
-        await repo.save(FP_A, state);
-        assertEquals(await repo.load(FP_A), state);
+        await repo.save(KEY_A, state);
+        assertEquals(await repo.load(KEY_A), state);
       }),
       { numRuns: 200 },
     );
   });
+});
+
+Deno.test("InboxCacheFileRepository: one fingerprint keeps separate state per server", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new InboxCacheFileRepository(dir);
+    const staging: InboxCacheKey = { origin: STAGING, fingerprint: FP_A };
+    const stopped: InboxState = {
+      ...InboxState.empty(),
+      schedule: {
+        lastPolledAt: T0,
+        nextPollAt: null,
+        stop: { reason: "rejected", at: T0 },
+      },
+    };
+    await repo.save(staging, stopped);
+    await repo.save(KEY_A, fullState);
+    assertEquals(await repo.load(staging), stopped);
+    assertEquals(await repo.load(KEY_A), fullState);
+    assert(
+      (await cachePath(dir, staging)) !== (await cachePath(dir, KEY_A)),
+    );
+  });
+});
+
+Deno.test("InboxCacheFileRepository: writes under inbox-v2 and never reads the first layout", async () => {
+  await withTempDir(async (dir) => {
+    const legacy = join(dir, "inbox", `${FP_A}.json`);
+    await Deno.mkdir(join(dir, "inbox"));
+    await Deno.writeTextFile(legacy, "{}");
+    const repo = new InboxCacheFileRepository(dir);
+    assertEquals(await repo.load(KEY_A), InboxState.empty());
+    await repo.save(KEY_A, fullState);
+    assertEquals(await Deno.readTextFile(legacy), "{}");
+    assert((await Deno.stat(await cachePath(dir, KEY_A))).isFile);
+  });
+});
+
+Deno.test({
+  name:
+    "InboxCacheFileRepository: cache files are readable by their owner only",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const repo = new InboxCacheFileRepository(dir);
+      await repo.save(KEY_A, fullState);
+      // Saved again over an existing file, too.
+      await repo.save(KEY_A, fullState);
+      const info = await Deno.stat(await cachePath(dir, KEY_A));
+      assertEquals(info.mode! & 0o777, 0o600);
+    });
+  },
+});
+
+Deno.test("InboxCacheFileRepository: delete removes the key's file and its first-layout file only", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new InboxCacheFileRepository(dir);
+    const staging: InboxCacheKey = { origin: STAGING, fingerprint: FP_A };
+    await repo.save(KEY_A, fullState);
+    await repo.save(staging, fullState);
+    await repo.save(KEY_B, fullState);
+    await Deno.mkdir(join(dir, "inbox"));
+    await Deno.writeTextFile(join(dir, "inbox", `${FP_A}.json`), "{}");
+    await Deno.writeTextFile(join(dir, "inbox", `${FP_B}.json`), "{}");
+    await repo.delete(KEY_A);
+    assertEquals(await repo.load(KEY_A), InboxState.empty());
+    assertEquals(await repo.load(staging), fullState);
+    assertEquals(await repo.load(KEY_B), fullState);
+    assertEquals(await listNames(join(dir, "inbox")), [`${FP_B}.json`]);
+    // Nothing left to remove is not an error.
+    await repo.delete(KEY_A);
+  });
+});
+
+Deno.test("InboxCacheFileRepository: canWrite is true for a writable dir and leaves nothing behind", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new InboxCacheFileRepository(dir);
+    assertEquals(await repo.canWrite(), true);
+    assertEquals(await listNames(join(dir, "inbox-v2")), []);
+  });
+});
+
+Deno.test({
+  name:
+    "InboxCacheFileRepository: canWrite is false for a config dir that cannot be written",
+  // Root writes through any mode, and Windows has no mode bits.
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const config = join(dir, "config");
+      await Deno.mkdir(config);
+      await Deno.chmod(config, 0o500);
+      try {
+        const repo = new InboxCacheFileRepository(config);
+        assertEquals(await repo.canWrite(), false);
+      } finally {
+        await Deno.chmod(config, 0o700);
+      }
+    });
+  },
 });

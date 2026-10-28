@@ -47,6 +47,7 @@
     "fzf": "npm:fzf@0.5.2",
     "ink": "npm:ink@^6.8.0",
     "ink-testing-library": "npm:ink-testing-library@4",
+    "wrap-ansi": "npm:wrap-ansi@9.0.2",
     "react": "npm:react@^19.2.5",
     "react/jsx-runtime": "npm:react@^19.2.5/jsx-runtime",
     "react-dom/server": "npm:react-dom@^19.2.5/server",
