@@ -17,7 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
+import { withMockedFetch } from "@swamp-club/swamp-testing";
 import { z } from "zod";
 import { UserError } from "../domain/errors.ts";
 import "../domain/models/models.ts";
@@ -25,10 +31,14 @@ import { defineModel, modelRegistry } from "../domain/models/model.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import { runFileSink } from "../infrastructure/logging/run_file_sink.ts";
 import {
+  DISPATCH_SECRETS_PATH,
   type DispatchExecution,
   type DispatchResult,
+  LEGACY_PLAINTEXT_PROTOCOL_VERSION,
   REMOTE_PROTOCOL_VERSION,
 } from "../domain/remote/protocol.ts";
+import { SecretBagRegistry } from "../domain/vaults/secret_bag_registry.ts";
+import { VaultSecretBag } from "../domain/vaults/vault_secret_bag.ts";
 import {
   createStdioReader,
   StdioTransport,
@@ -135,7 +145,8 @@ Deno.test("runDispatchRunner: the result error is scrubbed with the dispatch red
         dispatchId: crypto.randomUUID(),
         leaseId: crypto.randomUUID(),
         execution: {
-          protocolVersion: REMOTE_PROTOCOL_VERSION,
+          // Its secrets travel in the frame, as a version 5 dispatch's do.
+          protocolVersion: LEGACY_PLAINTEXT_PROTOCOL_VERSION,
           modelType: type.normalized,
           modelId: crypto.randomUUID(),
           methodName: "fail",
@@ -164,7 +175,10 @@ Deno.test("runDispatchRunner: the result error is scrubbed with the dispatch red
   }
 });
 
-/** A bootstrap for `modelType`'s `run` method, shipping `secret`. */
+/**
+ * A version 5 bootstrap for `modelType`'s `run` method, shipping `secret` in
+ * the frame.
+ */
 function bootstrapFor(cacheDirPath: string, modelType: string, secret: string) {
   const definitionId = crypto.randomUUID();
   return {
@@ -175,7 +189,7 @@ function bootstrapFor(cacheDirPath: string, modelType: string, secret: string) {
       dispatchId: crypto.randomUUID(),
       leaseId: crypto.randomUUID(),
       execution: {
-        protocolVersion: REMOTE_PROTOCOL_VERSION,
+        protocolVersion: LEGACY_PLAINTEXT_PROTOCOL_VERSION,
         modelType,
         modelId: definitionId,
         methodName: "run",
@@ -383,4 +397,163 @@ Deno.test("definitionFromExecution: still rejects a path-traversal name", () => 
     Error,
     "path traversal",
   );
+});
+
+/**
+ * Runs one dispatch through the runner in this process, answering every call
+ * the runner makes of its supervisor as the supervisor does, and returns
+ * the result frame with the calls it made.
+ */
+async function runRunnerAnswering(
+  bootstrap: Record<string, unknown>,
+): Promise<{ result: DispatchResult | undefined; calls: string[] }> {
+  const stdin = new TransformStream<Uint8Array, Uint8Array>();
+  const stdinWriter = new StdioTransport(stdin.writable);
+  stdinWriter.send(JSON.stringify(bootstrap));
+  const calls: string[] = [];
+  let result: DispatchResult | undefined;
+  let pending = new Uint8Array(0);
+  const stdout = new WritableStream<Uint8Array>({
+    write(chunk) {
+      const joined = new Uint8Array(pending.length + chunk.length);
+      joined.set(pending);
+      joined.set(chunk, pending.length);
+      pending = joined;
+      // Length-prefixed frames, as the stdio transport writes them.
+      while (pending.length >= 4) {
+        const length = new DataView(pending.buffer, pending.byteOffset)
+          .getUint32(0);
+        if (pending.length < 4 + length) break;
+        const frame = JSON.parse(
+          new TextDecoder().decode(pending.subarray(4, 4 + length)),
+        );
+        pending = pending.slice(4 + length);
+        if (frame.type === "runner.result") {
+          result = frame.result as DispatchResult;
+        } else if (frame.type === "rpc.request") {
+          calls.push(frame.method);
+          stdinWriter.send(
+            JSON.stringify({ type: "rpc.response", id: frame.id, result: {} }),
+          );
+        }
+      }
+    },
+  });
+  await runDispatchRunner(stdin.readable, stdout);
+  stdinWriter.close();
+  await stdin.writable.close();
+  return { result, calls };
+}
+
+Deno.test("runDispatchRunner: a version 6 dispatch loads its references once through the route, validates its arguments on the worker, reports it, and masks what it loaded (typed-secrets 5.2)", async () => {
+  const type = ModelType.create(`swamp/runner-v6-${crypto.randomUUID()}`);
+  const token = `canary-${crypto.randomUUID()}`;
+  const received: Record<string, unknown>[] = [];
+  defineModel({
+    type,
+    version: "2026.10.28.1",
+    globalArguments: z.object({ endpoint: z.string().url() }),
+    methods: {
+      run: {
+        description: "records and prints what it receives",
+        kind: "action",
+        arguments: z.object({ token: z.string() }),
+        execute: (args, context) => {
+          const { token } = args as { token: string };
+          received.push({ token, endpoint: context.globalArgs.endpoint });
+          console.log(`token ${token}`);
+          return Promise.resolve({});
+        },
+      },
+    },
+  });
+  // Serve's bag, which ships its references and no value.
+  const serveBag = new VaultSecretBag(new SecretBagRegistry());
+  const endpoint = serveBag.addSecret(
+    { vaultName: "v", key: "endpoint" },
+    "globalArguments.endpoint",
+  );
+  const tokenSentinel = serveBag.addSecret(
+    { vaultName: "v", key: "token" },
+    "methods.run.arguments.token",
+  );
+  const globalArgs = { endpoint };
+  const methodArgs = { token: tokenSentinel };
+  const definitionId = crypto.randomUUID();
+  const cacheDirPath = await Deno.makeTempDir({ prefix: "swamp-runner-test-" });
+  try {
+    const { result: run, calls } = await withMockedFetch(
+      [Response.json({
+        values: [
+          { vaultName: "v", key: "endpoint", value: "https://api.example.com" },
+          { vaultName: "v", key: "token", value: token },
+        ],
+      })],
+      () =>
+        runRunnerAnswering({
+          sessionCredential: "dispatch-cred",
+          dataPlaneUrl: "http://127.0.0.1:9",
+          cacheDirPath,
+          dispatch: {
+            dispatchId: crypto.randomUUID(),
+            leaseId: crypto.randomUUID(),
+            execution: {
+              protocolVersion: REMOTE_PROTOCOL_VERSION,
+              modelType: type.normalized,
+              modelId: definitionId,
+              methodName: "run",
+              globalArgs,
+              methodArgs,
+              definitionMeta: {
+                id: definitionId,
+                name: "v6",
+                version: 1,
+                tags: {},
+              },
+            },
+            bundleFingerprint: `builtin:${type.normalized}`,
+            reportBundleFingerprints: [],
+            environmentSnapshot: {},
+            referenceBag: serveBag.referenceEntriesFor({
+              globalArgs,
+              methodArgs,
+            }),
+          },
+        }),
+    );
+    assertEquals(run.result?.status, "success", run.result?.error);
+    assertEquals(received, [{ token, endpoint: "https://api.example.com" }]);
+    // One load, through the route, under the dispatch credential.
+    assertEquals(calls.length, 1);
+    assertEquals(new URL(calls[0].url).pathname, DISPATCH_SECRETS_PATH);
+    assertEquals(run.calls, ["runner.argumentsValidated"]);
+    assert(run.result?.logs.includes(`token ***`));
+    assertEquals(
+      run.result?.logs.filter((line) => line.includes(token)),
+      [],
+    );
+  } finally {
+    modelRegistry.invalidateType(type);
+    await Deno.remove(cacheDirPath, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("runDispatchRunner: a version 6 dispatch that carries a plaintext field is refused before anything loads", async () => {
+  const cacheDirPath = await Deno.makeTempDir({ prefix: "swamp-runner-test-" });
+  try {
+    const bootstrap = bootstrapFor(cacheDirPath, "test/no-such-model", "s3c");
+    bootstrap.dispatch.execution.protocolVersion = REMOTE_PROTOCOL_VERSION;
+    const { result: run, calls } = await withMockedFetch(
+      [],
+      () => runRunnerAnswering(bootstrap),
+    );
+    assertEquals(run.result?.status, "error");
+    assertStringIncludes(
+      run.result?.error ?? "",
+      "Refusing a protocol version 6 dispatch that carries secretValues",
+    );
+    assertEquals(calls, []);
+  } finally {
+    await Deno.remove(cacheDirPath, { recursive: true }).catch(() => {});
+  }
 });

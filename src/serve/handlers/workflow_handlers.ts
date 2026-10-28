@@ -156,11 +156,7 @@ import {
   resolveResumableRun,
   resolveSuspendedRun,
 } from "../../domain/workflows/suspended_run_resolver.ts";
-import {
-  createWorkflowId,
-  type WorkflowRunId,
-} from "../../domain/workflows/workflow_id.ts";
-import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { unclaimedRuns } from "../../domain/workflows/run_claim.ts";
 import {
   NestedRunPendingError,
@@ -768,7 +764,9 @@ export async function handleWorkflowApprovals(
   ) return;
 
   try {
-    const libCtx = handlerLibSwampContext(ctx);
+    // The suspended-run reads stop when the request is cancelled, so it
+    // gives up its place among the shared scan permits (swamp-club#4088).
+    const libCtx = handlerLibSwampContext(ctx, { signal: controller.signal });
     const runRepo = ctx.repoContext.workflowRunRepo;
     const evaluatedRepo = new YamlEvaluatedWorkflowRepository(
       ctx.repoDir,
@@ -777,16 +775,8 @@ export async function handleWorkflowApprovals(
     const deps = createWorkflowApprovalsDeps(
       ctx.repoContext.workflowRepo,
       runRepo,
-      async (workflowId) => {
-        const suspended = await runRepo
-          .findSummariesByStatus(workflowId, "suspended");
-        const runs = await Promise.all(
-          suspended.map((s) =>
-            runRepo.findById(workflowId, s.id as WorkflowRunId)
-          ),
-        );
-        return runs.filter((r): r is WorkflowRun => r !== null);
-      },
+      (workflowId, signal) =>
+        runRepo.findByStatus(workflowId, "suspended", signal),
       (workflowId) => evaluatedRepo.findById(workflowId),
     );
 
@@ -859,6 +849,11 @@ export async function handleWorkflowApprovals(
       payload: { data },
     });
   } catch (error) {
+    // A read stopped by the cancel answers as one that ran to the end does.
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "workflow_approvals_failed", message);
   }

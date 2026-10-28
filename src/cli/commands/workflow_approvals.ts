@@ -47,8 +47,6 @@ import type { WorkflowApprovalsResponse } from "../../serve/protocol.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import { quoteShellWord } from "../../domain/shell_word.ts";
-import type { WorkflowRunId } from "../../domain/workflows/workflow_id.ts";
-import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 
@@ -326,16 +324,8 @@ export const workflowApprovalsCommand = withRemoteOptions(
   const deps = createWorkflowApprovalsDeps(
     repoContext.workflowRepo,
     runRepo,
-    async (workflowId) => {
-      const suspended = await runRepo
-        .findSummariesByStatus(workflowId, "suspended");
-      const runs = await Promise.all(
-        suspended.map((s) =>
-          runRepo.findById(workflowId, s.id as WorkflowRunId)
-        ),
-      );
-      return runs.filter((r): r is WorkflowRun => r !== null);
-    },
+    (workflowId, signal) =>
+      runRepo.findByStatus(workflowId, "suspended", signal),
     (workflowId) => evaluatedRepo.findById(workflowId),
   );
 

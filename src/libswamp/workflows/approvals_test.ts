@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -581,4 +581,63 @@ Deno.test("workflowApprovals: records the definitions load and the approval coun
     assertEquals(approvals.attributes["approvals.pending"], 1);
     assertEquals(approvals.attributes["approvals.expired"], 1);
   });
+});
+
+Deno.test("workflowApprovals: passes its context's signal to findSuspendedRuns (swamp-club#4088)", async () => {
+  const wf = makeWorkflow({ stepType: "manual_approval" });
+  const controller = new AbortController();
+  const signals: Array<AbortSignal | undefined> = [];
+  const deps: WorkflowApprovalsDeps = {
+    ...makeDeps([wf], new Map()),
+    findSuspendedRuns: (_id, signal) => {
+      signals.push(signal);
+      return Promise.resolve([makeRun()]);
+    },
+  };
+
+  const events = await collect<WorkflowApprovalsEvent>(
+    workflowApprovals(
+      createLibSwampContext({ signal: controller.signal }),
+      deps,
+    ),
+  );
+
+  assertEquals(events.map((e) => e.kind), ["resolving", "completed"]);
+  assertEquals(signals, [controller.signal]);
+});
+
+Deno.test("workflowApprovals: a cancelled listing rejects with the abort reason and reads no further workflow's runs (swamp-club#4088)", async () => {
+  const workflows = [
+    makeWorkflow({ stepType: "manual_approval" }),
+    makeWorkflow({ id: PARENT_WF_ID, name: "second" }),
+    makeWorkflow({
+      id: "990e8400-e29b-41d4-a716-446655440000" as unknown as WorkflowId,
+      name: "third",
+    }),
+  ];
+  const controller = new AbortController();
+  let reads = 0;
+  const deps: WorkflowApprovalsDeps = {
+    ...makeDeps(workflows, new Map()),
+    // Cancelled while the first workflow's runs are read, as findByStatus
+    // rejects once its signal aborts.
+    findSuspendedRuns: (_id, signal) => {
+      reads++;
+      controller.abort(new DOMException("client went away", "AbortError"));
+      return Promise.reject(signal?.reason);
+    },
+  };
+
+  await assertRejects(
+    () =>
+      collect<WorkflowApprovalsEvent>(
+        workflowApprovals(
+          createLibSwampContext({ signal: controller.signal }),
+          deps,
+        ),
+      ),
+    DOMException,
+    "client went away",
+  );
+  assertEquals(reads, 1);
 });

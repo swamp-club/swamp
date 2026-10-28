@@ -622,3 +622,145 @@ Deno.test("modelEvaluate: persist leaves a rejected model unsaved, for one model
   );
   assertEquals(saved, ["runnable"]);
 });
+
+/**
+ * A stored definition whose env tag holds an expression, and the evaluated
+ * definition evaluation makes of it, with the same id and name.
+ */
+function storedAndEvaluated(name: string, stored: string, evaluated: string) {
+  const source = Definition.create({ name, version: 1, tags: { env: stored } });
+  const definition = Definition.fromData({
+    ...source.toData(),
+    tags: { env: evaluated },
+  });
+  return { source, definition };
+}
+
+/** The items of an all-models evaluation, after asserting it completed. */
+async function evaluateAllItems(
+  deps: ModelEvaluateDeps,
+  input: Parameters<typeof modelEvaluate>[2],
+): Promise<ModelEvaluateItemData[]> {
+  const events = await collect<ModelEvaluateEvent>(
+    modelEvaluate(createLibSwampContext(), deps, input),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (
+    completed?.kind !== "completed" || !isModelEvaluateAllData(completed.data)
+  ) {
+    throw new Error("expected all data");
+  }
+  return completed.data.items;
+}
+
+Deno.test("modelEvaluate: all decides persist on each stored definition, not its evaluated tags (swamp-club#4090)", async () => {
+  const modelType = ModelType.create("aws/ec2");
+  // Stored refused, evaluated allowed; and stored allowed, evaluated refused.
+  const planted = storedAndEvaluated("planted", "expr", "prod");
+  const kept = storedAndEvaluated("kept", "prod", "expr");
+  const saved: string[] = [];
+  const seen: string[] = [];
+  const deps = makeDeps({
+    evaluateAllDefinitions: () =>
+      Promise.resolve([planted, kept].map(({ source, definition }) => ({
+        definition,
+        sourceDefinition: source,
+        type: modelType,
+        hadExpressions: true,
+        authoredExpressions: new Set<string>(),
+      }))),
+    saveEvaluatedDefinition: (_type, definition) => {
+      saved.push(definition.name);
+      return Promise.resolve();
+    },
+  });
+
+  const items = await evaluateAllItems(deps, {
+    persist: ({ definition }) => {
+      seen.push(`${definition.name}:${definition.tags.env}`);
+      return definition.tags.env === "prod";
+    },
+  });
+
+  assertEquals(seen, ["planted:expr", "kept:prod"]);
+  assertEquals(
+    items.map((i) => [i.name, i.saved, i.outputPath !== undefined]),
+    [["planted", false, false], ["kept", undefined, true]],
+  );
+  assertEquals(saved, ["kept"]);
+});
+
+Deno.test("modelEvaluate: all decides include on each stored definition, not its evaluated tags (swamp-club#4090)", async () => {
+  const modelType = ModelType.create("aws/ec2");
+  const hidden = storedAndEvaluated("hidden", "expr", "prod");
+  const shown = storedAndEvaluated("shown", "prod", "expr");
+  const saved: string[] = [];
+  const deps = makeDeps({
+    evaluateAllDefinitions: () =>
+      Promise.resolve([hidden, shown].map(({ source, definition }) => ({
+        definition,
+        sourceDefinition: source,
+        type: modelType,
+        hadExpressions: true,
+        authoredExpressions: new Set<string>(),
+      }))),
+    saveEvaluatedDefinition: (_type, definition) => {
+      saved.push(definition.name);
+      return Promise.resolve();
+    },
+  });
+
+  const items = await evaluateAllItems(deps, {
+    include: ({ definition }) => definition.tags.env === "prod",
+  });
+
+  assertEquals(items.map((i) => i.name), ["shown"]);
+  assertEquals(saved, ["shown"]);
+});
+
+Deno.test("modelEvaluate: one model and all give the same persist decision for the same stored definition (swamp-club#4090)", async () => {
+  const modelType = ModelType.create("aws/ec2");
+  for (
+    const [stored, evaluated, expected] of [
+      ["expr", "prod", false],
+      ["prod", "expr", true],
+    ] as const
+  ) {
+    const { source, definition } = storedAndEvaluated(
+      "target",
+      stored,
+      evaluated,
+    );
+    const result = {
+      definition,
+      sourceDefinition: source,
+      type: modelType,
+      hadExpressions: true,
+      authoredExpressions: new Set<string>(),
+    };
+    const deps = makeDeps({
+      lookupDefinition: () =>
+        Promise.resolve({ definition: source, type: modelType }),
+      evaluateDefinition: () => Promise.resolve(result),
+      evaluateAllDefinitions: () => Promise.resolve([result]),
+    });
+    const persist = ({ definition }: { definition: Definition }) =>
+      definition.tags.env === "prod";
+
+    const single = await collect<ModelEvaluateEvent>(
+      modelEvaluate(createLibSwampContext(), deps, {
+        modelIdOrName: "target",
+        persist,
+      }),
+    );
+    const one = single[1] as Extract<
+      ModelEvaluateEvent,
+      { kind: "completed" }
+    >;
+    const [all] = await evaluateAllItems(deps, { persist });
+
+    const singleSaved = (one.data as ModelEvaluateItemData).saved !== false;
+    assertEquals(singleSaved, expected, `single, stored ${stored}`);
+    assertEquals(all.saved !== false, expected, `all, stored ${stored}`);
+  }
+});

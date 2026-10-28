@@ -34,6 +34,7 @@ const T0 = Date.UTC(2026, 9, 27, 12, 0, 0);
 const SECOND = 1000;
 const HOUR = 60 * 60 * SECOND;
 const MINUTE = 60 * SECOND;
+const DAY = 24 * HOUR;
 const ID_A = "01JBQ0000000000000000000AA";
 const ID_B = "01JBQ0000000000000000000BB";
 
@@ -261,18 +262,113 @@ Deno.test("applyPollOutcome: an ok after unsupported resumes the 900-second floo
   assertEquals(shouldPoll(resumed, t + 900 * SECOND), true);
 });
 
-Deno.test("applyPollOutcome: a stop is never cleared or replaced", () => {
+Deno.test("applyPollOutcome: only an answer the key earned clears a stop", () => {
   const stopped = applyPollOutcome(
     InboxState.empty(),
     { kind: "rejected" },
     T0,
   );
-  const after = applyPollOutcome(
-    applyPollOutcome(stopped, { kind: "ok", snapshot: snapshot() }, T0 + HOUR),
-    { kind: "unsupported" },
-    T0 + 2 * HOUR,
+  for (
+    const outcome of [
+      { kind: "unsupported" },
+      { kind: "unavailable" },
+      { kind: "rejected" },
+      { kind: "backoff" },
+      { kind: "failed", reason: "HTTP 500" },
+    ] as const
+  ) {
+    const after = applyPollOutcome(stopped, outcome, T0 + HOUR);
+    assertEquals(after.schedule.stop, { reason: "rejected", at: T0 });
+  }
+});
+
+Deno.test("applyPollOutcome: a key rejected once polls again after an ok or not_modified", () => {
+  const stopped = applyPollOutcome(
+    InboxState.empty(),
+    { kind: "rejected" },
+    T0,
   );
-  assertEquals(after.schedule.stop, { reason: "rejected", at: T0 });
+  assertEquals(shouldPoll(stopped, T0 + 2 * HOUR), false);
+  for (
+    const outcome of [
+      { kind: "ok", snapshot: snapshot() },
+      { kind: "not_modified" },
+    ] as const
+  ) {
+    const working = applyPollOutcome(stopped, outcome, T0 + HOUR);
+    assertEquals(working.schedule.stop, null);
+    assertEquals(shouldPoll(working, T0 + HOUR + 899 * SECOND), false);
+    assertEquals(shouldPoll(working, T0 + HOUR + 900 * SECOND), true);
+  }
+});
+
+Deno.test("applyPollOutcome: an answer sent before the stop leaves the stop in place", () => {
+  const stopped = applyPollOutcome(
+    InboxState.empty(),
+    { kind: "rejected" },
+    T0,
+  );
+  for (
+    const outcome of [
+      { kind: "ok", snapshot: snapshot({ fetchedAt: T0 - SECOND }) },
+      { kind: "not_modified", sentAt: T0 - SECOND },
+    ] as const
+  ) {
+    const after = applyPollOutcome(stopped, outcome, T0 + MINUTE);
+    assertEquals(after.schedule.stop, { reason: "rejected", at: T0 });
+  }
+  // Sent at or after the stop: the key works.
+  for (
+    const outcome of [
+      { kind: "ok", snapshot: snapshot({ fetchedAt: T0 }) },
+      { kind: "not_modified", sentAt: T0 + SECOND },
+    ] as const
+  ) {
+    assertEquals(
+      applyPollOutcome(stopped, outcome, T0 + MINUTE).schedule.stop,
+      null,
+    );
+  }
+});
+
+Deno.test("applyPollOutcome: an older snapshot never replaces a newer one", () => {
+  const newer = snapshot({ unread: 0, newestId: null, fetchedAt: T0 + 10 });
+  const held = applyPollOutcome(
+    InboxState.empty(),
+    { kind: "ok", snapshot: newer },
+    T0 + 10,
+  );
+  const older = snapshot({ unread: 1, fetchedAt: T0 });
+  const after = applyPollOutcome(
+    held,
+    { kind: "ok", snapshot: older },
+    T0 + 20,
+  );
+  assertEquals(after.snapshot, newer);
+  // Still a poll: the schedule moves on.
+  assertEquals(after.schedule.lastPolledAt, T0 + 20);
+  const later = snapshot({ unread: 3, fetchedAt: T0 + 15 });
+  assertEquals(
+    applyPollOutcome(held, { kind: "ok", snapshot: later }, T0 + 20).snapshot,
+    later,
+  );
+});
+
+Deno.test("applyPollOutcome: a held snapshot fetched in the future or before fetchedAt existed never blocks a new one", () => {
+  const fetched = snapshot({ unread: 4, fetchedAt: T0 });
+  for (
+    const held of [
+      snapshot({ fetchedAt: T0 + DAY }),
+      snapshot(),
+    ]
+  ) {
+    const state = { ...InboxState.empty(), snapshot: held };
+    assertEquals(
+      applyPollOutcome(state, { kind: "ok", snapshot: fetched }, T0 + HOUR)
+        .snapshot,
+      fetched,
+    );
+  }
 });
 
 Deno.test("applyPollOutcome: never changes the announcement", () => {
@@ -309,6 +405,13 @@ Deno.test("noticeToShow: repeats within 24 hours and retires at 24 hours", () =>
   const shown = recordNoticeShown(polledAt(T0), T0);
   assertEquals(noticeToShow(shown, T0 + NOTICE_LIFETIME_MS - 1), { unread: 2 });
   assertEquals(noticeToShow(shown, T0 + NOTICE_LIFETIME_MS), null);
+});
+
+Deno.test("noticeToShow: an announcement dated after now (clock went back) is retired", () => {
+  const shown = recordNoticeShown(polledAt(T0), T0);
+  assertEquals(noticeToShow(shown, T0 - SECOND), null);
+  assertEquals(noticeToShow(shown, T0 - DAY), null);
+  assertEquals(noticeToShow(shown, T0), { unread: 2 });
 });
 
 Deno.test("noticeToShow: a newer message restarts the 24 hours", () => {

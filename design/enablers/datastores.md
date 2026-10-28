@@ -6216,6 +6216,7 @@ are stamped `@anonymous`.
 | `POST partitions/{p}/commits` | One commit and the chunks it carries: `{seq}`, or a conflict |
 | `GET partitions/{p}/commits?after=&limit=` | A partition's commits after a seq, and its head: catch-up |
 | `GET changes?cursor=&limit=` | Commits after a feed cursor in this namespace, filtered to what the caller may read |
+| `GET base?after=&limit=` | The compacted base of this namespace, a page at a time, filtered to what the caller may read: `{point, entries, next?}` |
 | `POST locks` | `{lockKey, ttlMs?, waitMs?}`: serve's own lock on a behavior or a workflow run's claim, held for the caller: `201 {leaseId, lockKey, ttlMs, expiresAt}`, or `409 lock_held` |
 | `PUT locks/{leaseId}` | `{ttlMs?}`: renews the caller's lease, authorised again; `404 lease_not_found` once it ended |
 | `DELETE locks/{leaseId}` | Releases the caller's lease; `404 lease_not_found` when it already ended |
@@ -6460,6 +6461,50 @@ not vouched for by that partition: a non-admin gets 404 for it, and a client
 uploads it again to name it. A read model still being built vouches for
 nothing.
 
+**The compacted base** (swamp-club#4006). A checkout whose feed cursor is
+below the compaction point loads the base instead of the commits, and serve
+sends it per caller, never as a copy of its tables. `GET base` pages
+`readCompactedBase` and keeps an entry only when the caller may read it:
+
+- a record, and a file's ownership (by its owner partition), by its
+  partition and key (`baseRecordReadAccessOf`), since a compacted record no
+  longer carries the intent that wrote it. A behavior's data key needs read
+  on its data, an output or evaluated definition read on the behavior, a
+  config record what `definitionAccessOf` decides for the type its key
+  names (a rename's key too), a run read on its workflow, an
+  auto-definition what its op needs, the lockfile nothing. A behavior key no
+  intent writes needs admin and both reads. The list always holds what
+  `readAccessOf` needs of the op that wrote the key, so the base is never
+  read more loosely than the feed
+  (`commit_authorization_property_test.ts` checks this for every intent kind
+  and key);
+- a data name's versions, catalog rows and forward by read on the
+  behavior's data (`baseDataReadAccessOf`);
+- a partition in its own section when the caller may read it whole
+  (`partitionReadAccessOf`), and otherwise just before the first entry of it
+  the caller may read, once per request. Partitions are paged before
+  records, so this is how a record of a partition the caller may read only
+  part of (a behavior whose data it may read but not its outputs, a config
+  partition same-named definitions share) arrives with its compacted seq.
+  The entry carries each data name's version marks (its high-water mark and
+  removed versions) from serve's partition as it stands now, when the caller
+  may read its data: a mark only grows, so the copy never hands out a
+  version serve already used, and its version history can show the gaps any
+  follower shows.
+
+The feed decides a whole commit and hides it when any of its ops is
+unreadable. The base decides each record on its own, so a readable record a
+hidden commit wrote reaches the caller and the rest of that commit does not.
+That is the one difference, and it shows only what the caller may read.
+
+Each request scans at most `MAX_BASE_SCAN` (10,000) entries, kept or
+filtered, and `next` moves past filtered ones. A page holds entries of one
+compaction point; when the point moves mid-request the page ends there, and
+the next reports the new point. A token serve never handed out is `400
+invalid_request`, and a partition read below its compacted seq answers `410`
+with the partition's compacted `seq` beside the point, so a reader that holds
+the base reads on after it.
+
 **Uploading a chunk needs write access to its partition.** An upload spends
 serve's storage and the caller's quota, so `PUT chunks/{sha256}` names the
 partition it is for and needs that partition's least write access
@@ -6518,7 +6563,7 @@ other limits are constants, with no flags:
 | A named chunk is not stored | `409 {code: chunk_missing, missing}` |
 | Fenced, or the lease lost | `409 datastore_v3_writer_fenced` |
 | Storage unreachable, partly committed, or replication unconfirmed | `503` with the code `replicationErrorForClient` keeps |
-| A cursor or seq below the compaction point | `410 {code: commits_compacted, point}` |
+| A cursor or seq below the compaction point | `410 {code: commits_compacted, point}`, with the partition's compacted `seq` for a partition read |
 | A binding or authorisation refusal | `403 {code, reason, opIndex}` |
 | A malformed envelope, op or chunk | `400`; an oversized one `413` |
 
@@ -6617,7 +6662,7 @@ file locks under the root, whatever the datastore's type
   store's schema is unchanged and a solo checkout never opens it;
 - `_blobs/`, the chunk cache.
 
-**One copy per checkout, reset when the token changes.** Serve filters what
+**One copy per checkout, reset when the token or its access changes.** Serve filters what
 each caller may read, so a copy is one caller's view. `serve_upstream.db`
 records a fingerprint of the token the copy was built with (its SHA-256, never
 the token). Binding with another token resets the copy before anything
@@ -6637,6 +6682,111 @@ writer-busy:
 The chunk cache stays: it is content-addressed, and only chunks the new copy's
 commits name, which serve let this caller reference, are read from it.
 
+A reset also gives the copy a new id (below), so the checkout's projection is
+rebuilt from the new copy.
+
+**Reset when the caller's read access changes** (swamp-club#4089). A member's
+grants change more often than their token, and a copy built under old grants
+goes stale both ways: a widened grant never brings back the compacted records
+it now allows (they are in no commit to read again, and the base was loaded
+under the old grants), and a narrowed grant leaves records the member may no
+longer read in the copy and the checkout's files. So serve names the caller's
+read access on every datastore API reply to an authenticated caller, refusals
+included, in the `x-swamp-datastore-access` header:
+
+- It is a SHA-256 over what decides the caller's reads
+  (`GrantBasedAccessDecisionService.readAccessFingerprint`,
+  `src/domain/access/read_access_fingerprint.ts`): the principal, the
+  collectives and IdP groups it authenticated with, its groups in the policy
+  snapshot, and every grant for those subjects that names `read` or `admin`
+  (the only actions the read filter decides, and no other action implies
+  either), reduced to the fields a decision reads (id, state, subject,
+  effect, actions, selector, methods, condition) and sorted, and serve's
+  restricted behavior types (`--restricted-model-types`), whose definitions
+  only an admin may read: a restart with another list changes what a member
+  may read without changing a grant. Control-plane types are code constants,
+  so they change only with a release, which bumps the fingerprint's format.
+  Other subjects' grants, timestamps, authorship and the snapshot's version
+  are left out, so a reload that does not touch the caller keeps it. It is cached per caller
+  for each snapshot. Serve takes it before it answers the request, so a
+  reload while it answers shows as a change on the next reply (which resets
+  the copy), never as the access of a copy filtered under the old grants.
+  When it cannot be taken, the reply names none rather than failing.
+- With `--auth-mode none` it is the constant `unrestricted`; a caller with no
+  principal or policy gets `none`.
+
+The client reads it on every reply after the log id check
+(`ServeDatastoreClient.checkAccess`, `serveAccessCheck`), and
+`serve_upstream.db` records two values: the access the copy was built under
+(the first one a copy sees after it is made or reset) and the access serve
+sent. Once serve sends one other than the built one, that mismatch sticks
+until the copy is reset: the copy took that reply, so a later reply under the
+built access (replicas that disagree, in turn) does not make it current again.
+A value not shaped like a fingerprint is ignored. A different one does
+not interrupt the command that sees it, since serve already filters its
+replies: the command warns once that the next command rebuilds the copy (or,
+within the cooldown below, that a later one does); a later command whose
+binding already found the mismatch says why it waits instead.
+The next command's binding then resets the copy as a token switch does
+(`resetCopyForCaller`, `accessResetDue`), with these differences:
+
+- **Unlanded writes wait.** An outbox that still holds entries defers the
+  reset with a warning instead of refusing, since the member cannot return to
+  the old grants to settle them. A writing command lands them as it would
+  anyway, and the next command resets. An entry serve refuses with a 403 (a
+  narrowing that took the caller's `write`) is dropped by recovery like any
+  refused entry, so a refusal cannot hold the reset off for good; if an
+  earlier attempt landed it, the next catch-up brings it back.
+- **A busy checkout waits.** The reset takes the copy's writer lease without
+  waiting: when another command of the checkout is writing, this command
+  warns and reads the copy as it is, rather than waiting the lock timeout and
+  failing as writer-busy. The first command after that writer finishes
+  resets. A token switch still waits for the lease, since a copy built for
+  another caller is never read.
+- **A cooldown.** Serve replicas behind a load balancer hold their own policy
+  snapshot and reload it separately, so while two disagree a member's replies
+  name two fingerprints in turn. A change seen within
+  `ACCESS_RESET_COOLDOWN_MS` (10 minutes) of the last reset for access only
+  warns that the replicas may disagree; the first command after it resets if
+  the access still differs. A reset recorded in the future (the clock moved
+  back) holds nothing off. The cooldown applies to a narrowing too: one made
+  within 10 minutes of an earlier reset for access (a grant widened, then
+  narrowed again) leaves the records it revokes in the copy and the
+  checkout's files until the cooldown ends. Serve filters every reply under
+  the narrowed access meanwhile.
+
+A serve too old to send the header leaves both values unrecorded, and the
+copy behaves as before: only a token switch resets it. A copy that read the
+feed before any access was recorded (made by an older swamp, or through such a
+serve) records its build access as unknown when a fingerprint first arrives,
+so it is rebuilt once rather than adopting access it was not built under. This is freshness,
+not safety, so unlike the log id its absence is never refused. A grant change
+therefore takes effect in the copy from the second command after it: the
+first sees it, the second resets.
+
+**A reset never loses another command's pages.** A read-only command catches
+the copy up without the writer lease, so another command can reset the copy
+while it pages the feed: its commits then went into the replaced
+`commits.db`. Each `ServeUpstreamState` handle remembers the copy id it opened
+under, and every write of the catch-up (the feed cursor and anchor, serve's
+heads, a loaded base, the log id, the access seen) checks it in the same
+transaction. The handle opens before the copy's `commits.db`, so the files a
+command reads are never a newer copy's than the id it holds, and a handle
+opened while another command is partway through a reset holds no id at all:
+the files it opened may be the ones that reset removes. A copy reset since refuses them
+(`datastore_v3_serve_copy_replaced`): the command fails and says to run it
+again, and the new copy reads from the start.
+
+A reset removes what a narrowed grant no longer allows from this checkout's
+copy and files. Serve cannot reach copies made elsewhere before the
+narrowing, such as another checkout of the same member that has not run a
+command since, or files copied off the machine.
+
+Resource attributes decide reads too: a behavior renamed under a name-pattern
+grant, or a tag changed under a tag-conditioned grant. Those are content, not
+access, so no access fingerprint can see them, and a copy keeps what it
+already holds of such a behavior. Moving the copy aside loads it afresh.
+
 **The projection follows the view.** The projection, the v3 catalog and the
 read model's state are one per checkout, while the log they are built from
 changes with the token, the serve address or namespace (another root), or a
@@ -6648,7 +6798,9 @@ apply. So the checkout records the view its projection was built from in
 copy's id and the token fingerprint, or the solo datastore's path and
 namespace. The copy's id is random, made with the copy's `serve_upstream.db`
 (swamp-club#4049), so a copy moved aside and started afresh at the same root
-is another view. A view recorded before copies had ids is rebuilt once.
+is another view; every reset takes a new one (swamp-club#4089), so a reset for
+a change of access, which keeps the token, is another view too. A view
+recorded before copies had ids is rebuilt once.
 `v3RepositoryFactoryConfig` opens the handle (after the copy is current) and,
 before any recovery or catch-up, rebuilds the projection when the recorded
 view differs or a rebuild did not finish (`alignCheckoutView`):
@@ -6801,6 +6953,57 @@ brings back commits hidden from the caller before a grant changed, and records
 serve's head. A page that is filtered to nothing still moves on by the limit
 it was read at, because serve's own log has no holes.
 
+**Catching up past compaction** (swamp-club#4006). A feed read that serve
+answers `410` (a fresh copy of a compacted datastore, or one left behind the
+point) loads serve's base, and the feed then reads on from the point. One
+load of a copy runs at a time: in a process by a chain per copy, across
+processes under the copy's writer lease (which a writing command already
+holds, and a read-only one takes for the load). A load that gets the lease
+after another command loaded a base covering serve's point does nothing.
+
+1. Any `base_staging-*.db` a cut-off load left is removed, and the base is
+   paged into a staging file of its own beside the copy
+   (`ObservedBaseStaging`), each page in one transaction. Every reply is checked as the feed's are: the log id
+   first, then each entry's shape and namespace (`observedBaseEntryFromJSON`),
+   under the page byte limit, asked again at half the entries when too large.
+2. Pages of two compaction points are parts of two bases: the load starts
+   again, at most three times, then fails for this command.
+3. `installObservedBase` (follower stores only) finishes the staging file and
+   installs it in one write transaction, as a restore installs a file: each
+   partition's head at its compacted seq with a snapshot there, built from
+   its records, versions and serve's marks; the compaction point the higher
+   of serve's and the copy's last cursor plus one, so base ownership marks
+   sort before every later append and a read model at any older cursor loads
+   the base; the file's own rows (log id, writer fence, owner) carried over.
+   A staging file gone from its path is refused, never installed as an
+   empty store.
+4. Only then does `serve_upstream.db` record the load (`recordBaseLoaded`):
+   the cursor at exactly serve's point (the install replaced every commit
+   the copy held, so the feed reads those past the point again), the anchor
+   forgotten (a compacted commit cannot be asked for), the base's point,
+   each compacted seq a head serve reported. A feed page applied under
+   another base point (another process loaded a base meanwhile) does not
+   move the cursor; the feed reads on from the base's.
+
+A load cut off before the install leaves the copy as it was and only the
+staging file, which the next load removes. One cut off between the install
+and the record leaves the cursor below the point, so the next catch-up meets
+the `410` and loads again: a half-loaded copy never reads as current. The
+load writes only the copy, under the copy's own lease, never the
+datastore's writer lease or a direct writer's hold, so a claimed datastore
+(swamp-club#4063) loads as any other.
+The log id and the anchor of the next page applied guard the copy as before.
+A serve with no base route answers `404`, and the copy keeps the
+`commits_compacted` refusal.
+
+A partition read (a write's catch-up, or a gap in the feed) that meets a
+partition compacted past the copy's head reads on from the compacted seq
+`410` names only when the base the copy loaded covers serve's point: that
+base held what was compacted, and a partition it held nothing of was one
+this caller could not read. Otherwise (no base loaded, or serve compacted
+again since) the copy loads the base first, so commits compacted away are
+read only from a base, never skipped.
+
 **One serve's log.** The copy is keyed only by address and namespace. Its
 cursor is a position in one serve's log, so swamp-club#4049 checks that
 whatever answers at the address still serves that log. Without the check, a
@@ -6824,8 +7027,8 @@ that happens.
     refused with `serve_upstream_upgrade_required`, never left unchecked.
   - A copy from before log ids records the first id it sees, and the anchor
     checks below guard that first contact.
-  - A reset to another token clears the recorded id with the rest of the
-    copy.
+  - A reset, to another token or for a change of access, clears the recorded
+    id with the rest of the copy.
   - Only a log id can tell a moved serve from a revoked grant. Serve answers
     404 both for a partition the caller may no longer read and for one it
     has never heard of, and after a move, every partition of the old log is
@@ -6896,6 +7099,7 @@ the copy's truth.
   | Other small JSON (has, locks) | 1 MiB                                            |
   | Page of more than one commit  | 64 MiB                                           |
   | Page of one commit            | `MAX_WRITTEN_COMMIT_REPLY_BYTES` (about 350 MiB) |
+  | Page of the compacted base    | 64 MiB, asked again at half the entries          |
 
   No byte limit both bounds memory and fits every real page of 1000
   commits, so a page too large is asked again at half the limit, logged at
@@ -6956,7 +7160,7 @@ never relies on:
 | `409 datastore_v3_writer_fenced` | the same code | 1 |
 | `503` storage unreachable, writer busy, replication | the same code (serve now answers storage-unreachable and writer-busy as 503, not 500) | 75 |
 | `403` | serve's message and the op's index | 1 |
-| `410 commits_compacted` | refused; see the limits | 1 |
+| `410 commits_compacted` | serve's compacted base is loaded; a serve with no base route keeps the refusal | 1 (old serve) |
 
 A read that cannot reach serve uses the copy as it is and warns that it may be
 out of date. A write never falls back to storage.
@@ -6969,9 +7173,12 @@ than dropped as `head-moved`.
 
 **Limits (later items).**
 
-- A copy behind serve's compaction point cannot catch up. Serve has no route
-  for the compacted base yet, so a fresh checkout of a compacted datastore is
-  refused with a clear error until it has one (swamp-club#4006).
+- A base load has no bound on its number of pages, as the feed has none:
+  a hostile serve can grow the staging file on disk.
+- A grant widened after a copy loaded the base brings back the compacted
+  records it now allows only through a reset of the copy (swamp-club#4089,
+  "Reset when the caller's read access changes" above): the second command
+  after the change, or later within the cooldown.
 - Offline writes are refused, not queued (`p5-offline`).
 - Per-model and workflow-run locks are serve's ("Model locks" above).
   `p5-leases` builds on those routes (fencing tokens, a lapse cancelling the
@@ -7005,6 +7212,10 @@ than dropped as `head-moved`.
 - `integration/serve_upstream_test.ts` drives real checkouts against a port-0
   serve with admin and member tokens, compares them with a solo checkout, and
   proves storage and its lease are never touched.
+- `integration/serve_upstream_compacted_base_test.ts` loads serve's base into
+  a fresh copy and one left behind, with scoped grants, a load cut off
+  part-way, a serve moved after a load and a claimed datastore;
+  `integration/serve_datastore_base_test.ts` drives `GET base`'s filtering.
 - The error rules are each red-checked.
 
 ### Team mode: claiming a datastore (datastore rework Phase 5)

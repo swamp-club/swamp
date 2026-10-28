@@ -22,7 +22,7 @@
 // prints it, the design doc pins it, and the `swamp` skill's rule 4 quotes the
 // second line so agents recognise the notice and relay it.
 
-import { assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { ROOT } from "./arch_fitness_helpers.ts";
 import {
@@ -44,4 +44,11 @@ Deno.test("inbox notice: both first lines match the design doc", async () => {
   const doc = await Deno.readTextFile(DESIGN_DOC);
   assertStringIncludes(doc, INBOX_NOTICE_SINGLE_LINE);
   assertStringIncludes(doc, inboxNoticeFirstLine(3));
+});
+
+Deno.test("inbox notice: the plural line counts unread messages, not new ones", async () => {
+  // The count includes messages announced before, so "new" would overstate.
+  const plural = "ℹ 3 unread messages from Swamp Club are waiting for you.";
+  assertEquals(inboxNoticeFirstLine(3), plural);
+  assertStringIncludes(await Deno.readTextFile(DESIGN_DOC), plural);
 });

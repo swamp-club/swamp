@@ -37,7 +37,8 @@
  * - otherwise the partition moved on, and the entry is dropped: landing it
  *   now could overwrite what was committed since.
  *
- * A refusal drops the entry; with either, the unit's run entries go too
+ * A refusal drops the entry, serve's 403 on a forwarded commit included;
+ * with either, the unit's run entries go too
  * (decision 7). Each drop is logged once. Entries of a writer that may
  * still be running are left for it, and marked so: the floor, which then
  * rises to this writer's fence, does not drop them (swamp-club#3564), and a
@@ -71,6 +72,7 @@ import {
   type ProcessIdentity,
 } from "../../domain/datastore_v3/process_liveness.ts";
 import { localProcess } from "./process_identity.ts";
+import { ServeCommitRefusedError } from "./serve_upstream_errors.ts";
 import type { SqliteCommitStore } from "./sqlite_commit_store.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
@@ -413,7 +415,14 @@ async function recoverEntry(
         rebuilt = build(moved.seq + 1);
         continue;
       }
-      if (error instanceof CommitRejectedError) {
+      // Serve refusing a forwarded commit on the caller's access or its
+      // content is final: it never landed, and a narrowed grant refuses it
+      // on every recovery (swamp-club#4089). If an earlier attempt landed
+      // it, the next catch-up brings it back.
+      if (
+        error instanceof CommitRejectedError ||
+        error instanceof ServeCommitRefusedError
+      ) {
         return { kind: "dropped", reason: "refused", detail: error.message };
       }
       throw error;

@@ -38,6 +38,11 @@ import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
 import { CHUNK_BYTES } from "../../domain/datastore_v3/chunk_store.ts";
 import { MAX_COMMIT_OPS } from "../../domain/datastore_v3/commit.ts";
 import { MAX_FIELD_LENGTH as MAX_INTENT_FIELD_LENGTH } from "../../domain/datastore_v3/intent.ts";
+import {
+  type ObservedBaseEntry,
+  observedBaseEntryFromJSON,
+  type ObservedBasePage,
+} from "../../domain/datastore_v3/observed_base.ts";
 import { MAX_INLINE_BYTES } from "../../domain/datastore_v3/op.ts";
 import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { MAX_RECORD_KEY_LENGTH } from "../../domain/datastore_v3/record_key.ts";
@@ -129,6 +134,13 @@ export const COMMIT_CONTENT_TYPE = "application/vnd.swamp.commit+v1";
  * with the id of the commit log serve serves (swamp-club#4049).
  */
 export const SERVE_DATASTORE_LOG_HEADER = "x-swamp-datastore-log";
+
+/**
+ * The header every datastore API reply to an authenticated caller carries
+ * with a fingerprint of what that caller may read (swamp-club#4089): a
+ * checkout's copy is rebuilt when it changes.
+ */
+export const SERVE_DATASTORE_ACCESS_HEADER = "x-swamp-datastore-access";
 
 /**
  * The per-request timeout `SWAMP_SERVE_TIMEOUT_MS` sets (a positive
@@ -277,6 +289,7 @@ export class ServeDatastoreClient {
   readonly #maxAttempts: number;
   readonly #maxRetryDelayMs: number;
   #logCheck: ((logId: string | undefined) => void) | undefined;
+  #accessCheck: ((fingerprint: string) => void) | undefined;
 
   constructor(options: ServeDatastoreClientOptions) {
     this.baseUrl = normalizeServerUrl(options.baseUrl);
@@ -501,6 +514,59 @@ export class ServeDatastoreClient {
   }
 
   /**
+   * One page of serve's compacted base after `after` (undefined to start),
+   * at most `limit` entries the caller may read with their partitions'
+   * (swamp-club#4006). The reply is read under the page byte limit, and
+   * every entry is checked: one of another shape, or outside `namespace`,
+   * refuses the whole page.
+   */
+  async compactedBase(
+    after: string | undefined,
+    namespace: string,
+    signal: AbortSignal,
+    limit?: number,
+  ): Promise<ObservedBasePage> {
+    const body = await this.#json(
+      {
+        method: "GET",
+        path: "base",
+        query: {
+          ...(after === undefined ? {} : { after }),
+          ...(limit === undefined ? {} : { limit: String(limit) }),
+        },
+      },
+      signal,
+      SERVE_PAGE_MAX_BYTES,
+    );
+    if (
+      !isSeq(body.point) || !Array.isArray(body.entries) ||
+      (body.next !== undefined &&
+        (typeof body.next !== "string" || body.next.length === 0))
+    ) {
+      throw invalidReply("base", "point, entries and next");
+    }
+    let entries: ObservedBaseEntry[];
+    try {
+      entries = body.entries.map((entry) =>
+        observedBaseEntryFromJSON(entry, namespace)
+      );
+    } catch (error) {
+      throw new ServeUpstreamError(
+        200,
+        "invalid_response",
+        `Serve's reply to base holds an entry this copy refuses: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    return {
+      point: body.point,
+      entries,
+      next: body.next as string | undefined,
+    };
+  }
+
+  /**
    * Asks serve for its lock `lockKey` (`data/{type}/{id}/.lock` or
    * `workflow-run-claims/{runId}/.lock`, with no namespace), for `ttlMs`,
    * serve waiting up to `waitMs` while another holder has it. A lock still
@@ -624,6 +690,17 @@ export class ServeDatastoreClient {
   }
 
   /**
+   * Has every reply that names the caller's read access
+   * ({@link SERVE_DATASTORE_ACCESS_HEADER}) reported to `check`, once the
+   * log check passed (swamp-club#4089). A reply that names none (a serve
+   * too old to send it) is not reported. It never refuses a reply: serve
+   * filters every reply under the caller's current access.
+   */
+  checkAccess(check: (fingerprint: string) => void): void {
+    this.#accessCheck = check;
+  }
+
+  /**
    * A request whose success is a JSON object of at most `maxBytes`
    * ({@link SERVE_REPLY_MAX_BYTES} by default).
    */
@@ -695,6 +772,10 @@ export class ServeDatastoreClient {
           await response.body?.cancel();
           throw error;
         }
+      }
+      const access = response.headers.get(SERVE_DATASTORE_ACCESS_HEADER);
+      if (this.#accessCheck !== undefined && access !== null) {
+        this.#accessCheck(access);
       }
       try {
         return await read(response);

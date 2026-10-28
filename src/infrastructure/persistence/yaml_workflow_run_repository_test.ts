@@ -30,6 +30,7 @@ import { ensureDir } from "@std/fs";
 import { dirname, isAbsolute, join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
+import { SCAN_CONCURRENCY, SEARCH_SCAN_SHARE } from "./scan_permits.ts";
 import {
   getIndexPath,
   INDEX_SCHEMA_VERSION,
@@ -523,13 +524,10 @@ Deno.test("findAllGlobalSince: returns only in-window runs", async () => {
     const repo = new YamlWorkflowRunRepository(dir);
     const workflow = createTestWorkflow();
 
-    const old = WorkflowRun.create(workflow);
-    old.start();
-    await repo.save(workflow.id, old);
-
-    // Backdate the file so its mtime falls before the cutoff.
-    const oldPath = repo.getPath(workflow.id, old.id);
+    // A run that started, and was last saved, a week ago.
     const oldDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const old = await saveRunStartedAt(repo, workflow.id, workflow, oldDate);
+    const oldPath = repo.getPath(workflow.id, old.id);
     await Deno.utime(oldPath, oldDate, oldDate);
 
     const fresh = WorkflowRun.create(workflow);
@@ -634,6 +632,382 @@ Deno.test(
 
       assertEquals(found.length, 1);
       assertEquals(found[0].run.id, keep.id);
+    });
+  },
+);
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** A running run of `workflow` that started at `startedAt`, saved under `workflowId`. */
+async function saveRunStartedAt(
+  repo: YamlWorkflowRunRepository,
+  workflowId: WorkflowId,
+  workflow: Workflow,
+  startedAt: Date,
+): Promise<WorkflowRun> {
+  const started = WorkflowRun.create(workflow);
+  started.start();
+  const run = WorkflowRun.fromData({
+    ...started.toData(),
+    startedAt: startedAt.toISOString(),
+  });
+  await repo.save(workflowId, run);
+  return run;
+}
+
+/**
+ * Runs `fn` recording each run record read under `dir`, and the most
+ * listings, stats and reads under `dir` in flight at once. Each waits a
+ * macrotask, so concurrent ones overlap even on a fast disk.
+ */
+async function trackScanOpens<T>(
+  dir: string,
+  fn: () => Promise<T>,
+): Promise<{ result: T; reads: string[]; peak: number; open: number }> {
+  const { readTextFile, readDir, stat } = Deno;
+  const reads: string[] = [];
+  let open = 0;
+  let peak = 0;
+  const under = (path: string | URL) => String(path).startsWith(dir);
+  const opening = async <R>(run: () => Promise<R>): Promise<R> => {
+    open++;
+    peak = Math.max(peak, open);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return await run();
+    } finally {
+      open--;
+    }
+  };
+  Deno.readTextFile = ((path, options) => {
+    if (!under(path)) return readTextFile(path, options);
+    if (/workflow-run-[^/\\]*\.yaml$/.test(String(path))) {
+      reads.push(String(path));
+    }
+    return opening(() => readTextFile(path, options));
+  }) as typeof readTextFile;
+  Deno.stat = ((path) => {
+    if (!under(path)) return stat(path);
+    return opening(() => stat(path));
+  }) as typeof stat;
+  Deno.readDir = ((path) => {
+    if (!under(path)) return readDir(path);
+    return (async function* () {
+      open++;
+      peak = Math.max(peak, open);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        yield* readDir(path);
+      } finally {
+        open--;
+      }
+    })();
+  }) as typeof readDir;
+  try {
+    return { result: await fn(), reads, peak, open };
+  } finally {
+    Deno.readTextFile = readTextFile;
+    Deno.stat = stat;
+    Deno.readDir = readDir;
+  }
+}
+
+Deno.test(
+  "findAllGlobalSince: reads no run its index records as started before the cutoff (swamp-club#4076)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlWorkflowRunRepository(dir);
+      const workflow = createTestWorkflow();
+      // Saved just now, so the mtime pre-filter alone would read it.
+      const old = await saveRunStartedAt(
+        repo,
+        workflow.id,
+        workflow,
+        new Date(Date.now() - 2 * DAY_MS),
+      );
+      const fresh = WorkflowRun.create(workflow);
+      fresh.start();
+      await repo.save(workflow.id, fresh);
+
+      const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+      const { result, reads } = await trackScanOpens(
+        dir,
+        () => repo.findAllGlobalSince(cutoff),
+      );
+
+      assertEquals(result.map((found) => found.run.id), [fresh.id]);
+      assertEquals(reads, [repo.getPath(workflow.id, fresh.id)]);
+      assert(!reads.includes(repo.getPath(workflow.id, old.id)));
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: without an index in step with the records, filters by mtime and leaves the index as it was",
+  async () => {
+    for (const index of ["missing", "corrupt", "stale count"] as const) {
+      await withTempDir(async (dir) => {
+        const repo = new YamlWorkflowRunRepository(dir);
+        const workflow = createTestWorkflow();
+        const old = await saveRunStartedAt(
+          repo,
+          workflow.id,
+          workflow,
+          new Date(Date.now() - 2 * DAY_MS),
+        );
+        const oldPath = repo.getPath(workflow.id, old.id);
+        const oldDate = new Date(Date.now() - 2 * DAY_MS);
+        await Deno.utime(oldPath, oldDate, oldDate);
+        const fresh = WorkflowRun.create(workflow);
+        fresh.start();
+        await repo.save(workflow.id, fresh);
+
+        const indexPath = getIndexPath(runsDirOf(dir, workflow.id));
+        if (index === "missing") await Deno.remove(indexPath);
+        if (index === "corrupt") await Deno.writeTextFile(indexPath, "{");
+        if (index === "stale count") {
+          const other = WorkflowRun.create(workflow);
+          await copyRecord(dir, workflow.id, fresh.id, other.id);
+        }
+        const before = await Deno.readTextFile(indexPath).catch(() => null);
+
+        const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+        const { result, reads } = await trackScanOpens(
+          dir,
+          () => repo.findAllGlobalSince(cutoff),
+        );
+
+        const ids = result.map((found) => found.run.id);
+        assert(ids.includes(fresh.id), index);
+        assert(!ids.includes(old.id), index);
+        assert(!reads.includes(oldPath), index);
+        assertEquals(
+          await Deno.readTextFile(indexPath).catch(() => null),
+          before,
+          index,
+        );
+      });
+    }
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: finds a run file its index has no entry for, though the counts match (swamp-club#3452)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlWorkflowRunRepository(dir);
+      const workflow = createTestWorkflow();
+      const kept = WorkflowRun.create(workflow);
+      kept.start();
+      await repo.save(workflow.id, kept);
+      const removed = WorkflowRun.create(workflow);
+      removed.start();
+      await repo.save(workflow.id, removed);
+
+      // Another process adds a run and removes one without this process's
+      // index hearing of either: one entry per file still.
+      const added = WorkflowRun.create(workflow);
+      await copyRecord(dir, workflow.id, kept.id, added.id);
+      await Deno.remove(repo.getPath(workflow.id, removed.id));
+      const index = await readRunIndex(runsDirOf(dir, workflow.id));
+      assertEquals(
+        Object.keys(index?.entries ?? {}).sort(),
+        [
+          kept.id,
+          removed.id,
+        ].sort(),
+      );
+
+      const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+      const found = await repo.findAllGlobalSince(cutoff);
+
+      assertEquals(
+        found.map((f) => f.run.id).sort(),
+        [kept.id, added.id].sort(),
+      );
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: reads a run whose index entry has no startedAt, and checks its record",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlWorkflowRunRepository(dir);
+      const workflow = createTestWorkflow();
+      // Saved pending, so its entry has no startedAt.
+      const run = WorkflowRun.create(workflow);
+      await repo.save(workflow.id, run);
+      const runsDir = runsDirOf(dir, workflow.id);
+      assertEquals(
+        (await readRunIndex(runsDir))?.entries[run.id].startedAt,
+        undefined,
+      );
+      // Another process starts it; this process's index still has the
+      // pending entry.
+      const path = repo.getPath(workflow.id, run.id);
+      const started = WorkflowRun.fromData(
+        parseYaml(await Deno.readTextFile(path)) as Parameters<
+          typeof WorkflowRun.fromData
+        >[0],
+      );
+      started.start();
+      await Deno.writeTextFile(
+        path,
+        stringifyYaml(JSON.parse(JSON.stringify(started.toData()))),
+      );
+
+      const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+      const found = await repo.findAllGlobalSince(cutoff);
+
+      assertEquals(found.map((f) => f.run.id), [run.id]);
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: a run file whose name is not a UUID is filtered by mtime, never looked up in the index",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlWorkflowRunRepository(dir);
+      const workflow = createTestWorkflow();
+      const fresh = WorkflowRun.create(workflow);
+      fresh.start();
+      await repo.save(workflow.id, fresh);
+      const runsDir = runsDirOf(dir, workflow.id);
+      // A hand-placed record, and an entry under its file name that says it
+      // started long ago, so the counts match.
+      await Deno.copyFile(
+        repo.getPath(workflow.id, fresh.id),
+        join(runsDir, "workflow-run-not-a-uuid.yaml"),
+      );
+      const indexPath = getIndexPath(runsDir);
+      const stored = JSON.parse(await Deno.readTextFile(indexPath));
+      stored.entries["not-a-uuid"] = {
+        ...stored.entries[fresh.id],
+        startedAt: new Date(Date.now() - 30 * DAY_MS).toISOString(),
+      };
+      await Deno.writeTextFile(indexPath, JSON.stringify(stored));
+
+      const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+      const { reads } = await trackScanOpens(
+        dir,
+        () => repo.findAllGlobalSince(cutoff),
+      );
+
+      assert(reads.includes(join(runsDir, "workflow-run-not-a-uuid.yaml")));
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince and findGlobalByStatus: return what a sequential walk returns, in its order (swamp-club#4076)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlWorkflowRunRepository(dir);
+      const workflow = createTestWorkflow();
+      const base = Date.now();
+      // Two runs in different workflows share a startedAt, so ties must
+      // keep walk order; the rest are spread across the cutoff.
+      const tie = new Date(base - 10 * 60 * 1000);
+      for (let w = 0; w < 6; w++) {
+        const workflowId = createWorkflowId(crypto.randomUUID());
+        for (let r = 0; r < 5; r++) {
+          const startedAt = r === 0 && w < 2
+            ? tie
+            : new Date(base - (w * 5 + r) * 7 * 60 * 1000);
+          const run = await saveRunStartedAt(
+            repo,
+            workflowId,
+            workflow,
+            startedAt,
+          );
+          if (r === 4) {
+            // Its jobs never ran, so it completes as failed.
+            run.complete();
+            await repo.save(workflowId, run);
+          }
+        }
+      }
+      const cutoff = new Date(base - 90 * 60 * 1000);
+      const all = await repo.findAllGlobal();
+      const ids = (found: { run: WorkflowRun }[]) => found.map((f) => f.run.id);
+      const startedSince = (f: { run: WorkflowRun }) =>
+        (f.run.startedAt?.getTime() ?? -Infinity) >= cutoff.getTime();
+
+      const since = all.filter(startedSince);
+      assert(since.length > 0 && since.length < all.length);
+      assertEquals(ids(await repo.findAllGlobalSince(cutoff)), ids(since));
+
+      const running = all.filter((f) => f.run.status === "running");
+      const runningSince = running.filter(startedSince);
+      // A status scan lists each workflow's runs in its index's order, so
+      // only startedAt fixes the order between runs: compare without ties.
+      const untied = (found: { run: WorkflowRun }[]) =>
+        found.filter((f) => f.run.startedAt?.getTime() !== tie.getTime());
+      assertEquals(
+        ids(untied(await repo.findGlobalByStatus("running"))),
+        ids(untied(running)),
+      );
+      assertEquals(
+        ids(untied(await repo.findGlobalByStatus("running", cutoff))),
+        ids(untied(runningSince)),
+      );
+      assertEquals(
+        (await repo.findGlobalByStatus(["running", "failed"])).length,
+        all.length,
+      );
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince and findGlobalByStatus: scans running at once keep at most 16 directories and files open between them (swamp-club#4076)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlWorkflowRunRepository(dir);
+      const workflow = createTestWorkflow();
+      for (let w = 0; w < 12; w++) {
+        const workflowId = createWorkflowId(crypto.randomUUID());
+        for (let r = 0; r < 6; r++) {
+          const run = WorkflowRun.create(workflow);
+          run.start();
+          await repo.save(workflowId, run);
+        }
+      }
+      const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+
+      // Each scan alone opens more than one at a time.
+      for (
+        const scan of [
+          () => repo.findAllGlobalSince(cutoff),
+          () => repo.findGlobalByStatus("running"),
+        ]
+      ) {
+        const alone = await trackScanOpens(dir, scan);
+        assertEquals(alone.result.length, 72);
+        assert(alone.peak > 1, `${alone.peak} open at once`);
+      }
+
+      const { result, peak, open } = await trackScanOpens(
+        dir,
+        () =>
+          Promise.all([
+            ...Array.from(
+              { length: 12 },
+              () => repo.findAllGlobalSince(cutoff),
+            ),
+            ...Array.from(
+              { length: 12 },
+              () => repo.findGlobalByStatus("running"),
+            ),
+          ]),
+      );
+      for (const found of result) assertEquals(found.length, 72);
+      assertEquals(open, 0);
+      // Bounded across the scans (24 scans unbounded open up to 24).
+      assert(peak <= 16, `${peak} open at once`);
+      assert(peak > 1, `${peak} open at once`);
     });
   },
 );
@@ -4565,5 +4939,168 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: with records in another da
     assertEquals(result.deletedRunIds, [old.id]);
     assertEquals(await pathExists(legacy), false);
     assertEquals(await indexIds(indexDir), [kept.id]);
+  });
+});
+
+/** Saves `count` suspended runs of `workflow`, returned in save order. */
+async function saveSuspendedRuns(
+  repo: YamlWorkflowRunRepository,
+  workflow: Workflow,
+  count: number,
+): Promise<WorkflowRun[]> {
+  const runs: WorkflowRun[] = [];
+  for (let i = 0; i < count; i++) {
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    run.suspend();
+    await repo.save(workflow.id, run);
+    runs.push(run);
+  }
+  return runs;
+}
+
+Deno.test(
+  "findByStatus: requests running at once keep at most the search share of directories and files open between them, with findGlobalByStatus (swamp-club#4077)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlWorkflowRunRepository(dir);
+      const workflow = createTestWorkflow();
+      const runs = await saveSuspendedRuns(
+        repo,
+        workflow,
+        SCAN_CONCURRENCY * 3,
+      );
+
+      // One request alone reads more than one record at a time.
+      const alone = await trackScanOpens(
+        dir,
+        () => repo.findByStatus(workflow.id, "suspended"),
+      );
+      assertEquals(alone.result.length, runs.length);
+      assert(alone.peak > 1, `${alone.peak} open at once`);
+
+      const { result, peak, open } = await trackScanOpens(
+        dir,
+        () =>
+          Promise.all([
+            ...Array.from(
+              { length: 8 },
+              () => repo.findByStatus(workflow.id, "suspended"),
+            ),
+            repo.findGlobalByStatus("suspended"),
+          ]),
+      );
+      for (const found of result) assertEquals(found.length, runs.length);
+      assertEquals(open, 0);
+      // Unbounded, eight requests of 48 runs each open up to 384.
+      assert(peak <= SEARCH_SCAN_SHARE, `${peak} open at once`);
+      assert(peak > 1, `${peak} open at once`);
+    });
+  },
+);
+
+Deno.test("findByStatus: returns only runs with the status, in the order the index lists them", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    await saveSuspendedRuns(repo, workflow, 5);
+    const running = WorkflowRun.create(workflow);
+    running.start();
+    await repo.save(workflow.id, running);
+
+    const listed = await repo.findSummariesByStatus(workflow.id, "suspended");
+    const { result } = await trackScanOpens(
+      dir,
+      () => repo.findByStatus(workflow.id, "suspended"),
+    );
+
+    assertEquals(result.map((r) => r.id), listed.map((s) => s.id));
+    assert(result.every((r) => r.status === "suspended"));
+  });
+});
+
+Deno.test("findByStatus: leaves out a run whose record is gone when it is read", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const runs = await saveSuspendedRuns(repo, workflow, 3);
+    const gone = repo.getPath(workflow.id, runs[1].id);
+
+    // Removed after the index lists it, so the read finds no record.
+    const original = Deno.readTextFile;
+    Deno.readTextFile = ((...args: Parameters<typeof original>) => {
+      if (String(args[0]) === gone) {
+        return Deno.remove(gone).then(() => original(...args));
+      }
+      return original(...args);
+    }) as typeof original;
+    let found: WorkflowRun[];
+    try {
+      found = await repo.findByStatus(workflow.id, "suspended");
+    } finally {
+      Deno.readTextFile = original;
+    }
+
+    assertEquals(
+      found.map((r) => r.id).sort(),
+      [runs[0].id, runs[2].id].sort(),
+    );
+  });
+});
+
+Deno.test("findByStatus: a record that cannot be read rejects with its error", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const runs = await saveSuspendedRuns(repo, workflow, 3);
+    const unreadable = repo.getPath(workflow.id, runs[0].id);
+
+    const original = Deno.readTextFile;
+    Deno.readTextFile = ((...args: Parameters<typeof original>) => {
+      if (String(args[0]) === unreadable) {
+        return Promise.reject(new Deno.errors.PermissionDenied("denied"));
+      }
+      return original(...args);
+    }) as typeof original;
+    try {
+      await assertRejects(
+        () => repo.findByStatus(workflow.id, "suspended"),
+        Deno.errors.PermissionDenied,
+        "denied",
+      );
+    } finally {
+      Deno.readTextFile = original;
+    }
+  });
+});
+
+Deno.test("findByStatus: an aborted signal stops reading records and rejects with its reason", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const runs = await saveSuspendedRuns(repo, workflow, SCAN_CONCURRENCY * 3);
+    const abort = new AbortController();
+
+    // Aborted as the first record is read.
+    const original = Deno.readTextFile;
+    let recordReads = 0;
+    Deno.readTextFile = ((...args: Parameters<typeof original>) => {
+      if (/workflow-run-[^/\\]*\.yaml$/.test(String(args[0]))) {
+        recordReads++;
+        abort.abort(new DOMException("shutting down", "AbortError"));
+      }
+      return original(...args);
+    }) as typeof original;
+    try {
+      await assertRejects(
+        () => repo.findByStatus(workflow.id, "suspended", abort.signal),
+        DOMException,
+        "shutting down",
+      );
+    } finally {
+      Deno.readTextFile = original;
+    }
+
+    assert(recordReads < runs.length, `${recordReads} records read`);
   });
 });

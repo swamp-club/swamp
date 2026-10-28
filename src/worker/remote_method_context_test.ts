@@ -43,21 +43,28 @@ import { RECORD_KIND_TAG } from "../domain/models/data_writer.ts";
 import { RpcChannel } from "../domain/remote/rpc_channel.ts";
 import {
   type DispatchParams,
+  type DispatchSecretLoadReference,
+  LEGACY_PLAINTEXT_PROTOCOL_VERSION,
   REMOTE_PROTOCOL_VERSION,
   RemoteMethod,
 } from "../domain/remote/protocol.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { DataPlaneClient } from "./data_plane_client.ts";
+import { secretReadKey } from "../domain/vaults/secret_loader.ts";
 import { modelIdentityPredicate } from "../domain/data/data_access_service.ts";
 
 const MODEL_TYPE = ModelType.create("swamp/remote-ctx-test");
 
+/**
+ * A version 5 dispatch: its secrets travel in the frame and `resolveSecret`.
+ * The version 6 tests below override the version.
+ */
 function dispatch(): DispatchParams {
   return {
     dispatchId: "d-1",
     leaseId: "l-1",
     execution: {
-      protocolVersion: REMOTE_PROTOCOL_VERSION,
+      protocolVersion: LEGACY_PLAINTEXT_PROTOCOL_VERSION,
       modelType: MODEL_TYPE.normalized,
       modelId: "m-1",
       methodName: "run",
@@ -235,6 +242,16 @@ function harness(
     deleteResource: (body: { name: string }) => {
       calls.push({ method: "deleteResource", params: body });
       return Promise.resolve();
+    },
+    // The protected load route: each reference's value is its key's.
+    loadSecrets: (references: DispatchSecretLoadReference[]) => {
+      calls.push({ method: "loadSecrets", params: references });
+      return Promise.resolve(
+        new Map(references.map((reference) => [
+          secretReadKey(reference),
+          `${reference.key}-loaded`,
+        ])),
+      );
     },
   } as unknown as DataPlaneClient;
 
@@ -990,4 +1007,82 @@ Deno.test("dispatchRedactor: masks the shipped values and leaves text alone with
   );
   assertEquals(dispatchRedactor(undefined).redact(text), text);
   assertEquals(dispatchRedactor([]).redact(text), text);
+});
+
+/** A version 6 dispatch: references only, loaded through the route. */
+function referenceDispatch(
+  referenceBag?: DispatchParams["referenceBag"],
+): DispatchParams {
+  const base = dispatch();
+  return {
+    ...base,
+    execution: { ...base.execution, protocolVersion: REMOTE_PROTOCOL_VERSION },
+    ...(referenceBag ? { referenceBag } : {}),
+  };
+}
+
+Deno.test("remote context: a version 6 dispatch rebuilds its bag from references, holding no value until the runner loads it (typed-secrets 5.2)", async () => {
+  await withScratch((dir) => {
+    const sentinel = `__SWAMP_VSEC_${"0a1b2c3d".repeat(4)}_0__`;
+    const h = harness(
+      dir,
+      undefined,
+      undefined,
+      referenceDispatch([{
+        sentinel,
+        reference: { vaultName: "v", key: "token" },
+        encoding: "raw",
+        dataOrigin: false,
+        location: "methods.run.arguments.token",
+      }]),
+    );
+    const bag = h.context.vaultSecrets!;
+    assertEquals(bag.resolvesAny, true);
+    assertThrows(() => bag.resolveRaw(sentinel), Error, "was not loaded");
+    assertEquals(
+      bag.withLoaded(new Map([[sentinel, "s3cret"]])).resolveRaw(sentinel),
+      "s3cret",
+    );
+    // A version 6 dispatch with no secret has an empty bag.
+    const plain = harness(dir, undefined, undefined, referenceDispatch());
+    assertEquals(plain.context.vaultSecrets?.resolvesAny, false);
+    return Promise.resolve();
+  });
+});
+
+Deno.test("remote context: on a version 6 dispatch a readResource claim goes through the load route, a method's own vault read keeps resolveSecret, and both join the redactor (typed-secrets 5.2)", async () => {
+  await withScratch(async (dir) => {
+    const h = harness(
+      dir,
+      undefined,
+      {
+        username: "alice",
+        refreshToken: "${{ vault.get('my-vault', 'refresh-tok') }}",
+      },
+      referenceDispatch(),
+      undefined,
+      { "_swamp.sensitiveFields": JSON.stringify(["refreshToken"]) },
+    );
+    // A method's own read by name takes the verb, as on version 5.
+    assertEquals(await h.context.vaultService!.get("v", "api-key"), "s3cret");
+    const value = await h.context.readResource!("state-main");
+    assertEquals(value, {
+      username: "alice",
+      refreshToken: "refresh-tok-loaded",
+    });
+    assertEquals(
+      h.calls.filter((c) => c.method === "loadSecrets").map((c) => c.params),
+      // The read claims the record it is for (swamp-club#3529).
+      [[{
+        vaultName: "my-vault",
+        key: "refresh-tok",
+        resource: { name: "state-main", version: 4 },
+      }]],
+    );
+    assertEquals(
+      h.calls.filter((c) => c.method === "resolveSecret").map((c) => c.params),
+      [{ vaultName: "v", secretKey: "api-key" }],
+    );
+    assertEquals(h.redact("s3cret refresh-tok-loaded"), "*** ***");
+  });
 });

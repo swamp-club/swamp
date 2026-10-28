@@ -80,8 +80,18 @@ const outcome: fc.Arbitrary<PollOutcome> = fc.oneof(
 
 type Op =
   | { readonly op: "advance"; readonly ms: number }
-  | { readonly op: "poll"; readonly outcome: PollOutcome }
+  /**
+   * A background poll, sent `lag` ms before it is applied. `refresh` is the
+   * `inbox read` refresh, which applies its answer whether a poll is due.
+   */
+  | {
+    readonly op: "poll" | "refresh";
+    readonly outcome: PollOutcome;
+    readonly lag: number;
+  }
   | { readonly op: "notice" };
+
+const lag = fc.constantFrom(0, SECOND, MIN_GAP_MS, DAY);
 
 function ops(minStepMs: number): fc.Arbitrary<Op[]> {
   const step = fc.oneof(
@@ -91,7 +101,16 @@ function ops(minStepMs: number): fc.Arbitrary<Op[]> {
   return fc.array(
     fc.oneof(
       step.map((ms): Op => ({ op: "advance", ms })),
-      outcome.map((o): Op => ({ op: "poll", outcome: o })),
+      fc.tuple(outcome, lag).map(([o, l]): Op => ({
+        op: "poll",
+        outcome: o,
+        lag: l,
+      })),
+      fc.tuple(outcome, lag).map(([o, l]): Op => ({
+        op: "refresh",
+        outcome: o,
+        lag: l,
+      })),
       fc.constant<Op>({ op: "notice" }),
     ),
     { minLength: 20, maxLength: 60 },
@@ -105,10 +124,80 @@ interface Coverage {
   notices: Record<string, number>;
   blocked: number;
   retried: number;
+  /** A stop cleared by an answer the key earned. */
+  unstopped: number;
+  /** A snapshot fetched earlier that lost to the one held. */
+  olderLost: number;
+  /** A stop kept against an answer sent before it. */
+  staleKept: number;
 }
 
 function newCoverage(): Coverage {
-  return { outcomes: {}, notices: {}, blocked: 0, retried: 0 };
+  return {
+    outcomes: {},
+    notices: {},
+    blocked: 0,
+    retried: 0,
+    unstopped: 0,
+    olderLost: 0,
+    staleKept: 0,
+  };
+}
+
+/** Stamps the outcome with when its request was sent. */
+function sent(outcome: PollOutcome, at: number): PollOutcome {
+  if (outcome.kind === "ok") {
+    return { ...outcome, snapshot: { ...outcome.snapshot, fetchedAt: at } };
+  }
+  return outcome.kind === "not_modified" ? { ...outcome, sentAt: at } : outcome;
+}
+
+/**
+ * The invariants every applied answer keeps, poll or refresh: a working key
+ * is never left stopped, any other answer never clears or replaces a stop,
+ * and an older snapshot never replaces a newer one held.
+ */
+function checkApplied(
+  before: InboxState,
+  outcome: PollOutcome,
+  after: InboxState,
+  now: number,
+  coverage: Coverage,
+): string | undefined {
+  const stop = before.schedule.stop;
+  if (outcome.kind === "ok" || outcome.kind === "not_modified") {
+    const sentAt = outcome.kind === "ok"
+      ? outcome.snapshot.fetchedAt
+      : outcome.sentAt;
+    if (stop !== null && sentAt !== undefined && sentAt < stop.at) {
+      // Sent before the stop: it says nothing about the key now.
+      if (after.schedule.stop !== stop) return "a stale answer cleared a stop";
+      coverage.staleKept++;
+    } else {
+      if (after.schedule.stop !== null) return "a working key stayed stopped";
+      if (stop !== null) coverage.unstopped++;
+    }
+  } else if (stop !== null && after.schedule.stop !== stop) {
+    return "a stop was cleared or replaced";
+  }
+  if (outcome.kind !== "ok") {
+    if (after.snapshot !== before.snapshot) {
+      return `${outcome.kind} changed the snapshot`;
+    }
+    return undefined;
+  }
+  const held = before.snapshot?.fetchedAt;
+  const fetched = outcome.snapshot.fetchedAt!;
+  const keepHeld = held !== undefined && held <= now && held > fetched;
+  if (keepHeld) {
+    if (after.snapshot !== before.snapshot) {
+      return "an older snapshot replaced a newer one";
+    }
+    coverage.olderLost++;
+  } else if (after.snapshot !== outcome.snapshot) {
+    return "a newer snapshot was not kept";
+  }
+  return undefined;
 }
 
 function noticeBranch(state: InboxState, now: number): NoticeBranch {
@@ -120,6 +209,8 @@ function noticeBranch(state: InboxState, now: number): NoticeBranch {
     return "new";
   }
   if (snapshot.newestId < announcement.id) return "superseded";
+  // An announcement dated after now means the clock went back.
+  if (announcement.at > now) return "retired";
   return now - announcement.at < NOTICE_LIFETIME_MS ? "repeat" : "retired";
 }
 
@@ -143,6 +234,19 @@ function play(
     const stopBefore = state.schedule.stop;
     if (step.op === "advance") {
       now += step.ms;
+    } else if (step.op === "refresh") {
+      const applied = sent(step.outcome, now - step.lag);
+      const next = applyPollOutcome(state, applied, now);
+      const broken = checkApplied(state, applied, next, now, coverage);
+      if (broken) return `refresh: ${broken}`;
+      if (next.announcement !== state.announcement) {
+        return "a refresh changed the announcement";
+      }
+      state = next;
+      // Not a poll: it neither spaces nor follows the poll schedule.
+      lastPollTime = null;
+      lastOutcome = null;
+      continue;
     } else if (step.op === "poll") {
       const { lastPolledAt, stop } = state.schedule;
       const due = shouldPoll(state, now);
@@ -168,7 +272,10 @@ function play(
       ) {
         return `two polls ${now - lastPollTime} ms apart`;
       }
-      const next = applyPollOutcome(state, step.outcome, now);
+      const applied = sent(step.outcome, now - step.lag);
+      const next = applyPollOutcome(state, applied, now);
+      const broken = checkApplied(state, applied, next, now, coverage);
+      if (broken) return `poll: ${broken}`;
       if (next.announcement !== state.announcement) {
         return "a poll changed the announcement";
       }
@@ -205,6 +312,9 @@ function play(
       if (now - announcement.at >= NOTICE_LIFETIME_MS) {
         return "a notice shown 24 hours after it was announced";
       }
+      if (announcement.at > now) {
+        return "a notice shown for an announcement dated after now";
+      }
       if (monotonic) {
         if (superseded.has(id)) return `superseded ${id} showed again`;
         const first = firstShown.get(id);
@@ -220,7 +330,7 @@ function play(
       state = next;
     }
     if (stopBefore !== null && state.schedule.stop !== stopBefore) {
-      return "a stop was cleared or replaced";
+      return "a notice cleared or replaced a stop";
     }
   }
   return undefined;
@@ -236,6 +346,12 @@ function assertCovered(coverage: Coverage, notices: NoticeBranch[]): void {
     coverage.blocked,
     "polls after unsupported:",
     coverage.retried,
+    "stops cleared:",
+    coverage.unstopped,
+    "older snapshots lost:",
+    coverage.olderLost,
+    "stale answers kept a stop:",
+    coverage.staleKept,
   );
   for (
     const kind of [
@@ -255,6 +371,9 @@ function assertCovered(coverage: Coverage, notices: NoticeBranch[]): void {
   }
   assert(coverage.blocked > 0, "never tried: a poll that was not due");
   assert(coverage.retried > 0, "never tried: a poll after unsupported");
+  assert(coverage.unstopped > 0, "never tried: a stop cleared");
+  assert(coverage.olderLost > 0, "never tried: an older snapshot losing");
+  assert(coverage.staleKept > 0, "never tried: a stale answer and a stop");
 }
 
 Deno.test("inbox policy (property): with a monotonic clock, polls stay 900 s apart and retired notices stay retired", () => {

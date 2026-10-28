@@ -748,6 +748,36 @@ export function inferMethodKind(
 }
 
 /**
+ * Where a method's kind came from: set on the method definition, inferred
+ * from the method name, or neither.
+ */
+export type MethodKindSource = "declared" | "inferred" | "none";
+
+/**
+ * A method's resolved kind together with where it came from.
+ */
+export interface ResolvedMethodKind {
+  kind?: MethodKind;
+  source: MethodKindSource;
+}
+
+/**
+ * Resolves a method's kind the same way `inferMethodKind()` does, and reports
+ * whether it was declared, inferred from the name, or not resolved at all.
+ *
+ * @param methodName - The method name to infer from
+ * @param definition - Optional method definition with explicit kind
+ */
+export function resolveMethodKind(
+  methodName: string,
+  definition?: { kind?: MethodKind },
+): ResolvedMethodKind {
+  const kind = inferMethodKind(methodName, definition);
+  if (kind === undefined) return { source: "none" };
+  return { kind, source: definition?.kind ? "declared" : "inferred" };
+}
+
+/**
  * Result of a pre-flight check execution.
  */
 export interface CheckResult {

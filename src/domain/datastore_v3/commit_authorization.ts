@@ -53,7 +53,11 @@ import {
   intentPartition,
   type ModelRef,
 } from "./intent.ts";
-import { bindKey, type KeyBindingRefusal } from "./intent_key_paths.ts";
+import {
+  bindKey,
+  type KeyBindingRefusal,
+  modelRecordKind,
+} from "./intent_key_paths.ts";
 import type { DataVersionOp, Op, PutOp, TombstoneOp } from "./op.ts";
 import { type DefinitionKind, partitionOf } from "./partition_key.ts";
 import type { PartitionKey } from "./partition_key.ts";
@@ -611,6 +615,151 @@ export async function definitionRecordReadAccessOf(
   return write.action === "admin"
     ? write
     : { action: "read", resource: write.resource };
+}
+
+/**
+ * What a caller needs to read one record of the compacted base
+ * (swamp-club#4006), every entry of the list: an empty list means any
+ * authenticated caller. A base record no longer carries the intent that
+ * wrote it, so it is decided by its partition and key. The list always
+ * holds what {@link readAccessOf} requires of the op that wrote the key,
+ * so the base is never read more loosely than the changes feed:
+ *
+ * - a behavior's partition: a data key needs read on its data, an output
+ *   or evaluated definition read on the behavior, as their ops do; a
+ *   control-plane behavior admin. A key its intents never write needs
+ *   admin and both reads, since no op tells what it holds;
+ * - a definition's config partition: as {@link definitionAccessOf} decides
+ *   a write of the key, read in place of write;
+ * - a workflow run's partition: read on its workflow;
+ * - an auto-definition's partition: as its op is decided, by the type its
+ *   key names;
+ * - the lockfile: any authenticated caller.
+ */
+export async function baseRecordReadAccessOf(
+  partition: PartitionKey,
+  key: RecordKey,
+  resolver: AggregateResourceResolver,
+): Promise<readonly RequiredAccess[]> {
+  const identity = partition.identity;
+  switch (identity.kind) {
+    case "model": {
+      const model = { type: identity.type, id: identity.id };
+      const type = ModelType.create(identity.type);
+      if (isControlPlaneModelType(type.normalized)) {
+        return [{
+          action: "admin",
+          resource: await controlPlaneResourceOf(model, resolver),
+        }];
+      }
+      const kind = modelRecordKind(model, key);
+      if (kind === undefined) {
+        return [
+          { action: "admin", resource: ADMIN_RESOURCE },
+          ...await partitionReadAccessOf(partition, resolver),
+        ];
+      }
+      const lookup = await resolver.model(model);
+      return [{
+        action: "read",
+        resource: lookup === undefined
+          ? unresolvedModelResource(type, identity.id, kind)
+          : modelAccessResource(lookup, kind),
+      }];
+    }
+    case "run": {
+      const workflow = await resolver.workflow(identity.workflowId);
+      return [{
+        action: "read",
+        resource: workflow === undefined
+          ? unresolvedAccessResource("workflow", identity.workflowId)
+          : workflowAccessResource({
+            name: workflow.name,
+            tags: workflow.tags ?? {},
+          }),
+      }];
+    }
+    case "config": {
+      const definition = {
+        kind: identity.definitionKind,
+        name: identity.name,
+      };
+      // A rename puts the key named by the other name into this partition:
+      // bind the name the key's file carries, so its type is read from the
+      // key as the rename's own op reads it.
+      const file = key.toString().split("/").pop() ?? "";
+      const stem = file.endsWith(".yaml") ? file.slice(0, -".yaml".length) : "";
+      const write = await definitionAccessOf(
+        {
+          intent: { kind: "definition.rename-to", definition, from: stem },
+          kind: "put",
+          key,
+        },
+        definition,
+        resolver,
+      );
+      return [
+        write.action === "admin"
+          ? write
+          : { action: "read", resource: write.resource },
+      ];
+    }
+    case "definition": {
+      const binding = bindKey(
+        { kind: "auto-definition.save", autoDefinition: { id: identity.id } },
+        "put",
+        key,
+      );
+      const modelType = binding.ok ? binding.type : undefined;
+      if (
+        modelType === undefined ||
+        isControlPlaneModelType(modelType.normalized)
+      ) {
+        return [{ action: "admin", resource: ADMIN_RESOURCE }];
+      }
+      return [{
+        action: "read",
+        resource: unresolvedModelResource(modelType, identity.id, "model"),
+      }];
+    }
+    case "lockfile":
+      return [];
+  }
+}
+
+/**
+ * What a caller needs to read a compacted data name's versions, catalog
+ * rows, forward and marks (swamp-club#4006): read on the behavior's data,
+ * as its data records need, or admin for a control-plane behavior. Only a
+ * behavior's partition holds data names; any other needs admin and every
+ * read of the partition.
+ */
+export async function baseDataReadAccessOf(
+  partition: PartitionKey,
+  resolver: AggregateResourceResolver,
+): Promise<readonly RequiredAccess[]> {
+  const identity = partition.identity;
+  if (identity.kind !== "model") {
+    return [
+      { action: "admin", resource: ADMIN_RESOURCE },
+      ...await partitionReadAccessOf(partition, resolver),
+    ];
+  }
+  const model = { type: identity.type, id: identity.id };
+  const type = ModelType.create(identity.type);
+  if (isControlPlaneModelType(type.normalized)) {
+    return [{
+      action: "admin",
+      resource: await controlPlaneResourceOf(model, resolver),
+    }];
+  }
+  const lookup = await resolver.model(model);
+  return [{
+    action: "read",
+    resource: lookup === undefined
+      ? unresolvedModelResource(type, identity.id, "data")
+      : modelAccessResource(lookup, "data"),
+  }];
 }
 
 /**

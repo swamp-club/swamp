@@ -81,8 +81,23 @@ export interface Serve {
   readonly models: Readonly<Record<string, string>>;
   /** Serve's own checkout. */
   readonly serveRepo: string;
-  /** Every commit of serve's log, in order. */
+  /** Every commit of serve's log after its compaction point, in order. */
   log(): Promise<readonly ServeLogEntry[]>;
+  /**
+   * Compacts serve's whole log; with `claim`, serve claims its datastore
+   * first. Resolves with the compaction point.
+   */
+  compact(options?: { claim?: boolean }): Promise<number>;
+  /**
+   * Replaces the grants serve enforces, as a reload of its access data
+   * does (swamp-club#4089).
+   */
+  setGrants(grants: readonly GrantSpec[]): Promise<void>;
+  /**
+   * Replaces serve's restricted behavior types, as a restart with another
+   * `--restricted-model-types` does (swamp-club#4089).
+   */
+  restrict(types: readonly string[]): Promise<void>;
   /**
    * Serve's own work: `count` saves of `dataName` on `web`, each under
    * serve's lock on it, as serve's method runs take it.
@@ -199,6 +214,9 @@ async function startServe(options: ServeOptions): Promise<Serve> {
   let failed: string | undefined;
   let stopped = false;
   let logReply: readonly ServeLogEntry[] | undefined;
+  let compactedPoint: number | undefined;
+  let granted = false;
+  let restricted = false;
   let wroteReply:
     | { versions: readonly number[]; errors: readonly string[] }
     | undefined;
@@ -209,6 +227,9 @@ async function startServe(options: ServeOptions): Promise<Serve> {
     else if (message.kind === "failed") failed = message.error;
     else if (message.kind === "stopped") stopped = true;
     else if (message.kind === "wrote") wroteReply = message;
+    else if (message.kind === "compacted") compactedPoint = message.point;
+    else if (message.kind === "granted") granted = true;
+    else if (message.kind === "restricted") restricted = true;
     else logReply = message.entries;
   };
   worker.onerror = (event) => {
@@ -274,6 +295,42 @@ async function startServe(options: ServeOptions): Promise<Serve> {
       );
       if (logReply === undefined) throw new Error(`serve failed: ${failed}`);
       return logReply;
+    },
+    async compact(options = {}) {
+      compactedPoint = undefined;
+      worker.postMessage(
+        { kind: "compact", claim: options.claim } satisfies ServeWorkerRequest,
+      );
+      await waitFor(
+        () => compactedPoint !== undefined || failed !== undefined,
+        "serve's compaction",
+      );
+      if (compactedPoint === undefined) {
+        throw new Error(`serve failed: ${failed}`);
+      }
+      return compactedPoint;
+    },
+    async setGrants(grants) {
+      granted = false;
+      worker.postMessage(
+        { kind: "grants", grants } satisfies ServeWorkerRequest,
+      );
+      await waitFor(
+        () => granted || failed !== undefined,
+        "serve's grants",
+      );
+      if (!granted) throw new Error(`serve failed: ${failed}`);
+    },
+    async restrict(types) {
+      restricted = false;
+      worker.postMessage(
+        { kind: "restrict", types } satisfies ServeWorkerRequest,
+      );
+      await waitFor(
+        () => restricted || failed !== undefined,
+        "serve's restricted types",
+      );
+      if (!restricted) throw new Error(`serve failed: ${failed}`);
     },
     async write(dataName, dataId, count) {
       wroteReply = undefined;

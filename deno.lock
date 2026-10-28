@@ -76,6 +76,7 @@
     "npm:tailwindcss@^4.3.3": "4.3.3",
     "npm:typescript@^5.8.3": "5.9.3",
     "npm:vite@^6.4.4": "6.4.4_@types+node@24.0.7_yaml@2.9.0",
+    "npm:wrap-ansi@9.0.2": "9.0.2",
     "npm:yaml@^2.9.0": "2.9.0",
     "npm:zod@^4.6.7": "4.6.7"
   },
@@ -2784,6 +2785,7 @@
       "npm:marked@^14.1.4",
       "npm:react-dom@^19.2.5",
       "npm:react@^19.2.5",
+      "npm:wrap-ansi@9.0.2",
       "npm:yaml@^2.9.0",
       "npm:zod@^4.6.7"
     ],

@@ -40,7 +40,31 @@ import type { DispatchOutput, RpcStreamEvent } from "./protocol.ts";
 import type {
   SecretBagEntry,
   SecretReference,
+  ShippedReferenceEntry,
 } from "../vaults/secret_bag_registry.ts";
+
+/**
+ * The plaintext frame a protocol version 5 worker receives, for the
+ * deprecation window typed-secrets 5.3 ends (design/enablers/typed-secrets.md
+ * Section 9): the arguments with their secrets resolved, the step's bag
+ * entries with their values, and the values the worker's redactor masks.
+ */
+export interface LegacyStepDelivery {
+  globalArgs: Record<string, unknown>;
+  methodArgs: Record<string, unknown>;
+  /**
+   * Resolved vault secret values for the worker's SecretRedactor, and the
+   * sensitive argument values a local run would register.
+   */
+  secretValues?: string[];
+  /**
+   * Method args with vault sentinels intact, shipped with {@link secretBag}
+   * so the worker resolves them itself (see DispatchParams).
+   */
+  unresolvedMethodArgs?: Record<string, unknown>;
+  /** The step's vault secret bag entries, with their values. */
+  secretBag?: SecretBagEntry[];
+}
 
 export interface RemoteStepRequest {
   placement: StepPlacement;
@@ -56,6 +80,12 @@ export interface RemoteStepRequest {
     version: number;
     tags: Record<string, string>;
   };
+  /**
+   * The step's global and method arguments as the definition holds them:
+   * sentinels in place of secrets, and the global arguments not yet
+   * validated. A version 6 worker loads, resolves and validates them
+   * itself; a version 5 worker gets {@link legacyDelivery}'s instead.
+   */
   globalArgs: Record<string, unknown>;
   methodArgs: Record<string, unknown>;
   resourceSpecs?: Record<string, unknown>;
@@ -76,24 +106,37 @@ export interface RemoteStepRequest {
   /** Dispatch-level probe marker for fleet verification. */
   probeMarker?: string;
   /**
-   * Resolved vault secret values for the worker's SecretRedactor.
-   * Extracted from sensitive argument fields on the orchestrator side.
+   * One reference-only entry per sentinel the arguments carry, which a
+   * version 6 dispatch ships as its bag. Absent when the step holds no
+   * secret.
    */
-  secretValues?: string[];
+  referenceBag?: ShippedReferenceEntry[];
   /**
-   * Method args with vault sentinels intact, shipped with {@link secretBag}
-   * so the worker resolves them itself (see DispatchParams).
-   */
-  unresolvedMethodArgs?: Record<string, unknown>;
-  /** The step's vault secret bag entries. */
-  secretBag?: SecretBagEntry[];
-  /**
-   * The vault references the step's arguments hold, which serve admits to
-   * the dispatch's own secret reads (swamp-club#3529). The arguments
-   * themselves arrive with their secrets resolved, so serve cannot read the
-   * references from them.
+   * The references behind {@link referenceBag}, which serve admits to the
+   * dispatch's own secret reads and loads (swamp-club#3529).
    */
   secretReferences?: readonly SecretReference[];
+  /**
+   * Sensitive literal values the arguments hold as authored, for serve's
+   * dispatch redactor. They are not secrets the typed-secrets contract
+   * covers (design/enablers/typed-secrets.md Section 1.3).
+   */
+  redactorSeeds?: string[];
+  /**
+   * Builds the frame a version 5 worker receives: it loads the step's
+   * references and validates its arguments, so it is called only once the
+   * dispatcher has chosen a version 5 worker, and at most once per attempt
+   * however many such workers the attempt is dispatched to. Absent when the
+   * arguments hold no secret and need no validation on serve, as for a
+   * fleet probe: the arguments above are then the frame's.
+   */
+  legacyDelivery?: () => Promise<LegacyStepDelivery>;
+  /**
+   * Called when a version 6 worker reports that the step's arguments
+   * passed their schema, at most once however many workers report it
+   * (swamp-club#3681).
+   */
+  onArgumentsValidated?: () => Promise<void>;
   /**
    * Begins the hand-off of the per-model locks held for the step to one
    * dispatch attempt, so a swamp the step starts on the worker skips them.

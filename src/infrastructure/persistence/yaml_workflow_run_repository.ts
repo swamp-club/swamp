@@ -66,7 +66,12 @@ import {
   toRelativePath,
 } from "./paths.ts";
 import { assertSafePath, isSinglePathSegment } from "./safe_path.ts";
-import { readDirSorted } from "./sorted_dir_entries.ts";
+import { readDirSorted, sortDirEntriesByName } from "./sorted_dir_entries.ts";
+import {
+  mapBounded,
+  SCAN_CONCURRENCY,
+  withScanPermit,
+} from "./scan_permits.ts";
 import {
   createWorkflowId,
   createWorkflowRunId,
@@ -119,6 +124,16 @@ async function recordMayExist(path: string): Promise<boolean> {
   } catch (error) {
     return !(error instanceof Deno.errors.NotFound);
   }
+}
+
+/**
+ * A run file {@link YamlWorkflowRunRepository.findAllGlobalSince} may read,
+ * and whether its mtime must be checked against the cutoff first.
+ */
+interface SinceCandidate {
+  workflowId: WorkflowId;
+  path: string;
+  needsStat: boolean;
 }
 
 /**
@@ -210,6 +225,19 @@ function withTimedIndexQueue<T>(
   });
 }
 
+/**
+ * Runs one listing, stat or read for a caller: a scan passes
+ * {@link openUnderSearchPermit} so the open counts against the scan permits
+ * every repository shares (swamp-club#4076), and every other caller opens
+ * directly.
+ */
+type OpenFile = <T>(open: () => Promise<T>) => Promise<T>;
+
+const openDirectly: OpenFile = (open) => open();
+
+const openUnderSearchPermit: OpenFile = (open) =>
+  withScanPermit("search", open);
+
 /** The workflow a runs directory holds the records of, for a span. */
 function workflowOfRunsDir(runsDir: string): Record<string, string> {
   // getRunsDir is join(baseDir, workflowId).
@@ -263,9 +291,18 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     });
   }
 
-  async findById(
+  findById(
     workflowId: WorkflowId,
     runId: WorkflowRunId,
+  ): Promise<WorkflowRun | null> {
+    return this.readById(workflowId, runId, openDirectly);
+  }
+
+  /** {@link findById}, its read made through `open`. */
+  private async readById(
+    workflowId: WorkflowId,
+    runId: WorkflowRunId,
+    open: OpenFile,
   ): Promise<WorkflowRun | null> {
     // Every run id is a UUID (WorkflowRunSchema), so anything else cannot
     // name a run. Checking before the path is built keeps a caller-supplied
@@ -277,7 +314,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const path = this.getPath(workflowId, runId);
     let content: string;
     try {
-      content = await Deno.readTextFile(path);
+      content = await open(() => Deno.readTextFile(path));
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
         await this.throwIfUnreadable(path);
@@ -388,23 +425,25 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
    */
   private readSummariesByWorkflowId(
     workflowId: WorkflowId,
+    open: OpenFile = openDirectly,
   ): Promise<WorkflowRunSummary[]> {
     return withRecordReadSpan(
       "swamp.workflow_runs.read_summaries",
       { "workflow.id": workflowId },
-      (tally) => this.readSummariesUntraced(workflowId, tally),
+      (tally) => this.readSummariesUntraced(workflowId, tally, open),
     );
   }
 
   private async readSummariesUntraced(
     workflowId: WorkflowId,
     tally: RecordReadTally,
+    open: OpenFile,
   ): Promise<WorkflowRunSummary[]> {
     const dir = this.getRunsDir(workflowId);
     const summaries: WorkflowRunSummary[] = [];
 
     try {
-      for (const entry of await readDirSorted(dir)) {
+      for (const entry of await open(() => readDirSorted(dir))) {
         if (
           !entry.isFile || !entry.name.startsWith("workflow-run-") ||
           !entry.name.endsWith(".yaml")
@@ -418,7 +457,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         // readTextFile. NotFound on a single file means "skip it" — never
         // "abandon the rest of the workflow." Mirrors findAllByWorkflowId.
         try {
-          const content = await Deno.readTextFile(path);
+          const content = await open(() => Deno.readTextFile(path));
           tallyRead(tally, content);
           // parseWorkflowRunSummary keeps only the displayed fields; the heavy
           // jobs/output subtree in `parseYaml`'s result is dropped and GC'd.
@@ -646,16 +685,26 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
   /**
    * Finds all workflow runs across all workflows whose startedAt is at or
-   * after the cutoff, using a two-stage filter to avoid parsing every YAML
-   * file on large repos.
+   * after the cutoff, reading only the runs that may have started then.
    *
-   * Stage A — mtime pre-filter: stat each candidate file and skip if mtime
-   * is strictly before the cutoff. `save()` rewrites the YAML on every
-   * status transition (pending → running → succeeded/failed), so a file
-   * with mtime < cutoff cannot have startedAt >= cutoff: any startedAt on
-   * or after the cutoff would have triggered a save on or after the cutoff.
+   * Stage A — choose candidates from each workflow's listing. A run its
+   * workflow's run index records as started before the cutoff is skipped
+   * without a stat or read: a run's `startedAt` is set once, when it first
+   * starts, and a resume keeps it, so an entry written at any save either
+   * has no `startedAt` or has the record's (swamp-club#4076). The index is
+   * used only when its schema version is current and it holds an entry per
+   * run file, and it is read, never repaired; a listed file it has no entry
+   * for, or with no `startedAt`, and every file of a workflow whose index is
+   * missing or out of step, gets the mtime pre-filter instead.
+   * `save()` rewrites the YAML on every status transition (pending →
+   * running → succeeded/failed), so a file with mtime < cutoff cannot have
+   * startedAt >= cutoff: any startedAt on or after the cutoff would have
+   * triggered a save on or after the cutoff. Candidates come from the
+   * listing, not the index, because the index is checked against the
+   * records' count only: one another process wrote can lack a run it holds
+   * (swamp-club#3452).
    *
-   * Stage B — parse and verify: parse files that pass Stage A and re-check
+   * Stage B — parse and verify: parse each candidate and re-check
    * `startedAt >= cutoff`. This rejects long-running workflows that started
    * before the cutoff but were still being saved into after it (mtime > cutoff
    * but startedAt < cutoff).
@@ -664,25 +713,22 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
    * inclusion — Stage B is the source of truth for inclusion. They can only
    * defeat the optimization (degrading to current `findAllGlobal()` cost),
    * which is acceptable.
+   *
+   * Directories are listed, and files stat'ed and read,
+   * {@link SCAN_CONCURRENCY} at a time under the scan permits every
+   * repository shares: every awaited listing or read waits for a turn of
+   * the event loop, so on a busy serve a scan that awaited them one by one
+   * took as long as the turns added up. The result is in the order a
+   * sequential walk returns it all the same.
    */
   async findAllGlobalSince(
     cutoff: Date,
   ): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]> {
-    const results: { run: WorkflowRun; workflowId: WorkflowId }[] = [];
-    const cutoffMs = cutoff.getTime();
-
-    try {
-      for (const entry of await readDirSorted(this.baseDir)) {
-        if (!entry.isDirectory) continue;
-        const workflowId = entry.name as WorkflowId;
-        const runs = await this.findRunsSinceByWorkflowId(workflowId, cutoffMs);
-        for (const run of runs) {
-          results.push({ run, workflowId });
-        }
-      }
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) throw error;
-    }
+    const results = await withRecordReadSpan(
+      "swamp.workflow_runs.scan_since",
+      {},
+      (tally) => this.scanAllGlobalSince(cutoff.getTime(), tally),
+    );
     // An unreadable run's start is unknown: every one is named.
     await this.warnLeftOut(this.baseDir);
 
@@ -693,62 +739,120 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     });
   }
 
-  private async findRunsSinceByWorkflowId(
-    workflowId: WorkflowId,
+  private async scanAllGlobalSince(
     cutoffMs: number,
-  ): Promise<WorkflowRun[]> {
-    const dir = this.getRunsDir(workflowId);
-    const runs: WorkflowRun[] = [];
-
-    try {
-      for (const entry of await readDirSorted(dir)) {
-        if (
-          !entry.isFile || !entry.name.startsWith("workflow-run-") ||
-          !entry.name.endsWith(".yaml")
-        ) {
-          continue;
-        }
-        const path = join(dir, entry.name);
-
-        // Per-file try/catch closes the TOCTOU window: a concurrent
-        // delete can remove the file between readDir and stat or between
-        // stat and readTextFile. NotFound on a single file means "skip
-        // it" — never "discard runs already collected for this workflow."
-        try {
-          // Stage A: mtime pre-filter
-          const stat = await Deno.stat(path);
-          const mtimeMs = stat.mtime?.getTime();
-          if (mtimeMs !== undefined && mtimeMs < cutoffMs) continue;
-
-          // Stage B: parse and verify
-          const content = await Deno.readTextFile(path);
-          const data = parseYaml(content) as WorkflowRunData | null;
-          if (!data) continue;
-          if (data.logFile) {
-            data.logFile = toAbsolutePath(this.repoDir, data.logFile);
-          }
-          const run = WorkflowRun.fromData(data);
-          const startedAtMs = run.startedAt?.getTime();
-          if (startedAtMs === undefined || startedAtMs < cutoffMs) continue;
-
-          runs.push(run);
-        } catch (error) {
-          if (error instanceof Deno.errors.NotFound) continue;
-          throw error;
-        }
-      }
-    } catch (error) {
-      // Outer catch handles "directory itself doesn't exist." Per-file
-      // NotFound is handled above.
-      if (error instanceof Deno.errors.NotFound) {
-        return [];
-      }
-      throw error;
-    }
-
-    return runs;
+    tally: RecordReadTally,
+  ): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]> {
+    const workflowIds = await this.scanWorkflowIds();
+    // Each stage keeps its items in walk order (swamp-club#3067).
+    const candidates = (await mapBounded(
+      workflowIds,
+      SCAN_CONCURRENCY,
+      (workflowId) => this.sinceCandidates(workflowId, cutoffMs),
+    )).flat();
+    const found = await mapBounded(
+      candidates,
+      SCAN_CONCURRENCY,
+      (candidate) => this.readSinceCandidate(candidate, cutoffMs, tally),
+    );
+    return found.filter((result) => result !== undefined);
   }
 
+  /**
+   * {@link listWorkflowIds}, its listing made under a scan permit.
+   */
+  private async scanWorkflowIds(): Promise<WorkflowId[]> {
+    let entries: Deno.DirEntry[];
+    try {
+      entries = await openUnderSearchPermit(() => readDirSorted(this.baseDir));
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return [];
+      throw error;
+    }
+    return entries
+      .filter((entry) => entry.isDirectory)
+      .map((entry) => entry.name as WorkflowId);
+  }
+
+  /** Stage A of {@link findAllGlobalSince} for one workflow. */
+  private async sinceCandidates(
+    workflowId: WorkflowId,
+    cutoffMs: number,
+  ): Promise<SinceCandidate[]> {
+    const runsDir = this.getRunsDir(workflowId);
+    const entries = sortDirEntriesByName(
+      await openUnderSearchPermit(() => listDirEntries(runsDir)),
+    );
+    // Read, never repaired: a repair waits behind the workflow's queued
+    // index writes and can read every record, so an index out of step with
+    // the records only costs this scan the mtime pre-filter it always had.
+    const read = await openUnderSearchPermit(() =>
+      readRunIndex(this.getLocalIndexDir(workflowId))
+    );
+    const index = read && !isIndexStale(read, countYamlRunFiles(entries))
+      ? read.entries
+      : undefined;
+
+    const candidates: SinceCandidate[] = [];
+    for (const entry of entries) {
+      if (!isYamlRunFile(entry)) continue;
+      const path = join(runsDir, entry.name);
+      // Only a UUID names a run (as in findById); any other name has no
+      // entry, so its file gets the mtime pre-filter.
+      const id = runIdFromFileName(entry.name);
+      const startedAt = index && isUuid(id) && Object.hasOwn(index, id)
+        ? index[id]?.startedAt
+        : undefined;
+      if (typeof startedAt !== "string") {
+        candidates.push({ workflowId, path, needsStat: true });
+      } else if (!(new Date(startedAt).getTime() < cutoffMs)) {
+        candidates.push({ workflowId, path, needsStat: false });
+      }
+    }
+    return candidates;
+  }
+
+  /** Stage B of {@link findAllGlobalSince} for one candidate. */
+  private async readSinceCandidate(
+    { workflowId, path, needsStat }: SinceCandidate,
+    cutoffMs: number,
+    tally: RecordReadTally,
+  ): Promise<{ run: WorkflowRun; workflowId: WorkflowId } | undefined> {
+    // Per-file try/catch closes the TOCTOU window: a concurrent delete can
+    // remove the file between readDir and stat or between stat and
+    // readTextFile. NotFound on a single file means "skip it" — never
+    // "abandon the rest of the scan."
+    try {
+      if (needsStat) {
+        const stat = await openUnderSearchPermit(() => Deno.stat(path));
+        const mtimeMs = stat.mtime?.getTime();
+        if (mtimeMs !== undefined && mtimeMs < cutoffMs) return undefined;
+      }
+
+      const content = await openUnderSearchPermit(() =>
+        Deno.readTextFile(path)
+      );
+      tallyRead(tally, content);
+      const data = parseYaml(content) as WorkflowRunData | null;
+      if (!data) return undefined;
+      if (data.logFile) {
+        data.logFile = toAbsolutePath(this.repoDir, data.logFile);
+      }
+      const run = WorkflowRun.fromData(data);
+      const startedAtMs = run.startedAt?.getTime();
+      if (startedAtMs === undefined || startedAtMs < cutoffMs) return undefined;
+      return { run, workflowId };
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return undefined;
+      throw error;
+    }
+  }
+
+  /**
+   * Workflow directories are listed, and runs read, {@link SCAN_CONCURRENCY}
+   * at a time under the scan permits every repository shares, as in
+   * {@link findAllGlobalSince}, in the order a sequential walk returns them.
+   */
   async findGlobalByStatus(
     status: string | string[],
     since?: Date,
@@ -756,38 +860,52 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const statuses = Array.isArray(status) ? status : [status];
     const statusSet = new Set(statuses);
     const sinceMs = since?.getTime();
-    const results: { run: WorkflowRun; workflowId: WorkflowId }[] = [];
 
-    try {
-      for (const entry of await readDirSorted(this.baseDir)) {
-        if (!entry.isDirectory) continue;
-        const workflowId = entry.name as WorkflowId;
-        const matchingIds = await this.findRunIdsByStatusFromIndex(
-          workflowId,
-          statusSet,
-          sinceMs,
-        );
-        for (const runId of matchingIds) {
-          const run = await this.findById(
+    const workflowIds = await this.scanWorkflowIds();
+    const matching = (await mapBounded(
+      workflowIds,
+      SCAN_CONCURRENCY,
+      async (workflowId) => {
+        try {
+          const runIds = await this.findRunIdsByStatusFromIndex(
             workflowId,
-            runId as WorkflowRunId,
+            statusSet,
+            sinceMs,
+            openUnderSearchPermit,
           );
-          // The index named the run under a status its record no longer has.
-          if (run && !statusSet.has(run.status)) {
-            await this.repairIndexEntry(workflowId, run);
-          }
-          if (run && statusSet.has(run.status)) {
-            if (sinceMs !== undefined) {
-              const startedAtMs = run.startedAt?.getTime();
-              if (startedAtMs === undefined || startedAtMs < sinceMs) continue;
-            }
-            results.push({ run, workflowId });
+          return runIds.map((runId) => ({ workflowId, runId }));
+        } catch (error) {
+          // A workflow removed mid-scan has no runs to find.
+          if (error instanceof Deno.errors.NotFound) return [];
+          throw error;
+        }
+      },
+    )).flat();
+    const found = await mapBounded(
+      matching,
+      SCAN_CONCURRENCY,
+      async ({ workflowId, runId }) => {
+        const run = await this.readById(
+          workflowId,
+          runId as WorkflowRunId,
+          openUnderSearchPermit,
+        );
+        if (!run) return undefined;
+        // The index named the run under a status its record no longer has.
+        if (!statusSet.has(run.status)) {
+          await this.repairIndexEntry(workflowId, run);
+          return undefined;
+        }
+        if (sinceMs !== undefined) {
+          const startedAtMs = run.startedAt?.getTime();
+          if (startedAtMs === undefined || startedAtMs < sinceMs) {
+            return undefined;
           }
         }
-      }
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) throw error;
-    }
+        return { run, workflowId };
+      },
+    );
+    const results = found.filter((result) => result !== undefined);
     // An unreadable run's status is unknown: every one is named.
     await this.warnLeftOut(this.baseDir);
 
@@ -802,10 +920,16 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     workflowId: WorkflowId,
     statusSet: Set<string>,
     sinceMs: number | undefined,
+    open: OpenFile,
   ): Promise<string[]> {
     const runsDir = this.getRunsDir(workflowId);
     const indexDir = this.getLocalIndexDir(workflowId);
-    const index = await this.getValidatedIndex(runsDir, indexDir);
+    const index = await this.getValidatedIndex(
+      runsDir,
+      indexDir,
+      undefined,
+      open,
+    );
 
     if (index) {
       const ids: string[] = [];
@@ -823,7 +947,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     }
 
     // Fallback: lightweight summary scan
-    const summaries = await this.readSummariesByWorkflowId(workflowId);
+    const summaries = await this.readSummariesByWorkflowId(workflowId, open);
     return summaries
       .filter((s) => {
         if (!statusSet.has(s.status)) return false;
@@ -1570,46 +1694,85 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
    * stops between records only once no caller needs it. Serve's continuation
    * sweep passes its own signal so shutdown is not held up (swamp-club#3472).
    */
-  async findSummariesByStatus(
+  findSummariesByStatus(
     workflowId: WorkflowId,
     status: string,
     signal?: AbortSignal,
   ): Promise<WorkflowRunSummary[]> {
+    return this.listByStatus(workflowId, status, signal, openDirectly);
+  }
+
+  /** {@link findSummariesByStatus}, its listing and reads made through `open`. */
+  private async listByStatus(
+    workflowId: WorkflowId,
+    status: string,
+    signal: AbortSignal | undefined,
+    open: OpenFile,
+  ): Promise<WorkflowRunSummary[]> {
     const runsDir = this.getRunsDir(workflowId);
     const indexDir = this.getLocalIndexDir(workflowId);
-    const index = await this.getValidatedIndex(runsDir, indexDir, signal);
+    const index = await this.getValidatedIndex(runsDir, indexDir, signal, open);
     await this.warnLeftOut(runsDir);
     if (!index) {
-      const all = await this.readSummariesByWorkflowId(workflowId);
+      const all = await this.readSummariesByWorkflowId(workflowId, open);
       return all.filter((s) => s.status === status);
     }
     return indexToSummaries(index).filter((s) => s.status === status);
+  }
+
+  /**
+   * The workflow's runs with `status`, in the order
+   * {@link findSummariesByStatus} lists them. The listing, and the record
+   * reads {@link SCAN_CONCURRENCY} at a time, are made under the search share
+   * of the scan permits every repository shares, as in
+   * {@link findGlobalByStatus} (swamp-club#4077). The status is the index's
+   * when listed: a run resumed before its record is read comes back with its
+   * new status, so callers check it again. A run deleted before it is read is
+   * left out.
+   */
+  async findByStatus(
+    workflowId: WorkflowId,
+    status: string,
+    signal?: AbortSignal,
+  ): Promise<WorkflowRun[]> {
+    const open: OpenFile = (opened) => withScanPermit("search", opened, signal);
+    const summaries = await this.listByStatus(workflowId, status, signal, open);
+    const runs = await mapBounded(
+      summaries,
+      SCAN_CONCURRENCY,
+      (summary) => this.readById(workflowId, summary.id as WorkflowRunId, open),
+      signal,
+    );
+    return runs.filter((run) => run !== null);
   }
 
   private async getValidatedIndex(
     runsDir: string,
     indexDir: string,
     signal?: AbortSignal,
+    open: OpenFile = openDirectly,
   ): Promise<WorkflowRunIndex | null> {
-    return (await this.validateIndex(runsDir, indexDir, signal))?.entries ??
-      null;
+    const validated = await this.validateIndex(runsDir, indexDir, signal, open);
+    return validated?.entries ?? null;
   }
 
   /**
    * The workflow's index entries, repaired first when they disagree with
-   * the records' count, and whether the index file now holds them.
+   * the records' count, and whether the index file now holds them. The
+   * listing and the index read are made through `open`; a repair is not.
    */
   private async validateIndex(
     runsDir: string,
     indexDir: string,
     signal?: AbortSignal,
+    open: OpenFile = openDirectly,
   ): Promise<ValidatedIndex | null> {
     signal?.throwIfAborted();
-    const entries = await listDirEntries(runsDir);
+    const entries = await open(() => listDirEntries(runsDir));
     const yamlCount = countYamlRunFiles(entries);
     if (yamlCount === 0) return null;
 
-    const result = await readRunIndex(indexDir);
+    const result = await open(() => readRunIndex(indexDir));
     if (!result || isIndexStale(result, yamlCount)) {
       return await this.repairIndex(runsDir, indexDir, signal);
     }

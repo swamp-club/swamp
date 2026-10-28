@@ -24,7 +24,7 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
-import { join } from "@std/path";
+import { join, SEPARATOR } from "@std/path";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { Commit } from "../../domain/datastore_v3/commit.ts";
 import {
@@ -32,8 +32,12 @@ import {
   savePut,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import { runPartition, runPut } from "./commit_log_test_helpers.ts";
+import type { ObservedBaseEntry } from "../../domain/datastore_v3/observed_base.ts";
 import {
+  BASE_LOAD_ATTEMPTS,
+  OBSERVED_BASE_STAGING_PREFIX,
   SERVE_PARTITION_PAGE,
+  serveAccessCheck,
   ServeCatchUp,
   serveLogCheck,
 } from "./serve_catch_up.ts";
@@ -42,9 +46,13 @@ import {
   ServeCommitsCompactedError,
   ServeReplyTooLargeError,
   ServeUpstreamDivergedError,
+  ServeUpstreamError,
   ServeUpstreamUpgradeRequiredError,
 } from "./serve_upstream_errors.ts";
-import { ServeUpstreamState } from "./serve_upstream_state.ts";
+import {
+  ServeCopyReplacedError,
+  ServeUpstreamState,
+} from "./serve_upstream_state.ts";
 import {
   FakeServe,
   removeTempDir,
@@ -785,5 +793,503 @@ Deno.test("ServeCatchUp.catchUpPartition: a serve whose every page is too large 
     assertEquals(serve.partitionReads.map((read) => read.limit), halvings());
     assertEquals(halvings().length, 11, "ten retries after the first read");
     assertEquals(appends, []);
+  });
+});
+
+/** The staging files a base load left in `dir`. */
+function stagingFiles(dir: string): string[] {
+  return [...Deno.readDirSync(dir)].map((entry) => entry.name).filter((name) =>
+    name.startsWith(OBSERVED_BASE_STAGING_PREFIX)
+  );
+}
+
+/**
+ * Serve compacted through feed position `point`: the base of the commits
+ * landed so far, each a save of `m{seq}` version 1, as serve sends it.
+ */
+async function compactServe(serve: FakeServe, point: number) {
+  const entries: ObservedBaseEntry[] = [];
+  const seqs = new Map<string, number>();
+  const records: ObservedBaseEntry[] = [];
+  for (const entry of serve.feed.slice(0, point)) {
+    const commit = await Commit.fromJSON(entry.json);
+    seqs.set(commit.partition.toString(), commit.seq);
+    for (const op of commit.ops) {
+      if (op.kind !== "put") continue;
+      records.push({
+        kind: "record",
+        namespace: "",
+        partition: commit.partition.toString(),
+        key: op.key.toString(),
+        record: {
+          sha256: op.sha256,
+          content: { inline: (op.content as { inline: string }).inline },
+        },
+      });
+    }
+  }
+  for (const [partition, seq] of seqs) {
+    entries.push({
+      kind: "partition",
+      namespace: "",
+      partition,
+      seq,
+      names: [{ name: "m1", highWater: 3, removed: [[2, 2]] }],
+    });
+  }
+  entries.push(...records);
+  serve.compactionPoint = point;
+  serve.base = { point, entries };
+  for (const [partition, seq] of seqs) {
+    serve.compactedThrough.set(partition, seq);
+  }
+}
+
+/** The copy's seqs of `partition` after `after`. */
+async function seqsAfter(
+  store: SqliteCommitStore,
+  after: number,
+  partition = MODEL,
+) {
+  return (await store.readPartition("", partition, after + 1, 10_000)).map((
+    c,
+  ) => c.commit.seq);
+}
+
+Deno.test("ServeCatchUp.catchUp: a fresh copy of a compacted serve loads the base, then reads the feed on from the point", async () => {
+  await withCheckout(async ({ dir, store, state, serve, catchUp, appends }) => {
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    await compactServe(serve, 3);
+    serve.land(await other(4));
+
+    assertEquals(await catchUp.catchUp(signal()), { applied: 1 });
+    assertEquals(appends, [4]);
+    assertEquals((await store.head("", MODEL)).seq, 4);
+    assertEquals(await seqsAfter(store, 3), [4]);
+    assertEquals(state.feedCursor(), 4);
+    assert((await store.compactionPoint()) >= 3);
+    // Serve's marks reach the copy, so it never hands out a used version.
+    assertEquals(await store.dataHighWater("", MODEL, "m1"), 3);
+    const base = await store.readCompactedBase(undefined, 100);
+    assertEquals(
+      base.entries.filter((e) => e.kind === "record").length,
+      3,
+    );
+    assertEquals(state.serveHead("", MODEL.toString()), 3);
+    // The staging file is gone once the base is installed.
+    assertEquals(stagingFiles(dir), []);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: the base load starts again when serve's point moves between pages", async () => {
+  await withCheckout(async ({ store, state, serve, catchUp }) => {
+    for (let seq = 1; seq <= 4; seq++) serve.land(await other(seq));
+    await compactServe(serve, 4);
+    const moved = serve.base!;
+    await compactServe(serve, 3);
+    serve.basePageSize = 1;
+    serve.beforeBasePage = (page) => {
+      // Serve compacts again while the copy reads its second page.
+      if (page === 1) {
+        serve.base = moved;
+        serve.compactionPoint = 4;
+      }
+    };
+
+    await catchUp.catchUp(signal());
+    // The first load read two pages of two points, and started again.
+    assertEquals(serve.baseReads.map((read) => read.after).slice(0, 3), [
+      undefined,
+      "1",
+      undefined,
+    ]);
+    assertEquals((await store.head("", MODEL)).seq, 4);
+    assertEquals(state.feedCursor(), 4);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a base whose point never holds still fails, and leaves the copy as it was", async () => {
+  await withCheckout(async ({ dir, store, state, serve, catchUp }) => {
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    await compactServe(serve, 3);
+    serve.basePageSize = 1;
+    serve.beforeBasePage = () => {
+      serve.base = { ...serve.base!, point: serve.base!.point + 1 };
+    };
+
+    const error = await assertRejects(
+      () => catchUp.catchUp(signal()),
+      ServeUpstreamError,
+    );
+    assertEquals(error.status, 503);
+    assertEquals(serve.baseReads.length, 2 * BASE_LOAD_ATTEMPTS);
+    assertEquals(await store.compactionPoint(), 0);
+    assertEquals((await store.head("", MODEL)).seq, 0);
+    assertEquals(state.feedCursor(), 0);
+    assertEquals(stagingFiles(dir), []);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a serve with no base route keeps the commits_compacted refusal", async () => {
+  await withCheckout(async ({ store, serve, catchUp }) => {
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    serve.compactionPoint = 3;
+
+    const error = await assertRejects(
+      () => catchUp.catchUp(signal()),
+      ServeCommitsCompactedError,
+    );
+    assertEquals(error.point, 3);
+    assertEquals(serve.baseReads.length, 1);
+    assertEquals(await store.compactionPoint(), 0);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a load cut off between pages leaves the copy untouched, and the next catch-up loads it", async () => {
+  await withCheckout(async ({ dir, store, state, serve, catchUp }) => {
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    await compactServe(serve, 3);
+    serve.basePageSize = 1;
+    const abort = new AbortController();
+    serve.beforeBasePage = (page) => {
+      if (page === 1) abort.abort(new Error("cut off"));
+    };
+
+    await assertRejects(() => catchUp.catchUp(abort.signal));
+    assertEquals(await store.compactionPoint(), 0);
+    assertEquals((await store.head("", MODEL)).seq, 0);
+    assertEquals(state.feedCursor(), 0);
+    assertEquals(stagingFiles(dir), []);
+
+    serve.beforeBasePage = undefined;
+    await catchUp.catchUp(signal());
+    assertEquals((await store.head("", MODEL)).seq, 3);
+    assertEquals(state.feedCursor(), 3);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a load cut off after the install reads as behind the point, and loads the base again", async () => {
+  await withCheckout(async ({ store, state, serve, catchUp }) => {
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    await compactServe(serve, 3);
+    serve.land(await other(4));
+    const record = state.recordBaseLoaded.bind(state);
+    let failures = 1;
+    state.recordBaseLoaded = (...args) => {
+      if (failures-- > 0) throw new Error("cut off");
+      record(...args);
+    };
+
+    await assertRejects(() => catchUp.catchUp(signal()), Error, "cut off");
+    // The base is in, but the cursor is still below the point.
+    assert((await store.compactionPoint()) >= 3);
+    assertEquals(state.feedCursor(), 0);
+
+    const reads = serve.baseReads.length;
+    await catchUp.catchUp(signal());
+    assert(serve.baseReads.length > reads);
+    assertEquals((await store.head("", MODEL)).seq, 4);
+    assertEquals(await seqsAfter(store, 3), [4]);
+    assertEquals(state.feedCursor(), 4);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a partition the base held nothing of reads on from its compacted seq", async () => {
+  await withCheckout(async ({ store, serve, catchUp }) => {
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    // OTHER's first two commits are compacted and were never this caller's.
+    serve.land(await other(1, OTHER), { hidden: true });
+    serve.land(await other(2, OTHER), { hidden: true });
+    await compactServe(serve, 3);
+    serve.base!.point = 5;
+    serve.compactionPoint = 5;
+    serve.compactedThrough.set(OTHER.toString(), 2);
+    serve.land(await other(3, OTHER));
+
+    await catchUp.catchUp(signal());
+    assertEquals(await copySeqs(store, OTHER), [3]);
+    assertEquals(
+      serve.partitionReads.map((read) => read.after).slice(-2),
+      [0, 2],
+    );
+  });
+});
+
+Deno.test("ServeCatchUp.catchUpPartition: a partition compacted past a copy with no base loads the base first, then reads on", async () => {
+  await withCheckout(async ({ store, state, serve, catchUp }) => {
+    for (let seq = 1; seq <= 2; seq++) serve.land(await other(seq));
+    await compactServe(serve, 2);
+    serve.land(await other(3));
+
+    assertEquals(await catchUp.catchUpPartition("", MODEL, signal()), 3);
+    assert(serve.baseReads.length > 0, "the base was loaded");
+    assertEquals(state.basePoint(), 2);
+    assertEquals(await seqsAfter(store, 2), [3]);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a gap in a partition compacted past a copy that never loaded a base loads the base, never skipping what was compacted", async () => {
+  await withCheckout(async ({ store, state, serve, catchUp }) => {
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    // OTHER's first two commits are hidden from this caller: the copy's
+    // feed passes them, and its cursor is past them before serve compacts.
+    serve.land(await other(1, OTHER), { hidden: true });
+    serve.land(await other(2, OTHER), { hidden: true });
+    await catchUp.catchUp(signal());
+    assertEquals(state.feedCursor(), 5);
+    await compactServe(serve, 5);
+    assertEquals(serve.baseReads.length, 0);
+    // A grant widens: the base now holds OTHER's records for this caller.
+    serve.hidden.clear();
+    serve.land(await other(3, OTHER));
+
+    await catchUp.catchUp(signal());
+    assert(serve.baseReads.length > 0, "the base was loaded");
+    assertEquals(state.basePoint(), 5);
+    assertEquals(
+      (await store.readCompactedBase(undefined, 100)).entries.filter((e) =>
+        e.kind === "record" && e.partition === OTHER.toString()
+      ).length,
+      // Both hidden commits put the same run record.
+      1,
+    );
+    assertEquals(await seqsAfter(store, 2, OTHER), [3]);
+    assertEquals(state.feedCursor(), 6);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a load that finds another process loaded the base while it waited for the lease does not load it again", async () => {
+  await withCheckout(async (checkout) => {
+    const { dir, store, state, serve } = checkout;
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    await compactServe(serve, 3);
+    serve.land(await other(4));
+    // Another process's handle on the same copy.
+    const otherStore = SqliteCommitStore.open(join(dir, "commits.db"), {
+      follower: true,
+    });
+    const otherState = ServeUpstreamState.open(join(dir, "serve_upstream.db"));
+    try {
+      const first = new ServeCatchUp({
+        client: serve,
+        commitStore: otherStore,
+        state: otherState,
+        // Another process: the same directory, but not this process's
+        // in-process chain, which only the lease orders against it.
+        copyDir: `${dir}${SEPARATOR}.`,
+        namespace: "",
+        lockCopy: () => Promise.resolve(() => Promise.resolve()),
+      });
+      let locks = 0;
+      const second = new ServeCatchUp({
+        client: serve,
+        commitStore: store,
+        state,
+        copyDir: dir,
+        namespace: "",
+        // The other process holds the lease and loads the base: this one
+        // gets it once that load is done.
+        lockCopy: async () => {
+          locks++;
+          await first.catchUp(signal());
+          return () => Promise.resolve();
+        },
+      });
+      await second.catchUp(signal());
+      assertEquals(locks, 1);
+      // One load's pages only, and the copy whole.
+      assertEquals(serve.baseReads.length, 1);
+      assertEquals((await store.head("", MODEL)).seq, 4);
+      assertEquals(state.feedCursor(), 4);
+      assertEquals(stagingFiles(dir), []);
+    } finally {
+      otherState.close();
+      await otherStore.close();
+    }
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: two handles of one copy in one process load the base once", async () => {
+  await withCheckout(async (checkout) => {
+    const { dir, store, state, serve } = checkout;
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    await compactServe(serve, 3);
+    serve.basePageSize = 1;
+    const otherStore = SqliteCommitStore.open(join(dir, "commits.db"), {
+      follower: true,
+    });
+    const otherState = ServeUpstreamState.open(join(dir, "serve_upstream.db"));
+    try {
+      const handles = [
+        through(serve, checkout),
+        new ServeCatchUp({
+          client: serve,
+          commitStore: otherStore,
+          state: otherState,
+          copyDir: dir,
+          namespace: "",
+        }),
+      ];
+      await Promise.all(handles.map((handle) => handle.catchUp(signal())));
+      const pages = serve.base!.entries.length;
+      assertEquals(serve.baseReads.length, pages);
+      assertEquals((await store.head("", MODEL)).seq, 3);
+      assertEquals(
+        (await store.readCompactedBase(undefined, 100)).entries.filter((e) =>
+          e.kind === "record"
+        ).length,
+        3,
+      );
+      assertEquals(state.feedCursor(), 3);
+      assertEquals(stagingFiles(dir), []);
+    } finally {
+      otherState.close();
+      await otherStore.close();
+    }
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: after a base load, the next page's anchor still refuses a serve rolled back to another commit", async () => {
+  await withCheckout(async (checkout) => {
+    const { state, serve, catchUp } = checkout;
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    await compactServe(serve, 3);
+    serve.land(await other(4));
+    await catchUp.catchUp(signal());
+    assertEquals(state.feedAnchor()?.seq, 4);
+
+    // The same log restored to before commit 4, which then took another.
+    const restored = new FakeServe();
+    for (let seq = 1; seq <= 3; seq++) restored.land(await other(seq));
+    await compactServe(restored, 3);
+    restored.land(await another(4));
+    const error = await assertRejects(
+      () => through(restored, checkout).catchUp(signal()),
+      ServeUpstreamDivergedError,
+    );
+    assertEquals(error.divergence.kind, "other-commit");
+  });
+});
+
+Deno.test("serveAccessCheck: records each access serve sends, warns once when it differs from the copy's, ignores what is not a fingerprint and never throws (swamp-club#4089)", async () => {
+  await withCheckout(async ({ state }) => {
+    const captured: LogRecord[] = [];
+    await configure({
+      sinks: { capture: (record: LogRecord) => captured.push(record) },
+      loggers: [
+        {
+          category: ["datastore", "v3", "serve"],
+          lowestLevel: "warning",
+          sinks: ["capture"],
+        },
+        { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+      ],
+      reset: true,
+    });
+    try {
+      const check = serveAccessCheck(state, SERVE_URL);
+      check("a1");
+      check("a1");
+      assertEquals(state.access(), { built: "a1", seen: "a1" });
+      assertEquals(captured.length, 0);
+      check("b2");
+      check("c3");
+      check("b2");
+      assertEquals(state.access(), { built: "a1", seen: "b2" });
+      assertEquals(captured.length, 1, "warned once");
+      assertStringIncludes(
+        captured[0].message.map((part) => String(part)).join(""),
+        "the next command rebuilds",
+      );
+      // Not a fingerprint: ignored.
+      check("Not A Fingerprint");
+      check("x".repeat(129));
+      assertEquals(state.access().seen, "b2");
+      // A state that cannot record is no reason to fail the reply.
+      serveAccessCheck({
+        access: () => ({}),
+        recordAccessSeen: () => {
+          throw new Error("database is locked");
+        },
+      }, SERVE_URL)("d4");
+    } finally {
+      await reset();
+    }
+  });
+});
+
+Deno.test("serveAccessCheck: warns only for a mismatch the reply records, and within the cooldown says the rebuild waits (swamp-club#4089)", async () => {
+  await withCheckout(async ({ state }) => {
+    const captured: LogRecord[] = [];
+    await configure({
+      sinks: { capture: (record: LogRecord) => captured.push(record) },
+      loggers: [
+        {
+          category: ["datastore", "v3", "serve"],
+          lowestLevel: "warning",
+          sinks: ["capture"],
+        },
+        { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+      ],
+      reset: true,
+    });
+    const texts = () =>
+      captured.map((record) => record.message.map(String).join(""));
+    try {
+      state.stampCaller("token-a");
+      state.recordAccessSeen("a1");
+      state.beginCallerReset();
+      state.finishCallerReset("token-a", 1_000);
+      state.recordAccessSeen("a1");
+      // Within the cooldown of that reset: the rebuild waits, and it says so.
+      serveAccessCheck(state, SERVE_URL, () => 2_000)("b2");
+      assertEquals(texts().length, 1);
+      assertStringIncludes(texts()[0], "changed again within 10 minutes");
+      assert(!texts()[0].includes("the next command rebuilds"));
+      // A later command whose binding found the mismatch says nothing more.
+      serveAccessCheck(state, SERVE_URL, () => 3_000)("b2");
+      serveAccessCheck(state, SERVE_URL, () => 3_000)("c3");
+      assertEquals(texts().length, 1);
+    } finally {
+      await reset();
+    }
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a reset of the copy by another command while this one pages the feed refuses the rest, so the new copy is never told it holds pages it does not (swamp-club#4089)", async () => {
+  await withCheckout(async ({ state, serve, catchUp }) => {
+    serve.feedPageSize = 2;
+    for (let seq = 1; seq <= 5; seq++) serve.land(await other(seq));
+    // Another command resets the copy between this one's first and second
+    // pages, as an access change does.
+    let reads = 0;
+    serve.tooLarge = (route) => {
+      if (route === "changes" && ++reads === 2) {
+        const other = ServeUpstreamState.open(state.path);
+        try {
+          other.beginCallerReset();
+          other.finishCallerReset("token-a", 1_000);
+        } finally {
+          other.close();
+        }
+      }
+      return false;
+    };
+
+    await assertRejects(
+      () => catchUp.catchUp(signal()),
+      ServeCopyReplacedError,
+    );
+    const reset = ServeUpstreamState.open(state.path);
+    try {
+      assertEquals(
+        reset.feedCursor(),
+        0,
+        "the reset copy reads from the start",
+      );
+      assertEquals(reset.feedAnchor(), undefined);
+    } finally {
+      reset.close();
+    }
   });
 });

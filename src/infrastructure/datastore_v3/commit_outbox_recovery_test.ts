@@ -42,6 +42,7 @@ import {
 } from "./commit_outbox_recovery.ts";
 import { SqliteCommitOutbox } from "./sqlite_commit_outbox.ts";
 import { setLocalProcessForTesting } from "./process_identity.ts";
+import { ServeCommitRefusedError } from "./serve_upstream_errors.ts";
 import { SqliteCommitStore } from "./sqlite_commit_store.ts";
 import { FileSystemStorage } from "../persistence/fs_datastore_storage.ts";
 
@@ -465,6 +466,28 @@ Deno.test("recoverCommitOutbox: a refused entry is dropped with its unit's run e
       [["t2", "refused"], ["run", "unit-dropped"]],
     );
     assertEquals(await commitsOf(store, runPartition()), []);
+  });
+});
+
+Deno.test("recoverCommitOutbox: an entry serve refuses on the caller's access is dropped, as a narrowed grant refuses it on every recovery (swamp-club#4089)", async () => {
+  await withFixture(async ({ store, prepare, recover }) => {
+    await prepare(prepared(1, [await savePut("a", 1)], "t1"));
+    // Serve's 403 for a forwarded commit, as a grant narrowed since the
+    // write was made answers it.
+    store.append = () =>
+      Promise.reject(
+        new ServeCommitRefusedError(
+          "forbidden",
+          "access",
+          0,
+          "Not authorized to write data:web",
+        ),
+      );
+    const report = await recover(2);
+    assertEquals(
+      report.drops.map((drop) => [drop.entry.commit.txnId, drop.reason]),
+      [["t1", "refused"]],
+    );
   });
 });
 

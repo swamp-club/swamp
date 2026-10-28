@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// deno-lint-ignore verbatim-module-syntax
 import React from "react";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
@@ -32,6 +31,7 @@ import {
   SearchPicker,
 } from "./components/search_picker.tsx";
 import { pressOnFrame } from "./components/press_on_frame_test_helpers.ts";
+import { computePickerLayout } from "./components/picker_layout.ts";
 import {
   createInboxPickerRenderer,
   inboxMessageLines,
@@ -330,4 +330,101 @@ Deno.test("inbox picker: an empty inbox prints the empty line and opens no picke
   }
 
   assertEquals(out, ["Your inbox is empty."]);
+});
+
+/** A long body, as a six-paragraph announcement is. */
+const LONG: InboxMessageView = {
+  ...ANNOUNCEMENT,
+  body: Array.from(
+    { length: 6 },
+    (_, i) => `Paragraph ${i + 1}. ${"Swamp news and notes. ".repeat(20)}`,
+  ).join("\n\n"),
+  link: `https://swamp-club.com/blog/${"long-path-".repeat(20)}end`,
+  action: {
+    label: "Search",
+    command: `swamp extension search ${"aws ".repeat(30)}x`,
+  },
+};
+
+/** The preview's rows, as the shared picker renders them at `width`. */
+function previewRows(m: InboxMessageView, width: number): string[] {
+  const config = inboxPickerConfig(makeView([m]), false);
+  const element = config.renderPreview(m, undefined, width, 0);
+  return React.Children.toArray(
+    (element.props as { children?: React.ReactNode }).children,
+  ).map((child) =>
+    String((child as React.ReactElement<{ children: string }>).props.children)
+  );
+}
+
+Deno.test("inbox picker: at 120x40 the preview line count reaches the Next line", () => {
+  const { previewWidth } = computePickerLayout(120, 40);
+  const config = inboxPickerConfig(makeView([LONG]), false);
+  const rows = previewRows(LONG, previewWidth);
+
+  const counted = config.previewLineCount(LONG, undefined, previewWidth);
+
+  assertEquals(counted, rows.length);
+  assertStringIncludes(stripAnsiCode(rows.at(-1) ?? ""), "x");
+  assert(rows.some((r) => stripAnsiCode(r).startsWith("Next:")));
+  // The scrollback's count, what the scroll limit used before, falls short.
+  assert(config.renderScrollback(LONG, undefined).split("\n").length < counted);
+});
+
+Deno.test("inbox picker: no preview row is wider than the pane, so nothing is cut off", () => {
+  const { previewWidth } = computePickerLayout(120, 40);
+  const inner = previewWidth - 1;
+  const rows = previewRows(LONG, previewWidth).map(stripAnsiCode);
+  for (const row of rows) assert(row.length <= inner, row);
+  const joined = rows.join("");
+  assertStringIncludes(joined, LONG.link!);
+  assertStringIncludes(
+    joined.replaceAll(" ", ""),
+    LONG.action!.command.replaceAll(" ", ""),
+  );
+});
+
+Deno.test("inboxMessageLines: a long body link wraps whole instead of being cut to its start", () => {
+  const host = `https://swamp-club.com.${"a".repeat(80)}.evil.example/x`;
+  const m: InboxMessageView = { ...ISSUE, body: `Go to <${host}>.` };
+  const lines = inboxMessageLines(m, 40).map(stripAnsiCode);
+  for (const line of lines) assert(line.length <= 40, line);
+  assertStringIncludes(lines.join(""), "evil.example");
+});
+
+Deno.test("inboxMessageLines: prose that already fits is unchanged by the wrap", () => {
+  const m: InboxMessageView = { ...ISSUE, body: "Short line one.\n\nTwo." };
+  assertEquals(
+    inboxMessageLines(m, 60).map(stripAnsiCode),
+    inboxMessageLines(m).map(stripAnsiCode),
+  );
+});
+
+Deno.test("inbox picker: after closing, names the older page when there is one", async () => {
+  for (
+    const [nextCursor, expected] of [
+      [
+        "01JBX5Q8ZK00000000000000ZP",
+        ["To see older:  swamp inbox --all --before 01JBX5Q8ZK00000000000000ZP"],
+      ],
+      [null, []],
+    ] as const
+  ) {
+    const out: string[] = [];
+    const originalLog = console.log;
+    console.log = (msg: string) => out.push(stripAnsiCode(msg));
+    try {
+      const renderer = createInboxPickerRenderer();
+      // An empty page opens no picker, so the test needs no terminal.
+      await renderer.handlers().completed({
+        kind: "completed",
+        view: { messages: [], nextCursor, dropped: 0 },
+      });
+      out.length = 0;
+      renderer.printOlderPageLine();
+    } finally {
+      console.log = originalLog;
+    }
+    assertEquals(out, [...expected]);
+  }
 });

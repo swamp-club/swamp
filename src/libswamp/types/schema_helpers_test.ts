@@ -133,7 +133,7 @@ Deno.test("zodToJsonSchema: optional field is not required", () => {
   assertEquals(required.includes("tag"), false);
 });
 
-Deno.test("toMethodDescribeData: returns name, description, and arguments only", () => {
+Deno.test("toMethodDescribeData: returns name, description, arguments and kindSource only when no kind resolves", () => {
   const method = {
     description: "Start the resource",
     arguments: z.object({ name: z.string() }),
@@ -143,11 +143,36 @@ Deno.test("toMethodDescribeData: returns name, description, and arguments only",
   assertEquals(result.name, "start");
   assertEquals(result.description, "Start the resource");
   assertEquals(typeof result.arguments, "object");
+  assertEquals(result.kindSource, "none");
   assertEquals(Object.keys(result).sort(), [
     "arguments",
     "description",
+    "kindSource",
     "name",
   ]);
+});
+
+Deno.test("toMethodDescribeData: reports a kind set on the method as declared", () => {
+  const method = {
+    description: "Probe the resource",
+    kind: "read" as const,
+    arguments: z.object({}),
+    execute: () => Promise.resolve({}),
+  };
+  const result = toMethodDescribeData("probe", method);
+  assertEquals(result.kind, "read");
+  assertEquals(result.kindSource, "declared");
+});
+
+Deno.test("toMethodDescribeData: reports a kind found from the method name as inferred", () => {
+  const method = {
+    description: "Delete the resource",
+    arguments: z.object({}),
+    execute: () => Promise.resolve({}),
+  };
+  const result = toMethodDescribeData("delete", method);
+  assertEquals(result.kind, "delete");
+  assertEquals(result.kindSource, "inferred");
 });
 
 Deno.test("buildDataOutputSpecs: builds specs from resources and files", () => {

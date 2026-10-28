@@ -82,9 +82,7 @@ import {
 import {
   createWorkflowId,
   createWorkflowRunId,
-  type WorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
-import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import {
   deepMerge,
   mergeInputArgs,
@@ -586,16 +584,8 @@ export const workflowRunCommand = new Command()
               definitionRepo: repoContext.definitionRepo,
               telemetrySink,
               supersede: {
-                findSuspendedRuns: async (workflowId) => {
-                  const suspended = await runRepo
-                    .findSummariesByStatus(workflowId, "suspended");
-                  const runs = await Promise.all(
-                    suspended.map((s) =>
-                      runRepo.findById(workflowId, s.id as WorkflowRunId)
-                    ),
-                  );
-                  return runs.filter((r): r is WorkflowRun => r !== null);
-                },
+                findSuspendedRuns: (workflowId, signal) =>
+                  runRepo.findByStatus(workflowId, "suspended", signal),
                 findEvaluatedWorkflow: (runId) =>
                   evaluatedWorkflowRepo.findByRunId(runId),
                 evaluatedCache: (name) =>

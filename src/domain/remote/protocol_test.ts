@@ -26,14 +26,18 @@ import {
   DispatchResultSchema,
   DispatchSecretLoadRequestSchema,
   EnrollParamsSchema,
+  isSupportedRemoteProtocolVersion,
+  LEGACY_PLAINTEXT_PROTOCOL_VERSION,
   MAX_DISPATCH_SECRET_KEY_LENGTH,
   MAX_DISPATCH_SECRET_LOAD_BODY_BYTES,
   MAX_DISPATCH_SECRET_LOADS,
   MAX_DISPATCH_SECRET_RESOURCE_NAME_LENGTH,
   MAX_DISPATCH_SECRET_VAULT_NAME_LENGTH,
   parseRpcFrame,
+  plaintextFieldsOf,
   REMOTE_PROTOCOL_VERSION,
   ResolveSecretParamsSchema,
+  shipsReferencesOnly,
 } from "./protocol.ts";
 import { SENTINEL_SOURCE } from "../vaults/secret_bag_registry.ts";
 
@@ -425,7 +429,7 @@ Deno.test("REMOTE_PROTOCOL_VERSION: pins the sentinel format a dispatch's secret
   // instead of failing on its first secret-bearing dispatch.
   assertEquals(
     [REMOTE_PROTOCOL_VERSION, SENTINEL_SOURCE],
-    [5, "__SWAMP_VSEC_[0-9a-f]{32}_\\d+__"],
+    [6, "__SWAMP_VSEC_[0-9a-f]{32}_\\d+__"],
   );
   // A sentinel of the protocol 4 shape is refused by the schema.
   assertEquals(
@@ -434,6 +438,72 @@ Deno.test("REMOTE_PROTOCOL_VERSION: pins the sentinel format a dispatch's secret
     ).success,
     false,
   );
+});
+
+Deno.test("isSupportedRemoteProtocolVersion: serve enrolls versions 5 and 6 until typed-secrets 5.3", () => {
+  assertEquals(
+    [4, 5, 6, 7].map(isSupportedRemoteProtocolVersion),
+    [false, true, true, false],
+  );
+  assertEquals(LEGACY_PLAINTEXT_PROTOCOL_VERSION, 5);
+  assertEquals(shipsReferencesOnly(LEGACY_PLAINTEXT_PROTOCOL_VERSION), false);
+  assertEquals(shipsReferencesOnly(REMOTE_PROTOCOL_VERSION), true);
+});
+
+Deno.test("DispatchParamsSchema: a version 6 reference bag carries the reference, encoding and origin, never a value", () => {
+  const sentinel = `__SWAMP_VSEC_${"0a1b2c3d".repeat(4)}_0__`;
+  const { secretBag: _bag, unresolvedMethodArgs: _args, ...base } =
+    dispatchWithSecretBag(sentinel);
+  const entry = {
+    sentinel,
+    reference: { vaultName: "v", key: "k" },
+    encoding: "json" as const,
+    dataOrigin: true,
+    jsonValue: true as const,
+    location: "methodArguments.run",
+  };
+  const parsed = DispatchParamsSchema.parse(
+    JSON.parse(JSON.stringify({
+      ...base,
+      execution: { ...base.execution, methodArgs: { run: `echo ${sentinel}` } },
+      referenceBag: [{ ...entry, value: "s3cret" }],
+    })),
+  );
+  // A value smuggled into an entry is stripped, never delivered.
+  assertEquals(parsed.referenceBag, [entry]);
+  assertEquals(plaintextFieldsOf(parsed), []);
+  for (
+    const bad of [
+      { ...entry, sentinel: "__SWAMP_VSEC_0a1b2c3d_0__" },
+      { ...entry, encoding: "base64" },
+      { ...entry, reference: { vaultName: "", key: "k" } },
+      {
+        ...entry,
+        reference: {
+          vaultName: "v",
+          key: "k".repeat(MAX_DISPATCH_SECRET_KEY_LENGTH + 1),
+        },
+      },
+    ]
+  ) {
+    assertEquals(
+      DispatchParamsSchema.safeParse({ ...base, referenceBag: [bad] }).success,
+      false,
+    );
+  }
+});
+
+Deno.test("plaintextFieldsOf: names each plaintext-bearing field a dispatch carries", () => {
+  const sentinel = `__SWAMP_VSEC_${"0a1b2c3d".repeat(4)}_0__`;
+  const parsed = DispatchParamsSchema.parse({
+    ...dispatchWithSecretBag(sentinel),
+    secretValues: ["s3cret"],
+  });
+  assertEquals(plaintextFieldsOf(parsed), [
+    "secretValues",
+    "secretBag",
+    "unresolvedMethodArgs",
+  ]);
 });
 
 Deno.test("ResolveSecretParamsSchema: carries an optional resource claim (swamp-club#3529)", () => {

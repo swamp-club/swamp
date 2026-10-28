@@ -44,6 +44,7 @@ import type {
 } from "../protocol.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
+import { findLatestReportData } from "../../infrastructure/persistence/catalog_report_adapter.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { getReportTypes } from "../../domain/reports/report_types.ts";
 import type { Principal } from "../../domain/access/principal.ts";
@@ -101,9 +102,15 @@ export async function handleReportGet(
   try {
     const libCtx = handlerLibSwampContext(ctx);
     const deps: ReportGetDeps = {
-      findAllGlobal: () => ctx.repoContext.unifiedDataRepo.findAllGlobal(),
-      findAllForModel: (type, modelId) =>
-        ctx.repoContext.unifiedDataRepo.findAllForModel(type, modelId),
+      // The reads stop when the request is cancelled, so it gives up its
+      // place among the shared scan permits (swamp-club#4070, #4075).
+      findReportData: (owner) =>
+        findLatestReportData(
+          ctx.repoContext.dataQueryService,
+          ctx.repoContext.catalogStore,
+          ctx.repoContext.unifiedDataRepo,
+          { owner, signal: controller.signal },
+        ),
       findDataByVersion: (type, modelId, dataName, version) =>
         ctx.repoContext.unifiedDataRepo.findByName(
           type,
@@ -172,6 +179,11 @@ export async function handleReportGet(
       payload: { data: result },
     });
   } catch (error) {
+    // A read stopped by the cancel answers as one that ran to the end does.
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "report_get_failed", message);
   }
@@ -207,9 +219,15 @@ export async function handleReportSearch(
     const libCtx = handlerLibSwampContext(ctx);
     await reportRegistry.ensureLoaded();
     const deps: ReportSearchDeps = {
-      findAllGlobal: () => ctx.repoContext.unifiedDataRepo.findAllGlobal(),
-      findAllForModel: (type, modelId) =>
-        ctx.repoContext.unifiedDataRepo.findAllForModel(type, modelId),
+      // The reads stop when the request is cancelled, so it gives up its
+      // place among the shared scan permits (swamp-club#4070, #4075).
+      findReportData: (owner) =>
+        findLatestReportData(
+          ctx.repoContext.dataQueryService,
+          ctx.repoContext.catalogStore,
+          ctx.repoContext.unifiedDataRepo,
+          { owner, signal: controller.signal },
+        ),
       lookupDefinition: (idOrName) =>
         findDefinitionByIdOrName(ctx.repoContext.definitionRepo, idOrName),
       lookupDefinitionById: (type, id) =>
@@ -276,6 +294,11 @@ export async function handleReportSearch(
       payload: { data },
     });
   } catch (error) {
+    // A read stopped by the cancel answers as one that ran to the end does.
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "report_search_failed", message);
   }

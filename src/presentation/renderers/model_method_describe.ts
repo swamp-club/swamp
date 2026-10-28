@@ -25,7 +25,7 @@ import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { carryModelWording } from "../../domain/behavior_wording.ts";
-import { formatSchemaAttributes } from "./model_get.ts";
+import { formatMethodKind, formatSchemaAttributes } from "./model_get.ts";
 import {
   type CommandSurface,
   DEFAULT_COMMAND_SURFACE,
@@ -49,9 +49,9 @@ class LogModelMethodDescribeRenderer
         lines.push(`${bold(cyan("Version:"))} ${data.version}`);
         lines.push("");
         lines.push(
-          `${bold(cyan("Method:"))} ${data.method.name} ${
-            dim("-")
-          } ${data.method.description}`,
+          `${bold(cyan("Method:"))} ${data.method.name}${
+            formatMethodKind(data.method)
+          } ${dim("-")} ${data.method.description}`,
         );
 
         const argAttrs = formatSchemaAttributes(

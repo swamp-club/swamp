@@ -25,6 +25,7 @@ import { ModelType } from "../models/model_type.ts";
 import {
   type AggregateResourceResolver,
   authorizeCommit,
+  baseRecordReadAccessOf,
   type CallerAuthority,
   checkCommitBindings,
   type CommitAuthorization,
@@ -779,6 +780,114 @@ Deno.test("definitionRecordReadAccessOf: decides a definition record by the type
   ) {
     assertEquals((await access(key)).action, "admin", key);
   }
+});
+
+Deno.test("baseRecordReadAccessOf: decides a compacted record by its partition and key, as the feed decides the op that wrote it", async () => {
+  const resolver = new FakeResolver();
+  resolver.definitions.set(MODEL_ID, web());
+  resolver.workflows.set(SAMPLE_WORKFLOW_ID, { name: "deploy" });
+  const decided = async (
+    partition: Parameters<typeof baseRecordReadAccessOf>[0],
+    key: string,
+  ) =>
+    (await baseRecordReadAccessOf(partition, RecordKey.create(key), resolver))
+      .map(({ action, resource }) =>
+        `${action} ${resource.kind}:${resource.name}`
+      );
+  const model = modelPartition();
+
+  assertEquals(await decided(model, `${DATA}/vpc/1/raw`), ["read data:web"]);
+  assertEquals(await decided(model, `${DATA}/vpc/latest`), ["read data:web"]);
+  assertEquals(
+    await decided(
+      model,
+      `outputs/${MODEL_TYPE.normalized}/create/${MODEL_ID}-2026-01-01T00-00-00-000Z.yaml`,
+    ),
+    ["read model:web"],
+  );
+  assertEquals(
+    await decided(
+      model,
+      `definitions-evaluated/${MODEL_TYPE.normalized}/${MODEL_ID}.yaml`,
+    ),
+    ["read model:web"],
+  );
+  // A key no intent of the behavior writes says nothing of what it holds:
+  // admin, and both reads, so it is never shown more loosely than any op.
+  assertEquals(await decided(model, `${DATA}/vpc/1/other`), [
+    "admin access:*",
+    "read data:web",
+    "read model:web",
+  ]);
+  // Another behavior's data key in this partition is not this one's data.
+  assertEquals(
+    (await decided(
+      model,
+      `data/${MODEL_TYPE.normalized}/${OTHER_ID}/vpc/1/raw`,
+    ))[0],
+    "admin access:*",
+  );
+
+  const grant = partitionOf({
+    kind: "model",
+    type: ModelType.create("@swamp/grant"),
+    id: MODEL_ID,
+  });
+  assertEquals(
+    (await decided(grant, `data/@swamp/grant/${MODEL_ID}/main/1/raw`))
+      .map((access) => access.split(" ")[0]),
+    ["admin"],
+  );
+
+  const run = partitionOf({
+    kind: "run",
+    workflowId: SAMPLE_WORKFLOW_ID,
+    runId: SAMPLE_RUN_ID,
+  });
+  assertEquals(
+    await decided(
+      run,
+      `workflow-runs/${SAMPLE_WORKFLOW_ID}/workflow-run-${SAMPLE_RUN_ID}.yaml`,
+    ),
+    ["read workflow:deploy"],
+  );
+
+  // A definition's config partition decides each record by the type its
+  // key names, so same-named definitions sharing it are told apart
+  // (swamp-club#3938).
+  const shared = partitionOf({
+    kind: "config",
+    definitionKind: "model",
+    name: "shared",
+  });
+  assertEquals(
+    await decided(shared, "config/models/acme/web/shared.yaml"),
+    ["read model:shared"],
+  );
+  assertEquals(
+    (await decided(shared, "config/models/@swamp/grant/shared.yaml"))[0]
+      .split(" ")[0],
+    "admin",
+  );
+
+  const auto = partitionOf({ kind: "definition", id: MODEL_ID });
+  assertEquals(
+    await decided(
+      auto,
+      `auto-definitions/${MODEL_TYPE.normalized}/${MODEL_ID}.yaml`,
+    ),
+    [`read model:${MODEL_ID}`],
+  );
+  assertEquals(
+    (await decided(auto, `auto-definitions/@swamp/grant/${MODEL_ID}.yaml`))[0]
+      .split(" ")[0],
+    "admin",
+  );
+
+  assertEquals(
+    await decided(partitionOf({ kind: "lockfile" }), LOCKFILE_RECORD_KEY),
+    [],
+  );
 });
 
 Deno.test("partitionWriteAccessOf: an upload needs the least write a partition takes, and admin where its partition names no type", async () => {

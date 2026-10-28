@@ -32,6 +32,7 @@
  * | `POST partitions/{p}/commits` | one commit and its missing chunks, framed: `{seq}` or a conflict |
  * | `GET partitions/{p}/commits?after=` | a partition's commits after a seq |
  * | `GET changes?cursor=` | every commit since a cursor the caller may read |
+ * | `GET base?after=` | the compacted base, a page at a time, filtered to what the caller may read |
  * | `POST locks` | take serve's model or workflow-run lock for the caller: a lease |
  * | `PUT locks/{leaseId}` | renew a lease |
  * | `DELETE locks/{leaseId}` | release a lease |
@@ -55,6 +56,8 @@ import {
   ADMIN_RESOURCE,
   type AggregateResourceResolver,
   authorizeCommit,
+  baseDataReadAccessOf,
+  baseRecordReadAccessOf,
   type CallerAuthority,
   type CommitRefusal,
   definitionRecordReadAccessOf,
@@ -64,7 +67,15 @@ import {
   type RequiredAccess,
 } from "../domain/datastore_v3/commit_authorization.ts";
 import { storageNamespaceOf } from "../domain/datastore_v3/chunk_store.ts";
-import { CommitsCompactedError } from "../domain/datastore_v3/commit_store.ts";
+import {
+  CommitsCompactedError,
+  type CompactedBaseEntry,
+  InvalidBasePageTokenError,
+} from "../domain/datastore_v3/commit_store.ts";
+import {
+  type ObservedBaseEntry,
+  observedBaseEntryToJSON,
+} from "../domain/datastore_v3/observed_base.ts";
 import { type Op, opFromJSON } from "../domain/datastore_v3/op.ts";
 import { CommitRejectedError } from "../domain/datastore_v3/partition.ts";
 import {
@@ -72,6 +83,7 @@ import {
   partitionOf,
 } from "../domain/datastore_v3/partition_key.ts";
 import { ReadModelIncompleteError } from "../domain/datastore_v3/read_model.ts";
+import { RecordKey } from "../domain/datastore_v3/record_key.ts";
 import { isControlPlaneModelType } from "../domain/models/control_plane_types.ts";
 import { findDefinitionByIdGlobal } from "../domain/models/model_lookup.ts";
 import { ModelType } from "../domain/models/model_type.ts";
@@ -97,7 +109,10 @@ import type {
   UploadLedger,
   UploadReservation,
 } from "../infrastructure/datastore_v3/upload_ledger.ts";
-import { SERVE_DATASTORE_LOG_HEADER } from "../infrastructure/datastore_v3/serve_datastore_client.ts";
+import {
+  SERVE_DATASTORE_ACCESS_HEADER,
+  SERVE_DATASTORE_LOG_HEADER,
+} from "../infrastructure/datastore_v3/serve_datastore_client.ts";
 import type { V3Datastore } from "../infrastructure/datastore_v3/v3_datastore.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
@@ -142,6 +157,8 @@ export const MAX_HAS_HASHES = 1024;
 export const MAX_PAGE = 1000;
 /** The most feed rows one changes request scans, kept or filtered. */
 export const MAX_CHANGES_SCAN = 10_000;
+/** The most compacted base entries one base request scans, kept or filtered. */
+export const MAX_BASE_SCAN = 10_000;
 /** The most partitions a chunk read checks the caller against. */
 const MAX_REFERENCING_PARTITIONS = 64;
 /** The most chunk requests one principal has in flight. */
@@ -186,7 +203,11 @@ const catchUps = new WeakMap<V3Datastore, CatchUpCoalescer>();
  * ({@link SERVE_DATASTORE_LOG_HEADER}): a checkout's copy refuses a serve
  * that answers with another log's (swamp-club#4049). It says nothing of
  * the log's content, so it goes to every authenticated caller, whatever
- * its grants.
+ * its grants. Every reply to an authenticated caller also carries a
+ * fingerprint of what the caller may read
+ * ({@link SERVE_DATASTORE_ACCESS_HEADER}): a checkout's copy is rebuilt
+ * when it changes, so a widened or narrowed grant refreshes what the copy
+ * holds (swamp-club#4089).
  */
 export async function handleDatastoreRequest(
   req: Request,
@@ -196,14 +217,56 @@ export async function handleDatastoreRequest(
 ): Promise<Response> {
   const authenticated = await authenticateCaller(req, sourceIp, deps);
   if (authenticated instanceof Response) return authenticated;
+  // Taken before the reply is answered: a reload while it is answered then
+  // shows as a change on the next reply, which rebuilds the copy, never as
+  // the access a copy filtered under the old grants was built with.
+  const access = callerReadAccess(authenticated, deps.ctx);
   const response = await answerDatastoreRequest(
     req,
     route,
     authenticated,
     deps,
   );
+  const headers: [string, string][] = access === undefined
+    ? []
+    : [[SERVE_DATASTORE_ACCESS_HEADER, access]];
   const logId = logIdOf(deps.v3);
-  return logId === undefined ? response : withHeader(response, logId);
+  if (logId !== undefined) headers.push([SERVE_DATASTORE_LOG_HEADER, logId]);
+  return withHeaders(response, headers);
+}
+
+/** The read-access fingerprint of a caller with no authorization to apply. */
+export const UNRESTRICTED_READ_ACCESS = "unrestricted";
+
+/** The read-access fingerprint of a caller that may read nothing. */
+export const NO_READ_ACCESS = "none";
+
+/**
+ * The fingerprint of what `caller` may read, as the read filter decides it
+ * (`callerResourceDecider`): everything when authorization is off, nothing
+ * without a principal or a policy, else the decision service's
+ * fingerprint of the caller's grants and serve's restricted behavior types,
+ * which only an admin may read. Undefined, so the reply names none,
+ * when it cannot be taken: it is freshness, never a reason to fail a reply.
+ */
+function callerReadAccess(
+  caller: ApiCaller,
+  ctx: Pick<ConnectionContext, "authConfig" | "policySnapshotLoader">,
+): string | undefined {
+  if (ctx.authConfig.mode === "none") return UNRESTRICTED_READ_ACCESS;
+  const loader = ctx.policySnapshotLoader;
+  const { principal, collectives, groups } = caller.access;
+  if (!loader || !principal) return NO_READ_ACCESS;
+  try {
+    return loader.decisionService.readAccessFingerprint(
+      { principal, collectives, groups },
+      ctx.authConfig.restrictedModelTypes,
+    );
+  } catch (error) {
+    logger
+      .warn`Could not fingerprint a datastore caller's read access: ${error}`;
+    return undefined;
+  }
 }
 
 /** The log's id; undefined when there is no v3 log, or it is closing. */
@@ -215,18 +278,21 @@ function logIdOf(v3: V3Datastore | undefined): string | undefined {
   }
 }
 
-/** `response` with the log header set; a copy when its headers are fixed. */
-function withHeader(response: Response, logId: string): Response {
+/** `response` with `headers` set; a copy when its headers are fixed. */
+function withHeaders(
+  response: Response,
+  headers: readonly [string, string][],
+): Response {
   try {
-    response.headers.set(SERVE_DATASTORE_LOG_HEADER, logId);
+    for (const [name, value] of headers) response.headers.set(name, value);
     return response;
   } catch {
-    const headers = new Headers(response.headers);
-    headers.set(SERVE_DATASTORE_LOG_HEADER, logId);
+    const copied = new Headers(response.headers);
+    for (const [name, value] of headers) copied.set(name, value);
     return new Response(response.body, {
       status: response.status,
       statusText: response.statusText,
-      headers,
+      headers: copied,
     });
   }
 }
@@ -282,6 +348,10 @@ async function answerDatastoreRequest(
       case "changes":
         return req.method === "GET"
           ? await api.changes(req)
+          : methodNotAllowed("GET");
+      case "base":
+        return req.method === "GET"
+          ? await api.compactedBase(req)
           : methodNotAllowed("GET");
       case "locks":
         return req.method === "POST"
@@ -800,6 +870,133 @@ class DatastoreApi {
     // The next cursor moves past filtered rows too, so a caller who may
     // read nothing still makes progress.
     return Response.json({ changes: kept, cursor: next, more });
+  }
+
+  /**
+   * `GET base?after={token}&limit=` (swamp-club#4006): the compacted base of
+   * this namespace, a page at a time, with only what the caller may read.
+   * Each entry is decided by its partition and key, never more loosely than
+   * the changes feed decides the op that wrote it. A partition the caller
+   * may read as a whole is sent in its own section; one it may not (a
+   * config partition same-named definitions share) is sent just before the
+   * first entry of it the caller may read, so each entry arrives with its
+   * partition's compacted seq. `next` moves past filtered entries, so a
+   * caller who may read nothing still reaches the end. A page holds entries
+   * of one compaction point: when the point moves mid-request, the page ends
+   * there and the next one reports the new point.
+   */
+  async compactedBase(req: Request): Promise<Response> {
+    const params = new URL(req.url).searchParams;
+    const after = params.get("after") ?? undefined;
+    const limit = pageLimit(params.get("limit"));
+    if (limit === undefined) {
+      return failure(400, "invalid_request", "limit must be an integer");
+    }
+    const store = this.#v3.commitStore;
+    const entries: Record<string, unknown>[] = [];
+    const announced = new Set<string>();
+    let next = after;
+    let point: number | undefined;
+    let scanned = 0;
+    let kept = 0;
+    while (kept < limit && scanned < MAX_BASE_SCAN) {
+      let page;
+      try {
+        page = await store.readCompactedBase(
+          next,
+          Math.min(limit - kept, MAX_BASE_SCAN - scanned),
+        );
+      } catch (error) {
+        if (!(error instanceof InvalidBasePageTokenError)) throw error;
+        return failure(
+          400,
+          "invalid_request",
+          "after must be the next token of a base page",
+        );
+      }
+      if (point === undefined) point = page.point;
+      else if (page.point !== point) break;
+      for (const entry of page.entries) {
+        scanned++;
+        if (entry.namespace !== this.#namespace) continue;
+        const readable = await this.#readableBaseEntry(entry, announced);
+        if (readable === undefined) continue;
+        for (const sent of readable) {
+          entries.push(observedBaseEntryToJSON(sent));
+        }
+        kept++;
+      }
+      next = page.next;
+      if (next === undefined) break;
+    }
+    return Response.json({
+      point: point ?? 0,
+      entries,
+      ...(next === undefined ? {} : { next }),
+    });
+  }
+
+  /**
+   * The entries to send for `entry`: none when the caller may not read it,
+   * else the entry, after its partition's when that was not sent yet.
+   */
+  async #readableBaseEntry(
+    entry: CompactedBaseEntry,
+    announced: Set<string>,
+  ): Promise<ObservedBaseEntry[] | undefined> {
+    if (entry.kind === "partition") {
+      const partition = PartitionKey.parse(entry.partition);
+      if (
+        !this.#mayRead(await partitionReadAccessOf(partition, this.#resolver))
+      ) {
+        return undefined;
+      }
+      const marks = await this.#compactedPartition(partition);
+      if (marks === undefined) return undefined;
+      announced.add(entry.partition);
+      return [marks];
+    }
+    const owner = entry.kind === "file"
+      ? entry.ownership.owner
+      : entry.partition;
+    const partition = PartitionKey.parse(owner);
+    const required = entry.kind === "record" || entry.kind === "file"
+      ? await baseRecordReadAccessOf(
+        partition,
+        RecordKey.create(entry.key),
+        this.#resolver,
+      )
+      : await baseDataReadAccessOf(partition, this.#resolver);
+    if (!this.#mayRead(required)) return undefined;
+    if (announced.has(owner)) return [entry];
+    announced.add(owner);
+    const marks = await this.#compactedPartition(partition);
+    return marks === undefined ? [entry] : [marks, entry];
+  }
+
+  /**
+   * A compacted partition's entry: its compacted seq, and its data names'
+   * marks when the caller may read its data.
+   */
+  async #compactedPartition(
+    partition: PartitionKey,
+  ): Promise<ObservedBaseEntry | undefined> {
+    const marks = await this.#v3.commitStore.compactedPartition(
+      this.#namespace,
+      partition,
+    );
+    if (marks === undefined) return undefined;
+    const names = marks.names.length > 0 &&
+        this.#mayRead(await baseDataReadAccessOf(partition, this.#resolver))
+      ? marks.names
+      : [];
+    return {
+      kind: "partition",
+      namespace: this.#namespace,
+      partition: partition.toString(),
+      seq: marks.seq,
+      names,
+    };
   }
 
   /**
@@ -1570,6 +1767,7 @@ export function datastoreErrorResponse(error: unknown): Response {
     return Response.json({
       code: "commits_compacted",
       point: error.point,
+      ...(error.compactedSeq === undefined ? {} : { seq: error.compactedSeq }),
       message: error.message,
     }, { status: 410 });
   }

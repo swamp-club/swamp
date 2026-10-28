@@ -366,13 +366,16 @@ export interface InMemoryWorker {
 }
 
 /**
- * Connects and enrolls a worker over an in-memory control socket. Register
- * `WorkerMethod.dispatch` on the returned channel to act as the worker.
+ * Connects and enrolls a worker over an in-memory control socket, at
+ * `protocolVersion` (the current one unless a test pins the version 5 frame
+ * of the deprecation window). Register `WorkerMethod.dispatch` on the
+ * returned channel to act as the worker.
  */
 export async function connectInMemoryWorker(
   orchestrator: BaselineOrchestrator,
   name: string,
   labels: Record<string, string> = { tier: "baseline" },
+  protocolVersion: number = REMOTE_PROTOCOL_VERSION,
 ): Promise<InMemoryWorker> {
   const token = await orchestrator.mintToken(name);
   const channel: RpcChannel = new RpcChannel({
@@ -385,7 +388,7 @@ export async function connectInMemoryWorker(
     token,
     instanceUuid: crypto.randomUUID(),
     machineId: `machine-${name}`,
-    protocolVersion: REMOTE_PROTOCOL_VERSION,
+    protocolVersion,
     swampVersion: "test",
     platform: "linux",
     arch: "x86_64",

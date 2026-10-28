@@ -38,6 +38,7 @@ import type {
 import type { DataMetadata } from "../data/data_metadata.ts";
 import type { FileOwnership } from "./materialisation.ts";
 import type { PartitionKey } from "./partition_key.ts";
+import type { VersionRange } from "./version_ranges.ts";
 
 /** What {@link CommitStore.append} did with a commit it accepted. */
 export type CommitStoreAppendResult =
@@ -97,11 +98,27 @@ export class CommitsCompactedError extends Error {
     /** The store's compaction point. */
     readonly point: number,
     detail: string,
+    /**
+     * For a partition read, the partition's compacted seq: a reader that
+     * holds what was compacted reads on after it (swamp-club#4006).
+     */
+    readonly compactedSeq?: number,
   ) {
     super(
       `${detail}: those commits were compacted (compaction point ${point})`,
     );
     this.name = "CommitsCompactedError";
+  }
+}
+
+/**
+ * A page token {@link CommitStore.readCompactedBase} never handed out
+ * (swamp-club#4006): serve answers one a caller sent with a 400.
+ */
+export class InvalidBasePageTokenError extends Error {
+  constructor(readonly token: string) {
+    super(`Invalid compacted base page token: ${token}`);
+    this.name = "InvalidBasePageTokenError";
   }
 }
 
@@ -151,6 +168,26 @@ export type CompactedBaseEntry =
     readonly key: string;
     readonly ownership: FileOwnership;
   };
+
+/**
+ * A data name's version marks (swamp-club#4006): the greatest version ever
+ * recorded and the versions recorded then removed, which are never handed
+ * out again.
+ */
+export interface DataNameMarks {
+  readonly name: string;
+  readonly highWater: number;
+  readonly removed?: readonly VersionRange[];
+}
+
+/**
+ * A compacted partition as serve sends it with the compacted base: its
+ * compacted seq and its data names' marks.
+ */
+export interface CompactedPartitionMarks {
+  readonly seq: number;
+  readonly names: readonly DataNameMarks[];
+}
 
 /** One page of the compacted base. */
 export interface CompactedBasePage {

@@ -48,10 +48,15 @@ import { exitCodeForError } from "../src/presentation/output/error_output.ts";
 import { datastoreErrorResponse } from "../src/serve/datastore_api.ts";
 import { captureLogs } from "./remote_secrets_baseline_harness.ts";
 import {
+  SERVE_UPSTREAM_STATE_FILE,
+  ServeUpstreamState,
+} from "../src/infrastructure/datastore_v3/serve_upstream_state.ts";
+import {
   type Client,
   dataOf,
   json,
   latestOf,
+  MEMBER,
   readCommand,
   serveEnv,
   startProxy,
@@ -758,6 +763,105 @@ Deno.test({
         String(error).includes("has not read this datastore from serve yet"),
         String(error),
       );
+    });
+  },
+});
+
+/** The id of the copy `client` holds of serve at `origin`. */
+function copyIdOf(client: Client, origin: string): string {
+  const state = ServeUpstreamState.open(
+    join(
+      serveUpstreamLocalRoot(client.repoDir, origin, ""),
+      SERVE_UPSTREAM_STATE_FILE,
+    ),
+  );
+  try {
+    return state.copyId();
+  } finally {
+    state.close();
+  }
+}
+
+Deno.test({
+  name:
+    "serve upstream errors: a change of access waits while the copy holds unlanded writes, warning, and rebuilds the copy once a writing command lands them (swamp-club#4089)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve();
+      const bucket = scratch.bucket();
+      const client = await scratch.client("a", { bucket });
+      const env = serveEnv(serve, "alice-token");
+      const type = serve.modelType;
+      const web = serve.models.web;
+
+      await leaveUnsettledWrite(
+        scratch,
+        client,
+        env,
+        (repos) =>
+          repos.unifiedDataRepo.save(type, web, dataOf("vpc"), json(1)),
+      );
+      const id = copyIdOf(client, serve.origin);
+      assertEquals((await outboxEntries(client, serve.origin)).length, 1);
+
+      // Alice's access widens; the next command sees it.
+      await serve.setGrants([
+        ...MEMBER,
+        { actions: ["read"], kind: "workflow", pattern: "*" },
+      ]);
+      await readCommand(scratch, client, env, () => Promise.resolve());
+
+      // A rebuild now would drop the unlanded entry: the command goes on
+      // with the copy as it is, and says why.
+      const deferred = await captureLogs(async () => {
+        assertEquals(
+          await readCommand(
+            scratch,
+            client,
+            env,
+            (repos) => latestOf(repos, type, web, "vpc"),
+          ),
+          { version: 1, content: "1" },
+        );
+      });
+      assert(
+        deferred.some((log) =>
+          log.level === "warning" &&
+          log.text.includes("still holds writes that have not finished")
+        ),
+        JSON.stringify(deferred),
+      );
+      assertEquals(copyIdOf(client, serve.origin), id);
+      assertEquals((await outboxEntries(client, serve.origin)).length, 1);
+
+      // A writing command lands it; the next command rebuilds the copy.
+      await writeCommand(
+        scratch,
+        client,
+        env,
+        (repos) => latestOf(repos, type, web, "vpc"),
+      );
+      assertEquals(await outboxEntries(client, serve.origin), []);
+      assertEquals(
+        await readCommand(
+          scratch,
+          client,
+          env,
+          (repos) => latestOf(repos, type, web, "vpc"),
+        ),
+        { version: 1, content: "1" },
+      );
+      assert(copyIdOf(client, serve.origin) !== id, "the copy was rebuilt");
+      assertEquals(
+        (await serve.log()).filter((entry) =>
+          entry.keys.some((key) => key.includes("vpc"))
+        ).length,
+        1,
+        "the unlanded write landed once",
+      );
+      assertEquals(bucket.touched(), []);
     });
   },
 });

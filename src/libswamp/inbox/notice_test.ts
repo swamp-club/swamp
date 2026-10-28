@@ -22,9 +22,10 @@ import {
   type AuthCredentials,
   keyFingerprint,
 } from "../../domain/auth/auth_credentials.ts";
-import type {
-  InboxSnapshot,
-  InboxState,
+import {
+  InboxCacheKey,
+  type InboxSnapshot,
+  type InboxState,
 } from "../../domain/inbox/inbox_state.ts";
 import type { InboxSummaryResult } from "../../infrastructure/http/inbox_schemas.ts";
 import { InboxCacheFileRepository } from "../../infrastructure/inbox/inbox_cache_file_repository.ts";
@@ -89,7 +90,7 @@ interface Harness {
   deps: InboxNoticeDeps;
   rec: Recorder;
   cache: InboxCacheFileRepository;
-  fingerprint: string;
+  key: InboxCacheKey;
 }
 
 /**
@@ -110,8 +111,11 @@ async function withHarness(
   const dir = await Deno.makeTempDir({ prefix: "swamp-inbox-notice-" });
   try {
     const cache = new InboxCacheFileRepository(dir);
-    const fingerprint = await keyFingerprint(credentials.apiKey);
-    if (options.state) await cache.save(fingerprint, options.state);
+    const key = InboxCacheKey.of(
+      credentials.serverUrl,
+      await keyFingerprint(credentials.apiKey),
+    );
+    if (options.state) await cache.save(key, options.state);
     const rec: Recorder = { summaries: [], waits: [], saves: 0 };
     const deps: InboxNoticeDeps = {
       loadCredentials: () => Promise.resolve(credentials),
@@ -121,12 +125,12 @@ async function withHarness(
           ? options.summary(signal)
           : Promise.resolve(okSummary);
       },
-      loadInboxState: (fp) => cache.load(fp),
-      saveInboxState: (fp, state) => {
+      loadInboxState: (k) => cache.load(k),
+      saveInboxState: (k, state) => {
         rec.saves++;
-        return cache.save(fp, state);
+        return cache.save(k, state);
       },
-      ownsConfigDir: () => true,
+      configDirWritable: () => Promise.resolve(true),
       now: () => NOW,
       wait: (_ms, signal) => {
         rec.waits.push(signal);
@@ -138,7 +142,7 @@ async function withHarness(
       },
       ...options.overrides,
     };
-    await fn({ deps, rec, cache, fingerprint });
+    await fn({ deps, rec, cache, key });
   } finally {
     await Deno.remove(dir, { recursive: true }).catch((error) => {
       if (Deno.build.os !== "windows") throw error;
@@ -160,7 +164,7 @@ function pendingUntilAborted(
 }
 
 Deno.test("startInboxPoll: a poll that settled before teardown is saved without waiting out the grace", async () => {
-  await withHarness({}, async ({ deps, rec, cache, fingerprint }) => {
+  await withHarness({}, async ({ deps, rec, cache, key }) => {
     const poll = await startInboxPoll(deps);
     assert(poll !== null);
     await poll.settle();
@@ -170,7 +174,7 @@ Deno.test("startInboxPoll: a poll that settled before teardown is saved without 
     // The grace wait was cut short as soon as the poll had settled.
     assertEquals(rec.waits.length, 1);
     assertEquals(rec.waits[0].aborted, true);
-    const saved = await cache.load(fingerprint);
+    const saved = await cache.load(key);
     assertEquals(saved.snapshot?.unread, 2);
     assertEquals(saved.snapshot?.etag, '"v2"');
     assertEquals(saved.schedule.lastPolledAt, NOW);
@@ -180,13 +184,13 @@ Deno.test("startInboxPoll: a poll that settled before teardown is saved without 
 Deno.test("startInboxPoll: a poll still running when the grace ends is aborted and saved as failed", async () => {
   await withHarness(
     { summary: pendingUntilAborted, graceElapses: true },
-    async ({ deps, rec, cache, fingerprint }) => {
+    async ({ deps, rec, cache, key }) => {
       const poll = await startInboxPoll(deps);
       assert(poll !== null);
       await poll.settle();
 
       assertEquals(rec.summaries[0].signal.aborted, true);
-      const saved = await cache.load(fingerprint);
+      const saved = await cache.load(key);
       assertStrictEquals(saved.snapshot, null);
       assertEquals(saved.schedule.lastPolledAt, NOW);
     },
@@ -199,13 +203,13 @@ Deno.test("startInboxPoll: sends the cached etag, and a 304 keeps the snapshot",
       state: polledState(),
       summary: () => Promise.resolve({ kind: "not_modified" }),
     },
-    async ({ deps, rec, cache, fingerprint }) => {
+    async ({ deps, rec, cache, key }) => {
       const poll = await startInboxPoll(deps);
       assert(poll !== null);
       await poll.settle();
 
       assertEquals(rec.summaries[0].etag, '"v1"');
-      const saved = await cache.load(fingerprint);
+      const saved = await cache.load(key);
       assertEquals(saved.snapshot, snapshot());
       assertEquals(saved.schedule.lastPolledAt, NOW);
     },
@@ -231,11 +235,11 @@ Deno.test("startInboxPoll: a client that rejects or throws is saved as a failed 
       throwing,
     ]
   ) {
-    await withHarness({ summary }, async ({ deps, cache, fingerprint }) => {
+    await withHarness({ summary }, async ({ deps, cache, key }) => {
       const poll = await startInboxPoll(deps);
       assert(poll !== null);
       await poll.settle();
-      const saved = await cache.load(fingerprint);
+      const saved = await cache.load(key);
       assertStrictEquals(saved.snapshot, null);
       assertEquals(saved.schedule.lastPolledAt, NOW);
     });
@@ -260,6 +264,31 @@ Deno.test("startInboxPoll: a save that throws never escapes settle", async () =>
       const poll = await startInboxPoll(deps);
       assert(poll !== null);
       await poll.settle();
+    },
+  );
+});
+
+Deno.test("startInboxPoll: a poll sent before inbox read saved never puts back its older snapshot", async () => {
+  let clock = NOW;
+  await withHarness(
+    {
+      state: polledState(),
+      graceElapses: true,
+      overrides: { now: () => clock },
+    },
+    async ({ deps, cache, key }) => {
+      // The poll is sent at NOW and answers unread 2.
+      const poll = await startInboxPoll(deps);
+      assert(poll !== null);
+      // Meanwhile inbox read marks the message read and saves unread 0.
+      clock = NOW + 10;
+      const read = snapshot({ unread: 0, newestId: null, fetchedAt: clock });
+      await cache.save(key, { ...(await cache.load(key)), snapshot: read });
+      clock = NOW + 20;
+      await poll.settle();
+      const saved = await cache.load(key);
+      assertEquals(saved.snapshot, read);
+      assertEquals(saved.schedule.lastPolledAt, NOW + 20);
     },
   );
 });
@@ -304,9 +333,9 @@ Deno.test("startInboxPoll: no poll without a credential or with an empty key", a
   }
 });
 
-Deno.test("startInboxPoll: no poll when the process does not own the config dir", async () => {
+Deno.test("startInboxPoll: no poll when the config dir cannot be written", async () => {
   await withHarness(
-    { overrides: { ownsConfigDir: () => false } },
+    { overrides: { configDirWritable: () => Promise.resolve(false) } },
     async ({ deps, rec }) => {
       assertStrictEquals(await startInboxPoll(deps), null);
       assertEquals(rec.summaries.length, 0);
@@ -352,10 +381,10 @@ Deno.test("startInboxPoll: the grace the wait is asked for is the teardown cap",
 Deno.test("showInboxNotice: reads the cache only and records the announcement", async () => {
   await withHarness(
     { state: polledState() },
-    async ({ deps, rec, cache, fingerprint }) => {
+    async ({ deps, rec, cache, key }) => {
       assertEquals(await showInboxNotice(deps), { unread: 2 });
       assertEquals(rec.summaries.length, 0);
-      const saved = await cache.load(fingerprint);
+      const saved = await cache.load(key);
       assertEquals(saved.announcement, { id: ID_A, at: NOW });
     },
   );
@@ -381,9 +410,41 @@ Deno.test("showInboxNotice: a retired notice stays retired", async () => {
   });
 });
 
-Deno.test("showInboxNotice: shows without recording when the process does not own the config dir", async () => {
+Deno.test("showInboxNotice: a first showing the config dir cannot record is not shown", async () => {
   await withHarness(
-    { state: polledState(), overrides: { ownsConfigDir: () => false } },
+    {
+      state: polledState(),
+      overrides: { configDirWritable: () => Promise.resolve(false) },
+    },
+    async ({ deps, rec }) => {
+      assertStrictEquals(await showInboxNotice(deps), null);
+      assertEquals(rec.saves, 0);
+    },
+  );
+});
+
+Deno.test("showInboxNotice: a first showing whose save throws is not shown", async () => {
+  await withHarness(
+    {
+      state: polledState(),
+      overrides: { saveInboxState: () => Promise.reject(new Error("disk")) },
+    },
+    async ({ deps }) => {
+      assertStrictEquals(await showInboxNotice(deps), null);
+    },
+  );
+});
+
+Deno.test("showInboxNotice: an announcement already recorded shows even where the config dir cannot be written", async () => {
+  const announced: InboxState = {
+    ...polledState(),
+    announcement: { id: ID_A, at: NOW - HOUR_MS },
+  };
+  await withHarness(
+    {
+      state: announced,
+      overrides: { configDirWritable: () => Promise.resolve(false) },
+    },
     async ({ deps, rec }) => {
       assertEquals(await showInboxNotice(deps), { unread: 2 });
       assertEquals(rec.saves, 0);
@@ -391,14 +452,27 @@ Deno.test("showInboxNotice: shows without recording when the process does not ow
   );
 });
 
-Deno.test("showInboxNotice: a save that throws still shows the notice", async () => {
+Deno.test("showInboxNotice: reloads before saving, so a snapshot saved since is kept", async () => {
+  const newer = snapshot({ unread: 5, etag: '"v9"', fetchedAt: NOW - 1 });
   await withHarness(
-    {
-      state: polledState(),
-      overrides: { saveInboxState: () => Promise.reject(new Error("disk")) },
-    },
-    async ({ deps }) => {
-      assertEquals(await showInboxNotice(deps), { unread: 2 });
+    { state: polledState() },
+    async ({ deps, cache, key }) => {
+      let loads = 0;
+      const racing: InboxNoticeDeps = {
+        ...deps,
+        loadInboxState: async (k) => {
+          const state = await cache.load(k);
+          // Another command saves a newer snapshot after the first load.
+          if (++loads === 1) {
+            await cache.save(k, { ...state, snapshot: newer });
+          }
+          return state;
+        },
+      };
+      assertEquals(await showInboxNotice(racing), { unread: 5 });
+      const saved = await cache.load(key);
+      assertEquals(saved.snapshot, newer);
+      assertEquals(saved.announcement, { id: ID_A, at: NOW });
     },
   );
 });
@@ -448,7 +522,7 @@ Deno.test("createInboxNoticeDeps: with no home directory the deps build, and the
             summaries++;
             return Promise.resolve(okSummary);
           },
-          ownsConfigDir: () => true,
+          configDirWritable: () => Promise.resolve(true),
         };
         assertStrictEquals(await startInboxPoll(deps), null);
         assertStrictEquals(await showInboxNotice(deps), null);

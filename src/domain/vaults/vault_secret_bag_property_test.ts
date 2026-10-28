@@ -24,7 +24,9 @@ import {
   deliveredJsonValue,
   holdsValue,
   isIssuedEntry,
+  jsonEscaped,
   type RegistryEntry,
+  SECRET_ENCODINGS,
   SecretBagRegistry,
   SENTINEL_EXACT,
 } from "./secret_bag_registry.ts";
@@ -492,5 +494,143 @@ Deno.test("VaultSecretBag.resolveDeep: a sentinel delivers its text everywhere b
         assertEquals(view.resolveRaw(sentinel), text);
       },
     ),
+  );
+});
+
+/** One secret of a run, issued the way `kind` names, over a vault value. */
+const arbIssued = fc.record({
+  kind: fc.constantFrom(
+    "vault",
+    "dataReference",
+    "written",
+    "dataSecret",
+  ),
+  value: fc.oneof(
+    fc.string({ minLength: 3, maxLength: 12 }),
+    fc.jsonValue().map((value) => JSON.stringify(value)),
+  ),
+  encoding: fc.constantFrom(...SECRET_ENCODINGS),
+  dataOrigin: fc.boolean(),
+  jsonValue: fc.boolean(),
+});
+
+Deno.test("VaultSecretBag.referenceEntriesFor: a worker that loads the shipped references delivers exactly what the plaintext frame delivered, in every encoding (typed-secrets 5.2)", () => {
+  fc.assert(
+    fc.property(
+      fc.array(arbIssued, { minLength: 1, maxLength: 6 }),
+      fc.array(fc.nat({ max: 5 }), { minLength: 1, maxLength: 8 }),
+      fc.string({ maxLength: 4 }),
+      (secrets, uses, filler) => {
+        const bag = new VaultSecretBag(new SecretBagRegistry());
+        // The vault holds each secret's value under a key of its own.
+        const vault = new Map<string, string>();
+        const sentinels = secrets.map((secret, i) => {
+          const reference = { vaultName: "v", key: `k${i}` };
+          vault.set(reference.key, secret.value);
+          switch (secret.kind) {
+            case "vault":
+              return bag.addSecret(reference, `at ${i}`);
+            case "dataReference":
+              return bag.addDataReference(
+                reference,
+                `field ${i}`,
+                secret.jsonValue,
+              );
+            case "written":
+              return bag.addWrittenReference(
+                reference,
+                secret.encoding,
+                secret.dataOrigin,
+                `record ${i}`,
+                secret.jsonValue,
+              );
+            default:
+              // A data entry holds the value in its encoding's form.
+              return secret.encoding === "json"
+                ? bag.addDataSecret(
+                  jsonEscaped(secret.value),
+                  reference,
+                  "json",
+                  secret.jsonValue,
+                )
+                : bag.addDataSecret(
+                  secret.value,
+                  reference,
+                  "raw",
+                  secret.jsonValue,
+                );
+          }
+        });
+        const used = uses.map((i) => sentinels[i % sentinels.length]);
+        const args = {
+          methodArgs: {
+            whole: used[0],
+            text: used.join(filler),
+            list: used,
+          },
+          globalArgs: { embedded: `${filler}${used[used.length - 1]}!` },
+        };
+        const loadedValues = (target: VaultSecretBag) => {
+          const values = new Map<string, string>();
+          for (const entry of target.registry.all()) {
+            if (isIssuedEntry(entry) && !holdsValue(entry)) {
+              values.set(entry.sentinel, vault.get(entry.reference.key)!);
+            }
+          }
+          return values;
+        };
+
+        // Today: the orchestrator loads, then ships values a worker rebuilds.
+        const shippedView = bag.withLoaded(loadedValues(bag));
+        const plaintext = VaultSecretBag.fromEntries(
+          shippedView.entriesFor(args),
+        ).resolveDeep(args);
+
+        // Version 6: references ship, and the worker loads them itself.
+        const shipped = bag.referenceEntriesFor(args);
+        assertEquals(
+          shipped.map((entry) => entry.reference),
+          bag.referencesFor(args),
+        );
+        for (const entry of shipped) {
+          assertEquals("value" in entry, false);
+        }
+        const rebuilt = VaultSecretBag.fromReferenceEntries(shipped);
+        const delivered = rebuilt.withLoaded(loadedValues(rebuilt))
+          .resolveDeep(args);
+
+        assertEquals(delivered, plaintext);
+      },
+    ),
+  );
+});
+
+Deno.test("VaultSecretBag.fromReferenceEntries: delivers nothing until loaded, and refuses a malformed or repeated sentinel", () => {
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addSecret(REF, "methodArguments.token");
+  const [entry] = bag.referenceEntriesFor({ token: sentinel });
+  assertEquals(entry, {
+    sentinel,
+    reference: REF,
+    encoding: "raw",
+    dataOrigin: false,
+    location: "methodArguments.token",
+  });
+  const rebuilt = VaultSecretBag.fromReferenceEntries([entry]);
+  assertThrows(() => rebuilt.resolveRaw(sentinel), Error, "was not loaded");
+  assertEquals(
+    rebuilt.withLoaded(new Map([[sentinel, "s3cret"]])).resolveRaw(sentinel),
+    "s3cret",
+  );
+  assertThrows(
+    () =>
+      VaultSecretBag.fromReferenceEntries([{ ...entry, sentinel: "$(id)" }]),
+    Error,
+    "Malformed",
+  );
+  assertThrows(
+    () => VaultSecretBag.fromReferenceEntries([entry, entry]),
+    Error,
+    "Repeated",
   );
 });

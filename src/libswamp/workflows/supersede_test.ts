@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { acceptedOutcomeFor } from "../../domain/workflows/signal_wait_store_test_helpers.ts";
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { supersedeMatchInputs, supersedeSuspendedRuns } from "./supersede.ts";
 import type { EvaluatedWorkflowCache } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { emptyNestedCascade } from "./nested_cascade.ts";
@@ -583,5 +583,85 @@ Deno.test("supersedeMatchInputs: a --last-evaluated run that will be refused sup
       authoredExpressions: new Set(["${{ data.latest('x', 'y') }}"]),
     }),
     undefined,
+  );
+});
+
+Deno.test("supersedeSuspendedRuns: passes its signal to findSuspendedRuns (swamp-club#4088)", async () => {
+  const wf = createWorkflow("deploy");
+  const run = createSuspendedRun(wf, { env: "prod" });
+  const controller = new AbortController();
+  const signals: Array<AbortSignal | undefined> = [];
+
+  const result = await supersedeSuspendedRuns(
+    wf,
+    { env: "prod" },
+    {
+      findSuspendedRuns: (_id, signal) => {
+        signals.push(signal);
+        return Promise.resolve([run]);
+      },
+      evaluatedCache: () => Promise.resolve(null),
+      findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
+    },
+    stubRunRepo([], [run]),
+    controller.signal,
+  );
+
+  assertEquals(signals, [controller.signal]);
+  assertEquals(result.cancelledRunIds, [run.id]);
+});
+
+Deno.test("supersedeSuspendedRuns: a cancelled read supersedes nothing and settles no run, whatever its abort reason (swamp-club#4088)", async () => {
+  const wf = createWorkflow("deploy");
+  const run = createSuspendedRun(wf, { env: "prod" });
+  const controller = new AbortController();
+  controller.abort(new Error("serve is shutting down"));
+  const saved: WorkflowRun[] = [];
+  let claims = 0;
+
+  const result = await supersedeSuspendedRuns(
+    wf,
+    { env: "prod" },
+    {
+      findSuspendedRuns: (_id, signal) => Promise.reject(signal?.reason),
+      evaluatedCache: () => Promise.resolve(null),
+      findEvaluatedWorkflow: noSnapshot,
+      runClaims: {
+        withClaim: (_runId, fn) => {
+          claims++;
+          return fn();
+        },
+      },
+    },
+    stubRunRepo(saved, [run]),
+    controller.signal,
+  );
+
+  assertEquals(result.cancelledRunIds, []);
+  assertEquals(result.skippedRuns, []);
+  assertEquals(claims, 0);
+  assertEquals(saved, []);
+});
+
+Deno.test("supersedeSuspendedRuns: a read that fails while its signal has not aborted rejects with its error (swamp-club#4088)", async () => {
+  const wf = createWorkflow("deploy");
+
+  await assertRejects(
+    () =>
+      supersedeSuspendedRuns(
+        wf,
+        { env: "prod" },
+        {
+          findSuspendedRuns: () => Promise.reject(new Error("disk is full")),
+          evaluatedCache: () => Promise.resolve(null),
+          findEvaluatedWorkflow: noSnapshot,
+          runClaims: unclaimedRuns,
+        },
+        stubRunRepo([]),
+        new AbortController().signal,
+      ),
+    Error,
+    "disk is full",
   );
 });

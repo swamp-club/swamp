@@ -91,6 +91,24 @@ export interface SecretBagEntry {
 }
 
 /**
+ * One sentinel of a VaultSecretBag in the shape a protocol version 6
+ * dispatch ships it: the reference behind it, with no value. The runner
+ * loads the value and delivers it in the entry's encoding, as a local run
+ * delivers a reference-only entry (design/enablers/typed-secrets.md
+ * Section 9).
+ */
+export interface ShippedReferenceEntry {
+  sentinel: string;
+  reference: SecretReference;
+  encoding: SecretEncoding;
+  dataOrigin: boolean;
+  /** See {@link DataReferenceEntry.jsonValue}. */
+  jsonValue?: true;
+  /** Where the reference was written or read from, for a load's errors. */
+  location: string;
+}
+
+/**
  * A vault.get() reference a pass issued, or a vault-origin written reference
  * a rehydration restored from an existing file. It holds no value: a load
  * reads one at delivery, for that delivery attempt only, and delivery applies

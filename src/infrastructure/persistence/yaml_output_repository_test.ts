@@ -47,6 +47,13 @@ import {
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { YamlOutputRepository } from "./yaml_output_repository.ts";
+import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
+import { Workflow } from "../../domain/workflows/workflow.ts";
+import { Job } from "../../domain/workflows/job.ts";
+import { Step } from "../../domain/workflows/step.ts";
+import { StepTask } from "../../domain/workflows/step_task.ts";
+import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { SERVER_TOKEN_MODEL_TYPE } from "../../domain/models/access/server_token_model.ts";
 import {
   observeDiagnosticPhase,
@@ -3250,6 +3257,108 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "output and workflow-run scans running at once keep at most 16 directories and files open between them (swamp-club#4076)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      for (let i = 0; i < 60; i++) {
+        await repo.save(
+          registeredType,
+          "run",
+          historyOutput(definitionId, new Date(Date.now() - i)),
+        );
+      }
+      const runRepo = new YamlWorkflowRunRepository(dir);
+      const workflow = Workflow.create({
+        id: crypto.randomUUID(),
+        name: "scan-bound",
+        jobs: [
+          Job.create({
+            name: "job",
+            steps: [
+              Step.create({
+                name: "step",
+                task: StepTask.model("test-model", "run"),
+              }),
+            ],
+          }),
+        ],
+      });
+      for (let w = 0; w < 8; w++) {
+        const workflowId = createWorkflowId(crypto.randomUUID());
+        for (let r = 0; r < 6; r++) {
+          const run = WorkflowRun.create(workflow);
+          run.start();
+          await runRepo.save(workflowId, run);
+        }
+      }
+      const readTextFile = Deno.readTextFile;
+      const readDir = Deno.readDir;
+      const stat = Deno.stat;
+      let open = 0;
+      let peak = 0;
+      const opening = async <T>(run: () => Promise<T>): Promise<T> => {
+        open++;
+        peak = Math.max(peak, open);
+        try {
+          // A macrotask, so concurrent opens overlap even on a fast disk.
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          return await run();
+        } finally {
+          open--;
+        }
+      };
+      (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile = (
+        path,
+        options,
+      ) =>
+        String(path).startsWith(dir)
+          ? opening(() => readTextFile(path, options))
+          : readTextFile(path, options);
+      (Deno as { stat: typeof Deno.stat }).stat = (path) =>
+        String(path).startsWith(dir) ? opening(() => stat(path)) : stat(path);
+      (Deno as { readDir: typeof Deno.readDir }).readDir = (path) => {
+        if (!String(path).startsWith(dir)) return readDir(path);
+        return (async function* () {
+          open++;
+          peak = Math.max(peak, open);
+          try {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            yield* readDir(path);
+          } finally {
+            open--;
+          }
+        })();
+      };
+      const since = new Date(Date.now() - HOUR_MS);
+      try {
+        await Promise.all([
+          ...Array.from({ length: 6 }, () => repo.findAllGlobalSince(since)),
+          ...Array.from(
+            { length: 6 },
+            () => runRepo.findAllGlobalSince(since),
+          ),
+          ...Array.from(
+            { length: 6 },
+            () => runRepo.findGlobalByStatus("running"),
+          ),
+        ]);
+      } finally {
+        (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile =
+          readTextFile;
+        (Deno as { readDir: typeof Deno.readDir }).readDir = readDir;
+        (Deno as { stat: typeof Deno.stat }).stat = stat;
+      }
+      assertEquals(open, 0);
+      // One bound shared by both repositories' scans.
+      assert(peak <= 16, `${peak} open at once`);
+      assert(peak > 1, `${peak} open at once`);
+    });
+  },
+);
+
 /** Saves `count` outputs of `definitionId`, a millisecond apart. */
 async function saveHistory(
   repo: YamlOutputRepository,
@@ -3473,8 +3582,13 @@ Deno.test(
           reads.release();
           assertEquals(await assertRejects(() => scan), reason);
           assertEquals((await holding).length, 6);
+          // The aborted caller rejects at once (swamp-club#4074); the scan's
+          // own released reads settle after it.
+          await waitFor(
+            () => reads.inFlight === 0,
+            "the aborted scan's reads to settle",
+          );
           assertEquals(reads.started, startedAtAbort);
-          assertEquals(reads.inFlight, 0);
         }, ["output-repo"]);
         assertEquals(
           warnings.filter((warning) =>

@@ -23,6 +23,9 @@ import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
+import { keyFingerprint } from "../../domain/auth/auth_credentials.ts";
+import { InboxCacheKey, InboxState } from "../../domain/inbox/inbox_state.ts";
+import { InboxCacheFileRepository } from "../../infrastructure/inbox/inbox_cache_file_repository.ts";
 import {
   authLogout,
   type AuthLogoutDeps,
@@ -41,6 +44,7 @@ function makeDeps(overrides: Partial<AuthLogoutDeps> = {}): AuthLogoutDeps {
     revokeApiKey: () => Promise.resolve({ kind: "revoked", id: "key-1" }),
     deleteCredentials: () => Promise.resolve(),
     deleteCaches: () => Promise.resolve(),
+    deleteInboxState: () => Promise.resolve(),
     credentialsPath: () => "/home/test/.config/swamp/auth.json",
     ...overrides,
   };
@@ -71,6 +75,10 @@ Deno.test("authLogout: revokes the key on the stored server, then deletes creden
       calls.push("delete");
       return Promise.resolve();
     },
+    deleteInboxState: (serverUrl, apiKey) => {
+      calls.push(`inbox ${serverUrl} ${apiKey}`);
+      return Promise.resolve();
+    },
   });
 
   const data = completedData(
@@ -80,6 +88,7 @@ Deno.test("authLogout: revokes the key on the stored server, then deletes creden
   assertEquals(calls, [
     "revoke https://api.example.com swamp_test_key",
     "delete",
+    "inbox https://api.example.com swamp_test_key",
   ]);
   assertEquals(data, {
     loggedOut: true,
@@ -392,6 +401,77 @@ Deno.test("createAuthLogoutDeps: logout succeeds even when a gate stamp cannot b
       () => true,
     );
     assertEquals(credentialsGone, true);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("authLogout: keeps the inbox cache when the key could not be revoked", async () => {
+  let inboxDeleted = false;
+  const deps = makeDeps({
+    revokeApiKey: () => Promise.reject(new UserError("boom")),
+    deleteInboxState: () => {
+      inboxDeleted = true;
+      return Promise.resolve();
+    },
+  });
+
+  await collect<AuthLogoutEvent>(authLogout(createLibSwampContext(), deps));
+
+  assertEquals(inboxDeleted, false);
+});
+
+Deno.test("createAuthLogoutDeps: deleting the inbox state removes the key's cache files only", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = join(tmpDir, "config");
+    const cache = new InboxCacheFileRepository(configDir);
+    const fingerprint = await keyFingerprint("swamp_login_key");
+    const mine = InboxCacheKey.of("https://swamp-club.com", fingerprint);
+    const staging = InboxCacheKey.of("https://staging.example", fingerprint);
+    const other = InboxCacheKey.of(
+      "https://swamp-club.com",
+      await keyFingerprint("swamp_other_key"),
+    );
+    const state: InboxState = {
+      ...InboxState.empty(),
+      snapshot: {
+        unread: 1,
+        newestId: null,
+        newestAt: null,
+        pollAfterSeconds: 900,
+        etag: null,
+      },
+    };
+    for (const key of [mine, staging, other]) await cache.save(key, state);
+    await Deno.mkdir(join(configDir, "inbox"));
+    await Deno.writeTextFile(
+      join(configDir, "inbox", `${fingerprint}.json`),
+      "{}",
+    );
+
+    await createAuthLogoutDeps({ repo: { configDir } }).deleteInboxState(
+      "https://swamp-club.com",
+      "swamp_login_key",
+    );
+
+    assertEquals(await cache.load(mine), InboxState.empty());
+    assertEquals(await cache.load(staging), state);
+    assertEquals(await cache.load(other), state);
+    assertEquals(
+      await Array.fromAsync(Deno.readDir(join(configDir, "inbox"))),
+      [],
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("createAuthLogoutDeps: deleting the inbox state never fails on a bad server URL", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await createAuthLogoutDeps({ repo: { configDir: tmpDir } })
+      .deleteInboxState("not a url", "swamp_login_key");
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

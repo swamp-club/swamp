@@ -32,6 +32,12 @@ export interface InboxSnapshot {
   /** The server's value, unclamped. The policy applies the floor and ceiling. */
   readonly pollAfterSeconds: number;
   readonly etag: string | null;
+  /**
+   * Epoch milliseconds the request that fetched this summary was sent, so an
+   * older snapshot never replaces a newer one. Absent in state saved before
+   * the field existed, which orders before any stamped snapshot.
+   */
+  readonly fetchedAt?: number;
 }
 
 /** The poll outcomes that stop polling for a key. */
@@ -93,7 +99,11 @@ export const InboxState = {
  */
 export type PollOutcome =
   | { readonly kind: "ok"; readonly snapshot: InboxSnapshot }
-  | { readonly kind: "not_modified" }
+  | {
+    readonly kind: "not_modified";
+    /** Epoch milliseconds the request was sent, when known. */
+    readonly sentAt?: number;
+  }
   /** The server has no inbox. */
   | { readonly kind: "unsupported" }
   /** A collective key has no inbox. */
@@ -119,9 +129,30 @@ export function isStorableEtag(etag: string): boolean {
     /^[\x20-\x7e]+$/.test(etag);
 }
 
-/** Remembers each API key's inbox state, keyed by its fingerprint. */
+/**
+ * Whose inbox state this is: one API key on one server. The same key used
+ * against two servers (staging and production) keeps two states, so one
+ * server's answers never decide when or what the other shows.
+ */
+export interface InboxCacheKey {
+  /** The server's origin, as `URL.origin` gives it. */
+  readonly origin: string;
+  /** The API key's fingerprint; never the key. */
+  readonly fingerprint: string;
+}
+
+export const InboxCacheKey = {
+  /** The key for an API key on a server. Throws when the URL does not parse. */
+  of(serverUrl: string, fingerprint: string): InboxCacheKey {
+    return { origin: new URL(serverUrl).origin, fingerprint };
+  },
+};
+
+/** Remembers each API key's inbox state per server. */
 export interface InboxCacheRepository {
   /** The key's state, or an empty state when none is stored or it is invalid. */
-  load(fingerprint: string): Promise<InboxState>;
-  save(fingerprint: string, state: InboxState): Promise<void>;
+  load(key: InboxCacheKey): Promise<InboxState>;
+  save(key: InboxCacheKey, state: InboxState): Promise<void>;
+  /** Forgets the key's state. Never fails because none is stored. */
+  delete(key: InboxCacheKey): Promise<void>;
 }

@@ -25,6 +25,9 @@
 
 import { z } from "zod";
 import { sanitizeFieldText } from "../../domain/vaults/vault_config_fields.ts";
+import { getSwampLogger } from "../logging/logger.ts";
+
+const logger = getSwampLogger(["inbox", "schemas"]);
 
 export const MAX_INBOX_TITLE_LENGTH = 120;
 export const MAX_INBOX_BODY_BYTES = 8 * 1024;
@@ -120,6 +123,22 @@ const ANSI_CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 // Every C0 and C1 control except tab (\x09) and newline (\x0a).
 // deno-lint-ignore no-control-regex
 const BODY_CONTROL_RE = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
+/**
+ * Bidi controls and zero-width characters. They print nothing, yet can
+ * reorder the text around them or hide a difference between two strings.
+ */
+const INVISIBLE_RE =
+  /[\u061c\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
+/** {@link INVISIBLE_RE} without the global flag, for a stateless test. */
+const HAS_INVISIBLE_RE = new RegExp(INVISIBLE_RE.source);
+/**
+ * The same, less the zero-width non-joiner and joiner (U+200C, U+200D):
+ * prose needs them, to join an emoji sequence and to spell Persian and
+ * several Indic scripts, and they cannot reorder text. Kept in the body and
+ * the title only.
+ */
+const PROSE_INVISIBLE_RE =
+  /[\u061c\u200b\u200e\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
 const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
 
 /** Whether the text is a message id: a ULID, in either case. */
@@ -128,22 +147,43 @@ export function isInboxMessageId(text: string): boolean {
 }
 
 /**
- * Makes a markdown body safe to print: strips ANSI escape sequences and
- * every control character except newline and tab, and normalises line
- * endings to LF.
+ * Makes a markdown body safe to print: strips ANSI escape sequences, bidi
+ * controls and zero-width characters other than the joiners, and every
+ * control character except newline and tab, and normalises line endings to
+ * LF.
  */
 export function sanitizeInboxBody(text: string): string {
   return text
     .replace(ANSI_OSC_RE, "")
     .replace(ANSI_CSI_RE, "")
     .replace(/\r\n?/g, "\n")
-    .replace(BODY_CONTROL_RE, "");
+    .replace(BODY_CONTROL_RE, "")
+    .replace(PROSE_INVISIBLE_RE, "");
+}
+
+/**
+ * One line of text safe to print, at most `maxLength` code points. Cut on
+ * code points, so a character outside the BMP is never split into half a
+ * surrogate pair. `invisible` is the set of characters it strips.
+ */
+function sanitizeLine(
+  text: string,
+  maxLength: number,
+  invisible: RegExp = INVISIBLE_RE,
+): string {
+  const cleaned = sanitizeFieldText(
+    text.replace(invisible, ""),
+    Number.MAX_SAFE_INTEGER,
+  );
+  const codePoints = Array.from(cleaned);
+  if (codePoints.length <= maxLength) return cleaned;
+  return `${codePoints.slice(0, Math.max(0, maxLength - 1)).join("")}…`;
 }
 
 /** Sanitized one-line text, refused when nothing is left. */
-function lineText(maxLength: number) {
+function lineText(maxLength: number, invisible: RegExp = INVISIBLE_RE) {
   return z.string()
-    .transform((s) => sanitizeFieldText(s, maxLength))
+    .transform((s) => sanitizeLine(s, maxLength, invisible))
     .pipe(z.string().min(1));
 }
 
@@ -161,7 +201,7 @@ const body = z.string()
 function parseLink(raw: unknown): string | undefined {
   if (typeof raw !== "string") return undefined;
   try {
-    const url = new URL(raw);
+    const url = new URL(raw.replace(INVISIBLE_RE, ""));
     return url.protocol === "https:" && url.username === "" &&
         url.password === ""
       ? url.href
@@ -179,9 +219,78 @@ function parseLink(raw: unknown): string | undefined {
  */
 const SAFE_SWAMP_COMMAND_RE = /^swamp( [A-Za-z0-9@%+,./:=_-]+)+$/;
 
+/** A slot in an {@link InboxActionCommandShape}, filled by one or more words. */
+export type InboxActionCommandSlot =
+  /** An extension name, `@scope/name`. */
+  | "extension"
+  /** A collective slug. */
+  | "collective"
+  /** An issue number. */
+  | "issue"
+  /** One or more search words, none of them a flag. */
+  | "words";
+
+/** A command an action may suggest: fixed words, then at most one slot. */
+export interface InboxActionCommandShape {
+  readonly words: readonly string[];
+  readonly slot?: InboxActionCommandSlot;
+}
+
 /**
- * The action when it is well formed and suggests a safe `swamp` command short
- * enough to print whole: a truncated command would not run.
+ * Every command an inbox action may suggest. Anything else drops the action
+ * and keeps the message. Swamp Club's send-time check mirrors this list.
+ */
+export const INBOX_ACTION_COMMANDS: readonly InboxActionCommandShape[] = [
+  { words: ["update"] },
+  { words: ["quest"] },
+  { words: ["inbox"] },
+  { words: ["inbox", "read"] },
+  { words: ["subscription", "status"] },
+  { words: ["subscription", "start"] },
+  { words: ["subscription", "start", "--collective"], slot: "collective" },
+  { words: ["extension", "pull"], slot: "extension" },
+  { words: ["extension", "search"], slot: "words" },
+  { words: ["issue", "get"], slot: "issue" },
+];
+
+const SLOT_WORD_RE: Record<InboxActionCommandSlot, RegExp> = {
+  extension: /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/,
+  collective: /^[a-z0-9][a-z0-9-]*$/,
+  issue: /^[1-9][0-9]*$/,
+  words: /^[A-Za-z0-9_][A-Za-z0-9_-]*$/,
+};
+
+/** Whether the words after `swamp` match the shape exactly. */
+function matchesShape(
+  words: readonly string[],
+  shape: InboxActionCommandShape,
+): boolean {
+  const fixed = shape.words;
+  if (words.length < fixed.length) return false;
+  if (!fixed.every((word, i) => words[i] === word)) return false;
+  const rest = words.slice(fixed.length);
+  if (shape.slot === undefined) return rest.length === 0;
+  const pattern = SLOT_WORD_RE[shape.slot];
+  const count = shape.slot === "words" ? rest.length : 1;
+  return rest.length === count && rest.length > 0 &&
+    rest.every((word) => pattern.test(word));
+}
+
+/**
+ * Whether the command is one {@link INBOX_ACTION_COMMANDS} allows. The text
+ * must already pass the shell-syntax rule; a word holding `://` is refused
+ * whatever its position, so no command can point swamp at another server.
+ */
+export function isAllowedInboxActionCommand(command: string): boolean {
+  if (!SAFE_SWAMP_COMMAND_RE.test(command)) return false;
+  const words = command.split(" ").slice(1);
+  if (words.some((word) => word.includes("://"))) return false;
+  return INBOX_ACTION_COMMANDS.some((shape) => matchesShape(words, shape));
+}
+
+/**
+ * The action when it is well formed and suggests an allowed `swamp` command
+ * short enough to print whole: a truncated command would not run.
  */
 function parseAction(raw: unknown): InboxAction | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;
@@ -189,12 +298,17 @@ function parseAction(raw: unknown): InboxAction | undefined {
   if (typeof label !== "string" || typeof command !== "string") {
     return undefined;
   }
-  const cleanLabel = sanitizeFieldText(label, MAX_INBOX_ACTION_LABEL_LENGTH);
+  const cleanLabel = sanitizeLine(label, MAX_INBOX_ACTION_LABEL_LENGTH);
+  // Refused rather than stripped: stripping an invisible character could turn
+  // a command that differs from an allowed one into that allowed one. Tested
+  // on the raw text, since cleaning it trims a leading or trailing U+FEFF as
+  // whitespace.
+  if (HAS_INVISIBLE_RE.test(command)) return undefined;
   const cleanCommand = sanitizeFieldText(command, Number.MAX_SAFE_INTEGER);
   if (
     cleanLabel === "" ||
     cleanCommand.length > MAX_INBOX_ACTION_COMMAND_LENGTH ||
-    !SAFE_SWAMP_COMMAND_RE.test(cleanCommand)
+    !isAllowedInboxActionCommand(cleanCommand)
   ) {
     return undefined;
   }
@@ -204,7 +318,7 @@ function parseAction(raw: unknown): InboxAction | undefined {
 const messageSchema = z.object({
   id: ulid,
   kind: lineText(MAX_INBOX_KIND_LENGTH),
-  title: lineText(MAX_INBOX_TITLE_LENGTH),
+  title: lineText(MAX_INBOX_TITLE_LENGTH, PROSE_INVISIBLE_RE),
   body,
   createdAt: isoDatetime,
   link: z.unknown().optional(),
@@ -213,6 +327,15 @@ const messageSchema = z.object({
 }).transform((m): InboxMessage => {
   const link = parseLink(m.link);
   const action = parseAction(m.action);
+  // Only the id: the refused text is the server's, and stays out of logs.
+  if (m.link != null && link === undefined) {
+    logger
+      .debug`Inbox message ${m.id}: dropped a link that is not a plain https URL`;
+  }
+  if (m.action != null && action === undefined) {
+    logger
+      .debug`Inbox message ${m.id}: dropped an action whose command is not allowed`;
+  }
   return {
     id: m.id,
     kind: m.kind,
