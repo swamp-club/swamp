@@ -940,11 +940,12 @@ export class DispatchService {
     // its own, which stands for the parse serve makes for a version 5
     // worker: it calls the caller's hook, at most once and only before the
     // result, and is never forwarded as a run event (swamp-club#3681).
-    // Its outcome is held from the moment it starts, so a hook that fails
-    // while the dispatch runs is never an unhandled rejection.
-    let validation:
-      | Promise<{ failed: false } | { failed: true; error: unknown }>
-      | undefined;
+    // The method runs while the hook does, so a hook that fails cannot stop
+    // it and leaves the step the outcome the method reported: failing a step
+    // whose method ran would invite a retry that runs it again. The failure
+    // is caught from the moment the hook starts, so it is never an unhandled
+    // rejection.
+    let validation: Promise<void> | undefined;
     let resultArrived = false;
     const referencesOnly = shipsReferencesOnly(frame.protocolVersion);
     // What the method writes on the worker reaches the run log through the
@@ -964,10 +965,18 @@ export class DispatchService {
         if (referencesOnly && !resultArrived && validation === undefined) {
           validation = Promise.resolve()
             .then(() => request.onArgumentsValidated?.())
-            .then(
-              () => ({ failed: false as const }),
-              (error: unknown) => ({ failed: true as const, error }),
-            );
+            .catch((error: unknown) => {
+              const message = error instanceof Error
+                ? error.message
+                : String(error);
+              logger.warn(
+                "Recording the validated arguments of {dispatchId} failed: {error}",
+                {
+                  dispatchId,
+                  error: dispatchRedactor()?.redact(message) ?? message,
+                },
+              );
+            });
         }
         return;
       }
@@ -1001,7 +1010,7 @@ export class DispatchService {
         });
       });
       resultArrived = true;
-      const validated = await validation;
+      await validation;
       // What the method wrote to the console on the worker travels in the
       // result, not the stream. Forward it as output so it reaches the run
       // log whether the dispatch succeeded or failed (swamp-club#3080). The
@@ -1030,12 +1039,6 @@ export class DispatchService {
           );
           break;
         }
-      }
-      // A method that failed reports its own error; one that ran reports
-      // the hook's, as a run in this process does, after its console output
-      // has reached the run log.
-      if (validated?.failed && result.status !== "error") {
-        throw validated.error;
       }
       if (result.status === "error") {
         // The worker scrubs its result error before sending it
@@ -1084,7 +1087,6 @@ export class DispatchService {
       };
     } catch (dispatchError) {
       resultArrived = true;
-      // The dispatch's own failure is the one reported.
       await validation;
       // Every way out of here throws; the versions the dispatch wrote go
       // with the error, read before the finally releases the dispatch.

@@ -2260,7 +2260,7 @@ Deno.test("DispatchService: a version 6 worker's arguments_validated event calls
   assertEquals(v5Calls, 0);
 });
 
-Deno.test("DispatchService: a hook that fails after a version 6 worker validated fails the step once its console output is forwarded, and a method's own failure is reported over it", async () => {
+Deno.test("DispatchService: a hook that fails after a version 6 worker validated leaves the step the method's outcome, its console output forwarded, and a method's own failure is reported", async () => {
   const h = createHarness();
   h.setBehavior((_name, _params, options) => {
     options?.onEvent?.({ kind: ARGUMENTS_VALIDATED_EVENT });
@@ -2272,18 +2272,25 @@ Deno.test("DispatchService: a hook that fails after a version 6 worker validated
     });
   });
   const lines: unknown[] = [];
+  let hookCalls = 0;
   const request = stepRequest({
-    onArgumentsValidated: () => Promise.reject(new Error("record not saved")),
+    onArgumentsValidated: () => {
+      hookCalls++;
+      return Promise.reject(new Error("record not saved"));
+    },
     onEvent: (event) => {
       lines.push((event.event as { line?: unknown } | undefined)?.line);
     },
   });
-  await assertRejects(
-    () => h.service.executeRemote(request),
-    Error,
-    "record not saved",
-  );
+  const result = await h.service.executeRemote(request);
+  assertEquals(result.workerName, "w1");
+  assertEquals(hookCalls, 1);
   assertEquals(lines, ["created the bucket"]);
+  // The lease records the method's outcome, not the hook's.
+  assertEquals(
+    h.transitions.map((t) => t.methodName).filter((name) => name !== "acquire"),
+    ["complete"],
+  );
   h.setBehavior((_name, _params, options) => {
     options?.onEvent?.({ kind: ARGUMENTS_VALIDATED_EVENT });
     return Promise.resolve<DispatchResult>({
