@@ -43,7 +43,12 @@ import {
   v3DatastoreConfigOf,
   v3DatastoreFor,
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
-import { advanceV3WriterLease } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
+import {
+  advanceV3WriterLease,
+  checkV3WriterLease,
+  v3WriterLockHandle,
+} from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
+import { WriterFencedError } from "../src/domain/datastore_v3/writer_lease.ts";
 import { plantV3WriterLease } from "../src/infrastructure/datastore_v3/v3_writer_lock_test_helpers.ts";
 import { SqliteCommitStore } from "../src/infrastructure/datastore_v3/sqlite_commit_store.ts";
 import {
@@ -258,6 +263,39 @@ Deno.test("datastore claim: a direct writer is refused with datastore_claimed at
       assertEquals(refused.code, DATASTORE_CLAIMED_CODE);
     } finally {
       await lease.release();
+    }
+  });
+});
+
+Deno.test("datastore claim: a claimer whose lease was force-released writes no claim, as a lost writer commits nothing", async () => {
+  await withV3RowRepos({}, async (repos, datastorePath) => {
+    await closeV3Datastores();
+    try {
+      const log = await claimLog(repos.repoA);
+      const handle = v3WriterLockHandle(datastorePath);
+      const info = await handle.inspect();
+      assert(await handle.forceRelease(info!.nonce!));
+      await assertRejects(
+        () => checkV3WriterLease(datastorePath),
+        WriterFencedError,
+      );
+      await assertRejects(
+        () =>
+          log.claim(DatastoreOwner.create({
+            address: OWNER,
+            claimedAt: new Date().toISOString(),
+            claimedAtCursor: 0,
+          })),
+        WriterFencedError,
+      );
+    } finally {
+      await closeV3Datastores();
+    }
+    const store = SqliteCommitStore.open(commitsDb(datastorePath));
+    try {
+      assertEquals(store.owner(), undefined);
+    } finally {
+      await store.close();
     }
   });
 });

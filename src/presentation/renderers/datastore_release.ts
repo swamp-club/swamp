@@ -34,6 +34,11 @@ class LogDatastoreReleaseRenderer implements Renderer<DatastoreReleaseEvent> {
             .info`The datastore is not claimed; nothing was changed`;
           return;
         }
+        if (e.data.address === undefined) {
+          logger
+            .info`Removed a claim that could not be read; direct writes work again`;
+          return;
+        }
         logger
           .info`Released the claim of swamp serve at ${e.data.address} (since ${e.data.claimedAt}); direct writes work again`;
       },

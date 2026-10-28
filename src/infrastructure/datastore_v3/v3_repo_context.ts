@@ -1988,6 +1988,16 @@ export function v3ClaimCommitLog(
         [config.path],
       );
     }
+    // As before a commit: a hold that was lost, or a copy that is not
+    // current (serve's restore after a retake), writes no claim, which the
+    // restore would drop.
+    assertV3WriterCurrent(config.path);
+    if (
+      v3ReplicatesAt(config.path) &&
+      !currentCopies.has(handleKey(repoDir, config))
+    ) {
+      throw new WriterFencedError(held, undefined, "copy-restoring");
+    }
     return held;
   };
   const confirm = async (): Promise<void> => {

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
+import { configure, reset } from "@logtape/logtape";
 import type { DatastoreClaimData } from "../../libswamp/datastores/claim.ts";
 import type { DatastoreReleaseData } from "../../libswamp/datastores/release.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -100,4 +101,31 @@ Deno.test("datastoreClaimRenderer and datastoreReleaseRenderer: an error event i
       "refused",
     );
   }
+});
+
+Deno.test("datastoreReleaseRenderer log: a release of a claim that could not be read says so, never naming an undefined owner", async () => {
+  const messages: string[] = [];
+  await configure({
+    reset: true,
+    sinks: {
+      kept: (record) => {
+        messages.push(record.message.map((part) => String(part)).join(""));
+      },
+    },
+    loggers: [
+      { category: ["datastore"], sinks: ["kept"], lowestLevel: "info" },
+      { category: ["logtape", "meta"], sinks: [], lowestLevel: "fatal" },
+    ],
+  });
+  try {
+    createDatastoreReleaseRenderer("log").handlers().completed({
+      kind: "completed",
+      data: { released: true },
+    });
+  } finally {
+    await reset();
+  }
+  assertEquals(messages, [
+    "Removed a claim that could not be read; direct writes work again",
+  ]);
 });
