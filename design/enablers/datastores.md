@@ -7529,10 +7529,10 @@ content download waits until needed.
    definitions-evaluated) have no metadata/raw split and are downloaded fully.
 2. **Behavior runs / workflow runs**: `acquireModelLocks` does a scoped pull via
    `pullChanged({ context })`. It reads the partition file, sees `raw` missing
-   locally, and downloads it. That pull covers only the step's own behavior, and
-   only a method that takes a lock (a read-only method run takes none), so it
-   is not what makes another behavior's data readable; see "Expression reads"
-   below.
+   locally, and downloads it. A read or list run pulls the same way without the
+   lock (`pullModelsUnlocked`, see "Lock Lifecycle"). That pull covers only the
+   step's own behavior, so it is not what makes another behavior's data
+   readable; see "Expression reads" below.
 3. **`data get` and `data query` (read-only, no sync)**: every read of a
    content file goes through the repository's content-ensuring step (below),
    which downloads a missing `raw` through the `HydrateFileHook`. `data query`
@@ -7985,6 +7985,39 @@ different lock and the drain would silently do nothing. If it sees a stale
 global lock, `acquireModelLocks` calls `forceRelease(expectedNonce)` to clear
 it. Without that, the post-acquire TOCTOU re-check would find the same stale
 lock on every pass and recurse forever.
+
+A read or list run (`kind: "read"` or `"list"`, declared or inferred from the
+method name) takes no lock while it runs, so a read never waits behind a
+writer of the same behavior (swamp-club#1992). It still writes: an output
+record, its method-summary report, and often a resource, as a `get` that
+refreshes its resource does. `methodRunLockMode`
+(`src/libswamp/models/method_run_lock_mode.ts`) picks how the CLI's
+`behavior run` and both serve method-run handlers lock it (swamp-club#3934):
+
+- On a filesystem or v3 datastore it takes no lock: a filesystem datastore has
+  no push, and a v3 root commits through its commit log whatever the locks.
+- On a v2 extension datastore the model lock is the only path that pulls
+  before a run and publishes what it wrote, and each clone numbers data
+  versions from its own cache. So the run pulls the behavior without the lock
+  first (`pullModelsUnlocked`, after the same global-lock wait), runs unlocked,
+  and then takes the lock only to publish (`acquireModelLocks` with
+  `pull: false` and `refuseForeignVersions`). A pull then would silently
+  overwrite its versions wherever the remote holds the same path. Before the
+  first push, each written version the remote already holds under another data
+  id was written by another clone during the run. Every version of that data
+  name is discarded from this host, which gets the remote's copy back, the
+  rest are published, and the push fails with `DataVersionConflictError`
+  (`datastore_data_version_conflict`). A version holding the run's own data id
+  was uploaded by an earlier push and is published as usual. The CLI exits
+  non-zero; serve, which has answered its client before it publishes, logs it.
+- A sync service without `fetchContent` cannot tell its own version from
+  another clone's, so there the run holds the lock throughout, as a mutating
+  run does.
+
+Another run's push in the same namespace still uploads every dirty path, the
+read run's versions among them, without that check, because the S3 and GCS
+extensions ignore a push's model scope. The pre-run pull narrows that window;
+closing it needs model-scoped pushes in the extensions.
 
 Workflow commands (`workflow run`, `workflow resume`) and serve-hosted workflow
 runs do not lock up front. A `StepLockHook` callback injected into the

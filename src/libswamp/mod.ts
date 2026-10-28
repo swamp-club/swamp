@@ -260,6 +260,10 @@ export {
   unknownModelType,
 } from "./models/run.ts";
 export {
+  type MethodRunLockMode,
+  methodRunLockMode,
+} from "./models/method_run_lock_mode.ts";
+export {
   autoDefinitionLockKey,
   type DirectExecutionDeps,
   type DirectExecutionResult,

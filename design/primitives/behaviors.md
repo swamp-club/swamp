@@ -742,7 +742,14 @@ The `isMutatingKind(kind: MethodKind | undefined)` helper
 (`src/domain/models/model.ts:733`) takes the method's kind, not its name. It
 returns `true` for everything except `"read"` and `"list"`, including
 `undefined` (unrecognized names). It is used internally to decide whether to
-run checks.
+run checks, and how a run holds its behavior's lock (`methodRunLockMode`). A
+mutating run holds the lock throughout. A read or list run takes no lock while
+it runs (swamp-club#1992). On a v2 extension datastore it still pulls the
+behavior before it runs and takes the lock briefly afterwards to publish what
+it wrote, so a `get` that refreshes its resource reaches the datastore
+(swamp-club#3934). That publish can wait for a writer's lock, and it fails
+with `DataVersionConflictError` when another clone wrote the same data version
+during the run. See "Lock Lifecycle" in `design/enablers/datastores.md`.
 
 ### Labels and appliesTo
 

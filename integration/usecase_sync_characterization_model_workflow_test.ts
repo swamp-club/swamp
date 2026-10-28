@@ -417,6 +417,18 @@ function workflowDeleteRow(managedConfig: boolean): AnyRow {
   });
 }
 
+/**
+ * The marks a read run's publish lock makes outside the use case: its push
+ * stages each report version and its latest marker again before uploading
+ * (swamp-club#3146, swamp-club#3934).
+ */
+const PUBLISH_RESTAGE_MARKS = [
+  "markDirty data/<type>/<id>/report-swamp-method-summary-json/1",
+  "markDirty data/<type>/<id>/report-swamp-method-summary-json/latest",
+  "markDirty data/<type>/<id>/report-swamp-method-summary/1",
+  "markDirty data/<type>/<id>/report-swamp-method-summary/latest",
+];
+
 const ROWS: AnyRow[] = [
   modelCreateRow(false),
   modelCreateRow(true),
@@ -557,9 +569,48 @@ const ROWS: AnyRow[] = [
   row({
     name: "model method run",
     rootUnit: { cli: true, serve: true },
+    // `noop` is a read method. Since swamp-club#3934 it pulls unlocked, and
+    // its publish lock stages the run's report versions again in a root of
+    // its own, after the run's root has ended, as a lock's push does.
+    rootUnits: { cli: 2, serve: 2 },
+    outsideUseCase: {
+      cli: PUBLISH_RESTAGE_MARKS,
+      serve: PUBLISH_RESTAGE_MARKS,
+    },
     // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
-    // adopted a root unit.
-    syncOrder: { cli: [], serve: [] },
+    // adopted a root unit, when a read run neither pulled nor pushed. Since
+    // swamp-club#3934 it pulls before it runs, and its publish lock reads its
+    // two report versions' metadata to refuse another clone's, pushes, and
+    // reads each version's metadata and latest marker back.
+    syncOrder: {
+      cli: [
+        "pull",
+        "fetch",
+        "fetch",
+        "prepare",
+        "commit",
+        "release",
+        "fetch",
+        "fetch",
+        "fetch",
+        "fetch",
+        "release",
+      ],
+      serve: [
+        "pull",
+        "release",
+        "fetch",
+        "fetch",
+        "prepare",
+        "commit",
+        "release",
+        "fetch",
+        "fetch",
+        "fetch",
+        "fetch",
+        "release",
+      ],
+    },
     seed: async (repos) => {
       await saveModel(repos.serveRepo, "m1");
     },
@@ -867,6 +918,7 @@ const EXPECTED: Record<string, PinnedRow> = {
   "model method run": {
     cli: {
       "ops": [
+        "pull[0]",
         "markDirty definitions-evaluated/<type>/m1.yaml",
         "markDirty definitions-evaluated/<type>/m1.yaml",
         "markDirty outputs/<type>/noop/<id>-<time>.yaml",
@@ -875,15 +927,37 @@ const EXPECTED: Record<string, PinnedRow> = {
         "markDirty data/<type>/<id>/report-swamp-method-summary",
         "markDirty data/<type>/<id>/report-swamp-method-summary-json",
         "markDirty data/<type>/<id>/report-swamp-method-summary-json",
+        "fetch[1]",
+        "fetch[1]",
+        "markDirty data/<type>/<id>/report-swamp-method-summary/1",
+        "markDirty data/<type>/<id>/report-swamp-method-summary/latest",
+        "markDirty data/<type>/<id>/report-swamp-method-summary-json/1",
+        "markDirty data/<type>/<id>/report-swamp-method-summary-json/latest",
+        "prepare[8]",
+        "commit[8]",
+        "fetch[1]",
+        "fetch[1]",
+        "fetch[1]",
+        "fetch[1]",
       ],
       "remote": {
-        "added": [],
+        "added": [
+          "data/<type>/<id>/report-swamp-method-summary-json/1/metadata.yaml",
+          "data/<type>/<id>/report-swamp-method-summary-json/1/raw",
+          "data/<type>/<id>/report-swamp-method-summary-json/latest",
+          "data/<type>/<id>/report-swamp-method-summary/1/metadata.yaml",
+          "data/<type>/<id>/report-swamp-method-summary/1/raw",
+          "data/<type>/<id>/report-swamp-method-summary/latest",
+          "definitions-evaluated/<type>/m1.yaml",
+          "outputs/<type>/noop/<id>-<time>.yaml",
+        ],
         "removed": [],
         "changed": [],
       },
     },
     serve: {
       "ops": [
+        "pull[0]",
         "markDirty definitions-evaluated/<type>/m1.yaml",
         "markDirty definitions-evaluated/<type>/m1.yaml",
         "markDirty outputs/<type>/noop/<id>-<time>.yaml",
@@ -892,9 +966,30 @@ const EXPECTED: Record<string, PinnedRow> = {
         "markDirty data/<type>/<id>/report-swamp-method-summary",
         "markDirty data/<type>/<id>/report-swamp-method-summary-json",
         "markDirty data/<type>/<id>/report-swamp-method-summary-json",
+        "fetch[1]",
+        "fetch[1]",
+        "markDirty data/<type>/<id>/report-swamp-method-summary/1",
+        "markDirty data/<type>/<id>/report-swamp-method-summary/latest",
+        "markDirty data/<type>/<id>/report-swamp-method-summary-json/1",
+        "markDirty data/<type>/<id>/report-swamp-method-summary-json/latest",
+        "prepare[8]",
+        "commit[8]",
+        "fetch[1]",
+        "fetch[1]",
+        "fetch[1]",
+        "fetch[1]",
       ],
       "remote": {
-        "added": [],
+        "added": [
+          "data/<type>/<id>/report-swamp-method-summary-json/1/metadata.yaml",
+          "data/<type>/<id>/report-swamp-method-summary-json/1/raw",
+          "data/<type>/<id>/report-swamp-method-summary-json/latest",
+          "data/<type>/<id>/report-swamp-method-summary/1/metadata.yaml",
+          "data/<type>/<id>/report-swamp-method-summary/1/raw",
+          "data/<type>/<id>/report-swamp-method-summary/latest",
+          "definitions-evaluated/<type>/m1.yaml",
+          "outputs/<type>/noop/<id>-<time>.yaml",
+        ],
         "removed": [],
         "changed": [],
       },

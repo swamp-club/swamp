@@ -813,7 +813,9 @@ Deno.test("serve root units: a model.method.run that takes model locks pushes on
     // The lock flush commits the run's changes when the locks are released;
     // the root's flush, which owns only the no-lock push, pushes nothing.
     // Each repository write is marked before it and after it
-    // (swamp-club#2421).
+    // (swamp-club#2421). The run's report versions are staged again before
+    // the push and read back after it, as its data versions are
+    // (swamp-club#3146, swamp-club#3934).
     assertEquals(observation.ops, [
       "pull[0]",
       "markDirty definitions-evaluated/<type>/m1.yaml",
@@ -824,8 +826,16 @@ Deno.test("serve root units: a model.method.run that takes model locks pushes on
       "markDirty data/<type>/<id>/report-swamp-method-summary",
       "markDirty data/<type>/<id>/report-swamp-method-summary-json",
       "markDirty data/<type>/<id>/report-swamp-method-summary-json",
+      "markDirty data/<type>/<id>/report-swamp-method-summary/1",
+      "markDirty data/<type>/<id>/report-swamp-method-summary/latest",
+      "markDirty data/<type>/<id>/report-swamp-method-summary-json/1",
+      "markDirty data/<type>/<id>/report-swamp-method-summary-json/latest",
       "prepare[8]",
       "commit[8]",
+      "fetch[1]",
+      "fetch[1]",
+      "fetch[1]",
+      "fetch[1]",
     ]);
     assertEquals(rootFlushes, [0]);
   });
@@ -960,6 +970,11 @@ Deno.test("serve root units: an inline model.method.run with a model lock replie
         "prepare",
         "commit",
         "release",
+        "fetch",
+        "fetch",
+        "fetch",
+        "fetch",
+        "release",
       ],
     );
   });
@@ -1076,6 +1091,11 @@ Deno.test("serve root units: an inline model.method.run whose lock pull fails re
         "prepare",
         "commit",
         "release",
+        "fetch",
+        "fetch",
+        "fetch",
+        "fetch",
+        "release",
       ],
     );
     assertEquals(getRegisteredLockKeys(), [], "the model lock was released");
@@ -1123,6 +1143,11 @@ Deno.test("serve root units: a detached model.method.run with a model lock ends 
         "done",
         "prepare",
         "commit",
+        "release",
+        "fetch",
+        "fetch",
+        "fetch",
+        "fetch",
         "release",
         "deregister",
       ],

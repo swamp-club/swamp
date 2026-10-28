@@ -139,8 +139,13 @@ import {
 import {
   acquireModelLocks,
   type ModelLockResult,
+  pullModelsUnlocked,
   runUnderModelLocks,
 } from "../../cli/repo_context.ts";
+import {
+  type MethodRunLockMode,
+  methodRunLockMode,
+} from "../../libswamp/models/method_run_lock_mode.ts";
 import {
   extractTraceContext,
   runWithParentTrace,
@@ -151,13 +156,7 @@ import {
   type Principal,
   principalToString,
 } from "../../domain/access/principal.ts";
-import {
-  inferMethodKind,
-  isMutatingKind,
-  modelRegistry,
-} from "../../domain/models/model.ts";
-import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
-import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
 import { RegistryCapacityError } from "../active_run_registry.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
 import { deleteActiveRun, writeActiveRun } from "../active_run_tracker.ts";
@@ -223,18 +222,89 @@ const logger = getSwampLogger(["serve", "connection"]);
 
 const DEFAULT_BUFFER_CAPACITY = 10_000;
 
-export async function isMethodMutating(
+/** The model a read or list run publishes what it wrote to. */
+type PublishedModel = { modelType: string; modelId: string };
+
+/**
+ * How a method run holds its model's lock (swamp-club#3934). A direct type
+ * execution can rewrite an existing definition's global arguments whatever
+ * the method, so it always locks for the run.
+ */
+function runLockMode(
+  ctx: ConnectionContext,
+  target: MethodRunTarget,
   modelType: string,
   methodName: string,
-): Promise<boolean> {
+): Promise<MethodRunLockMode> {
+  if (target.run !== undefined) return Promise.resolve("run");
+  return methodRunLockMode({
+    modelType,
+    methodName,
+    config: ctx.datastoreConfig,
+    syncService: ctx.syncService,
+    repoContext: ctx.repoContext,
+  });
+}
+
+/** Pulls a read or list run's model, unlocked, under the run sync gate. */
+async function pullBeforeUnlockedRun(
+  ctx: ConnectionContext,
+  model: PublishedModel,
+): Promise<void> {
+  const synced = await pullModelsUnlocked(
+    ctx.datastoreConfig,
+    [model],
+    ctx.repoDir,
+    ctx.syncService,
+    { wrapSync: (fn, kind) => withRunSyncGate(ctx.syncGate, fn, kind) },
+  );
+  if (synced) ctx.repoContext.catalogStore.invalidate();
+}
+
+/**
+ * Takes a read or list run's model lock without a pull, publishes what the
+ * run wrote, refusing versions another clone wrote meanwhile, and releases
+ * the lock (swamp-club#3934). The client already has its result, so a
+ * failure is logged.
+ */
+async function publishUnlockedRun(
+  ctx: ConnectionContext,
+  model: PublishedModel,
+  written: readonly WrittenVersion[],
+): Promise<void> {
+  let publishLocks: ModelLockResult;
   try {
-    const modelDef = await resolveModelType(modelType, getAutoResolver());
-    if (!modelDef) return true;
-    const method = modelDef.methods[methodName];
-    return isMutatingKind(inferMethodKind(methodName, method));
-  } catch {
-    return true;
+    publishLocks = await acquireModelLocks(
+      ctx.datastoreConfig,
+      [model],
+      ctx.repoDir,
+      ctx.syncService,
+      ctx.repoContext.catalogStore,
+      undefined,
+      {
+        wrapSync: (fn, kind) => withRunSyncGate(ctx.syncGate, fn, kind),
+        repoContext: ctx.repoContext,
+        pull: false,
+        refuseForeignVersions: true,
+      },
+    );
+  } catch (error) {
+    logger.warn(
+      "Failed to lock {modelType}/{modelId} to publish its data: {error}",
+      {
+        ...model,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+    return;
   }
+  let pushFailure: { error: unknown } | undefined;
+  try {
+    await publishLocks.pushWritten(written);
+  } catch (error) {
+    pushFailure = { error };
+  }
+  await releaseModelLocks(publishLocks, pushFailure);
 }
 
 /** What a method run is authorized as, and what it then acts on. */
@@ -565,6 +635,13 @@ export async function handleModelMethodRun(
   if (!registry) {
     // Assigned in the root below, which control flow analysis cannot see.
     let modelLocks = undefined as ModelLockResult | undefined;
+    // Set when a read or list run takes its model's lock only to publish
+    // what it wrote (swamp-club#3934).
+    let publishModel = undefined as PublishedModel | undefined;
+    // Whether the run is answered before its root's flush: a lock's push,
+    // or a read or list run's publish, waits for no client.
+    const answersBeforeFlush = () =>
+      modelLocks !== undefined || publishModel !== undefined;
     let mutating = true;
     let lockPushFailure: { error: unknown } | undefined;
     // What the run wrote, for the lock's push to publish (swamp-club#3146).
@@ -636,11 +713,11 @@ export async function handleModelMethodRun(
       ) return;
       const preResult = executedDefinition(target);
 
-      // The root's flush is the model lock's push when the run took one, on
-      // every outcome; otherwise the run's push once it completed. The
-      // reply, telemetry and cancel deregistration keep their place: before
-      // a lock's push, and around the no-lock push as before
-      // (swamp-club#3055).
+      // The root's flush is the model lock's push when the run took one, or
+      // a read or list run's publish (swamp-club#3934), on every outcome;
+      // otherwise the run's push once it completed. The reply, telemetry and
+      // cancel deregistration keep their place: before a lock's push or a
+      // publish, and around the no-lock push as before (swamp-club#3055).
       await runInRootUnitOfWork(
         ctx.repoContext,
         {
@@ -651,6 +728,10 @@ export async function handleModelMethodRun(
               } catch (error) {
                 lockPushFailure = { error };
               }
+              return;
+            }
+            if (publishModel) {
+              await publishUnlockedRun(ctx, publishModel, written);
               return;
             }
             if (completed && mutating) {
@@ -671,20 +752,25 @@ export async function handleModelMethodRun(
         async () => {
           try {
             if (preResult) {
-              // A direct type execution can rewrite an existing definition's
-              // global arguments whatever the method, so it always locks.
-              mutating = target.run !== undefined ||
-                await isMethodMutating(
-                  preResult.type.normalized,
-                  payload.methodName,
-                );
+              const model = {
+                modelType: preResult.type.normalized,
+                modelId: preResult.definition.id,
+              };
+              const lockMode = await runLockMode(
+                ctx,
+                target,
+                model.modelType,
+                payload.methodName,
+              );
+              mutating = lockMode === "run";
+              if (lockMode === "publish") {
+                await pullBeforeUnlockedRun(ctx, model);
+                publishModel = model;
+              }
               if (mutating) {
                 const lockResult = await acquireModelLocks(
                   ctx.datastoreConfig,
-                  [{
-                    modelType: preResult.type.normalized,
-                    modelId: preResult.definition.id,
-                  }],
+                  [model],
                   ctx.repoDir,
                   ctx.syncService,
                   ctx.repoContext.catalogStore,
@@ -796,9 +882,9 @@ export async function handleModelMethodRun(
             } else {
               await runUnderModelLocks(modelLocks, runMethod);
             }
-            if (modelLocks) await telemetry?.finish(null);
+            if (answersBeforeFlush()) await telemetry?.finish(null);
           } catch (error) {
-            if (modelLocks) {
+            if (answersBeforeFlush()) {
               answered = true;
               answeredError = error;
               try {
@@ -809,10 +895,10 @@ export async function handleModelMethodRun(
             }
             throw error;
           }
-          if (modelLocks) deregister();
+          if (answersBeforeFlush()) deregister();
         },
       );
-      if (!modelLocks) await telemetry?.finish(null);
+      if (!answersBeforeFlush()) await telemetry?.finish(null);
     } catch (error) {
       if (!answered) {
         await answer(error);
@@ -914,14 +1000,26 @@ export async function handleModelMethodRun(
     initiatedBy,
   );
 
-  const detachedMutating = preResult
-    ? target.run !== undefined ||
-      await isMethodMutating(preResult.type.normalized, payload.methodName)
-    : true;
+  const detachedLockMode = preResult
+    ? await runLockMode(
+      ctx,
+      target,
+      preResult.type.normalized,
+      payload.methodName,
+    )
+    : "run";
+  const detachedMutating = detachedLockMode === "run";
 
   (async () => {
     // Assigned in the root below, which control flow analysis cannot see.
     let modelLocks = undefined as ModelLockResult | undefined;
+    // Set when a read or list run takes its model's lock only to publish
+    // what it wrote (swamp-club#3934).
+    let publishModel = undefined as PublishedModel | undefined;
+    // Whether the terminal precedes the root's flush: a lock's push, or a
+    // read or list run's publish, waits for no client.
+    const answersBeforeFlush = () =>
+      modelLocks !== undefined || publishModel !== undefined;
     let lockPushFailure: { error: unknown } | undefined;
     // What the run wrote, for the lock's push to publish (swamp-club#3146).
     const written: WrittenVersion[] = [];
@@ -958,9 +1056,10 @@ export async function handleModelMethodRun(
       }
     };
     try {
-      // The root's flush is the model lock's push when the run took one, on
-      // every outcome, after the stream's terminal; otherwise the run's push
-      // once it completed, before the terminal (swamp-club#3055).
+      // The root's flush is the model lock's push when the run took one, or
+      // a read or list run's publish (swamp-club#3934), on every outcome,
+      // after the stream's terminal; otherwise the run's push once it
+      // completed, before the terminal (swamp-club#3055).
       await runInRootUnitOfWork(
         ctx.repoContext,
         {
@@ -971,6 +1070,10 @@ export async function handleModelMethodRun(
               } catch (error) {
                 lockPushFailure = { error };
               }
+              return;
+            }
+            if (publishModel) {
+              await publishUnlockedRun(ctx, publishModel, written);
               return;
             }
             if (completed && detachedMutating) {
@@ -990,6 +1093,14 @@ export async function handleModelMethodRun(
         },
         async () => {
           try {
+            if (preResult && detachedLockMode === "publish") {
+              const model = {
+                modelType: preResult.type.normalized,
+                modelId: preResult.definition.id,
+              };
+              await pullBeforeUnlockedRun(ctx, model);
+              publishModel = model;
+            }
             if (preResult && detachedMutating) {
               const lockResult = await acquireModelLocks(
                 ctx.datastoreConfig,
@@ -1100,14 +1211,14 @@ export async function handleModelMethodRun(
             // On v3 the root commits after this: it waits too
             // (swamp-club#3759).
             if (
-              modelLocks && ctx.confirmReplicated === undefined &&
+              answersBeforeFlush() && ctx.confirmReplicated === undefined &&
               ctx.holdRepliesUntilCommitted !== true
             ) {
               buffer.finish({ kind: "done" });
               await detachedTelemetry?.finish(null);
             }
           } catch (error) {
-            if (modelLocks) {
+            if (answersBeforeFlush()) {
               answered = true;
               answeredError = error;
               await finishWithError(error);
@@ -1117,7 +1228,7 @@ export async function handleModelMethodRun(
         },
       );
       if (
-        !modelLocks || ctx.confirmReplicated !== undefined ||
+        !answersBeforeFlush() || ctx.confirmReplicated !== undefined ||
         ctx.holdRepliesUntilCommitted === true
       ) {
         // Reported finished only once its commits are replicated

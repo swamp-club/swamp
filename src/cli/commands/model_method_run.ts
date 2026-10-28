@@ -30,9 +30,11 @@ import {
   acquireModelLocks,
   libSwampContextForRepo,
   type ModelLockResult,
+  pullModelsUnlocked,
   requireInitializedRepoUnlocked,
   runUnderModelLocks,
 } from "../repo_context.ts";
+import { methodRunLockMode } from "../../libswamp/models/method_run_lock_mode.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -44,11 +46,7 @@ import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../auto_resolver_context.ts";
 import { DefaultMethodExecutionService } from "../../domain/models/method_execution_service.ts";
-import {
-  inferMethodKind,
-  isMutatingKind,
-  modelRegistry,
-} from "../../domain/models/model.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
@@ -569,31 +567,25 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
             modelIdOrName,
           );
           let modelLocks: ModelLockResult | undefined;
-          let mutating = true;
+          // Set when a read or list run takes its model's lock only to
+          // publish what it wrote (swamp-club#3934).
+          let publishModel: { modelType: string; modelId: string } | undefined;
           if (preResult) {
-            try {
-              const modelDef = await resolveModelType(
-                preResult.type.normalized,
-                getAutoResolver(),
-              );
-              if (modelDef) {
-                const method = modelDef.methods[methodName];
-                mutating = isMutatingKind(
-                  inferMethodKind(methodName, method),
-                );
-              }
-            } catch {
-              // Resolution failure — fall back to acquiring locks
-            }
-            if (mutating) {
+            const model = {
+              modelType: preResult.type.normalized,
+              modelId: preResult.definition.id,
+            };
+            const lockMode = await methodRunLockMode({
+              modelType: model.modelType,
+              methodName,
+              config: datastoreConfig,
+              syncService,
+              repoContext,
+            });
+            if (lockMode === "run") {
               const lockResult = await acquireModelLocks(
                 datastoreConfig,
-                [
-                  {
-                    modelType: preResult.type.normalized,
-                    modelId: preResult.definition.id,
-                  },
-                ],
+                [model],
                 repoDir,
                 syncService,
                 repoContext.catalogStore,
@@ -602,6 +594,18 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               );
               if (lockResult.synced) repoContext.catalogStore.invalidate();
               modelLocks = lockResult;
+            } else if (lockMode === "publish") {
+              if (
+                await pullModelsUnlocked(
+                  datastoreConfig,
+                  [model],
+                  repoDir,
+                  syncService,
+                )
+              ) {
+                repoContext.catalogStore.invalidate();
+              }
+              publishModel = model;
             }
           }
 
@@ -627,27 +631,54 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               if (outcome === "failed") methodFailed = true;
             },
           };
+          const pushWritten = async (locks: ModelLockResult) => {
+            try {
+              await locks.pushWritten(written);
+            } catch (error) {
+              // A failed method run keeps its own error; the version it
+              // could not publish is logged instead.
+              if (
+                !methodFailed ||
+                !isUnpublishedDataError(error)
+              ) {
+                throw error;
+              }
+              ctx.logger.error("{message}", { message: error.message });
+            }
+          };
           const locks = modelLocks;
+          const publishTo = publishModel;
           const finished = await runCommandInRootUnit(
             repoContext,
             {
               // Progress streams in log mode; the result waits for the
               // commit (swamp-club#3759).
               output: ctx.outputMode === "log" ? "live-until-outcome" : "held",
-              push: locks
+              push: locks ? () => pushWritten(locks) : publishTo
                 ? async () => {
+                  // No pull: it would overwrite what the run wrote wherever
+                  // another clone wrote the same version (swamp-club#3934).
+                  const publishLocks = await acquireModelLocks(
+                    datastoreConfig,
+                    [publishTo],
+                    repoDir,
+                    syncService,
+                    repoContext.catalogStore,
+                    undefined,
+                    { repoContext, pull: false, refuseForeignVersions: true },
+                  );
                   try {
-                    await locks.pushWritten(written);
-                  } catch (error) {
-                    // A failed method run keeps its own error; the version it
-                    // could not publish is logged instead.
-                    if (
-                      !methodFailed ||
-                      !isUnpublishedDataError(error)
-                    ) {
-                      throw error;
+                    await pushWritten(publishLocks);
+                  } finally {
+                    try {
+                      await publishLocks.release();
+                    } catch (releaseError) {
+                      ctx.logger.warn("Failed to release locks: {error}", {
+                        error: releaseError instanceof Error
+                          ? releaseError.message
+                          : String(releaseError),
+                      });
                     }
-                    ctx.logger.error("{message}", { message: error.message });
                   }
                 }
                 : undefined,

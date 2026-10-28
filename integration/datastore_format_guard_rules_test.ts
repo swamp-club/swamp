@@ -212,6 +212,9 @@ const GUARDED_PINNED = [
   "src/cli/retention_teardown.ts:runRetentionAtCommandEnd",
   "src/cli/managed_config_sync.ts:coordinatedGlobalLock",
   "src/cli/repo_context.ts:acquireModelLocks (x5)",
+  // swamp-club#3934: a read or list run's unlocked pull waits on the global
+  // lock and pulls, and checks its config itself, as acquireModelLocks does.
+  "src/cli/repo_context.ts:pullModelsUnlocked (x2)",
   "src/cli/repo_context.ts:createModelLock (x2)",
   "src/cli/repo_context.ts:createWorkflowRunLock (x2)",
   "src/cli/repo_context.ts:flushSinglePhasePush",
@@ -250,6 +253,7 @@ Deno.test("every production path that opens a datastore is behind the format gua
 const GUARD_CALLERS = [
   ["src/cli/repo_context.ts", "resolveDatastoreForRepo"],
   ["src/cli/repo_context.ts", "acquireModelLocks"],
+  ["src/cli/repo_context.ts", "pullModelsUnlocked"],
   ["src/cli/commands/serve.ts", "serveCommand"],
   ["src/libswamp/datastores/setup.ts", "datastoreSetupFilesystem"],
   ["src/libswamp/datastores/setup.ts", "datastoreSetupExtension"],
