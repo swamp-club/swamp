@@ -59,6 +59,20 @@ function makeScore(overrides: Partial<RubricScore> = {}): RubricScore {
         status: "missing",
         remediation: "Add JSDoc to >=80% of exported symbols.",
       },
+      {
+        id: "dependency-trust",
+        label: "Dependencies pass trust audit",
+        earnedPoints: 2,
+        maxPoints: 2,
+        status: "earned",
+      },
+      {
+        id: "repository-verified",
+        label: "Verified public repository",
+        earnedPoints: 0,
+        maxPoints: 2,
+        status: "provisional",
+      },
     ],
     earnedPoints: 12,
     maxEarnablePoints: 14,
@@ -531,16 +545,66 @@ Deno.test("createExtensionQualityRenderer: log names no raise when nothing is pe
   assert(!output.includes("pending server verification"), output);
 });
 
-Deno.test("createExtensionQualityRenderer: json carries grade right after percentage", () => {
-  const renderer = createExtensionQualityRenderer("json");
-  const logs = capture(() =>
-    renderer.handlers().completed(completedEvent(makeScore()))
+Deno.test("createExtensionQualityRenderer: json carries grade right after percentage, then ifProvisionalEarned as the log line names it", () => {
+  const score = makeScore();
+  const doc = JSON.parse(
+    capture(() =>
+      createExtensionQualityRenderer("json").handlers().completed(
+        completedEvent(score),
+      )
+    )[0],
   );
-  const doc = JSON.parse(logs[0]);
   assertEquals([doc.percentage, doc.grade], [85, "B"]);
   const keys = Object.keys(doc);
-  assertEquals(keys[keys.indexOf("percentage") + 1], "grade");
-  assertEquals(doc.ifProvisionalEarned, undefined);
+  assertEquals(
+    keys.slice(keys.indexOf("percentage"), keys.indexOf("percentage") + 3),
+    [
+      "percentage",
+      "grade",
+      "ifProvisionalEarned",
+    ],
+  );
+  assertEquals(doc.ifProvisionalEarned, { percentage: 100, grade: "A" });
+  const log = capture(() =>
+    createExtensionQualityRenderer("log").handlers().completed(
+      completedEvent(score),
+    )
+  ).join("\n");
+  assertStringIncludes(
+    log,
+    `pending server verification: ${doc.ifProvisionalEarned.percentage}% (${doc.ifProvisionalEarned.grade})`,
+  );
+});
+
+Deno.test("createExtensionQualityRenderer: json ifProvisionalEarned is null when nothing is pending", () => {
+  const doc = JSON.parse(
+    capture(() =>
+      createExtensionQualityRenderer("json").handlers().completed(
+        completedEvent(
+          makeScore({
+            maxClientEarnablePoints: 14,
+            provisionalPoints: 0,
+            ifProvisionalEarned: null,
+          }),
+        ),
+      )
+    )[0],
+  );
+  assertEquals(doc.ifProvisionalEarned, null);
+  const keys = Object.keys(doc);
+  assertEquals(keys[keys.indexOf("grade") + 1], "ifProvisionalEarned");
+});
+
+Deno.test("createExtensionQualityRenderer: log prints the dependency details directly under the dependency-trust row, wherever it sits", () => {
+  const lines = capture(() =>
+    createExtensionQualityRenderer("log").handlers().completed(
+      completedEvent(makeScore()),
+    )
+  ).map(stripAnsiCode);
+  const row = lines.findIndex((l) => l.includes("dependency-trust"));
+  assert(row >= 0, lines.join("\n"));
+  assertStringIncludes(lines[row + 1], "No npm/jsr dependencies to audit");
+  assertStringIncludes(lines[row + 2], "repository-verified");
 });
 
 Deno.test("createExtensionQualityRenderer: log prints the rubric, then every failed check with its details, then fails", () => {

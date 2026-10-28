@@ -543,16 +543,16 @@
           {
             "id": "repository-verified",
             "label": "Private repository (collective attested)",
-            "earnedPoints": 0,
+            "earnedPoints": 2,
             "maxPoints": 2,
-            "status": "provisional",
+            "status": "earned",
             "category": "per-package"
           }
         ],
-        "earnedPoints": 14,
+        "earnedPoints": 16,
         "maxPoints": 16,
-        "provisionalPoints": 2,
-        "percentage": 87
+        "provisionalPoints": 0,
+        "percentage": 100
       }
     },
     {

@@ -27,9 +27,11 @@ import type { LocalGateFailure } from "../../libswamp/extensions/push.ts";
 import type { SwampError } from "../../libswamp/errors.ts";
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
 import {
+  type DependencyTrustResult,
   notAuditedFixes,
   onlyOutagesNotAudited,
 } from "@swamp-club/extension-scoring/dependency-audit";
+import type { Logger } from "@logtape/logtape";
 import type { CompilationError } from "../../libswamp/extensions/push.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import type { Renderer } from "../renderer.ts";
@@ -160,6 +162,39 @@ function formatDownloads(n: number): string {
   return String(n);
 }
 
+/** Each audited dependency, or that there were none, under the dependency-trust row. */
+function logAuditedDependencies(
+  logger: Logger,
+  result: DependencyTrustResult,
+): void {
+  if (result.audited.length === 0) {
+    logger.info`      No npm/jsr dependencies to audit`;
+    return;
+  }
+  for (const dep of result.audited) {
+    const mark = dep.cause === "not-audited" ? "?" : dep.passed ? "✓" : "✗";
+    const parts: string[] = [];
+    if (dep.registry === "jsr") {
+      parts.push("jsr");
+    } else {
+      if (dep.license) parts.push(dep.license);
+      if (dep.weeklyDownloads !== null) {
+        parts.push(`${formatDownloads(dep.weeklyDownloads)}/week`);
+      }
+      if (dep.publishedAgo) parts.push(dep.publishedAgo);
+    }
+    if (dep.reason) parts.push(`not audited: ${dep.reason}`);
+    const detail = parts.length > 0 ? ` — ${parts.join(", ")}` : "";
+    if (dep.importedAs !== undefined) {
+      // The bare import the source wrote, as JSON's importedAs.
+      logger
+        .info`      ${mark} ${dep.name}@${dep.version} (as ${dep.importedAs})${detail}`;
+    } else {
+      logger.info`      ${mark} ${dep.name}@${dep.version}${detail}`;
+    }
+  }
+}
+
 function factorMark(status: FactorStatus): string {
   switch (status) {
     case "earned":
@@ -239,6 +274,7 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
         logger.info(
           `Rubric v${score.rubricVersion} — ${score.earnedPoints}/${score.maxEarnablePoints} points (${score.percentage}%, grade ${score.grade}${provisional}, ${passStatus})`,
         );
+        const { dependencyTrustResult } = e.data;
         for (const factor of score.factors) {
           const mark = factorMark(factor.status);
           const pts = `${factor.earnedPoints}/${factor.maxPoints}`;
@@ -253,37 +289,11 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
           ) {
             logger.info`      → ${factor.remediation}`;
           }
-        }
-        const { dependencyTrustResult } = e.data;
-        if (dependencyTrustResult.audited.length > 0) {
-          for (const dep of dependencyTrustResult.audited) {
-            const mark = dep.cause === "not-audited"
-              ? "?"
-              : dep.passed
-              ? "✓"
-              : "✗";
-            const parts: string[] = [];
-            if (dep.registry === "jsr") {
-              parts.push("jsr");
-            } else {
-              if (dep.license) parts.push(dep.license);
-              if (dep.weeklyDownloads !== null) {
-                parts.push(`${formatDownloads(dep.weeklyDownloads)}/week`);
-              }
-              if (dep.publishedAgo) parts.push(dep.publishedAgo);
-            }
-            if (dep.reason) parts.push(`not audited: ${dep.reason}`);
-            const detail = parts.length > 0 ? ` — ${parts.join(", ")}` : "";
-            if (dep.importedAs !== undefined) {
-              // The bare import the source wrote, as JSON's importedAs.
-              logger
-                .info`      ${mark} ${dep.name}@${dep.version} (as ${dep.importedAs})${detail}`;
-            } else {
-              logger.info`      ${mark} ${dep.name}@${dep.version}${detail}`;
-            }
+          // The audited dependencies belong under their own row, wherever
+          // the rubric places it.
+          if (factor.id === "dependency-trust") {
+            logAuditedDependencies(logger, dependencyTrustResult);
           }
-        } else {
-          logger.info`      No npm/jsr dependencies to audit`;
         }
         if (dependencyTrustResult.errors.length > 0) {
           logger.error`Dependency trust blockers (push blocked):`;
@@ -460,6 +470,7 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
             provisionalPoints: score.provisionalPoints,
             percentage: score.percentage,
             grade: score.grade,
+            ifProvisionalEarned: score.ifProvisionalEarned,
             allPassed: score.allPassed,
             factors: score.factors,
             dependencyTrust: {
