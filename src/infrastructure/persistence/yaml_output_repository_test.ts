@@ -3134,12 +3134,17 @@ Deno.test(
       const readDir = Deno.readDir;
       (Deno as { readDir: typeof Deno.readDir }).readDir = (path) => {
         if (String(path) !== failing) return readDir(path);
-        return (async function* () {
-          throw Object.assign(
-            new Error("Permission denied (os error 13)"),
-            { code: "EACCES" },
-          );
-        })();
+        return {
+          [Symbol.asyncIterator]: () => ({
+            next: () =>
+              Promise.reject(
+                Object.assign(
+                  new Error("Permission denied (os error 13)"),
+                  { code: "EACCES" },
+                ),
+              ),
+          }),
+        };
       };
       try {
         for (
