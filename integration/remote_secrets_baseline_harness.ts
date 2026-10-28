@@ -298,6 +298,7 @@ export async function startBaselineOrchestrator(
     onWorkerDraining: (worker) => dispatchService.notifyWorkerDraining(worker),
   });
   dispatchService.bindGateway(gateway);
+  const wrapDataPlaneVault = options.wrapDataPlaneVault;
   const dataPlane = new DataPlane({
     repoDir,
     repoContext,
@@ -305,12 +306,10 @@ export async function startBaselineOrchestrator(
     dispatches,
     bundles,
     onFirstWrite: (dispatch) => dispatchService.recordFirstWrite(dispatch),
-    ...(options.wrapDataPlaneVault
+    ...(wrapDataPlaneVault
       ? {
         createVaultService: async () =>
-          options.wrapDataPlaneVault!(
-            await VaultService.fromRepository(repoDir),
-          ),
+          wrapDataPlaneVault(await VaultService.fromRepository(repoDir)),
       }
       : {}),
   });

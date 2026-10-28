@@ -24,9 +24,9 @@
  *   POST /data/secrets   load references of the dispatch's own bag
  *
  * Authenticated with the per-dispatch credential alone. Serve answers only
- * for references in the dispatch's bag, or held by a sensitive field of the
- * dispatch's own resource (the resource claim, swamp-club#3529, with the
- * legacy schema fallback, swamp-club#3530), under the dispatching run's
+ * for references in the dispatch's bag, or held by a tagged sensitive field
+ * of the dispatch's own resource (the resource claim, swamp-club#3529),
+ * under the dispatching run's
  * vault access, and only while the attempt holds its lease: access is
  * checked again after the vault reads, so a read in flight when the
  * dispatch ends gets no value. Every reply is `no-store`, errors name the
@@ -69,6 +69,9 @@ import {
 const logger = getSwampLogger(["serve", "data-plane", "secrets"]);
 
 const VERB = "loadSecrets";
+
+/** The serve audit action of the route's events. */
+export const DISPATCH_SECRET_LOAD_AUDIT_ACTION = "worker.secrets.load";
 
 /** Where the route's audit events go, once serve has an emitter. */
 export interface DispatchSecretLoadsAudit {
@@ -181,13 +184,6 @@ async function readBounded(
   return body;
 }
 
-function validRequestId(value: string | null): value is string {
-  return value !== null &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
-      value,
-    );
-}
-
 export class DispatchSecretLoads {
   readonly #options: DispatchSecretLoadsOptions;
   readonly #claims: ResourceClaimVerifier;
@@ -197,15 +193,19 @@ export class DispatchSecretLoads {
     this.#claims = new ResourceClaimVerifier({
       verb: VERB,
       repoFor: options.repoFor,
-      schemaFallback: true,
     });
   }
 
-  /** Answers one request to the route. Never throws. */
+  /**
+   * Answers one request to the route. Never throws. `requestId` is the
+   * caller's validated request id, for the audit event; one is generated
+   * when it is absent.
+   */
   async handle(
     req: Request,
     sourceIp: string,
     trace: DispatchSecretLoadTrace,
+    requestId: string = crypto.randomUUID(),
   ): Promise<Response> {
     let caller: DispatchSecretLoadCaller | null = null;
     let reply: Reply;
@@ -216,23 +216,22 @@ export class DispatchSecretLoads {
       const verified = credential === undefined
         ? null
         : this.#options.sessions.verify(credential);
-      if (req.method !== "POST") {
-        reply = refusal(405, "malformed_request", "Use POST", 0);
-      } else if (
-        credential === undefined || verified === null ||
-        verified.dispatchId === undefined
-      ) {
-        reply = refusal(
-          401,
-          "access_ended",
-          "Missing or invalid dispatch credential",
-          0,
-        );
-      } else {
+      if (verified?.dispatchId !== undefined) {
         caller = {
           workerName: verified.workerId,
           dispatchId: verified.dispatchId,
         };
+      }
+      if (caller === null || credential === undefined) {
+        reply = refusal(
+          401,
+          "unauthenticated",
+          "Missing or invalid dispatch credential",
+          0,
+        );
+      } else if (req.method !== "POST") {
+        reply = refusal(405, "malformed_request", "Use POST", 0);
+      } else {
         const authenticated = caller;
         let traced: Reply | undefined;
         await trace(authenticated, async () => {
@@ -248,7 +247,7 @@ export class DispatchSecretLoads {
       );
       reply = refusal(500, "internal_error", "Internal server error", 0);
     }
-    this.#audit(req, sourceIp, caller, reply);
+    this.#audit(requestId, sourceIp, caller, reply);
     return reply.response;
   }
 
@@ -295,7 +294,9 @@ export class DispatchSecretLoads {
 
     // The run's vault scope holds the reads, as the same read in-process
     // would be (swamp-club#2676). A run with none reads unscoped, as
-    // resolveSecret does.
+    // resolveSecret does. The data plane's trace applies the same scope;
+    // applying it here too keeps the route held to it whatever runs it, and
+    // nesting the same scope changes nothing.
     const scope = dispatch.vaultAccess;
     const read = () => this.#read(dispatch, references);
     const loaded = await (scope ? runWithVaultAccess(scope, read) : read());
@@ -444,27 +445,26 @@ export class DispatchSecretLoads {
 
   /** One metadata-only event per request, at every audit level. */
   #audit(
-    req: Request,
+    requestId: string,
     sourceIp: string,
     caller: DispatchSecretLoadCaller | null,
     reply: Reply,
   ): void {
     const audit = this.#options.audit?.();
     if (audit === undefined) return;
-    const requestId = req.headers.get("x-swamp-request-id");
     audit.emitter.emit(buildAuditEvent({
       instanceId: audit.instanceId,
       category: "secrets",
       stage: "response",
       outcome: reply.outcome,
-      action: "load_dispatch_secrets",
+      action: DISPATCH_SECRET_LOAD_AUDIT_ACTION,
       resourceKind: "dispatch",
       resourceName: caller?.dispatchId ?? "unknown",
       principalKind: caller ? "worker" : "anonymous",
       principalId: caller?.workerName ?? "anonymous",
       initiatedBy: caller ? `worker:${caller.workerName}` : "ghost",
       sourceIp,
-      requestId: validRequestId(requestId) ? requestId : crypto.randomUUID(),
+      requestId,
       detail: `${reply.code ?? "loaded"}; ${reply.count} references`,
     }));
   }

@@ -1211,7 +1211,9 @@ worker for protocol version 6, and 5.3 removes the version 5 frame.
   wire contract in `src/domain/remote/protocol.ts`. A request names up to 256
   references (`MAX_DISPATCH_SECRET_LOADS`), each a vault name of at most 256
   characters and a key of at most 1024, optionally with a resource claim whose
-  name is at most 512. Serve reads at most 4 MiB of body
+  name is at most 512. One request claims at most 16 distinct resources
+  (`MAX_DISPATCH_SECRET_CLAIMS`), which bounds the record reads it costs and
+  keeps it from emptying the bounded claim cache. Serve reads at most 4 MiB of body
   (`MAX_DISPATCH_SECRET_LOAD_BODY_BYTES`), which fits the largest request the
   schema admits, and refuses a longer one with 413 before any vault read. The
   reply holds one value per distinct reference, in order of first occurrence.
@@ -1220,7 +1222,9 @@ worker for protocol version 6, and 5.3 removes the version 5 frame.
   and a vault provider's own message is neither echoed nor logged.
 - **The credential** must be a dispatch credential. A worker's control
   credential is refused, with none of the sole-dispatch fallback the other data
-  routes take, and a forged, revoked or expired one is refused alike.
+  routes take, and a forged, revoked or expired one is refused alike, with 401
+  and the code `unauthenticated`. A dispatch that has ended is `access_ended`
+  (410), so a client can tell the two apart.
 - **The bag** is the set of references behind the sentinels of the step's
   arguments (`VaultSecretBag.referencesFor`), which serve registers on the
   dispatch as `ActiveDispatch.bagReferences`. It is narrower than every entry a
@@ -1253,13 +1257,16 @@ worker for protocol version 6, and 5.3 removes the version 5 frame.
   allowlist off because every reference reaches serve as a reference.
 - `readResource` keeps its own authorization, the resource claim serve verifies
   against the record's tagged fields (swamp-club#3529), and uses the same route
-  for those fields and the resource-schema fallback for a legacy untagged
-  record from the verified bundle's definition (swamp-club#3530). Serve takes
-  that fallback's sensitive fields from the definition it registered for the
-  dispatch, never from the worker, and only for a record with no
-  sensitive-fields tag and no `_swamp.kind` tag: current writers stamp every
-  resource with `_swamp.kind`, so only a record written before that can take it.
-  `resolveSecret` keeps refusing an untagged claim.
+  for those fields. In 5.1 the route verifies tagged fields only, exactly as
+  `resolveSecret` does, and refuses a claim on a legacy untagged record. The
+  resource-schema fallback for such a record from the verified bundle's
+  definition (swamp-club#3530) is decided in 5.2. A record old enough to have no
+  `_swamp.kind` tag predates the writer guards the writer-version tag attests,
+  so a reference in one of its schema-sensitive fields may be text a method
+  wrote and nobody vaulted. Admitting it by the spec alone would hand the worker
+  a key that is neither in its bag nor reachable through `resolveSecret`. 5.2
+  either narrows the fallback to references the legacy writer itself generated,
+  or keeps such records on `resolveSecret` and the argument allowlist.
 
 Redaction stays after the trusted boundary. Worker result errors are already
 scrubbed on both hops, by the runner before the result frame and by serve
@@ -1817,7 +1824,8 @@ Add the protected data-plane route of Section 9 with no caller, so the protocol
 version stays 5 and no existing dispatch behavior changes. The resource claim
 check and the reserved vaults and keys move into
 `src/serve/dispatch_secret_authorization.ts`, which `resolveSecret` and the route
-share.
+share. The route verifies tagged resource claims only; the legacy untagged
+schema fallback moves to 5.2 (Section 9).
 
 **Exit:** integration tests with a port-0 serve: an in-bag reference loads under
 a live lease; an out-of-bag reference, a reference outside the run's vault
@@ -1829,7 +1837,10 @@ every detail level and serve logs hold no canary.
 
 `REMOTE_PROTOCOL_VERSION` goes to 6. Serve enrolls versions 5 and 6. A version
 6 dispatch carries references only, and its worker loads each value through the
-route; a version 5 worker keeps today's frame.
+route; a version 5 worker keeps today's frame. The route's resource claim gains
+the legacy untagged schema fallback only in a form that admits no reference a
+writer did not generate (Section 9), so a version 6 `readResource` of such a
+record reads as a version 5 one does.
 
 ### Phase 5.3: sunset version 5
 

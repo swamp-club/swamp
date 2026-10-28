@@ -398,12 +398,13 @@ The worker data plane and capability verbs are not audited, with one
 exception: the protected secret load route (`POST /data/secrets`, see
 [typed-secrets § 9](typed-secrets.md#9-serve-and-workers)), the first worker
 data-plane traffic serve audits. Each request writes one event with no
-WebSocket behind it: category `secrets`, action `load_dispatch_secrets`, stage
+WebSocket behind it: category `secrets`, action `worker.secrets.load`, stage
 `response`, `resourceKind` `dispatch` and `resourceName` the dispatch id,
-principal kind `worker` and id the worker name (`anonymous` when the credential
-did not verify), outcome `success`, `denied` (an unverified credential, an
-ended dispatch or a refused reference) or `failure` (a malformed or oversized
-request, or a vault error), and the caller's address. Its `detail` holds only
+principal kind `worker` and id the worker name whenever the dispatch credential
+verified, whatever else was wrong with the request (`anonymous` when it did
+not), outcome `success`, `denied` (an unverified credential, an ended dispatch
+or a refused reference) or `failure` (a malformed or oversized request, or a
+vault error), the caller's address and the request id. Its `detail` holds only
 the refusal code (or `loaded`) and the number of references requested.
 
 The event carries metadata only, at every detail level: no reference, request

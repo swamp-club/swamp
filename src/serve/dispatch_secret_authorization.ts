@@ -29,13 +29,9 @@
 import { computeChecksum } from "../domain/models/checksum.ts";
 import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
 import {
-  getSensitiveFieldsForResolution,
   parseSensitiveFieldsTag,
-  RECORD_KIND_TAG,
-  SENSITIVE_FIELDS_TAG,
   SENSITIVE_FIELDS_VERSION,
   SENSITIVE_FIELDS_VERSION_TAG,
-  type SensitiveFieldPath,
   sensitiveVaultReferences,
 } from "../domain/models/data_writer.ts";
 import { SERVER_TOKEN_SECRET_KEY_PREFIX } from "../domain/models/access/server_token_model.ts";
@@ -95,14 +91,6 @@ export interface ResourceClaimVerifierOptions {
   verb: string;
   /** The repository holding the dispatch's records. */
   repoFor: (dispatch: ActiveDispatch) => UnifiedDataRepository;
-  /**
-   * Admit a record written before the writers stamped
-   * {@link RECORD_KIND_TAG} and carrying no sensitive-fields tag by the
-   * fields its resource spec marks sensitive, as the resource reader does
-   * (swamp-club#3530). The spec is the one serve registered for the
-   * dispatch, never one the worker supplies.
-   */
-  schemaFallback?: boolean;
 }
 
 /**
@@ -121,11 +109,6 @@ export interface ResourceClaimVerifierOptions {
  * trusted server state. The version tag identifies the writer contract;
  * it is not authentication against direct tampering with that storage.
  * Workers cannot write raw metadata: their writes use createResourceWriter.
- *
- * With {@link ResourceClaimVerifierOptions.schemaFallback}, a legacy
- * untagged record is admitted by its spec instead. Current writers stamp
- * every resource with {@link RECORD_KIND_TAG}, so only a record written
- * before that can take the fallback.
  */
 export class ResourceClaimVerifier {
   readonly #options: ResourceClaimVerifierOptions;
@@ -176,12 +159,15 @@ export class ResourceClaimVerifier {
           "the record identity does not match the dispatched behavior",
         );
       }
-      const sensitiveFields = this.#sensitiveFields(
-        dispatch,
-        claim.name,
-        record.tags,
-        refused,
-      );
+      const sensitiveFields = parseSensitiveFieldsTag(record.tags);
+      if (sensitiveFields === null) {
+        throw refused("the record has no sensitive fields");
+      }
+      if (
+        record.tags[SENSITIVE_FIELDS_VERSION_TAG] !== SENSITIVE_FIELDS_VERSION
+      ) {
+        throw refused("the record predates verified sensitive-field writes");
+      }
       if (record.checksum === undefined) {
         throw refused("the record has no content checksum");
       }
@@ -222,41 +208,5 @@ export class ResourceClaimVerifier {
     if (!admitted.has(`${vaultName}\u0000${secretKey}`)) {
       throw refused("its sensitive fields do not reference it");
     }
-  }
-
-  /**
-   * The fields a claim on a record with `tags` may name: the tagged ones
-   * of a record whose writer-version tag is current, or with the schema
-   * fallback, the spec's sensitive fields of a legacy untagged record.
-   */
-  #sensitiveFields(
-    dispatch: ActiveDispatch,
-    name: string,
-    tags: Record<string, string>,
-    refused: (reason: string) => ResourceClaimRefusedError,
-  ): SensitiveFieldPath[] | "*" {
-    if (
-      this.#options.schemaFallback &&
-      tags[SENSITIVE_FIELDS_TAG] === undefined &&
-      tags[RECORD_KIND_TAG] === undefined
-    ) {
-      const fields = getSensitiveFieldsForResolution(
-        tags,
-        dispatch.modelDef.resources,
-        name,
-      );
-      if (fields === null) {
-        throw refused("the record has no sensitive fields");
-      }
-      return fields;
-    }
-    const sensitiveFields = parseSensitiveFieldsTag(tags);
-    if (sensitiveFields === null) {
-      throw refused("the record has no sensitive fields");
-    }
-    if (tags[SENSITIVE_FIELDS_VERSION_TAG] !== SENSITIVE_FIELDS_VERSION) {
-      throw refused("the record predates verified sensitive-field writes");
-    }
-    return sensitiveFields;
   }
 }

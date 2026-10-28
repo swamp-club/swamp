@@ -1638,9 +1638,11 @@ credentials and extensions onto workers:
   (`ActiveDispatch.bagReferences`, the references the step's arguments carry),
   or for one a verified resource claim admits, the same claim `resolveSecret`
   checks (`ResourceClaimVerifier` in
-  `src/serve/dispatch_secret_authorization.ts`) plus the legacy untagged
-  schema fallback, read from serve's own registration. The reserved vaults and
-  keys stay refused. The reads run under the dispatching run's vault access,
+  `src/serve/dispatch_secret_authorization.ts`), at most 16 distinct resources
+  per request. A legacy untagged record admits nothing until typed-secrets 5.2
+  settles its schema fallback. The reserved vaults and keys stay refused. A bad
+  credential is `unauthenticated` (401) and an ended dispatch `access_ended`
+  (410). The reads run under the dispatching run's vault access,
   each value joins the dispatch's redactor, and after the reads serve checks
   again that the credential and the registration still hold, so a read in
   flight when the dispatch ends gets 410 and no value. Every reply is

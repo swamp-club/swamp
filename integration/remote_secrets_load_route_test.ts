@@ -27,7 +27,8 @@
  * forged, control, completed, revoked, reassigned and expired credentials
  * read no value; a read in flight when the dispatch ends gets none either.
  * A resource claim loads a sensitive field of the dispatch's own resource,
- * tagged or legacy untagged (swamp-club#3529, swamp-club#3530). Audit events
+ * tagged and verified (swamp-club#3529); a legacy untagged record admits
+ * nothing until typed-secrets 5.2 adds the schema fallback. Audit events
  * at every detail level and serve's logs hold no canary.
  */
 
@@ -71,6 +72,7 @@ import {
 } from "../src/domain/vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../src/domain/vaults/vault_secret_bag.ts";
 import type { VaultService } from "../src/domain/vaults/vault_service.ts";
+import { DISPATCH_SECRET_LOAD_AUDIT_ACTION } from "../src/serve/dispatch_secret_loads.ts";
 import {
   BASELINE_VAULT,
   type BaselineOrchestrator,
@@ -740,7 +742,7 @@ const TAGGED = {
 
 Deno.test({
   name:
-    "secret load route: a resource claim loads a sensitive field of the dispatch's own resource, tagged or legacy untagged, and nothing else",
+    "secret load route: a resource claim loads a tagged sensitive field of the dispatch's own resource, and nothing else",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -761,8 +763,10 @@ Deno.test({
         password: vaultRef(keys.tagged),
         note: "n",
       }, TAGGED);
-      // Written before the writers stamped _swamp.kind: no tag at all, so
-      // serve takes the sensitive fields from its own spec.
+      // Written before the writers stamped _swamp.kind: no tag at all. The
+      // spec marks the password sensitive, but the record predates the writer
+      // guards, so its text may never have been vaulted (typed-secrets 5.2
+      // decides the schema fallback).
       await seedResource(f.o, LOAD_DEFINITION_ID, "legacy", {
         password: vaultRef(keys.legacy),
         note: vaultRef(keys.note),
@@ -792,14 +796,9 @@ Deno.test({
       assertEquals(tagged.status, 200);
       assertEquals(tagged.body.values?.[0].value, secrets.get(keys.tagged));
 
-      const legacy = await load(f.o, dispatch.credential, [
-        claim(keys.legacy, "legacy"),
-      ]);
-      assertEquals(legacy.status, 200);
-      assertEquals(legacy.body.values?.[0].value, secrets.get(keys.legacy));
-
       for (
         const [key, name] of [
+          [keys.legacy, "legacy"],
           [keys.note, "legacy"],
           [keys.foreign, "foreign"],
           [keys.forged, "forged"],
@@ -891,7 +890,7 @@ Deno.test({
         await emitter.flush();
 
         const recorded = sink.events.filter((e) =>
-          e.action === "load_dispatch_secrets"
+          e.action === DISPATCH_SECRET_LOAD_AUDIT_ACTION
         );
         assertEquals(recorded.length, level === "none" ? 0 : 4, level);
         const audited = JSON.stringify(sink.events);

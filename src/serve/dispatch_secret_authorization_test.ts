@@ -126,15 +126,8 @@ const TAGGED: Stored = {
   content: CONTENT,
 };
 
-function verifier(
-  repo: UnifiedDataRepository,
-  schemaFallback: boolean,
-): ResourceClaimVerifier {
-  return new ResourceClaimVerifier({
-    verb: "test",
-    repoFor: () => repo,
-    schemaFallback,
-  });
+function verifier(repo: UnifiedDataRepository): ResourceClaimVerifier {
+  return new ResourceClaimVerifier({ verb: "test", repoFor: () => repo });
 }
 
 async function refusalReason(promise: Promise<void>): Promise<string> {
@@ -156,77 +149,26 @@ Deno.test("assertSecretKeyNotDenied: refuses infrastructure keys in any case", (
   assertSecretKeyNotDenied("db-password", "test");
 });
 
-Deno.test("ResourceClaimVerifier: a tagged field is admitted in both modes, an untagged field of it in neither", async () => {
-  for (const schemaFallback of [false, true]) {
-    const { repo } = repoHolding(TAGGED);
-    const claims = verifier(repo, schemaFallback);
-    const dispatch = dispatchWithSpec();
-    const claim = { name: TAGGED.name, version: TAGGED.version };
-    await claims.verify(dispatch, claim, "default", "password-key");
-    assertEquals(
-      await refusalReason(
-        claims.verify(dispatch, claim, "default", "note-key"),
-      ),
-      "its sensitive fields do not reference it",
-    );
-  }
-});
-
-Deno.test("ResourceClaimVerifier: a legacy untagged record is admitted by serve's spec only with the schema fallback (swamp-club#3530)", async () => {
-  const claim = {
-    name: LEGACY_UNTAGGED.name,
-    version: LEGACY_UNTAGGED.version,
-  };
-  const { repo } = repoHolding(LEGACY_UNTAGGED);
-
-  assertEquals(
-    await refusalReason(
-      verifier(repo, false).verify(
-        dispatchWithSpec(),
-        claim,
-        "default",
-        "password-key",
-      ),
-    ),
-    "the record has no sensitive fields",
-  );
-
-  const claims = verifier(repo, true);
+Deno.test("ResourceClaimVerifier: a tagged field is admitted, an untagged field of the same record is not", async () => {
+  const { repo } = repoHolding(TAGGED);
+  const claims = verifier(repo);
   const dispatch = dispatchWithSpec();
+  const claim = { name: TAGGED.name, version: TAGGED.version };
   await claims.verify(dispatch, claim, "default", "password-key");
-  // The spec marks only the password sensitive.
   assertEquals(
     await refusalReason(claims.verify(dispatch, claim, "default", "note-key")),
     "its sensitive fields do not reference it",
   );
 });
 
-Deno.test("ResourceClaimVerifier: the schema fallback skips a record a current writer stamped", async () => {
-  const stamped: Stored = {
-    ...LEGACY_UNTAGGED,
-    tags: { ...LEGACY_UNTAGGED.tags, [RECORD_KIND_TAG]: "resource" },
-  };
-  const { repo } = repoHolding(stamped);
-  assertEquals(
-    await refusalReason(
-      verifier(repo, true).verify(
-        dispatchWithSpec(),
-        { name: stamped.name, version: stamped.version },
-        "default",
-        "password-key",
-      ),
-    ),
-    "the record has no sensitive fields",
-  );
-});
-
-Deno.test("ResourceClaimVerifier: the schema fallback reads serve's spec, so a dispatch without one admits nothing", async () => {
+Deno.test("ResourceClaimVerifier: a legacy untagged record is refused, even when the dispatch's spec marks the field sensitive", async () => {
+  // Such a record predates the writer guards, so a reference in it may be
+  // text nobody vaulted; the schema fallback waits for typed-secrets 5.2.
   const { repo } = repoHolding(LEGACY_UNTAGGED);
-  const dispatch = { ...dispatchWithSpec(), modelDef: {} as never };
   assertEquals(
     await refusalReason(
-      verifier(repo, true).verify(
-        dispatch,
+      verifier(repo).verify(
+        dispatchWithSpec(),
         { name: LEGACY_UNTAGGED.name, version: LEGACY_UNTAGGED.version },
         "default",
         "password-key",
@@ -236,47 +178,43 @@ Deno.test("ResourceClaimVerifier: the schema fallback reads serve's spec, so a d
   );
 });
 
-Deno.test("ResourceClaimVerifier: a tagged record without the writer-version tag is refused in both modes", async () => {
+Deno.test("ResourceClaimVerifier: a tagged record without the writer-version tag is refused", async () => {
   const unversioned: Stored = {
     ...TAGGED,
     tags: { ...TAGGED.tags, [SENSITIVE_FIELDS_VERSION_TAG]: "0" },
   };
-  for (const schemaFallback of [false, true]) {
-    const { repo } = repoHolding(unversioned);
-    assertEquals(
-      await refusalReason(
-        verifier(repo, schemaFallback).verify(
-          dispatchWithSpec(),
-          { name: unversioned.name, version: unversioned.version },
-          "default",
-          "password-key",
-        ),
+  const { repo } = repoHolding(unversioned);
+  assertEquals(
+    await refusalReason(
+      verifier(repo).verify(
+        dispatchWithSpec(),
+        { name: unversioned.name, version: unversioned.version },
+        "default",
+        "password-key",
       ),
-      "the record predates verified sensitive-field writes",
-    );
-  }
+    ),
+    "the record predates verified sensitive-field writes",
+  );
 });
 
-Deno.test("ResourceClaimVerifier: a record of another owner is refused in both modes", async () => {
-  for (const schemaFallback of [false, true]) {
-    const { repo } = repoHolding({ ...LEGACY_UNTAGGED, ownerRef: "other" });
-    assertEquals(
-      await refusalReason(
-        verifier(repo, schemaFallback).verify(
-          dispatchWithSpec(),
-          { name: LEGACY_UNTAGGED.name, version: LEGACY_UNTAGGED.version },
-          "default",
-          "password-key",
-        ),
+Deno.test("ResourceClaimVerifier: a record of another owner is refused", async () => {
+  const { repo } = repoHolding({ ...TAGGED, ownerRef: "other" });
+  assertEquals(
+    await refusalReason(
+      verifier(repo).verify(
+        dispatchWithSpec(),
+        { name: TAGGED.name, version: TAGGED.version },
+        "default",
+        "password-key",
       ),
-      "the record identity does not match the dispatched behavior",
-    );
-  }
+    ),
+    "the record identity does not match the dispatched behavior",
+  );
 });
 
 Deno.test("ResourceClaimVerifier: a verified claim reads its record once per dispatch", async () => {
   const { repo, reads } = repoHolding(TAGGED);
-  const claims = verifier(repo, true);
+  const claims = verifier(repo);
   const claim = { name: TAGGED.name, version: TAGGED.version };
   const dispatch = dispatchWithSpec();
   await claims.verify(dispatch, claim, "default", "password-key");

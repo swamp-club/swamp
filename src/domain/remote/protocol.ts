@@ -554,6 +554,12 @@ export const MAX_DISPATCH_SECRET_KEY_LENGTH = 1024;
 /** Longest resource name a load request's claim may name. */
 export const MAX_DISPATCH_SECRET_RESOURCE_NAME_LENGTH = 512;
 /**
+ * Most distinct resources (name and version) one load request may claim.
+ * Each is a record read serve verifies, so the cap bounds that work and
+ * keeps one request from emptying the bounded claim cache.
+ */
+export const MAX_DISPATCH_SECRET_CLAIMS = 16;
+/**
  * Largest load request body serve reads. Fits
  * {@link MAX_DISPATCH_SECRET_LOADS} references at the longest names, each
  * with a resource claim, so a request the schema admits is never refused
@@ -582,6 +588,16 @@ export type DispatchSecretLoadReference = z.infer<
 export const DispatchSecretLoadRequestSchema = z.object({
   references: z.array(DispatchSecretLoadReferenceSchema).min(1).max(
     MAX_DISPATCH_SECRET_LOADS,
+  ).refine(
+    (references) =>
+      new Set(
+        references.flatMap((ref) =>
+          ref.resource
+            ? [`${ref.resource.name}\u0000${ref.resource.version}`]
+            : []
+        ),
+      ).size <= MAX_DISPATCH_SECRET_CLAIMS,
+    { message: `claims more than ${MAX_DISPATCH_SECRET_CLAIMS} resources` },
   ),
 }).strict();
 
@@ -609,6 +625,7 @@ export type DispatchSecretLoadResponse = z.infer<
  * reference caused it, that reference; never a value.
  */
 export const DISPATCH_SECRET_LOAD_REFUSALS = [
+  "unauthenticated",
   "malformed_request",
   "request_too_large",
   "reserved_secret",

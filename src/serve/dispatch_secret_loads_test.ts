@@ -29,9 +29,13 @@ import { ModelType } from "../domain/models/model_type.ts";
 import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
 import {
   DISPATCH_SECRETS_PATH,
+  MAX_DISPATCH_SECRET_CLAIMS,
   MAX_DISPATCH_SECRET_LOAD_BODY_BYTES,
 } from "../domain/remote/protocol.ts";
-import { SessionCredentialService } from "../domain/remote/session_credential.ts";
+import {
+  DEFAULT_SESSION_TTL_MS,
+  SessionCredentialService,
+} from "../domain/remote/session_credential.ts";
 import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
 import type { AuditEvent } from "../domain/serve_audit/audit_event.ts";
 import { SecretRedactor } from "../domain/secrets/secret_redactor.ts";
@@ -46,6 +50,7 @@ import {
   DispatchRegistry,
 } from "./dispatch_registry.ts";
 import {
+  DISPATCH_SECRET_LOAD_AUDIT_ACTION,
   DispatchSecretLoads,
   isDispatchSecretsRoute,
 } from "./dispatch_secret_loads.ts";
@@ -232,7 +237,7 @@ Deno.test("DispatchSecretLoads: a revoked or expired credential reads nothing", 
     repoFor: () => ({} as UnifiedDataRepository),
   });
   const expiring = sessions.issueForDispatch("worker-1", f.dispatch.dispatchId);
-  now = 16 * 60 * 1000;
+  now = DEFAULT_SESSION_TTL_MS + 1;
   const revoked = sessions.issueForDispatch("worker-1", f.dispatch.dispatchId);
   sessions.revokeDispatch("worker-1", f.dispatch.dispatchId);
   for (const credential of [expiring.credential, revoked.credential]) {
@@ -471,27 +476,85 @@ Deno.test("DispatchSecretLoads: every request is audited with metadata only", as
   await denied.body?.cancel();
   const anonymous = await load(f, request({ references: [IN_BAG] }, "forged"));
   await anonymous.body?.cancel();
+  // A wrong method with a valid credential still names its worker.
+  const get = await load(f, request(null, f.credential, { method: "GET" }));
+  await get.body?.cancel();
 
   assertEquals(
     f.events.map((e) => [e.category, e.action, e.outcome, e.detail]),
     [
-      ["secrets", "load_dispatch_secrets", "success", "loaded; 1 references"],
+      ["secrets", "worker.secrets.load", "success", "loaded; 1 references"],
       [
         "secrets",
-        "load_dispatch_secrets",
+        "worker.secrets.load",
         "denied",
         "not_in_dispatch; 1 references",
       ],
       [
         "secrets",
-        "load_dispatch_secrets",
+        "worker.secrets.load",
         "denied",
-        "access_ended; 0 references",
+        "unauthenticated; 0 references",
+      ],
+      [
+        "secrets",
+        "worker.secrets.load",
+        "failure",
+        "malformed_request; 0 references",
       ],
     ],
   );
+  assertEquals(DISPATCH_SECRET_LOAD_AUDIT_ACTION, "worker.secrets.load");
   assertEquals(f.events[0].resourceName, f.dispatch.dispatchId);
   assertEquals(f.events[0].principalId, "worker-1");
   assertEquals(f.events[2].principalKind, "anonymous");
+  assertEquals(
+    [f.events[3].principalKind, f.events[3].principalId],
+    ["worker", "worker-1"],
+  );
   assertFalse(JSON.stringify(f.events).includes(SECRET));
+});
+
+Deno.test("DispatchSecretLoads: the audit event carries the request id the data plane validated", async () => {
+  const f = fixture();
+  const requestId = crypto.randomUUID();
+  const response = await f.loads.handle(
+    request({ references: [IN_BAG] }, f.credential),
+    "127.0.0.1",
+    (_caller, fn) => fn(),
+    requestId,
+  );
+  await response.body?.cancel();
+  assertEquals(f.events[0].requestId, requestId);
+});
+
+Deno.test("DispatchSecretLoads: a request claiming too many distinct resources is refused before any lookup", async () => {
+  const f = fixture({
+    bag: [],
+    repo: {
+      findByName: () => Promise.reject(new Error("not reached")),
+    } as unknown as UnifiedDataRepository,
+  });
+  const claims = Array.from(
+    { length: MAX_DISPATCH_SECRET_CLAIMS + 1 },
+    (_, version) => ({
+      vaultName: "default",
+      key: "k",
+      resource: { name: "state-main", version: version + 1 },
+    }),
+  );
+  const refused = await refusalOf(
+    await load(f, request({ references: claims }, f.credential)),
+  );
+  assertEquals([refused.status, refused.code], [400, "malformed_request"]);
+  // Claims of one resource count once, so this request passes the cap and
+  // reaches the (failing) lookup.
+  const sameResource = claims.map((c) => ({
+    ...c,
+    resource: { name: "state-main", version: 1 },
+  }));
+  const repeated = await refusalOf(
+    await load(f, request({ references: sameResource }, f.credential)),
+  );
+  assertEquals(repeated.code, "internal_error");
 });
