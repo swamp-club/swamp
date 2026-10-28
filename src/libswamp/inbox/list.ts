@@ -171,8 +171,8 @@ async function* fetchPage(
   yield { kind: "loading_credentials" };
 
   const credentials = await deps.loadCredentials();
-  // An empty key is the identity cache an env-key run leaves in auth.json:
-  // no credential, not a revoked one.
+  // An empty key is the identity cache older versions left in auth.json
+  // after an env-key run: no credential, not a revoked one.
   if (!credentials?.apiKey) {
     yield { kind: "error", error: notAuthenticated() };
     return undefined;

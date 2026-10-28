@@ -43,6 +43,7 @@ function makeDeps(overrides: Partial<AuthLogoutDeps> = {}): AuthLogoutDeps {
       }),
     revokeApiKey: () => Promise.resolve({ kind: "revoked", id: "key-1" }),
     deleteCredentials: () => Promise.resolve(),
+    deleteCaches: () => Promise.resolve(),
     deleteInboxState: () => Promise.resolve(),
     credentialsPath: () => "/home/test/.config/swamp/auth.json",
     ...overrides,
@@ -243,11 +244,21 @@ Deno.test("authLogout: deletes credentials without a revoke when no key is store
 
 Deno.test("authLogout: yields completed with loggedOut false when not authenticated", async () => {
   let revokeCalled = false;
+  let deleteCredentialsCalled = false;
+  let deleteCachesCalled = false;
   const deps = makeDeps({
     loadCredentials: () => Promise.resolve(null),
     revokeApiKey: () => {
       revokeCalled = true;
       return Promise.resolve({ kind: "revoked", id: "key-1" });
+    },
+    deleteCredentials: () => {
+      deleteCredentialsCalled = true;
+      return Promise.resolve();
+    },
+    deleteCaches: () => {
+      deleteCachesCalled = true;
+      return Promise.resolve();
     },
   });
 
@@ -256,6 +267,25 @@ Deno.test("authLogout: yields completed with loggedOut false when not authentica
   );
 
   assertEquals(revokeCalled, false);
+  // An API-key run's caches have no login record but are still cleared,
+  // without deleting a login another process may be writing.
+  assertEquals(deleteCachesCalled, true);
+  assertEquals(deleteCredentialsCalled, false);
+  assertEquals(data.loggedOut, false);
+  assertEquals(data.reason, "not authenticated");
+});
+
+Deno.test("authLogout: a cache that cannot be removed does not fail logout without a login", async () => {
+  const deps = makeDeps({
+    loadCredentials: () => Promise.resolve(null),
+    deleteCaches: () =>
+      Promise.reject(new Deno.errors.PermissionDenied("scope_cache.json")),
+  });
+
+  const data = completedData(
+    await collect<AuthLogoutEvent>(authLogout(createLibSwampContext(), deps)),
+  );
+
   assertEquals(data.loggedOut, false);
   assertEquals(data.reason, "not authenticated");
 });
@@ -442,6 +472,54 @@ Deno.test("createAuthLogoutDeps: deleting the inbox state never fails on a bad s
   try {
     await createAuthLogoutDeps({ repo: { configDir: tmpDir } })
       .deleteInboxState("not a url", "swamp_login_key");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("authLogout: a login written after the no-login check survives, while the API-key caches go", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = join(tmpDir, "config");
+    const repo = new AuthRepository({ configDir, getApiKey: () => undefined });
+    await repo.saveIdentityCache(
+      "https://swamp-club.com",
+      "envuser",
+      ["envorg"],
+      "fingerprint",
+    );
+    await repo.saveScopeCache("fingerprint", ["serve:*"]);
+
+    const real = createAuthLogoutDeps({ repo: { configDir } });
+    const deps: AuthLogoutDeps = {
+      ...real,
+      // A `swamp auth login` in another process lands between this read and
+      // the cleanup.
+      loadCredentials: async () => {
+        const creds = await real.loadCredentials();
+        await repo.save({
+          serverUrl: "https://swamp-club.com",
+          apiKey: "swamp_new_login_key",
+          apiKeyId: "key-2",
+          username: "testuser",
+        });
+        return creds;
+      },
+    };
+
+    const data = completedData(
+      await collect<AuthLogoutEvent>(authLogout(createLibSwampContext(), deps)),
+    );
+
+    assertEquals(data.reason, "not authenticated");
+    assertEquals((await repo.load())?.apiKey, "swamp_new_login_key");
+    for (const file of ["env_identity_cache.json", "scope_cache.json"]) {
+      const exists = await Deno.stat(join(configDir, file)).then(
+        () => true,
+        () => false,
+      );
+      assertEquals(exists, false, file);
+    }
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

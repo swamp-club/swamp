@@ -41,6 +41,7 @@ import type { LibSwampContext } from "../context.ts";
 import {
   cancelled,
   invalidApiKey,
+  noStoredLoginKey,
   notAuthenticated,
   type SwampError,
 } from "../errors.ts";
@@ -233,10 +234,13 @@ export async function* whoami(
   yield { kind: "loading_credentials" };
 
   const credentials = await deps.loadCredentials();
-  // An empty key is the identity cache an env-key run leaves in auth.json:
-  // no credential, not a revoked one.
+  // An empty key is the identity cache older versions left in auth.json
+  // after an env-key run: no credential, not a revoked one.
   if (!credentials?.apiKey) {
-    yield { kind: "error", error: notAuthenticated() };
+    yield {
+      kind: "error",
+      error: credentials ? noStoredLoginKey() : notAuthenticated(),
+    };
     return;
   }
 
@@ -274,10 +278,13 @@ export async function* whoami(
     const fingerprint = await keyFingerprint(credentials.apiKey);
 
     if (!response.collectiveToken) {
-      // Refresh cached collectives in auth.json so they stay current.
-      // Collective tokens are env-var-based — nothing to cache.
+      // Refresh cached username and collectives so they stay current; the
+      // username also repairs a login record an older version overwrote with
+      // an env key's identity. Collective tokens are env-var-based — nothing
+      // to cache.
       await deps.saveCredentials({
         ...credentials,
+        username: response.username ?? credentials.username,
         collectives: collectives ?? [],
       });
     }

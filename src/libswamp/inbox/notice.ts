@@ -136,8 +136,8 @@ interface ActiveKey {
 /** The credential in use, or null. Throws when its server URL does not parse. */
 async function activeKey(deps: InboxNoticeDeps): Promise<ActiveKey | null> {
   const credentials = await deps.loadCredentials();
-  // An empty key is the identity cache an env-key run leaves in auth.json:
-  // no credential.
+  // An empty key is the identity cache older versions left in auth.json
+  // after an env-key run: no credential.
   if (!credentials?.apiKey) return null;
   return {
     serverUrl: credentials.serverUrl,
