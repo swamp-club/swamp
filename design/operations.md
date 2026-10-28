@@ -13,7 +13,9 @@ something a primitive depends on, move it to `enablers/` and give it an
 - **Telemetry**: product telemetry, spooled under the user config dir and sent
   over HTTP. The CLI flushes once at teardown; `swamp serve` runs its own flush
   loop (`src/serve/telemetry_flush.ts`). Entries carry an `insert_id` for dedup
-  and are quarantined after a bounded number of retries.
+  and are quarantined after a bounded number of retries. `swamp completions`
+  records no event: shell rc files run it at every shell start and its scripts
+  call it on every Tab press, so it must not wait on the teardown flush.
   `src/domain/telemetry/`, `src/infrastructure/telemetry/`. The recorded
   command is resolved against the real command tree
   (`src/cli/telemetry_invocation.ts`): every command word is kept in

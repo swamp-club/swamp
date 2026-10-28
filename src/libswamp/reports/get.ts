@@ -20,6 +20,7 @@
 import type { Data } from "../../domain/data/data.ts";
 import type { Definition } from "../../domain/definitions/definition.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
+import type { FindStoredReports } from "../../domain/reports/stored_report_data.ts";
 import type { LibSwampContext } from "../context.ts";
 import { behaviorNotFound, notFound, validationFailed } from "../errors.ts";
 import type { ReportGetEvent, StoredReportDetail } from "./report_views.ts";
@@ -49,10 +50,8 @@ export interface ReportGetInput {
  * Dependencies for the report get operation.
  */
 export interface ReportGetDeps {
-  findAllGlobal: () => Promise<
-    Array<{ data: Data; modelType: ModelType; modelId: string }>
-  >;
-  findAllForModel: (type: ModelType, modelId: string) => Promise<Data[]>;
+  /** Every stored report, or one owner's; see {@link FindStoredReports}. */
+  findReportData: FindStoredReports;
   findDataByVersion: (
     type: ModelType,
     modelId: string,
@@ -116,17 +115,13 @@ export async function* reportGet(
           yield { kind: "error", error: behaviorNotFound(input.model) };
           return;
         }
-        const items = await deps.findAllForModel(
-          result.type,
-          result.definition.id,
+        const items = await deps.findReportData({
+          type: result.type,
+          modelId: result.definition.id,
+        });
+        matches = items.filter((c) =>
+          isMatchingReport(c.data, input.reportName)
         );
-        matches = items
-          .filter((d) => isMatchingReport(d, input.reportName))
-          .map((d) => ({
-            data: d,
-            modelType: result.type,
-            modelId: result.definition.id,
-          }));
       } else if (input.workflow) {
         const wf = await deps.findWorkflowByName(input.workflow);
         if (!wf) {
@@ -137,17 +132,16 @@ export async function* reportGet(
           "../../domain/models/model_type.ts"
         );
         const workflowModelType = MT.create("workflow");
-        const items = await deps.findAllForModel(workflowModelType, wf.id);
-        matches = items
-          .filter((d) => isMatchingReport(d, input.reportName))
-          .map((d) => ({
-            data: d,
-            modelType: workflowModelType,
-            modelId: wf.id,
-          }));
+        const items = await deps.findReportData({
+          type: workflowModelType,
+          modelId: wf.id,
+        });
+        matches = items.filter((c) =>
+          isMatchingReport(c.data, input.reportName)
+        );
       } else {
         // Global search
-        const all = await deps.findAllGlobal();
+        const all = await deps.findReportData();
         matches = all.filter((c) => isMatchingReport(c.data, input.reportName));
       }
 

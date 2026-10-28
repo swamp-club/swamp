@@ -49,12 +49,12 @@ import {
 import { assertSafePath } from "./safe_path.ts";
 import { isIoError } from "./io_errors.ts";
 import { readDirSorted } from "./sorted_dir_entries.ts";
-import type { ScanKind } from "./scan_permits.ts";
 import {
   mapBounded,
   SCAN_CONCURRENCY,
+  type ScanKind,
   withScanPermit,
-} from "./scan_concurrency.ts";
+} from "./scan_permits.ts";
 import { SharedScans } from "./shared_scans.ts";
 import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";

@@ -50,9 +50,15 @@ function makeDeps(
   }> = [],
 ): ReportGetDeps {
   return {
-    findAllGlobal: () => Promise.resolve(globalData),
-    findAllForModel: (_type: ModelType, _modelId: string) =>
-      Promise.resolve([] as Data[]),
+    findReportData: (scope) =>
+      Promise.resolve(
+        scope
+          ? globalData.filter((c) =>
+            c.modelType.normalized === scope.type.normalized &&
+            c.modelId === scope.modelId
+          )
+          : globalData,
+      ),
     findDataByVersion: () => Promise.resolve(null),
     getContent: (
       _type: ModelType,
@@ -123,7 +129,7 @@ Deno.test("reportGet - errors on ambiguous report across models", async () => {
 
   const deps: ReportGetDeps = {
     ...makeDeps(),
-    findAllGlobal: () =>
+    findReportData: () =>
       Promise.resolve([
         { data: report1, modelType, modelId: def1.id },
         { data: report2, modelType, modelId: def2.id },
@@ -160,7 +166,8 @@ Deno.test("reportGet - resolves with --model when ambiguous", async () => {
       }
       return Promise.resolve(null);
     },
-    findAllForModel: () => Promise.resolve([reportData]),
+    findReportData: () =>
+      Promise.resolve([{ data: reportData, modelType, modelId: def.id }]),
     getContent: (
       _type: ModelType,
       _modelId: string,
@@ -226,7 +233,7 @@ Deno.test("reportGet - --variant filters to matching varySuffix", async () => {
 
   const deps: ReportGetDeps = {
     ...makeDeps(),
-    findAllGlobal: () =>
+    findReportData: () =>
       Promise.resolve([
         { data: report1, modelType, modelId: "test-id" },
         { data: report2, modelType, modelId: "test-id" },
@@ -267,7 +274,7 @@ Deno.test("reportGet - ambiguity error suggests --variant for multiple variants"
 
   const deps: ReportGetDeps = {
     ...makeDeps(),
-    findAllGlobal: () =>
+    findReportData: () =>
       Promise.resolve([
         { data: report1, modelType, modelId: "test-id" },
         { data: report2, modelType, modelId: "test-id" },
@@ -359,9 +366,8 @@ function makeVersionedDeps(): {
   const contentReads: Array<{ dataName: string; version?: number }> = [];
 
   const deps: ReportGetDeps = {
-    findAllGlobal: () =>
+    findReportData: () =>
       Promise.resolve([{ data: latest, modelType, modelId: def.id }]),
-    findAllForModel: () => Promise.resolve([latest]),
     findDataByVersion: (_type, _modelId, dataName, version) => {
       lookups.push({ dataName, version });
       return Promise.resolve(

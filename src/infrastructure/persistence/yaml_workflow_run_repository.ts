@@ -71,7 +71,7 @@ import {
   mapBounded,
   SCAN_CONCURRENCY,
   withScanPermit,
-} from "./scan_concurrency.ts";
+} from "./scan_permits.ts";
 import {
   createWorkflowId,
   createWorkflowRunId,

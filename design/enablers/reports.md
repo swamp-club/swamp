@@ -565,6 +565,25 @@ spelling of `model` (swamp-club#3410): the CLI sends and filters on `model`,
 locally and over `--server`, and every other value as typed. `behaviour` is
 not a synonym. A report definition's `scope` stays `"model"`.
 
+`report search` and `report get`, locally and on serve, choose their
+candidates from the data catalog (`_catalog.db`) by tag: rows in the
+repository's own namespace whose `type` tag is `report`, whose content type is
+`text/markdown`, latest and published, of one owner when `--behavior` or
+`--workflow` names it. Only those items' metadata is read, through the search
+share (12 of 16) of the scan permits output scans use
+(`src/infrastructure/persistence/scan_permits.ts`), so a method run's lookups
+keep their own (`src/infrastructure/persistence/catalog_report_adapter.ts`,
+swamp-club#4075). The cost grows with stored reports, not with all data. A
+missing catalog is rebuilt first, and one being rebuilt is waited for. A rename
+marker is skipped and each data name is listed once, as a walk of the data
+directory would. A report whose catalogued version is missing, empty or
+unreadable on disk is left out with a warning that names it and its owner,
+rather than failing the search; when the catalog may be out of date, the
+warning suggests `swamp doctor datastores` to check it, which works for both
+datastore engines. Non-report data is never read, so an
+unreadable item no longer hides the reports stored beside it. On serve, a cancelled
+request starts no further read and replies `cancelled`.
+
 ### Report Flags on `behavior run`
 
 | Flag                              | Description                                      |
