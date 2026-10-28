@@ -123,8 +123,8 @@ export class DatastoreClaimedError extends UserError {
    */
   constructor(
     readonly owner: DatastoreOwner,
-    detail?: string,
-    wayOut?: string,
+    readonly detail?: string,
+    readonly wayOut?: string,
   ) {
     super(
       `This v3 datastore is claimed by swamp serve at ${owner.address} ` +

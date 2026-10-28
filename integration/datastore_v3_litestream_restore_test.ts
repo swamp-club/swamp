@@ -308,6 +308,32 @@ Deno.test({
 
 Deno.test({
   name:
+    "v3 restore: a refusal on a checkout whose own outbox holds an earlier command's commits names how many and where they stay (swamp-club#4063)",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const a = await world.machine("a");
+      const b = await world.machine("b");
+      await b.send({ kind: "write", commits: 1, close: true });
+      const outbox = await b.send({ kind: "plantOutboxEntry" }) as string;
+      await a.send({ kind: "claim", address: "https://swamp.example.com" });
+      const refused = await assertRejects(
+        () => b.send({ kind: "write", commits: 1, close: true }),
+        MachineError,
+      );
+      assertEquals(refused.code, "datastore_claimed");
+      assertStringIncludes(refused.message, "1 commit an earlier command");
+      assertStringIncludes(refused.message, outbox);
+      assertStringIncludes(refused.message, "not sent through serve");
+      assertStringIncludes(refused.message, "swamp datastore release");
+      assertStringIncludes(refused.message, "Nothing was changed.");
+      await b.send({ kind: "close" });
+    });
+  },
+});
+
+Deno.test({
+  name:
     "v3 restore: a stale copy's claim, met with a busy lease, is refused as the copy's, and the write goes ahead once the lease is free (swamp-club#4063)",
   ignore,
   async fn() {

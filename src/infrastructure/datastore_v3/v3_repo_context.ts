@@ -54,6 +54,7 @@ import {
   openV3Datastore,
   v3CommitsDbPath,
   type V3Datastore,
+  v3OutboxPath,
 } from "./v3_datastore.ts";
 import {
   compactionBound,
@@ -74,7 +75,8 @@ import {
   type V3WriterLeaseHolder,
   v3WriterLeaseHolder,
 } from "./v3_writer_lock.ts";
-import { SqliteCommitStore } from "./sqlite_commit_store.ts";
+import { peekDatastoreOwner } from "./sqlite_commit_store.ts";
+import { countPendingOutboxEntries } from "./sqlite_commit_outbox.ts";
 import {
   judgeRecordedProcess,
   type LocalProcess,
@@ -719,7 +721,7 @@ async function takeV3WriterHold(
   // stale copy's claim costs a free lease nothing.
   const claimHint = serveUpstreamAt(config.path) === undefined
     ? claimRefusal(
-      SqliteCommitStore.peekOwner(v3CommitsDbPath(config.path, repoDir)),
+      peekDatastoreOwner(v3CommitsDbPath(config.path, repoDir)),
       ownerCheckOf(config, options.ownerCheck),
     )
     : undefined;
@@ -749,12 +751,20 @@ async function takeV3WriterHold(
       // A replicated checkout read its last copy, which can predate a
       // release: say so, so a stale claim is not taken for a live one.
       if (!v3ReplicatesAt(config.path)) throw claimHint;
-      throw new DatastoreClaimedError(
-        claimHint.owner,
-        "This checkout's last copy of the datastore shows the claim, and " +
-          "another process holds the writer lease, so the write was not " +
-          "tried. If the claim was released since, run the command again " +
-          "once that process is done.",
+      throw withStrandedOutbox(
+        new DatastoreClaimedError(
+          claimHint.owner,
+          [
+            "This checkout's last copy of the datastore shows the claim, and " +
+            "another process holds the writer lease, so the write was not " +
+            "tried. If the claim was released since, run the command again " +
+            "once that process is done.",
+            claimHint.detail,
+          ].filter((part) => part !== undefined).join(" "),
+          claimHint.wayOut,
+        ),
+        config,
+        repoDir,
       );
     }
     throw error;
@@ -887,7 +897,7 @@ function refuseUnlessOwner(
     v3DatastoreFor(repoDir, config).commitStore.owner(),
     check,
   );
-  if (refusal !== undefined) throw refusal;
+  if (refusal !== undefined) throw withStrandedOutbox(refusal, config, repoDir);
   if (check.as === "serve") {
     serveHolds.set(datastore, {
       address: check.address,
@@ -936,6 +946,40 @@ function assertServeStillOwner(datastorePath: string, key: string): void {
     throw refusal;
   }
   serve.verifiedFence = fence;
+}
+
+/**
+ * `refusal`, telling of the commits an earlier command on this checkout left
+ * in its outbox, which the claim strands (swamp-club#4063). Only a
+ * replicated checkout has an outbox of its own: on a shared filesystem
+ * datastore the claim's own hold lands them before the claim. The command
+ * itself still changed nothing.
+ */
+function withStrandedOutbox(
+  refusal: DatastoreClaimedError,
+  config: V3DatastoreConfig,
+  repoDir: string,
+): DatastoreClaimedError {
+  if (!v3ReplicatesAt(config.path)) return refusal;
+  const outbox = v3OutboxPath(v3CommitsDbPath(config.path, repoDir));
+  const pending = countPendingOutboxEntries(outbox);
+  if (pending === 0) return refusal;
+  const commits = pending === 1 ? "1 commit" : `${pending} commits`;
+  const stranded = `This checkout also holds ${commits} an earlier ` +
+    "command on it made that never reached the datastore. They stay in " +
+    `${outbox}: they land if the claim is released and a command runs in ` +
+    "this checkout directly, and they are not sent through serve. To keep " +
+    "them, release the claim with 'swamp datastore release', run a command " +
+    "in this checkout, then claim again; or redo the work through serve.";
+  return markErrorPaths(
+    new DatastoreClaimedError(
+      refusal.owner,
+      [refusal.detail, stranded].filter((part) => part !== undefined)
+        .join(" "),
+      refusal.wayOut,
+    ),
+    [outbox],
+  );
 }
 
 /** The refusal `check` meets on a datastore `owner` claims, if any. */

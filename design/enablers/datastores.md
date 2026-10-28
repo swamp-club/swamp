@@ -7095,8 +7095,14 @@ set `serverAddress` or `SWAMP_SERVE_URL` and run `swamp auth server-login`.
 - Serve-mode checkouts are unaffected: they never write storage, and serve
   writes as the owner.
 - A checkout's commits still in its outbox when the claim lands stay there:
-  its next direct write is refused before recovery lands them. They land after
-  a release, or are written again through serve. On a filesystem datastore the
+  its next direct write is refused before recovery lands them. Moving to serve
+  does not carry them over: a serve-mode checkout has a copy root of its own
+  and never reads the old copy's outbox. So on a replicated checkout the
+  refusal says how many such commits there are and the outbox they stay in
+  (`countPendingOutboxEntries`, read-only), that they land only after a
+  release and a direct command, and that they are not sent through serve. To
+  keep them, release, run a command directly, then claim again, or redo the
+  work through serve. The refused command itself still changed nothing. On a filesystem datastore the
   outbox sits beside the shared `commits.db`, so the claim's own hold lands a
   dead writer's prepared commits before the claim.
 

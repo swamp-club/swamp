@@ -657,6 +657,31 @@ export class SqliteCommitOutbox implements CommitOutbox {
  * WAL, `synchronous=FULL` and a busy timeout, as the commit store does.
  * Refuses a file written by a newer schema.
  */
+/**
+ * How many entries the outbox at `path` holds that recovery would still
+ * land (not abandoned), read without opening the outbox: no migration, no
+ * write, and 0 for a file that is absent or unreadable (swamp-club#4063).
+ * A refused writer reports them, so its user knows a claim strands them.
+ */
+export function countPendingOutboxEntries(path: string): number {
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(path, { readOnly: true });
+  } catch {
+    return 0;
+  }
+  try {
+    const row = db.prepare(
+      "SELECT count(*) AS pending FROM outbox_entries WHERE abandoned_at IS NULL",
+    ).get() as { pending: number } | undefined;
+    return row?.pending ?? 0;
+  } catch {
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 function openOutboxDatabase(path: string): DatabaseSync {
   ensureDirSync(dirname(path));
   const db = new DatabaseSync(path);

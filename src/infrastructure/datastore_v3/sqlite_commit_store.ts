@@ -456,6 +456,29 @@ function readOwner(db: DatabaseSync): DatastoreOwner | undefined {
   });
 }
 
+/**
+ * The owner the `commits.db` at `path` names, read without opening the
+ * store: no migration, no write, and undefined for a file that is absent,
+ * unreadable or from before owners (swamp-club#4063). A hint for a writer
+ * that does not hold the lease yet; only {@link SqliteCommitStore.owner},
+ * read under the lease, decides.
+ */
+export function peekDatastoreOwner(path: string): DatastoreOwner | undefined {
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(path, { readOnly: true });
+  } catch {
+    return undefined;
+  }
+  try {
+    return readOwner(db);
+  } catch {
+    return undefined;
+  } finally {
+    db.close();
+  }
+}
+
 /** Error code for a `commits.db` written by a newer swamp. */
 export const COMMIT_STORE_SCHEMA_NEWER_CODE = "datastore_v3_schema_newer";
 
@@ -817,29 +840,6 @@ export class SqliteCommitStore implements CommitStore {
   owner(): DatastoreOwner | undefined {
     this.#assertOpen();
     return readOwner(this.#db);
-  }
-
-  /**
-   * The owner the `commits.db` at `path` names, read without opening the
-   * store: no migration, no write, and undefined for a file that is absent,
-   * unreadable or from before owners (swamp-club#4063). A hint for a writer
-   * that does not hold the lease yet; only {@link owner}, read under the
-   * lease, decides.
-   */
-  static peekOwner(path: string): DatastoreOwner | undefined {
-    let db: DatabaseSync;
-    try {
-      db = new DatabaseSync(path, { readOnly: true });
-    } catch {
-      return undefined;
-    }
-    try {
-      return readOwner(db);
-    } catch {
-      return undefined;
-    } finally {
-      db.close();
-    }
   }
 
   /**
