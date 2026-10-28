@@ -3336,24 +3336,35 @@ async function withHeldReads<T>(
 }
 
 /**
- * Asserts every shared scan permit is free: a scan of 16 records gets all 16
- * of its reads in flight at once. A permit a scan kept would leave it at 15.
+ * Asserts every shared scan permit is free: a lookup of 16 records gets all
+ * 16 of its reads in flight at once, and a search of 16 gets its share of
+ * 12 (swamp-club#4073). A permit a scan kept would leave one of them short.
  */
 async function assertScanPermitsFree(reads: HeldReads): Promise<void> {
   await withTempDir(async (dir) => {
     const repo = new YamlOutputRepository(dir);
     const definitionId = createDefinitionId(crypto.randomUUID());
     await saveHistory(repo, definitionId, 16);
-    reads.hold();
-    const scan = repo.findHistoryByDefinition(registeredType, definitionId);
-    let found: ModelOutput[];
-    try {
-      await waitFor(() => reads.inFlight === 16, "16 reads in flight");
-    } finally {
-      reads.release();
-      found = await scan;
+    for (
+      const [expected, scan] of [
+        [16, () => repo.findAll(registeredType)],
+        [12, () => repo.findHistoryByDefinition(registeredType, definitionId)],
+      ] as const
+    ) {
+      reads.hold();
+      const scanning = scan();
+      let found: ModelOutput[];
+      try {
+        await waitFor(
+          () => reads.inFlight === expected,
+          `${expected} reads in flight`,
+        );
+      } finally {
+        reads.release();
+        found = await scanning;
+      }
+      assertEquals(found.length, 16);
     }
-    assertEquals(found.length, 16);
   });
 }
 
@@ -3367,7 +3378,7 @@ Deno.test(
       const holderId = createDefinitionId(crypto.randomUUID());
       const abortedId = createDefinitionId(crypto.randomUUID());
       const behindId = createDefinitionId(crypto.randomUUID());
-      await saveHistory(holder, holderId, 16);
+      await saveHistory(holder, holderId, 12);
       await saveHistory(aborted, abortedId, 3);
       await saveHistory(behind, behindId, 3);
 
@@ -3377,7 +3388,8 @@ Deno.test(
           registeredType,
           holderId,
         );
-        await waitFor(() => reads.inFlight === 16, "the holder's 16 reads");
+        // Searches hold their whole share, 12 of the 16 permits.
+        await waitFor(() => reads.inFlight === 12, "the holder's 12 reads");
 
         const controller = new AbortController();
         const reason = new DOMException("request cancelled", "AbortError");
@@ -3398,13 +3410,13 @@ Deno.test(
           settled = true;
         });
         controller.abort(reason);
-        // While every permit is still held: a scan that stayed in the queue
-        // would only settle once one is released.
+        // While searches still hold their whole share: a scan that stayed in
+        // the queue would only settle once one is released.
         await waitFor(() => settled, "the aborted scan to reject");
         assertEquals(await abortedOutcome, reason);
 
         reads.release();
-        assertEquals((await holding).length, 16);
+        assertEquals((await holding).length, 12);
         assertEquals((await behindScan).length, 3);
         assertEquals(reads.startedUnder(join(dir, "aborted")), 0);
         await assertScanPermitsFree(reads);
@@ -3420,7 +3432,7 @@ Deno.test(
       const holder = new YamlOutputRepository(join(dir, "holder"));
       const scanned = new YamlOutputRepository(join(dir, "scanned"));
       const holderId = createDefinitionId(crypto.randomUUID());
-      await saveHistory(holder, holderId, 8);
+      await saveHistory(holder, holderId, 6);
       await saveHistory(
         scanned,
         createDefinitionId(crypto.randomUUID()),
@@ -3434,7 +3446,7 @@ Deno.test(
             registeredType,
             holderId,
           );
-          await waitFor(() => reads.inFlight === 8, "the holder's 8 reads");
+          await waitFor(() => reads.inFlight === 6, "the holder's 6 reads");
 
           const controller = new AbortController();
           const reason = new DOMException("request cancelled", "AbortError");
@@ -3442,15 +3454,15 @@ Deno.test(
             new Date(Date.now() - HOUR_MS),
             controller.signal,
           );
-          // Eight of its reads hold the other permits; the rest of its
-          // reads wait for one.
-          await waitFor(() => reads.inFlight === 16, "the scan's 8 reads");
+          // Six of its reads hold the rest of the searches' share; the rest
+          // of its reads wait for one.
+          await waitFor(() => reads.inFlight === 12, "the scan's 6 reads");
           const startedAtAbort = reads.started;
           controller.abort(reason);
 
           reads.release();
           assertEquals(await assertRejects(() => scan), reason);
-          assertEquals((await holding).length, 8);
+          assertEquals((await holding).length, 6);
           assertEquals(reads.started, startedAtAbort);
           assertEquals(reads.inFlight, 0);
         }, ["output-repo"]);
@@ -3511,6 +3523,153 @@ Deno.test(
         );
         assertEquals(reads.started, 0);
         await assertScanPermitsFree(reads);
+      });
+    });
+  },
+);
+
+/** Listings of `Deno.readDir` that {@link withHeldListings} controls. */
+interface HeldListings {
+  /** Held listings started and not yet released. */
+  readonly inFlight: number;
+  /** Settles every held listing, and lets listings started after it through. */
+  release(): void;
+}
+
+/**
+ * Runs `fn` with `Deno.readDir` replaced by one that holds a listing of a
+ * directory `holds` accepts open, before its first entry, until released, as
+ * a large directory's iteration holds its permit (swamp-club#4073). Every
+ * held listing is released, and the original restored, however `fn` ends.
+ */
+async function withHeldListings<T>(
+  holds: (dir: string) => boolean,
+  fn: (listings: HeldListings) => Promise<T>,
+): Promise<T> {
+  const readDir = Deno.readDir;
+  const gate = Promise.withResolvers<void>();
+  let released = false;
+  let inFlight = 0;
+  const listings: HeldListings = {
+    get inFlight() {
+      return inFlight;
+    },
+    release: () => {
+      released = true;
+      gate.resolve();
+    },
+  };
+  (Deno as { readDir: typeof Deno.readDir }).readDir = (path) => {
+    if (released || !holds(String(path))) return readDir(path);
+    return (async function* () {
+      inFlight++;
+      try {
+        await gate.promise;
+      } finally {
+        inFlight--;
+      }
+      yield* readDir(path);
+    })();
+  };
+  try {
+    return await fn(listings);
+  } finally {
+    listings.release();
+    (Deno as { readDir: typeof Deno.readDir }).readDir = readDir;
+  }
+}
+
+/**
+ * Sixteen repositories under `dir`, each with one output, whose history
+ * searches list a method directory {@link withHeldListings} can hold.
+ */
+async function sixteenSearches(dir: string) {
+  const searches: { repo: YamlOutputRepository; id: DefinitionId }[] = [];
+  for (let i = 0; i < 16; i++) {
+    const repo = new YamlOutputRepository(join(dir, `search-${i}`));
+    const id = createDefinitionId(crypto.randomUUID());
+    await saveHistory(repo, id, 1);
+    searches.push({ repo, id });
+  }
+  return {
+    holds: (path: string) =>
+      path.startsWith(dir + SEPARATOR) && basename(path) === "run",
+    start: () =>
+      searches.map(({ repo, id }) =>
+        repo.findHistoryByDefinition(
+          registeredType,
+          id,
+          undefined,
+          new AbortController().signal,
+        )
+      ),
+  };
+}
+
+Deno.test(
+  "findLatestByDefinition, findAll, findByDefinition: complete while 16 large search listings are held",
+  async () => {
+    await withTempDir(async (dir) => {
+      const searches = await sixteenSearches(join(dir, "searches"));
+      const runner = new YamlOutputRepository(join(dir, "runner"));
+      const runnerId = createDefinitionId(crypto.randomUUID());
+      await saveHistory(runner, runnerId, 3);
+
+      await withHeldListings(searches.holds, async (listings) => {
+        const searching = searches.start();
+        // Searches hold their whole share of 12 permits; the other four wait.
+        await waitFor(() => listings.inFlight === 12, "12 held listings");
+
+        let done = 0;
+        const lookups = [
+          runner.findLatestByDefinition(registeredType, runnerId),
+          runner.findAll(registeredType),
+          runner.findByDefinition(registeredType, runnerId),
+        ].map((lookup) => lookup.finally(() => done++));
+        await waitFor(() => done === 3, "the method run's lookups");
+        const [latest, all, byDefinition] = await Promise.all(lookups);
+        assertEquals((latest as ModelOutput | null)?.definitionId, runnerId);
+        assertEquals((all as ModelOutput[]).length, 3);
+        assertEquals((byDefinition as ModelOutput[]).length, 3);
+        assertEquals(listings.inFlight, 12);
+
+        listings.release();
+        for (const found of await Promise.all(searching)) {
+          assertEquals(found.length, 1);
+        }
+      });
+    });
+  },
+);
+
+Deno.test(
+  "scan permits: held search listings and lookup reads together open at most 16 files",
+  async () => {
+    await withTempDir(async (dir) => {
+      const searches = await sixteenSearches(join(dir, "searches"));
+      const runnerDir = join(dir, "runner");
+      const runner = new YamlOutputRepository(runnerDir);
+      await saveHistory(runner, createDefinitionId(crypto.randomUUID()), 8);
+
+      await withHeldListings(searches.holds, async (listings) => {
+        await withHeldReads(async (reads) => {
+          const searching = searches.start();
+          await waitFor(() => listings.inFlight === 12, "12 held listings");
+
+          reads.hold();
+          const lookup = runner.findAll(registeredType);
+          // The four permits no search may hold, and no more.
+          await waitFor(() => reads.inFlight === 4, "the lookup's 4 reads");
+          assertEquals(listings.inFlight + reads.inFlight, 16);
+          assertEquals(reads.startedUnder(runnerDir), 4);
+
+          reads.release();
+          assertEquals((await lookup).length, 8);
+          listings.release();
+          for (const found of await Promise.all(searching)) {
+            assertEquals(found.length, 1);
+          }
+        });
       });
     });
   },

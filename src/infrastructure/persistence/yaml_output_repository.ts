@@ -49,7 +49,7 @@ import {
 import { assertSafePath } from "./safe_path.ts";
 import { isIoError } from "./io_errors.ts";
 import { readDirSorted } from "./sorted_dir_entries.ts";
-import { Semaphore } from "../stream/semaphore.ts";
+import { type ScanKind, ScanPermits } from "./scan_permits.ts";
 import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import type {
@@ -144,31 +144,47 @@ function parseOutputFileName(
  * (a serve request's) stops waiting for permits once it aborts, starts no
  * further listing or read, and gives back each permit it holds as that
  * listing or read settles (swamp-club#4070).
+ *
+ * A listing holds its permit for its whole `Deno.readDir` iteration, and its
+ * directory stays open throughout, so the permit cannot be given back
+ * between batches without breaking the bound on open files. Instead the
+ * search and history listings serve requests run (findHistoryByDefinition,
+ * findAllGlobal, findAllGlobalSince) may hold at most
+ * {@link SEARCH_SCAN_SHARE} permits, so a method run's per-type reads
+ * (findAll, findByDefinition, findLatestByDefinition) always have the rest,
+ * however many large listings are under way (swamp-club#4073). The share
+ * follows the method, not its caller: serve's model output get reads
+ * through findLatestByDefinition and findByDefinition, so it draws on the
+ * lookups' permits as a method run does.
  */
 const SCAN_CONCURRENCY = 16;
 
+/** How many of the {@link SCAN_CONCURRENCY} permits searches may hold. */
+const SEARCH_SCAN_SHARE = 12;
+
 /** The {@link SCAN_CONCURRENCY} permits all scans' listings and reads share. */
-const scanPermits = new Semaphore(SCAN_CONCURRENCY);
+const scanPermits = new ScanPermits(SCAN_CONCURRENCY, SEARCH_SCAN_SHARE);
 
 /**
- * `open` once one of the shared scan permits is free, releasing it when
- * `open` settles. `open` is one listing, stat or read: it never waits for
- * another permit, so scans cannot deadlock on each other. Once `signal`
- * aborts, a scan waiting for a permit leaves the queue without one and
- * `open` does not start; either rejects with the abort reason.
+ * `open` once one of the shared scan permits `kind` may take is free,
+ * releasing it when `open` settles. `open` is one listing, stat or read: it
+ * never waits for another permit, so scans cannot deadlock on each other.
+ * Once `signal` aborts, a scan waiting for a permit leaves the queue without
+ * one and `open` does not start; either rejects with the abort reason.
  */
 async function withScanPermit<T>(
+  kind: ScanKind,
   open: () => Promise<T>,
   signal?: AbortSignal,
 ): Promise<T> {
-  await scanPermits.acquire(signal);
+  const release = await scanPermits.acquire(kind, signal);
   try {
     // Inside the try: an abort that lands after a release handed this scan
     // its permit, but before this runs, must still give the permit back.
     signal?.throwIfAborted();
     return await open();
   } finally {
-    scanPermits.release();
+    release();
   }
 }
 
@@ -396,7 +412,7 @@ export class YamlOutputRepository implements OutputRepository {
     type: ModelType,
     definitionId: DefinitionId,
   ): Promise<ModelOutput[]> {
-    const all = await this.readAll(type);
+    const all = await this.readAll(type, "lookup");
     await warnUnreadableLeftOut(
       this.unreadableContent,
       this.getTypeDir(type),
@@ -415,7 +431,7 @@ export class YamlOutputRepository implements OutputRepository {
     type: ModelType,
     definitionId: DefinitionId,
   ): Promise<ModelOutput | null> {
-    const outputs = (await this.readAll(type)).filter((output) =>
+    const outputs = (await this.readAll(type, "lookup")).filter((output) =>
       output.definitionId === definitionId
     );
     // Sort by startedAt descending and take the first one
@@ -444,7 +460,7 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   async findAll(type: ModelType): Promise<ModelOutput[]> {
-    const outputs = await this.readAll(type);
+    const outputs = await this.readAll(type, "lookup");
     await warnUnreadableLeftOut(this.unreadableContent, this.getTypeDir(type));
     return outputs;
   }
@@ -487,6 +503,7 @@ export class YamlOutputRepository implements OutputRepository {
       (untilStamp === undefined || stamp < untilStamp);
     const outputs = await this.readAll(
       type,
+      "search",
       (name) => {
         const match = OUTPUT_FILE_NAME.exec(name);
         if (match === null) return true;
@@ -514,7 +531,8 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   /**
-   * {@link findAll} without the unreadable-record warning. With `readsName`,
+   * {@link findAll} without the unreadable-record warning, its listings and
+   * reads drawing on `kind`'s share of the scan permits. With `readsName`,
    * a file whose name it refuses is skipped without being read. With
    * `unnamedSince`, a file whose name is not in {@link getPath}'s form and
    * whose mtime is before it is skipped after a stat. Once `signal` aborts,
@@ -522,6 +540,7 @@ export class YamlOutputRepository implements OutputRepository {
    */
   private async readAll(
     type: ModelType,
+    kind: ScanKind,
     readsName?: (name: string) => boolean,
     unnamedSince?: Date,
     signal?: AbortSignal,
@@ -533,6 +552,7 @@ export class YamlOutputRepository implements OutputRepository {
     let methodEntries: Deno.DirEntry[];
     try {
       methodEntries = await withScanPermit(
+        kind,
         () => readDirSorted(typeDir),
         signal,
       );
@@ -560,6 +580,7 @@ export class YamlOutputRepository implements OutputRepository {
         let entries: Deno.DirEntry[];
         try {
           entries = await withScanPermit(
+            kind,
             () => readDirSorted(methodDir),
             signal,
           );
@@ -595,6 +616,7 @@ export class YamlOutputRepository implements OutputRepository {
         try {
           if (unnamedSince !== undefined && !named) {
             const stat = await withScanPermit(
+              kind,
               () => tally.measure("stat", () => Deno.stat(path)),
               signal,
             );
@@ -606,6 +628,7 @@ export class YamlOutputRepository implements OutputRepository {
             }
           }
           const content = await withScanPermit(
+            kind,
             () => tally.measure("read", () => Deno.readTextFile(path)),
             signal,
           );
@@ -658,6 +681,7 @@ export class YamlOutputRepository implements OutputRepository {
     for (const modelType of modelRegistry.types()) {
       const typeOutputs = await this.readAll(
         modelType,
+        "search",
         undefined,
         undefined,
         signal,
@@ -721,6 +745,7 @@ export class YamlOutputRepository implements OutputRepository {
         const typeDir = this.getTypeDir(modelType);
         try {
           const methodEntries = await withScanPermit(
+            "search",
             () => readDirSorted(typeDir),
             signal,
           );
@@ -748,6 +773,7 @@ export class YamlOutputRepository implements OutputRepository {
         let entries: Deno.DirEntry[];
         try {
           entries = await withScanPermit(
+            "search",
             () => readDirSorted(dir),
             signal,
           );
@@ -789,6 +815,7 @@ export class YamlOutputRepository implements OutputRepository {
         try {
           if (!named) {
             const stat = await withScanPermit(
+              "search",
               () => tally.measure("stat", () => Deno.stat(path)),
               signal,
             );
@@ -802,6 +829,7 @@ export class YamlOutputRepository implements OutputRepository {
 
           // Stage B: parse and verify
           const content = await withScanPermit(
+            "search",
             () => tally.measure("read", () => Deno.readTextFile(path)),
             signal,
           );
