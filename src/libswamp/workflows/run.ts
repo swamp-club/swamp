@@ -79,6 +79,7 @@ import {
   type SkippedSupersedeData,
   type SupersedeDeps,
   supersedeMatchInputs,
+  type SupersedeResult,
   supersedeSuspendedRuns,
 } from "./supersede.ts";
 import type { EvaluatedWorkflowCache } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
@@ -957,13 +958,29 @@ export async function* workflowRun(
             )
             : undefined;
           if (supersedeInputs && deps.supersede) {
-            const { cancelledRunIds, skippedRuns, ...nested } =
-              await supersedeSuspendedRuns(
+            let superseded: SupersedeResult;
+            try {
+              superseded = await supersedeSuspendedRuns(
                 workflow,
                 supersedeInputs,
                 deps.supersede,
                 deps.runRepo,
+                ctx.signal,
               );
+            } catch (error) {
+              // A run cancelled while its suspended runs are read ends as
+              // a cancelled one, whatever reason it was aborted with
+              // (swamp-club#4088).
+              if (ctx.signal.aborted) {
+                yield {
+                  kind: "error",
+                  error: cancelled(error instanceof Error ? error : undefined),
+                };
+                return;
+              }
+              throw error;
+            }
+            const { cancelledRunIds, skippedRuns, ...nested } = superseded;
             if (cancelledRunIds.length > 0 || skippedRuns.length > 0) {
               yield {
                 kind: "superseded_runs",

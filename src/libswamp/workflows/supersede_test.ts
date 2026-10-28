@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { acceptedOutcomeFor } from "../../domain/workflows/signal_wait_store_test_helpers.ts";
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { supersedeMatchInputs, supersedeSuspendedRuns } from "./supersede.ts";
 import type { EvaluatedWorkflowCache } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { emptyNestedCascade } from "./nested_cascade.ts";
@@ -584,4 +584,64 @@ Deno.test("supersedeMatchInputs: a --last-evaluated run that will be refused sup
     }),
     undefined,
   );
+});
+
+Deno.test("supersedeSuspendedRuns: passes its signal to findSuspendedRuns (swamp-club#4088)", async () => {
+  const wf = createWorkflow("deploy");
+  const run = createSuspendedRun(wf, { env: "prod" });
+  const controller = new AbortController();
+  const signals: Array<AbortSignal | undefined> = [];
+
+  const result = await supersedeSuspendedRuns(
+    wf,
+    { env: "prod" },
+    {
+      findSuspendedRuns: (_id, signal) => {
+        signals.push(signal);
+        return Promise.resolve([run]);
+      },
+      evaluatedCache: () => Promise.resolve(null),
+      findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
+    },
+    stubRunRepo([], [run]),
+    controller.signal,
+  );
+
+  assertEquals(signals, [controller.signal]);
+  assertEquals(result.cancelledRunIds, [run.id]);
+});
+
+Deno.test("supersedeSuspendedRuns: a cancelled read rejects with the abort reason and settles no run (swamp-club#4088)", async () => {
+  const wf = createWorkflow("deploy");
+  const run = createSuspendedRun(wf, { env: "prod" });
+  const controller = new AbortController();
+  controller.abort(new DOMException("run cancelled", "AbortError"));
+  const saved: WorkflowRun[] = [];
+  let claims = 0;
+
+  await assertRejects(
+    () =>
+      supersedeSuspendedRuns(
+        wf,
+        { env: "prod" },
+        {
+          findSuspendedRuns: (_id, signal) => Promise.reject(signal?.reason),
+          evaluatedCache: () => Promise.resolve(null),
+          findEvaluatedWorkflow: noSnapshot,
+          runClaims: {
+            withClaim: (_runId, fn) => {
+              claims++;
+              return fn();
+            },
+          },
+        },
+        stubRunRepo(saved, [run]),
+        controller.signal,
+      ),
+    DOMException,
+    "run cancelled",
+  );
+  assertEquals(claims, 0);
+  assertEquals(saved, []);
 });

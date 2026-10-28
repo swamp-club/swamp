@@ -76,7 +76,14 @@ export interface SkippedSupersedeData {
  * a superseded run against.
  */
 export interface SupersedeDeps {
-  findSuspendedRuns: (workflowId: WorkflowId) => Promise<WorkflowRun[]>;
+  /**
+   * The workflow's suspended runs. Superseding passes the new run's signal,
+   * so a cancelled run stops reading them (swamp-club#4088).
+   */
+  findSuspendedRuns: (
+    workflowId: WorkflowId,
+    signal?: AbortSignal,
+  ) => Promise<WorkflowRun[]>;
   findEvaluatedWorkflow: EvaluatedWorkflowLookup;
   /**
    * Claims each run while it is cancelled, so the cancel acts on the run as
@@ -140,7 +147,9 @@ function isSuperseded(
 /**
  * Cancels the workflow's locally-owned suspended runs whose inputs match the
  * new run's, settling each one's unfinished jobs and steps against its
- * evaluated snapshot, or else `workflow`.
+ * evaluated snapshot, or else `workflow`. Only the read of the suspended runs
+ * stops once `signal` aborts, rejecting with its reason: the runs it found
+ * are then all settled, never some of them.
  */
 export async function supersedeSuspendedRuns(
   workflow: Workflow,
@@ -148,8 +157,9 @@ export async function supersedeSuspendedRuns(
   { findSuspendedRuns, findEvaluatedWorkflow, runClaims, cascade }:
     SupersedeDeps,
   runRepo: WorkflowRunRepository,
+  signal?: AbortSignal,
 ): Promise<SupersedeResult> {
-  const suspendedRuns = await findSuspendedRuns(workflow.id);
+  const suspendedRuns = await findSuspendedRuns(workflow.id, signal);
   const cancelledRunIds: string[] = [];
   const nested = emptyNestedCascade();
   const skippedRuns: SkippedSupersedeData[] = [];

@@ -278,8 +278,12 @@ export async function createWorkflowRunDeps(
     definitionRepo: repoContext.definitionRepo,
     telemetrySink: options?.telemetrySink,
     supersede: {
-      findSuspendedRuns: (workflowId) =>
-        repoContext.workflowRunRepo.findByStatus(workflowId, "suspended"),
+      findSuspendedRuns: (workflowId, signal) =>
+        repoContext.workflowRunRepo.findByStatus(
+          workflowId,
+          "suspended",
+          signal,
+        ),
       findEvaluatedWorkflow: (runId) => evaluatedWorkflows().findByRunId(runId),
       // On a v3 datastore only serve's own evaluations run: none trusted
       // refuses rather than falling back to the file (swamp-club#3922).

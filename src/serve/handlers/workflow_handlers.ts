@@ -764,7 +764,9 @@ export async function handleWorkflowApprovals(
   ) return;
 
   try {
-    const libCtx = handlerLibSwampContext(ctx);
+    // The suspended-run reads stop when the request is cancelled, so it
+    // gives up its place among the shared scan permits (swamp-club#4088).
+    const libCtx = handlerLibSwampContext(ctx, { signal: controller.signal });
     const runRepo = ctx.repoContext.workflowRunRepo;
     const evaluatedRepo = new YamlEvaluatedWorkflowRepository(
       ctx.repoDir,
@@ -773,7 +775,8 @@ export async function handleWorkflowApprovals(
     const deps = createWorkflowApprovalsDeps(
       ctx.repoContext.workflowRepo,
       runRepo,
-      (workflowId) => runRepo.findByStatus(workflowId, "suspended"),
+      (workflowId, signal) =>
+        runRepo.findByStatus(workflowId, "suspended", signal),
       (workflowId) => evaluatedRepo.findById(workflowId),
     );
 
@@ -846,6 +849,11 @@ export async function handleWorkflowApprovals(
       payload: { data },
     });
   } catch (error) {
+    // A read stopped by the cancel answers as one that ran to the end does.
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "workflow_approvals_failed", message);
   }

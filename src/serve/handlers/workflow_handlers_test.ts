@@ -55,6 +55,12 @@ import { cancelAndSettle } from "../../domain/workflows/abort_settlement.ts";
 import { nestedChain } from "../../domain/workflows/nested_run_test_helpers.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
+import {
+  SEARCH_SCAN_SHARE,
+  withScanPermit,
+} from "../../infrastructure/persistence/scan_permits.ts";
+import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { DefinitionIdIndex } from "../../infrastructure/persistence/definition_id_index.ts";
 import { Definition } from "../../domain/definitions/definition.ts";
@@ -2452,5 +2458,63 @@ Deno.test("handleWorkflowApprovals: with authorization off every gate can be dec
     await seedGatedRun(dir, repo, "deploy", {});
     const approvals = await listApprovals(approvalsCtx(dir, repo), null);
     assertEquals(approvals.map((a) => a.canDecide), [true]);
+  });
+});
+
+/** Records the signal each findByStatus is given, then reads as usual. */
+class SignalRecordingRunRepository extends YamlWorkflowRunRepository {
+  readonly signals: Array<AbortSignal | undefined> = [];
+
+  override findByStatus(
+    workflowId: WorkflowId,
+    status: string,
+    signal?: AbortSignal,
+  ) {
+    this.signals.push(signal);
+    return super.findByStatus(workflowId, status, signal);
+  }
+}
+
+Deno.test("handleWorkflowApprovals: a request cancelled while its suspended-run read waits for a scan permit leaves the queue and replies cancelled (swamp-club#4088)", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    await seedGatedRun(dir, repo, "deploy", {});
+    const runRepo = new SignalRecordingRunRepository(dir);
+    const ctx = approvalsCtx(dir, repo);
+    ctx.repoContext = { ...ctx.repoContext, workflowRunRepo: runRepo };
+
+    // Other searches hold the whole search share, so the read's first
+    // listing waits in the permit queue.
+    const held = Promise.withResolvers<void>();
+    const holders = Array.from(
+      { length: SEARCH_SCAN_SHARE },
+      () => withScanPermit("search", () => held.promise),
+    );
+    try {
+      const { socket, frames } = makeSearchSocket();
+      const controller = new AbortController();
+      const request = handleWorkflowApprovals(
+        socket,
+        ctx,
+        "req-approvals",
+        controller,
+        null,
+      );
+      await waitFor(
+        () => runRepo.signals.length > 0,
+        "the suspended-run read",
+      );
+      controller.abort();
+
+      // Answered while the share is still held: the read gave up its place
+      // rather than waiting for a permit. The handler replies only once the
+      // read has settled, so no listing or record read outlives the reply.
+      await request;
+      assertEquals(runRepo.signals, [controller.signal]);
+      assertEquals(frames.map((f) => f.type), ["error"]);
+      assertEquals(frames[0].error?.code, "cancelled");
+    } finally {
+      held.resolve();
+      await Promise.all(holders);
+    }
   });
 });
