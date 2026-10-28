@@ -49,13 +49,17 @@ import {
   setImplicitServeRouting,
   setMarkerServerAddress,
   subscribeServerEvents,
+  tokenFileBoundTo,
   toWebSocketUrl,
   writeRemoteIndicator,
 } from "./remote_run.ts";
+import { dirname, join } from "@std/path";
 import { gzipSync } from "node:zlib";
 import type { ServerCredential } from "../domain/auth/server_credential.ts";
 import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
 import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { resetWithheldTokenFiles } from "../domain/auth/server_login_hint.ts";
 import {
   MAX_FORWARDED_LOCK_TOKENS_LENGTH,
   SWAMP_LOCK_HOLDER_TOKENS,
@@ -1004,10 +1008,19 @@ Deno.test("readTokenFile: throws UserError for empty file", async () => {
 
 // ── resolveServerToken: token-file tests ────────────────────────────
 
+/** Leaves the token file bound only by what a test sets itself. */
+const UNSET_SERVE_URL_ENV: Record<string, string | undefined> = {
+  SWAMP_SERVE_URL: undefined,
+  SWAMP_SERVER_URL: undefined,
+};
+
 Deno.test("resolveServerToken: reads token from SWAMP_SERVER_TOKEN_FILE env var", async () => {
   const tmpFile = await Deno.makeTempFile({ prefix: "swamp-token-test-" });
   try {
-    await withMockedEnv({ SWAMP_SERVER_TOKEN_FILE: tmpFile }, async () => {
+    await withMockedEnv({
+      SWAMP_SERVER_TOKEN_FILE: tmpFile,
+      ...UNSET_SERVE_URL_ENV,
+    }, async () => {
       await Deno.writeTextFile(tmpFile, "file.token-value\n");
       const emptyRepo: ServerCredentialRepository = {
         get: () => Promise.resolve(null),
@@ -1019,6 +1032,7 @@ Deno.test("resolveServerToken: reads token from SWAMP_SERVER_TOKEN_FILE env var"
         "http://localhost:9090",
         undefined,
         emptyRepo,
+        "http://localhost:9090",
       );
       assertEquals(result, "file.token-value");
     });
@@ -1114,10 +1128,13 @@ Deno.test("resolveServerTokenFromOptions: passes token through when no tokenFile
   });
 });
 
-Deno.test("resolveServerTokenFromOptions: falls back to env var when no options", async () => {
+Deno.test("resolveServerTokenFromOptions: falls back to the token file env var when --server names the address", async () => {
   const tmpFile = await Deno.makeTempFile({ prefix: "swamp-token-test-" });
   try {
-    await withMockedEnv({ SWAMP_SERVER_TOKEN_FILE: tmpFile }, async () => {
+    await withMockedEnv({
+      SWAMP_SERVER_TOKEN_FILE: tmpFile,
+      ...UNSET_SERVE_URL_ENV,
+    }, async () => {
       await Deno.writeTextFile(tmpFile, "env-file.token\n");
       const emptyRepo: ServerCredentialRepository = {
         get: () => Promise.resolve(null),
@@ -1127,7 +1144,7 @@ Deno.test("resolveServerTokenFromOptions: falls back to env var when no options"
       };
       const result = await resolveServerTokenFromOptions(
         "http://localhost:9090",
-        {},
+        { server: "http://localhost:9090" },
         emptyRepo,
       );
       assertEquals(result, "env-file.token");
@@ -1135,6 +1152,309 @@ Deno.test("resolveServerTokenFromOptions: falls back to env var when no options"
   } finally {
     await Deno.remove(tmpFile).catch(() => {});
   }
+});
+
+// ── SWAMP_SERVER_TOKEN_FILE binding (swamp-club#4012) ────────────────
+
+Deno.test("tokenFileBoundTo: a mismatched, empty or unparseable address does not bind the token file", () => {
+  const key = "http://serve.test:9090";
+  assertEquals(tokenFileBoundTo(key, ["http://other.test:9090"]), false);
+  assertEquals(
+    tokenFileBoundTo(key, [
+      "http://serve.test:9091",
+      "https://serve.test:9090",
+    ]),
+    false,
+  );
+  assertEquals(tokenFileBoundTo(key, [undefined, ""]), false);
+  assertEquals(tokenFileBoundTo(key, ["not a url"]), false);
+  assertEquals(tokenFileBoundTo(key, []), false);
+});
+
+Deno.test("tokenFileBoundTo: either address naming the key binds the token file", () => {
+  const key = "http://serve.test:9090";
+  assertEquals(tokenFileBoundTo(key, ["ws://SERVE.test:9090/"]), true);
+  assertEquals(
+    tokenFileBoundTo(key, ["http://other.test:9090", "http://serve.test:9090"]),
+    true,
+  );
+});
+
+const NO_CREDENTIALS: ServerCredentialRepository = {
+  get: () => Promise.resolve(null),
+  save: () => Promise.resolve(),
+  remove: () => Promise.resolve(),
+  list: () => Promise.resolve([]),
+};
+
+/** Runs `fn` with SWAMP_SERVER_TOKEN_FILE pointing at a file holding `token`. */
+async function withTokenFileEnv(
+  token: string,
+  env: Record<string, string | undefined>,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const tmpFile = await Deno.makeTempFile({ prefix: "swamp-token-test-" });
+  resetWithheldTokenFiles();
+  try {
+    await Deno.writeTextFile(tmpFile, `${token}\n`);
+    await withMockedEnv({
+      ...UNSET_SERVE_URL_ENV,
+      ...env,
+      SWAMP_SERVER_TOKEN_FILE: tmpFile,
+    }, fn);
+  } finally {
+    resetWithheldTokenFiles();
+    await Deno.remove(tmpFile).catch(() => {});
+  }
+}
+
+/** The warnings the remote-run logger emits while `fn` runs. */
+async function captureRemoteRunWarnings(
+  fn: () => Promise<void>,
+): Promise<string[]> {
+  const captured: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => captured.push(record) },
+    loggers: [
+      {
+        category: ["swamp", "cli", "remote-run"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await reset();
+  }
+  return captured.map((r) => r.message.map((p) => String(p)).join(""));
+}
+
+Deno.test("resolveServerTokenFromOptions: a .swamp.yaml-only address does not receive the token file", async () => {
+  await withTokenFileEnv("file.secret", {}, async () => {
+    const result = await resolveServerTokenFromOptions(
+      "https://marker.test",
+      {},
+      NO_CREDENTIALS,
+    );
+    assertEquals(result, undefined);
+  });
+});
+
+Deno.test("resolveServerTokenFromOptions: a .swamp.yaml-only address falls through to the stored credential", async () => {
+  await withTokenFileEnv("file.secret", {}, async () => {
+    const repo: ServerCredentialRepository = {
+      ...NO_CREDENTIALS,
+      get: (url: string): Promise<ServerCredential | null> =>
+        Promise.resolve({
+          serverUrl: url,
+          tokenName: "stored",
+          token: "stored.credential",
+          principalId: "user:test",
+          obtainedAt: "2026-06-18T00:00:00Z",
+        }),
+    };
+    const result = await resolveServerTokenFromOptions(
+      "https://marker.test",
+      {},
+      repo,
+    );
+    assertEquals(result, "stored.credential");
+  });
+});
+
+Deno.test("resolveServerTokenFromOptions: --server, SWAMP_SERVE_URL or SWAMP_SERVER_URL naming the address binds the token file", async () => {
+  const cases: [string, { server?: string }, Record<string, string>][] = [
+    ["--server", { server: "https://serve.test" }, {}],
+    ["SWAMP_SERVE_URL", {}, { SWAMP_SERVE_URL: "https://serve.test" }],
+    ["SWAMP_SERVER_URL", {}, { SWAMP_SERVER_URL: "https://serve.test" }],
+  ];
+  for (const [label, options, env] of cases) {
+    await withTokenFileEnv("file.secret", env, async () => {
+      const result = await resolveServerTokenFromOptions(
+        "https://serve.test",
+        options,
+        NO_CREDENTIALS,
+      );
+      assertEquals(result, "file.secret", label);
+    });
+  }
+});
+
+Deno.test("resolveServerTokenFromOptions: a ws:// --server binds the token file to its http(s) form", async () => {
+  await withTokenFileEnv("file.secret", {}, async () => {
+    const result = await resolveServerTokenFromOptions(
+      "https://serve.test/",
+      { server: "wss://SERVE.test:443" },
+      NO_CREDENTIALS,
+    );
+    assertEquals(result, "file.secret");
+  });
+});
+
+Deno.test("resolveServerTokenFromOptions: an address naming another server does not bind the token file", async () => {
+  const cases: [string, { server?: string }, Record<string, string>][] = [
+    ["--server", { server: "https://other.test" }, {}],
+    ["SWAMP_SERVE_URL", {}, { SWAMP_SERVE_URL: "https://other.test" }],
+    ["SWAMP_SERVER_URL", {}, { SWAMP_SERVER_URL: "https://other.test" }],
+  ];
+  for (const [label, options, env] of cases) {
+    await withTokenFileEnv("file.secret", env, async () => {
+      const result = await resolveServerTokenFromOptions(
+        "https://marker.test",
+        options,
+        NO_CREDENTIALS,
+      );
+      assertEquals(result, undefined, label);
+    });
+  }
+});
+
+Deno.test("resolveServerTokenFromOptions: an unbound token file is never read", async () => {
+  const missing = join(
+    await Deno.makeTempDir({ prefix: "swamp-token-test-" }),
+    "missing",
+  );
+  try {
+    await withMockedEnv({
+      ...UNSET_SERVE_URL_ENV,
+      SWAMP_SERVER_TOKEN_FILE: missing,
+    }, async () => {
+      const result = await resolveServerTokenFromOptions(
+        "https://marker.test",
+        {},
+        NO_CREDENTIALS,
+      );
+      assertEquals(result, undefined);
+    });
+  } finally {
+    await Deno.remove(dirname(missing), { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("resolveServerTokenFromOptions: --token still wins over a bound token file", async () => {
+  await withTokenFileEnv("file.secret", {}, async () => {
+    const result = await resolveServerTokenFromOptions(
+      "https://serve.test",
+      { server: "https://serve.test", token: "explicit.token" },
+      NO_CREDENTIALS,
+    );
+    assertEquals(result, "explicit.token");
+  });
+});
+
+Deno.test("resolveServerTokenFromOptions: an unbound token file warns once, naming the address and not the file", async () => {
+  await withTokenFileEnv("file.secret", {}, async () => {
+    const path = Deno.env.get("SWAMP_SERVER_TOKEN_FILE")!;
+    const warnings = await captureRemoteRunWarnings(async () => {
+      await resolveServerTokenFromOptions(
+        "wss://marker.test",
+        {},
+        NO_CREDENTIALS,
+      );
+      await resolveServerTokenFromOptions(
+        "https://marker.test/",
+        {},
+        NO_CREDENTIALS,
+      );
+    });
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0], "SWAMP_SERVER_TOKEN_FILE was not sent");
+    assertStringIncludes(warnings[0], "https://marker.test");
+    assertStringIncludes(warnings[0], "SWAMP_SERVE_URL");
+    assertStringIncludes(warnings[0], "--server");
+    assertEquals(warnings[0].includes(path), false);
+    assertEquals(warnings[0].includes("file.secret"), false);
+  });
+});
+
+Deno.test("resolveServerTokenFromOptions: a bound or unset token file does not warn", async () => {
+  await withTokenFileEnv("file.secret", {}, async () => {
+    const warnings = await captureRemoteRunWarnings(async () => {
+      await resolveServerTokenFromOptions(
+        "https://serve.test",
+        { server: "https://serve.test" },
+        NO_CREDENTIALS,
+      );
+    });
+    assertEquals(warnings, []);
+  });
+  await withMockedEnv({
+    ...UNSET_SERVE_URL_ENV,
+    SWAMP_SERVER_TOKEN_FILE: undefined,
+  }, async () => {
+    const warnings = await captureRemoteRunWarnings(async () => {
+      await resolveServerTokenFromOptions(
+        "https://marker.test",
+        {},
+        NO_CREDENTIALS,
+      );
+    });
+    assertEquals(warnings, []);
+  });
+});
+
+Deno.test("resolveServerTokenFromOptions: an unbound token file does not warn when a stored credential supplies the token", async () => {
+  await withTokenFileEnv("file.secret", {}, async () => {
+    const repo: ServerCredentialRepository = {
+      ...NO_CREDENTIALS,
+      get: (url: string): Promise<ServerCredential | null> =>
+        Promise.resolve({
+          serverUrl: url,
+          tokenName: "stored",
+          token: "stored.credential",
+          principalId: "user:test",
+          obtainedAt: "2026-06-18T00:00:00Z",
+        }),
+    };
+    const warnings = await captureRemoteRunWarnings(async () => {
+      assertEquals(
+        await resolveServerTokenFromOptions("https://marker.test", {}, repo),
+        "stored.credential",
+      );
+    });
+    assertEquals(warnings, []);
+  });
+});
+
+Deno.test({
+  name:
+    "remote run: a 401 after the token file was withheld says why before the login hint",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = authRejectingServer();
+    try {
+      await withTokenFileEnv("file.secret", {}, async () => {
+        const token = await resolveServerTokenFromOptions(
+          server.url,
+          {},
+          NO_CREDENTIALS,
+        );
+        assertEquals(token, undefined);
+        const error = await assertRejects(async () => {
+          for await (
+            const _ of runWorkflowOverServer({
+              server: server.url,
+              token,
+              payload: { workflowIdOrName: "wf" },
+            })
+            // deno-lint-ignore no-empty
+          ) {}
+        }, UserError);
+        assertStringIncludes(
+          error.message,
+          "SWAMP_SERVER_TOKEN_FILE was not sent",
+        );
+        assertStringIncludes(error.message, "swamp auth server-login");
+      });
+    } finally {
+      await server.shutdown();
+    }
+  },
 });
 
 /** A credential repository that fails the test if it is ever read. */

@@ -103,6 +103,7 @@ import {
   resolveServerTokenFromOptions,
   resolveServeUrl,
   runModelMethodOverServer,
+  TOKEN_FILE_DESCRIPTION,
 } from "../remote_run.ts";
 import { SERVE_CAPABILITY_LITERAL_INPUTS } from "../../serve/protocol.ts";
 import { redactServerUrl } from "../../domain/auth/server_url.ts";
@@ -330,7 +331,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
     )
     .option(
       "--token-file <path:string>",
-      "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
+      TOKEN_FILE_DESCRIPTION,
     )
     .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
     .option(
@@ -371,7 +372,8 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
         );
         if (server) {
           await runMethodViaServer(
-            { ...options, server },
+            server,
+            options,
             modelIdOrName,
             methodName,
             { typeArg, definitionName },
@@ -846,6 +848,7 @@ export const modelMethodCommand = createModelMethodCommand(
  * uses. No local repository is required.
  */
 async function runMethodViaServer(
+  server: string,
   options: AnyOptions,
   modelIdOrName: string,
   methodName: string,
@@ -892,7 +895,7 @@ async function runMethodViaServer(
     : [cliInputs];
 
   const token = await resolveServerTokenFromOptions(
-    options.server as string,
+    server,
     options,
   );
 
@@ -907,7 +910,7 @@ async function runMethodViaServer(
       const version = await requestServerResponse<
         { version: string; capabilities?: string[] }
       >(
-        { server: options.server as string, token, signal: abort.signal },
+        { server, token, signal: abort.signal },
         { type: "server.version" },
       );
       if (!version.capabilities?.includes(SERVE_CAPABILITY_LITERAL_INPUTS)) {
@@ -922,7 +925,7 @@ async function runMethodViaServer(
           .info`Running method ${methodName} [${
           i + 1
         }/${inputSets.length}] via ${
-          redactServerUrl(options.server as string) ?? "(invalid URL)"
+          redactServerUrl(server) ?? "(invalid URL)"
         }`;
       }
       const renderer = createModelMethodRunRenderer(ctx.outputMode, {
@@ -934,7 +937,7 @@ async function runMethodViaServer(
       });
       await consumeStream(
         runModelMethodOverServer({
-          server: options.server as string,
+          server,
           token,
           signal: abort.signal,
           payload: {
