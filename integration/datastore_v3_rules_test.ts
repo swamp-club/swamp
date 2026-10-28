@@ -297,6 +297,8 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/serve/datastore_api.ts -> src/domain/datastore_v3/read_model.ts",
   "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/chunk_ingest.ts",
   "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/forwarded_commit.ts",
+  // The log id header serve sends and the client checks (swamp-club#4049).
+  "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/serve_datastore_client.ts",
   "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/upload_ledger.ts",
   "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/v3_datastore.ts",
   // swamp-club#3922: serve checks a forwarded commit's content as its
@@ -380,7 +382,7 @@ const CHECKPOINT = /wal_(?:auto)?checkpoint/i;
 /** v3 files that mention a checkpoint pragma, as `file:line`. */
 const PINNED_V3_CHECKPOINTS: readonly string[] = [
   // Auto-checkpoint off on a copy Litestream replicates (swamp-club#3935).
-  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2203",
+  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2229",
 ];
 
 Deno.test("datastore v3: no v3 code forces or tunes a WAL checkpoint", async () => {
