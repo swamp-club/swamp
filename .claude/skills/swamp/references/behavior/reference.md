@@ -112,7 +112,8 @@ swamp behavior type describe command/shell --compact --json
       "arguments": {
         "properties": { "cmd": { "type": "string" } },
         "required": ["cmd"]
-      }
+      },
+      "kindSource": "none"
     }
   ]
 }
@@ -126,6 +127,15 @@ Omit `--compact` for full JSON Schema detail on arguments and data output specs.
 - `dataOutputSpecs` - Output spec names (compact) or full specs (full mode), at
   type level
 - `methods` - Available operations with their per-method `arguments` schemas
+- `methods[].kind` - `create`, `read`, `update`, `delete`, `list` or `action`;
+  absent when no kind resolves
+- `methods[].kindSource` - `declared` (set by the type author), `inferred` (from
+  the method name alone, e.g. `get` → `read`) or `none`
+
+`kind` is the type author's claim and is not enforced. swamp treats every kind
+except `read` and `list`, including no kind, as mutating; a permission hook
+should auto-allow only `read` and `list` and ask for everything else. The same
+fields appear on `methods` in `swamp behavior get --json`.
 
 ## Create Definitions
 

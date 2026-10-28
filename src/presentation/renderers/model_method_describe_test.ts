@@ -33,6 +33,7 @@ const testData = {
     name: "run",
     description: "Run the command",
     arguments: { type: "object", properties: {}, required: [] },
+    kindSource: "none" as const,
   },
 };
 

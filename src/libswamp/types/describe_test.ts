@@ -112,6 +112,52 @@ Deno.test("typeDescribe yields resolving then completed on happy path", async ()
   assertEquals(completed.data.methods[0].name, "start");
 });
 
+Deno.test("typeDescribe reports each method's kind and where it came from", async () => {
+  const modelDef: ModelDefinition = {
+    type: makeModelType(),
+    version: "2026.01.01.1",
+    methods: {
+      probe: {
+        description: "Probe the resource",
+        kind: "read",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+      delete: {
+        description: "Delete the resource",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+      sync: {
+        description: "Sync the resource",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  };
+  const events = await collect<TypeDescribeEvent>(
+    typeDescribe(
+      createLibSwampContext(),
+      makeDeps({ resolveModelType: () => Promise.resolve(modelDef) }),
+      makeModelType(),
+    ),
+  );
+
+  const completed = events[1] as Extract<
+    TypeDescribeEvent,
+    { kind: "completed" }
+  >;
+  const byName = Object.fromEntries(
+    completed.data.methods.map((m) => [m.name, m]),
+  );
+  assertEquals(byName.probe.kind, "read");
+  assertEquals(byName.probe.kindSource, "declared");
+  assertEquals(byName.delete.kind, "delete");
+  assertEquals(byName.delete.kindSource, "inferred");
+  assertEquals("kind" in byName.sync, false);
+  assertEquals(byName.sync.kindSource, "none");
+});
+
 Deno.test("typeDescribe yields error with not_found when type not found", async () => {
   const deps = makeDeps({
     resolveModelType: () => Promise.resolve(undefined),
@@ -179,6 +225,7 @@ Deno.test("typeDescribe: dataOutputSpecs are at type level, not per-method", asy
     assertEquals(Object.keys(method).sort(), [
       "arguments",
       "description",
+      "kindSource",
       "name",
     ]);
   }

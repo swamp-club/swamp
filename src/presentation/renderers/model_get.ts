@@ -87,13 +87,27 @@ export function formatSchemaAttributes(
 }
 
 /**
+ * Formats a method's kind as a dimmed suffix, e.g. ` (read)` or
+ * ` (read, inferred)`; empty when the method has no kind.
+ */
+export function formatMethodKind(method: MethodDescribeData): string {
+  if (!method.kind) return "";
+  const label = method.kindSource === "inferred"
+    ? `${method.kind}, inferred`
+    : method.kind;
+  return ` ${dim(`(${label})`)}`;
+}
+
+/**
  * Formats method descriptions as human-readable lines.
  */
 export function formatMethodLines(methods: MethodDescribeData[]): string[] {
   const lines: string[] = [];
   for (const method of methods) {
     lines.push(
-      `  ${bold(cyan(method.name))} ${dim("-")} ${method.description}`,
+      `  ${bold(cyan(method.name))}${formatMethodKind(method)} ${
+        dim("-")
+      } ${method.description}`,
     );
 
     const methodAttrs = formatSchemaAttributes(

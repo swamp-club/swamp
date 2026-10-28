@@ -50,6 +50,7 @@ const testData: TypeDescribeData = {
         },
         required: ["message"],
       },
+      kindSource: "none" as const,
     },
   ],
 };
@@ -88,6 +89,7 @@ const testDataWithSpecs: TypeDescribeData = {
         },
         required: ["cidrBlock"],
       },
+      kindSource: "none" as const,
     },
   ],
 };
