@@ -17,14 +17,22 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { AsyncLocalStorage } from "node:async_hooks";
+import {
+  currentDiagnosticArea,
+  currentDiagnosticTally,
+  type DiagnosticArea,
+  PhaseTally,
+  withDiagnosticTally,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
+import { runOutsideAmbientContext } from "../runtime/ambient_context.ts";
 
 /** A shared scan's result, and whether this caller joined another's scan. */
 export interface SharedScanOutcome<T> {
   value: T;
   /**
-   * True when another caller started the scan: its work, and the
-   * diagnostic counters it records, belong to that caller's context.
+   * True when the scan's diagnostic counters were reported to another
+   * caller on it: the one that started it, or the earliest still waiting
+   * if that one left.
    */
   joined: boolean;
 }
@@ -38,7 +46,8 @@ export type SharedScanWork<W, T> = (
 interface Waiter<T> {
   resolve: (outcome: SharedScanOutcome<T>) => void;
   reject: (reason: unknown) => void;
-  joined: boolean;
+  /** The caller's phase tally, which the scan's counts may be reported to. */
+  report: PhaseTally;
   signal?: AbortSignal;
   onAbort?: () => void;
 }
@@ -48,8 +57,10 @@ interface Flight<W, T> {
   readonly work: SharedScanWork<W, T>;
   readonly waiters: Set<Waiter<T>>;
   readonly controller: AbortController;
-  /** Runs a function in the async context of the caller that created it. */
-  readonly inCreatorContext: <R>(fn: () => R) => R;
+  /** The creator's diagnostic area, which the work counts in. */
+  readonly area: DiagnosticArea | undefined;
+  /** What the work counts, reported to one caller as the flight ends. */
+  readonly tally: PhaseTally;
 }
 
 interface Slot<W, T> {
@@ -75,6 +86,13 @@ interface Slot<W, T> {
  * itself is aborted only once every caller on it has left, and a pending
  * flight every caller left never starts. A failed flight rejects every
  * caller on it, and the next call starts a fresh one.
+ *
+ * The work runs outside every caller's async context, so no caller's
+ * ambient authority (vault scope, unit of work, held locks, trace frames)
+ * reaches what the others are given. It counts into a tally of its own in
+ * the creator's diagnostic area, and its counts are reported to exactly
+ * one caller's phase: the earliest still on it when it settles, or the
+ * last to leave a running flight, which takes what the work reached.
  */
 export class SharedScans<W, T> {
   private readonly slots = new Map<string, Slot<W, T>>();
@@ -99,14 +117,15 @@ export class SharedScans<W, T> {
       this.slots.set(key, slot);
     }
     let flight = slot.pending;
-    const joined = flight !== undefined;
     if (flight === undefined) {
+      const area = currentDiagnosticArea();
       flight = {
         window,
         work,
         waiters: new Set(),
         controller: new AbortController(),
-        inCreatorContext: AsyncLocalStorage.snapshot(),
+        area,
+        tally: new PhaseTally(area !== undefined),
       };
       slot.pending = flight;
       if (slot.running === undefined) this.scheduleStart(key, slot);
@@ -116,27 +135,39 @@ export class SharedScans<W, T> {
     const pending = flight;
     const owner = slot;
     return new Promise((resolve, reject) => {
-      const waiter: Waiter<T> = { resolve, reject, joined, signal };
+      const waiter: Waiter<T> = {
+        resolve,
+        reject,
+        report: currentDiagnosticTally(),
+        signal,
+      };
       pending.waiters.add(waiter);
       if (signal !== undefined) {
         waiter.onAbort = () => {
           pending.waiters.delete(waiter);
-          reject(signal.reason);
-          if (pending.waiters.size > 0) return;
-          if (owner.pending === pending) {
-            // Never started: drop it, so it never reads.
-            owner.pending = undefined;
-            this.releaseIfIdle(key, owner);
-          } else {
-            pending.controller.abort(signal.reason);
+          if (pending.waiters.size === 0) {
+            if (owner.pending === pending) {
+              // Never started: drop it, so it never reads.
+              owner.pending = undefined;
+              this.releaseIfIdle(key, owner);
+            } else {
+              // The last to leave takes what the work reached, before its
+              // phase ends with this rejection.
+              waiter.report.merge(pending.tally);
+              pending.controller.abort(signal.reason);
+            }
           }
+          reject(signal.reason);
         };
         signal.addEventListener("abort", waiter.onAbort, { once: true });
       }
     });
   }
 
-  /** Whether any flight, running or pending, is held for `key`. */
+  /**
+   * Whether any flight, running or pending, is held for `key`. For tests:
+   * a key no flight holds any more must be released.
+   */
   has(key: string): boolean {
     return this.slots.has(key);
   }
@@ -152,6 +183,8 @@ export class SharedScans<W, T> {
       if (flight === undefined || slot.running !== undefined) return;
       slot.pending = undefined;
       slot.running = flight;
+      // Not awaited, and safe to leave: fly never rejects, and every caller
+      // on the flight awaits its own promise, which fly settles.
       void this.fly(key, slot, flight);
     });
   }
@@ -169,12 +202,15 @@ export class SharedScans<W, T> {
     try {
       // Inside an async function, so work that throws before returning a
       // promise rejects this flight like any other failure.
-      const value = await flight.inCreatorContext(async () =>
-        await flight.work(flight.window, flight.controller.signal)
-      );
-      for (const waiter of this.leave(flight)) {
-        waiter.resolve({ value, joined: waiter.joined });
-      }
+      const value = await runOutsideAmbientContext(async () => {
+        const work = () => flight.work(flight.window, flight.controller.signal);
+        return await (flight.area === undefined
+          ? work()
+          : withDiagnosticTally(flight.area, flight.tally, work));
+      });
+      const [reporter, ...others] = this.leave(flight);
+      reporter?.resolve({ value, joined: false });
+      for (const waiter of others) waiter.resolve({ value, joined: true });
     } catch (error) {
       for (const waiter of this.leave(flight)) waiter.reject(error);
     } finally {
@@ -184,10 +220,14 @@ export class SharedScans<W, T> {
     }
   }
 
-  /** `flight`'s callers, each detached from its signal, as it settles. */
+  /**
+   * `flight`'s callers, earliest first, each detached from its signal, as it
+   * settles. The work's counts are reported to the earliest.
+   */
   private leave(flight: Flight<W, T>): Waiter<T>[] {
     const waiters = [...flight.waiters];
     flight.waiters.clear();
+    waiters[0]?.report.merge(flight.tally);
     for (const waiter of waiters) {
       if (waiter.onAbort !== undefined) {
         waiter.signal?.removeEventListener("abort", waiter.onAbort);

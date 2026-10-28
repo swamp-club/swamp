@@ -189,14 +189,15 @@ function parseOutputFileName(
  * its turns added up. The bound is shared, not per scan, because concurrent
  * requests for different scans each scan: 16 per scan ran a serve under a low
  * hard open-file limit out of descriptors. Identical requests share one scan
- * (swamp-club#4074), so the bound caps descriptors and sharing caps memory. Lookups that open one file at a time (findById,
- * findByIds and the like) do not take a permit, so the process holds at most
- * 16 scan descriptors plus one or two per such lookup, beside the definition
- * index's 32. Every repository in the process shares the permits, so scans of
- * a slow filesystem can delay scans of another. A scan given an AbortSignal
- * (a serve request's) stops waiting for permits once it aborts, starts no
- * further listing or read, and gives back each permit it holds as that
- * listing or read settles (swamp-club#4070).
+ * (swamp-club#4074), so the bound caps descriptors and sharing caps memory.
+ * Lookups that open one file at a time (findById, findByIds and the like) do
+ * not take a permit, so the process holds at most 16 scan descriptors plus
+ * one or two per such lookup, beside the definition index's 32. Every
+ * repository in the process shares the permits, so scans of a slow
+ * filesystem can delay scans of another. A scan given an AbortSignal (a serve
+ * request's) stops waiting for permits once it aborts, starts no further
+ * listing or read, and gives back each permit it holds as that listing or
+ * read settles (swamp-club#4070).
  *
  * A listing holds its permit for its whole `Deno.readDir` iteration, and its
  * directory stays open throughout, so the permit cannot be given back
@@ -555,8 +556,9 @@ export class YamlOutputRepository implements OutputRepository {
    * a search joins one that has not started yet, widening its window to
    * cover its own, and keeps only its own window of what it reads. The
    * outputs are shared with those searches, so callers must not mutate
-   * them. A search that joined another's counts `scans_joined`; the reads
-   * are counted by the search that started the scan.
+   * them. One search on a scan counts its reads (the one that started it,
+   * or the earliest still waiting if that one left); the others count
+   * `scans_joined`.
    *
    * Once `signal` aborts, the search rejects with its reason, and a scan no
    * other search waits on starts no further listing or read

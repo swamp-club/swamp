@@ -20,6 +20,16 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
+import {
+  currentDiagnosticTally,
+  observeDiagnosticPhase,
+  withDiagnosticArea,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
+import {
+  diagnosticPhases,
+  type ReadableSpan,
+  withObservedSpans,
+} from "../tracing/span_test_helpers.ts";
 import { SharedScans } from "./shared_scans.ts";
 
 /** One call of a {@link gatedScans} scan, settled when the test says. */
@@ -261,7 +271,7 @@ Deno.test("SharedScans.run: a settled caller's abort listener is removed", async
   assertEquals(listeners, 0);
 });
 
-Deno.test("SharedScans.run: the scan runs in the async context of the caller that created it", async () => {
+Deno.test("SharedScans.run: the scan runs outside every caller's async context", async () => {
   const context = new AsyncLocalStorage<string>();
   const scans = new SharedScans<number, string>(earliest);
   const seen: (string | undefined)[] = [];
@@ -269,6 +279,7 @@ Deno.test("SharedScans.run: the scan runs in the async context of the caller tha
   const work = async () => {
     seen.push(context.getStore());
     await gate.promise;
+    seen.push(context.getStore());
     return "read";
   };
   const running = context.run("first", () => scans.run("key", 1, work));
@@ -278,5 +289,123 @@ Deno.test("SharedScans.run: the scan runs in the async context of the caller tha
   const joiner = context.run("third", () => scans.run("key", 1, work));
   gate.resolve();
   await Promise.all([running, creator, joiner]);
-  assertEquals(seen, ["first", "second"]);
+  assertEquals(seen, [undefined, undefined, undefined, undefined]);
+});
+
+/**
+ * Runs `fn` with `calls` phases of the output_search area open at once,
+ * each handed its index, and returns each phase's exported attributes.
+ */
+async function inPhases(
+  calls: number,
+  fn: (index: number) => Promise<unknown>,
+): Promise<ReadableSpan["attributes"][]> {
+  let attributes: ReadableSpan["attributes"][] = [];
+  await withObservedSpans(async (spans) => {
+    await withDiagnosticArea(
+      "output_search",
+      () =>
+        Promise.allSettled(
+          Array.from({ length: calls }, (_, index) =>
+            observeDiagnosticPhase(
+              "candidate_scan",
+              { "swamp.diagnostic.result": String(index) },
+              () => fn(index),
+            )),
+        ),
+    );
+    attributes = diagnosticPhases(spans, "candidate_scan")
+      .sort((a, b) =>
+        Number(a.attributes["swamp.diagnostic.result"]) -
+        Number(b.attributes["swamp.diagnostic.result"])
+      )
+      .map((span) => span.attributes);
+  });
+  return attributes;
+}
+
+/** A scan that counts `reads` reads into the current phase once released. */
+function countingWork(gate: Promise<void>, reads: number) {
+  return async () => {
+    currentDiagnosticTally().add("files_read", reads);
+    await gate;
+    return "read";
+  };
+}
+
+Deno.test("SharedScans.run: the scan's counts are reported to the caller that started it, and the others are joined", async () => {
+  const scans = new SharedScans<number, string>(earliest);
+  const work = countingWork(Promise.resolve(), 4);
+  const joined: boolean[] = [];
+  const phases = await inPhases(3, async () => {
+    joined.push((await scans.run("key", 1, work)).joined);
+  });
+  assertEquals(joined, [false, true, true]);
+  assertEquals(phases.map((p) => p["swamp.diagnostic.files_read"]), [
+    4,
+    undefined,
+    undefined,
+  ]);
+});
+
+Deno.test("SharedScans.run: when the caller that started the scan leaves, its counts go to the earliest still waiting", async () => {
+  const scans = new SharedScans<number, string>(earliest);
+  const gate = Promise.withResolvers<void>();
+  const work = countingWork(gate.promise, 4);
+  const controller = new AbortController();
+  const joined: (boolean | undefined)[] = [undefined, undefined, undefined];
+  const phases = await inPhases(3, async (index) => {
+    const result = scans.run(
+      "key",
+      1,
+      work,
+      index === 0 ? controller.signal : undefined,
+    );
+    if (index === 2) {
+      await flightsStarted();
+      controller.abort(new Error("cancelled"));
+      gate.resolve();
+    }
+    joined[index] = (await result).joined;
+  });
+  assertEquals(joined, [undefined, false, true]);
+  assertEquals(phases.map((p) => p["swamp.diagnostic.files_read"]), [
+    undefined,
+    4,
+    undefined,
+  ]);
+});
+
+Deno.test("SharedScans.run: the last caller to leave a running scan takes what it counted", async () => {
+  const scans = new SharedScans<number, string>(earliest);
+  const work = countingWork(new Promise<void>(() => {}), 4);
+  const controllers = [new AbortController(), new AbortController()];
+  const phases = await inPhases(2, async (index) => {
+    const result = scans.run("key", 1, work, controllers[index].signal);
+    if (index === 1) {
+      await flightsStarted();
+      for (const controller of controllers) {
+        controller.abort(new Error("cancelled"));
+      }
+    }
+    await result;
+  });
+  assertEquals(phases.map((p) => p["swamp.diagnostic.files_read"]), [
+    undefined,
+    4,
+  ]);
+});
+
+Deno.test("SharedScans.run: a failed scan's counts are reported to the earliest caller on it", async () => {
+  const scans = new SharedScans<number, string>(earliest);
+  const work = async () => {
+    currentDiagnosticTally().add("files_read", 2);
+    await Promise.resolve();
+    throw new Error("listing failed");
+  };
+  const phases = await inPhases(2, () => scans.run("key", 1, work));
+  assertEquals(phases.map((p) => p["swamp.diagnostic.files_read"]), [
+    2,
+    undefined,
+  ]);
 });

@@ -3754,7 +3754,7 @@ Deno.test(
         await repo.save(
           registeredType,
           "run",
-          historyOutput(definitionId, new Date()),
+          historyOutput(definitionId, new Date(Date.now() + 1000)),
         );
         const later = [
           repo.findHistoryByDefinition(registeredType, definitionId),
@@ -3788,7 +3788,7 @@ Deno.test(
       await repo.save(
         registeredType,
         "run",
-        historyOutput(definitionId, new Date()),
+        historyOutput(definitionId, new Date(Date.now() + 1000)),
       );
       assertEquals(
         (await repo.findHistoryByDefinition(registeredType, definitionId))
@@ -3948,6 +3948,72 @@ Deno.test(
         await waitFor(() => reads.inFlight === 0, "the held reads to settle");
         assertEquals(reads.started, startedAtAbort);
         await assertScanPermitsFree(reads);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findHistoryByDefinition: when the search that started a shared scan is cancelled, a search still on it counts the reads (swamp-club#4074)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      await saveHistory(repo, definitionId, 3);
+
+      await withHeldReads(async (reads) => {
+        await withObservedSpans(async (spans) => {
+          reads.hold();
+          const controller = new AbortController();
+          const reason = new DOMException("request cancelled", "AbortError");
+          const searches = withDiagnosticArea(
+            "output_search",
+            () =>
+              Promise.allSettled([
+                observeDiagnosticPhase(
+                  "candidate_scan",
+                  { "swamp.diagnostic.result": "cancelled" },
+                  () =>
+                    repo.findHistoryByDefinition(
+                      registeredType,
+                      definitionId,
+                      undefined,
+                      controller.signal,
+                    ),
+                ),
+                observeDiagnosticPhase(
+                  "candidate_scan",
+                  { "swamp.diagnostic.result": "kept" },
+                  () =>
+                    repo.findHistoryByDefinition(registeredType, definitionId),
+                ),
+              ]),
+          );
+          await waitFor(() => reads.inFlight === 3, "the shared scan's reads");
+          controller.abort(reason);
+          reads.release();
+          const [cancelled, kept] = await searches;
+          assertEquals(cancelled.status, "rejected");
+          assertEquals(
+            kept.status === "fulfilled" ? kept.value.length : -1,
+            3,
+          );
+
+          const scans = diagnosticPhases(spans, "candidate_scan");
+          const phase = (result: string) =>
+            scans.find((span) =>
+              span.attributes["swamp.diagnostic.result"] === result
+            )!.attributes;
+          assertEquals(phase("kept")["swamp.diagnostic.files_read"], 3);
+          assertEquals(
+            phase("kept")["swamp.diagnostic.scans_joined"],
+            undefined,
+          );
+          assertEquals(
+            phase("cancelled")["swamp.diagnostic.files_read"],
+            undefined,
+          );
+        });
       });
     });
   },
