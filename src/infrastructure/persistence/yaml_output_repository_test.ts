@@ -33,6 +33,9 @@ import { assertPathStringIncludes } from "./path_test_helpers.ts";
 import { ensureDir } from "@std/fs";
 import { basename, dirname, join, SEPARATOR } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { waitFor } from "@swamp-club/swamp-testing";
+import { initializeLogging } from "../logging/logger.ts";
 import {
   createModelOutputId,
   type ExecutionProvenance,
@@ -3245,6 +3248,298 @@ Deno.test(
       // on timing (192 were open at once with a bound per scan).
       assert(peak <= 16, `${peak} open at once`);
       assert(peak > 1, `${peak} open at once`);
+    });
+  },
+);
+
+/** Saves `count` outputs of `definitionId`, a millisecond apart. */
+async function saveHistory(
+  repo: YamlOutputRepository,
+  definitionId: DefinitionId,
+  count: number,
+): Promise<void> {
+  const now = Date.now();
+  for (let i = 0; i < count; i++) {
+    await repo.save(
+      registeredType,
+      "run",
+      historyOutput(definitionId, new Date(now - i)),
+    );
+  }
+}
+
+/** Reads of `Deno.readTextFile` that {@link withHeldReads} controls. */
+interface HeldReads {
+  /** Reads started so far, held or not. */
+  readonly started: number;
+  /** Reads started and not yet settled. */
+  readonly inFlight: number;
+  /** Reads started so far of a file under `dir`. */
+  startedUnder(dir: string): number;
+  /** Holds every read started from now on until the next release. */
+  hold(): void;
+  /** Settles every held read, and lets reads started after it through. */
+  release(): void;
+}
+
+/**
+ * Runs `fn` with `Deno.readTextFile` replaced by one that holds reads open
+ * while told to, so a test decides which scans hold the shared scan permits
+ * (swamp-club#4070). Reads pass through until `hold`. Every held read is
+ * released, and the original restored, however `fn` ends, so no permit
+ * outlives the test.
+ */
+async function withHeldReads<T>(
+  fn: (reads: HeldReads) => Promise<T>,
+): Promise<T> {
+  const readTextFile = Deno.readTextFile;
+  let holding = false;
+  let gate = Promise.withResolvers<void>();
+  const paths: string[] = [];
+  let inFlight = 0;
+  const reads: HeldReads = {
+    get started() {
+      return paths.length;
+    },
+    get inFlight() {
+      return inFlight;
+    },
+    startedUnder: (dir) =>
+      paths.filter((path) => path.startsWith(dir + SEPARATOR)).length,
+    hold: () => {
+      holding = true;
+      gate = Promise.withResolvers<void>();
+    },
+    release: () => {
+      holding = false;
+      gate.resolve();
+    },
+  };
+  (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile = async (
+    path,
+    options,
+  ) => {
+    paths.push(String(path));
+    inFlight++;
+    try {
+      if (holding) await gate.promise;
+      return await readTextFile(path, options);
+    } finally {
+      inFlight--;
+    }
+  };
+  try {
+    return await fn(reads);
+  } finally {
+    reads.release();
+    (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile =
+      readTextFile;
+  }
+}
+
+/**
+ * Asserts every shared scan permit is free: a scan of 16 records gets all 16
+ * of its reads in flight at once. A permit a scan kept would leave it at 15.
+ */
+async function assertScanPermitsFree(reads: HeldReads): Promise<void> {
+  await withTempDir(async (dir) => {
+    const repo = new YamlOutputRepository(dir);
+    const definitionId = createDefinitionId(crypto.randomUUID());
+    await saveHistory(repo, definitionId, 16);
+    reads.hold();
+    const scan = repo.findHistoryByDefinition(registeredType, definitionId);
+    let found: ModelOutput[];
+    try {
+      await waitFor(() => reads.inFlight === 16, "16 reads in flight");
+    } finally {
+      reads.release();
+      found = await scan;
+    }
+    assertEquals(found.length, 16);
+  });
+}
+
+/** Runs `fn` and returns the warnings the output repository logged. */
+async function captureOutputRepoWarnings(
+  fn: () => Promise<void>,
+): Promise<string[]> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["output-repo"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await reset();
+    await initializeLogging({});
+  }
+  return records.map((record) => record.message.map(String).join(""));
+}
+
+Deno.test(
+  "findHistoryByDefinition: a scan aborted while it waits for a permit rejects with the reason and reads nothing, and the scan queued behind it gets its permits",
+  async () => {
+    await withTempDir(async (dir) => {
+      const holder = new YamlOutputRepository(join(dir, "holder"));
+      const aborted = new YamlOutputRepository(join(dir, "aborted"));
+      const behind = new YamlOutputRepository(join(dir, "behind"));
+      const holderId = createDefinitionId(crypto.randomUUID());
+      const abortedId = createDefinitionId(crypto.randomUUID());
+      const behindId = createDefinitionId(crypto.randomUUID());
+      await saveHistory(holder, holderId, 16);
+      await saveHistory(aborted, abortedId, 3);
+      await saveHistory(behind, behindId, 3);
+
+      await withHeldReads(async (reads) => {
+        reads.hold();
+        const holding = holder.findHistoryByDefinition(
+          registeredType,
+          holderId,
+        );
+        await waitFor(() => reads.inFlight === 16, "the holder's 16 reads");
+
+        const controller = new AbortController();
+        const reason = new DOMException("request cancelled", "AbortError");
+        // Each joins the permit queue before its call returns: the history
+        // scan asks for its first listing's permit without awaiting first.
+        const abortedScan = aborted.findHistoryByDefinition(
+          registeredType,
+          abortedId,
+          undefined,
+          controller.signal,
+        );
+        const behindScan = behind.findHistoryByDefinition(
+          registeredType,
+          behindId,
+        );
+        let settled = false;
+        const abortedOutcome = assertRejects(() => abortedScan).finally(() => {
+          settled = true;
+        });
+        controller.abort(reason);
+        // While every permit is still held: a scan that stayed in the queue
+        // would only settle once one is released.
+        await waitFor(() => settled, "the aborted scan to reject");
+        assertEquals(await abortedOutcome, reason);
+
+        reads.release();
+        assertEquals((await holding).length, 16);
+        assertEquals((await behindScan).length, 3);
+        assertEquals(reads.startedUnder(join(dir, "aborted")), 0);
+        await assertScanPermitsFree(reads);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: a scan aborted while it holds permits gives them back, starts no read after the abort, and logs no unreadable record",
+  async () => {
+    await withTempDir(async (dir) => {
+      const holder = new YamlOutputRepository(join(dir, "holder"));
+      const scanned = new YamlOutputRepository(join(dir, "scanned"));
+      const holderId = createDefinitionId(crypto.randomUUID());
+      await saveHistory(holder, holderId, 8);
+      await saveHistory(
+        scanned,
+        createDefinitionId(crypto.randomUUID()),
+        20,
+      );
+
+      await withHeldReads(async (reads) => {
+        const warnings = await captureOutputRepoWarnings(async () => {
+          reads.hold();
+          const holding = holder.findHistoryByDefinition(
+            registeredType,
+            holderId,
+          );
+          await waitFor(() => reads.inFlight === 8, "the holder's 8 reads");
+
+          const controller = new AbortController();
+          const reason = new DOMException("request cancelled", "AbortError");
+          const scan = scanned.findAllGlobalSince(
+            new Date(Date.now() - HOUR_MS),
+            controller.signal,
+          );
+          // Eight of its reads hold the other permits; the rest of its
+          // reads wait for one.
+          await waitFor(() => reads.inFlight === 16, "the scan's 8 reads");
+          const startedAtAbort = reads.started;
+          controller.abort(reason);
+
+          reads.release();
+          assertEquals(await assertRejects(() => scan), reason);
+          assertEquals((await holding).length, 8);
+          assertEquals(reads.started, startedAtAbort);
+          assertEquals(reads.inFlight, 0);
+        });
+        assertEquals(
+          warnings.filter((warning) =>
+            warning.includes("Skipping unreadable output record")
+          ),
+          [],
+        );
+        await assertScanPermitsFree(reads);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findHistoryByDefinition: a scan aborted after it took a free permit, before it used it, gives the permit back",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      await saveHistory(repo, definitionId, 3);
+
+      await withHeldReads(async (reads) => {
+        const controller = new AbortController();
+        const reason = new DOMException("request cancelled", "AbortError");
+        // The scan takes a free permit for its first listing before this
+        // call returns, and the abort lands before that permit is used.
+        const scan = repo.findHistoryByDefinition(
+          registeredType,
+          definitionId,
+          undefined,
+          controller.signal,
+        );
+        controller.abort(reason);
+        assertEquals(await assertRejects(() => scan), reason);
+        assertEquals(reads.started, 0);
+        await assertScanPermitsFree(reads);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobal: a cancelled scan rejects with the reason and reads nothing",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      await saveHistory(repo, createDefinitionId(crypto.randomUUID()), 3);
+
+      await withHeldReads(async (reads) => {
+        const controller = new AbortController();
+        const reason = new DOMException("request cancelled", "AbortError");
+        controller.abort(reason);
+        assertEquals(
+          await assertRejects(() => repo.findAllGlobal(controller.signal)),
+          reason,
+        );
+        assertEquals(reads.started, 0);
+        await assertScanPermitsFree(reads);
+      });
     });
   },
 );
