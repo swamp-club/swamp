@@ -352,13 +352,14 @@ export interface InMemoryRemoteOpRecord {
   instance: string;
   op:
     | "markDirty"
+    | "clearDirty"
     | "push"
     | "pull"
     | "prepare"
     | "commit"
     | "fetch"
     | "controlPlane";
-  /** Paths marked, uploaded, downloaded or fetched, sorted. */
+  /** Paths marked, cleared, uploaded, downloaded or fetched, sorted. */
   paths: string[];
   /** Paths deleted remotely (push) or locally (pull), sorted. */
   deleted: string[];
@@ -403,6 +404,12 @@ export interface ConnectOptions {
    * method out, as an extension that does not implement it would.
    */
   fetchContent?: boolean;
+  /**
+   * Whether the service has `clearDirty`. Default true; false leaves the
+   * method out, as the S3 and GCS extensions do until they implement it
+   * (swamp-club#4091).
+   */
+  clearDirty?: boolean;
 }
 
 /** A remote datastore shared by any number of simulated machines. */
@@ -1460,6 +1467,28 @@ export function createInMemoryRemote(
       return Promise.resolve();
     }
 
+    // Models the `clearDirty` contract (swamp-club#4091), which no released
+    // extension implements yet. Synchronous, so every mark it sees was made
+    // before the call (contract rule 2).
+    function clearDirty(relPaths: readonly string[]): Promise<void> {
+      record({
+        instance,
+        op: "clearDirty",
+        paths: [...relPaths].sort(),
+        deleted: [],
+      });
+      const sidecar = loadSidecar();
+      if (sidecar === undefined) return Promise.resolve();
+      for (const relPath of relPaths) {
+        const rel = toCacheRelative(relPath);
+        if (rel === undefined) continue;
+        sidecar.dirtyPaths.delete(rel);
+        sidecar.pathGens.delete(rel);
+      }
+      sidecar.localDirty = sidecar.bulk || sidecar.dirtyPaths.size > 0;
+      return Promise.resolve();
+    }
+
     function fetchContent(
       relPath: string,
       _options?: DatastoreSyncOptions,
@@ -1573,6 +1602,7 @@ export function createInMemoryRemote(
       commitPush,
       capabilities: () => ({ ...capabilities }),
       ...(connectOptions?.fetchContent === false ? {} : { fetchContent }),
+      ...(connectOptions?.clearDirty === false ? {} : { clearDirty }),
       ...(controlPlane ? { controlPlaneStore } : {}),
     };
   }

@@ -112,10 +112,23 @@ export class V3RestoreError extends UserError {
 }
 
 /**
+ * A restore whose download finished and whose database swamp then refused:
+ * the storage answered, so the failure says nothing about reaching it, and
+ * no listing follows it to call the replica unreachable (swamp-club#4092).
+ */
+export class V3RestoredDatabaseRefusedError extends V3RestoreError {
+  constructor(message: string) {
+    super(message);
+    this.name = "V3RestoredDatabaseRefusedError";
+  }
+}
+
+/**
  * A restored database that failed SQLite's integrity check: the lineage
  * cannot be restored, unlike a restore that could not run (swamp-club#3935).
  */
-export class V3RestoredDatabaseCorruptError extends V3RestoreError {
+export class V3RestoredDatabaseCorruptError
+  extends V3RestoredDatabaseRefusedError {
   constructor(message: string) {
     super(message);
     this.name = "V3RestoredDatabaseCorruptError";
@@ -425,7 +438,7 @@ function checkDatabase(path: string): void {
       user_version: number;
     }).user_version;
     if (version > COMMIT_STORE_SCHEMA_VERSION) {
-      throw new V3RestoreError(
+      throw new V3RestoredDatabaseRefusedError(
         `the restored database has schema version ${version}, newer than ` +
           `this swamp reads (${COMMIT_STORE_SCHEMA_VERSION}); upgrade swamp`,
       );
@@ -446,7 +459,7 @@ async function truncateToMark(
     const outcome = store.checkMark(head.mark);
     if (outcome === "compacted-past") {
       throw markErrorPaths(
-        new V3RestoreError(
+        new V3RestoredDatabaseRefusedError(
           `lineage ${padFence(head.fence)} holds commits past the last one ` +
             `its writer acknowledged (cursor ${head.mark.cursor}), and they ` +
             `were compacted, so they cannot be removed. A writer kept ` +
@@ -460,7 +473,7 @@ async function truncateToMark(
     }
     if (outcome === "mismatch") {
       throw markErrorPaths(
-        new V3RestoreError(
+        new V3RestoredDatabaseRefusedError(
           `the restored database does not hold the commit lineage ` +
             `${
               padFence(head.fence)

@@ -1754,3 +1754,69 @@ Deno.test("createInMemoryRemote: storage is present only with the storage option
   assertEquals(remote.files().size, 0);
   assertEquals(remote.ops().length, 0);
 });
+
+Deno.test("createInMemoryRemote: clearDirty drops exact marks, so a marked directory no longer deletes the peer's files the cache lacks (swamp-club#4091)", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, b, aCache, bCache } = await twoMachines(dir);
+    await write(aCache, "data/x/1/raw", "a1");
+    await a.markDirty({ relPath: "data/x" });
+    await a.markDirty({ relPath: "data/x/1" });
+    await a.markDirty({ relPath: "data/y" });
+    await write(bCache, "data/x/2/raw", "b2");
+    await b.markDirty({ relPath: "data/x/2" });
+    await b.pushChanged();
+    assertEquals((await remote.pendingPush(aCache)).deletes, ["data/x/2/raw"]);
+
+    await a.clearDirty!(["data/x", "data/x/1", "data/never"]);
+    const pending = await remote.pendingPush(aCache);
+    assertEquals(pending.marked, ["data/y"]);
+    assertEquals(pending.deletes, []);
+    assertEquals(remote.ops().at(-1), {
+      instance: "a",
+      op: "clearDirty",
+      paths: ["data/never", "data/x", "data/x/1"],
+      deleted: [],
+    });
+    await a.pushChanged();
+    assertEquals(remoteText(remote, "data/x/2/raw"), "b2");
+  });
+});
+
+Deno.test("createInMemoryRemote: clearDirty keeps a parent's or child's mark, a mark made after it, and the bulk flag (swamp-club#4091)", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, aCache } = await twoMachines(dir);
+    await a.markDirty({ relPath: "data/x" });
+    await a.markDirty({ relPath: "data/x/1" });
+    await a.markDirty({ relPath: "data" });
+    await a.clearDirty!(["data/x"]);
+    assertEquals((await remote.pendingPush(aCache)).marked, [
+      "data",
+      "data/x/1",
+    ]);
+    await a.markDirty({ relPath: "data/x" });
+    assertEquals((await remote.pendingPush(aCache)).marked, [
+      "data",
+      "data/x",
+      "data/x/1",
+    ]);
+
+    await a.markDirty();
+    await a.clearDirty!(["data", "data/x", "data/x/1"]);
+    assertEquals((await remote.pendingPush(aCache)).bulk, true);
+  });
+});
+
+Deno.test("createInMemoryRemote: clearDirty on a cache with no marks is a no-op, and connect can leave it out (swamp-club#4091)", async () => {
+  await withTempDir(async (dir) => {
+    const remote = createInMemoryRemote();
+    const cache = join(dir, "c");
+    await Deno.mkdir(cache);
+    const service = remote.connect(cache);
+    await service.clearDirty!(["data/x"]);
+    assertEquals((await remote.pendingPush(cache)).marked, []);
+    assertEquals(
+      remote.connect(cache, { clearDirty: false }).clearDirty,
+      undefined,
+    );
+  });
+});

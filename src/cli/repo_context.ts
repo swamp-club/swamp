@@ -3168,6 +3168,17 @@ interface FetchedMarker {
  * marker that cannot be read is skipped, and a failed content restore or
  * directory sync is logged before the markers are written. Best effort:
  * the refusal stands whatever this does.
+ *
+ * The refused writes also left their paths marked, the data-name directory
+ * among them (a save marks it before it allocates a version). A push walks
+ * a marked directory and deletes every remote file under it the cache
+ * lacks, and uploads a marked file that differs: the new holder's other
+ * versions, and its `latest` marker (swamp-club#4091). So for each data
+ * name whose restore matched the datastore throughout (every read answered,
+ * every write and sync succeeded), the marks are then dropped with
+ * `clearDirty`: the refused version directories, the files restored or
+ * left removed, the latest marker and the data-name directory. A name with
+ * any failure keeps its marks.
  */
 async function discardRefusedVersions(
   refused: readonly WrittenVersion[],
@@ -3185,26 +3196,50 @@ async function discardRefusedVersions(
   const content = new Set<string>();
   // Each removed marker's cache path, and its data-name directory.
   const markers = new Map<string, string>();
+  // The data-name directory each refused path is under, and the paths whose
+  // marks are dropped once that name's restore matched the datastore.
+  const owner = new Map<string, string>();
+  const marked = new Map<string, Set<string>>();
+  const markedUnder = (nameDir: string, rel: string | undefined) => {
+    if (rel === undefined) return;
+    owner.set(rel, nameDir);
+    let rels = marked.get(nameDir);
+    if (rels === undefined) marked.set(nameDir, rels = new Set());
+    rels.add(rel);
+  };
+  // Data names whose restore did not match the datastore: they keep their
+  // marks.
+  const failed = new Set<string>();
+  const failOwnerOf = (rel: string) => {
+    const nameDir = owner.get(rel);
+    if (nameDir !== undefined) failed.add(nameDir);
+  };
+  let discarded = true;
   try {
     await runInRootUnitOfWork(repoContext, { flush: undefined }, async () => {
       for (const w of refused) {
         const type = ModelType.create(w.modelType);
         const versionDir = repo.getPath(type, w.modelId, w.dataName, w.version);
+        const nameDir = repo.getDataNameDir(type, w.modelId, w.dataName);
         try {
           for await (const entry of walk(versionDir, { includeDirs: false })) {
             const rel = cacheRelativePath(cachePath, entry.path);
             if (rel !== undefined) content.add(rel);
+            markedUnder(nameDir, rel);
           }
         } catch (error) {
           if (!(error instanceof Deno.errors.NotFound)) throw error;
         }
-        const nameDir = repo.getDataNameDir(type, w.modelId, w.dataName);
         const latestRel = cacheRelativePath(cachePath, join(nameDir, "latest"));
         if (latestRel !== undefined) markers.set(latestRel, nameDir);
+        markedUnder(nameDir, latestRel);
+        markedUnder(nameDir, cacheRelativePath(cachePath, versionDir));
+        markedUnder(nameDir, cacheRelativePath(cachePath, nameDir));
         await repo.delete(type, w.modelId, w.dataName, w.version);
       }
     });
   } catch (error) {
+    discarded = false;
     logger.debug`Discarding the refused data versions failed: ${error}`;
   }
   const fetchContent = syncService.fetchContent;
@@ -3229,11 +3264,17 @@ async function discardRefusedVersions(
     try {
       bytes = await fetchContent(rel, { namespace, signal });
     } catch (error) {
+      failed.add(nameDir);
       logger
         .debug`Restoring from the datastore after a refused push failed reading ${rel}: ${error}`;
       continue;
     }
-    if (bytes === null) continue;
+    if (bytes === null) {
+      // The datastore has no marker: a name that still has one here does
+      // not match it.
+      if (await exists(join(nameDir, "latest"))) failed.add(nameDir);
+      continue;
+    }
     const named = parseInt(new TextDecoder().decode(bytes).trim(), 10);
     const version = Number.isInteger(named) && named > 0 ? named : undefined;
     fetched.push({ rel, nameDir, bytes, version });
@@ -3241,7 +3282,11 @@ async function discardRefusedVersions(
     const dirRel = cacheRelativePath(cachePath, join(nameDir, String(version)));
     if (dirRel === undefined) continue;
     content.add(`${dirRel}/metadata.yaml`);
-    if (!restore.lazy) content.add(`${dirRel}/raw`);
+    owner.set(`${dirRel}/metadata.yaml`, nameDir);
+    if (!restore.lazy) {
+      content.add(`${dirRel}/raw`);
+      owner.set(`${dirRel}/raw`, nameDir);
+    }
   }
 
   const versionDirs = new Set<string>();
@@ -3252,6 +3297,7 @@ async function discardRefusedVersions(
       if (bytes === null) continue;
       versionDirs.add(dirname(await write(rel, bytes, false)));
     } catch (error) {
+      for (const left of pending.slice(i)) failOwnerOf(left);
       logger.debug`Restoring ${
         pending.length - i
       } file(s) from the datastore after a refused push failed at ${rel}: ${error}`;
@@ -3277,6 +3323,7 @@ async function discardRefusedVersions(
     try {
       for (const dir of ordered) await syncWrittenDirectory(dir, restore.sync);
     } catch (error) {
+      for (const nameDir of marked.keys()) failed.add(nameDir);
       logger
         .debug`Syncing the data restored after a refused push failed: ${error}`;
     }
@@ -3293,9 +3340,24 @@ async function discardRefusedVersions(
     try {
       await write(marker.rel, marker.bytes, true);
     } catch (error) {
+      failed.add(marker.nameDir);
       logger
         .debug`Restoring ${marker.rel} after a refused push failed: ${error}`;
     }
+  }
+
+  const clearDirty = syncService.clearDirty;
+  if (!clearDirty || !discarded) return;
+  const cleared: string[] = [];
+  for (const [nameDir, rels] of marked) {
+    if (!failed.has(nameDir)) cleared.push(...rels);
+  }
+  if (cleared.length === 0) return;
+  try {
+    await clearDirty.call(syncService, cleared);
+  } catch (error) {
+    logger
+      .debug`Clearing the marks a refused push left failed: ${error}`;
   }
 }
 
@@ -3737,7 +3799,10 @@ export async function acquireModelLocks(
     // upload them, over the other run's after a breakglass. Discard them
     // first, so that holds even when the datastore cannot be reached
     // (swamp-club#3485), then pull the lost models so the cache holds the
-    // datastore's copy. Best effort: the refusal stands whatever either does.
+    // datastore's copy. The discard also drops the marks the refused writes
+    // left, so a later push cannot delete or overwrite the other run's
+    // versions (swamp-club#4091). Best effort: the refusal stands whatever
+    // either does.
     if (customSyncService) {
       try {
         const repoContext = options?.repoContext;

@@ -26,7 +26,7 @@
 
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import { basename, dirname, join } from "@std/path";
+import { basename, dirname, join, relative, SEPARATOR } from "@std/path";
 import {
   createInMemoryRemote,
   type InMemoryRemote,
@@ -298,6 +298,8 @@ async function withClones(
     bSameProcess?: boolean;
     /** Clone A's sync service has no `fetchContent`. */
     noFetchA?: boolean;
+    /** Clone A's sync service has no `clearDirty`. */
+    noClearA?: boolean;
     /** Clone A's datastore block sets `durable: true`. */
     durableA?: boolean;
   } = {},
@@ -308,7 +310,10 @@ async function withClones(
   const locks = new LockTable();
   const typeA = registerTestDatastoreType(remote, {
     createLock: locks.lockFor(PROCESS_A.pid, options.blindA),
-    ...(options.noFetchA ? { connect: { fetchContent: false } } : {}),
+    connect: {
+      ...(options.noFetchA ? { fetchContent: false } : {}),
+      ...(options.noClearA ? { clearDirty: false } : {}),
+    },
   });
   const typeB = registerTestDatastoreType(remote, {
     createLock: locks.lockFor(
@@ -816,5 +821,141 @@ for (const twoPhaseSync of [true, false]) {
         "the datastore keeps the new holder's version 1",
       );
     }, { durableA: true });
+  });
+}
+
+/** The versions of data "x" the remote holds under the model, sorted. */
+function remoteVersions(remote: InMemoryRemote, modelId: string): number[] {
+  return [...remote.files().keys()]
+    .filter((key) =>
+      key.includes(modelId) && /\/x\/\d+\/metadata\.yaml$/.test(key)
+    )
+    .map((key) => Number(key.split("/").at(-2)))
+    .sort((p, q) => p - q);
+}
+
+/** The marks clone `repoDir` holds under data "x"'s directory. */
+async function marksUnderName(
+  remote: InMemoryRemote,
+  repoDir: string,
+  nameDir: string,
+): Promise<string[]> {
+  const cache = join(repoDir, ".test-cache");
+  const nameRel = relative(cache, nameDir).split(SEPARATOR).join("/");
+  const { marked } = await remote.pendingPush(cache);
+  return marked.filter((rel) =>
+    rel === nameRel || rel.startsWith(`${nameRel}/`)
+  );
+}
+
+// A refused push left its paths marked, the data-name directory among them
+// (a save marks it before allocating a version). A later push walked the
+// marked directory and deleted every version of the new holder's that the
+// cache lacked, and uploaded the stale latest marker over the holder's
+// (swamp-club#4091). The discard now clears those marks once its restore
+// matched the datastore. These pin the in-memory remote's scoped push,
+// which models swamp-extensions s3_cache_sync.ts collectPushWork: a marked
+// directory's remote entries the cache lacks are deleted, and a marked file
+// that differs is uploaded.
+for (const twoPhaseSync of [true, false]) {
+  for (const later of ["push", "pull then push"] as const) {
+    const sync = (
+      a: { pushUnlocked(): Promise<void>; syncUnlocked(): Promise<void> },
+    ) => later === "push" ? a.pushUnlocked() : a.syncUnlocked();
+
+    Deno.test(`acquireModelLocks: a refusal whose refresh pull fails keeps every version the other run wrote, and its latest marker, through a later ${later} (swamp-club#4091, twoPhaseSync=${twoPhaseSync})`, async () => {
+      await withClones(twoPhaseSync, async (c) => {
+        const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a"}');
+        try {
+          c.locks.breakglass(c.modelId);
+          const b = await lockAndSave(c.repoB, c.modelId, '{"by":"b1"}', {
+            more: ['{"by":"b2"}', '{"by":"b3"}'],
+          });
+          try {
+            await b.flush();
+          } finally {
+            await b.close();
+          }
+          c.remote.failNext("pull");
+          await assertRejects(() => a.flush(), ModelLockLostError);
+          assertEquals(
+            await marksUnderName(c.remote, c.repoA, await a.nameDir()),
+            [],
+          );
+          await sync(a);
+        } finally {
+          await a.close();
+        }
+        assertEquals(remoteVersions(c.remote, c.modelId), [1, 2, 3]);
+        assertEquals(remoteLatest(c.remote, c.modelId), ["3"]);
+      });
+    });
+
+    Deno.test(`acquireModelLocks: a version the other run pushes after the refusal survives a later ${later}, and the refused clone's next write is still pushed (swamp-club#4091, twoPhaseSync=${twoPhaseSync})`, async () => {
+      await withClones(twoPhaseSync, async (c) => {
+        const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a"}');
+        try {
+          c.locks.breakglass(c.modelId);
+          await saveAndPush(c.repoB, c.modelId, '{"by":"b1"}');
+          await assertRejects(() => a.flush(), ModelLockLostError);
+          assertEquals(await saveAndPush(c.repoB, c.modelId, '{"by":"b2"}'), 2);
+          await sync(a);
+        } finally {
+          await a.close();
+        }
+        assertEquals(remoteVersions(c.remote, c.modelId), [1, 2]);
+        assertEquals(remoteLatest(c.remote, c.modelId), ["2"]);
+
+        assertEquals(await saveAndPush(c.repoA, c.modelId, '{"by":"a2"}'), 3);
+        assertEquals(remoteVersions(c.remote, c.modelId), [1, 2, 3]);
+        assertEquals(remoteLatest(c.remote, c.modelId), ["3"]);
+        assertEquals(
+          remoteBodies(c.remote, c.modelId).sort(),
+          ['{"by":"a2"}', '{"by":"b1"}', '{"by":"b2"}'],
+        );
+      });
+    });
+  }
+
+  Deno.test(`acquireModelLocks: a refusal whose restore cannot read the datastore keeps the marks its writes left (swamp-club#4091, twoPhaseSync=${twoPhaseSync})`, async () => {
+    await withClones(twoPhaseSync, async (c) => {
+      const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a"}');
+      try {
+        c.locks.breakglass(c.modelId);
+        await saveAndPush(c.repoB, c.modelId, '{"by":"b"}');
+        c.remote.failNext("fetch");
+        await assertRejects(() => a.flush(), ModelLockLostError);
+        const nameDir = await a.nameDir();
+        assert(
+          (await marksUnderName(c.remote, c.repoA, nameDir)).length > 0,
+          "the marks stay when the restore did not match the datastore",
+        );
+        assertEquals(
+          c.remote.ops().filter((op) => op.op === "clearDirty"),
+          [],
+        );
+      } finally {
+        await a.close();
+      }
+    });
+  });
+
+  Deno.test(`acquireModelLocks: without clearDirty, a refusal leaves its marks as before (swamp-club#4091, twoPhaseSync=${twoPhaseSync})`, async () => {
+    await withClones(twoPhaseSync, async (c) => {
+      const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a"}');
+      try {
+        c.locks.breakglass(c.modelId);
+        await saveAndPush(c.repoB, c.modelId, '{"by":"b"}');
+        await assertRejects(() => a.flush(), ModelLockLostError);
+        assertEquals(await a.localVersions(), [1]);
+        assert(
+          (await marksUnderName(c.remote, c.repoA, await a.nameDir())).length >
+            0,
+        );
+      } finally {
+        await a.close();
+      }
+      assertEquals(remoteBodies(c.remote, c.modelId), ['{"by":"b"}']);
+    }, { noClearA: true });
   });
 }

@@ -127,6 +127,14 @@ export interface DatastoreSyncService {
   pullChanged(options?: DatastoreSyncOptions): Promise<number | void>;
   pushChanged(options?: DatastoreSyncOptions): Promise<number | void>;
   markDirty(options?: DatastoreSyncOptions): Promise<void>;
+  /**
+   * Drop the per-path marks whose keys equal `relPaths`, as `markDirty`
+   * received them. Only marks made before the call are dropped; a parent's
+   * or child's mark, a bulk mark and an overflowed path set are kept, and
+   * nothing remote is touched. Swamp calls it after undoing a refused push's
+   * writes (swamp-club#4091).
+   */
+  clearDirty?(relPaths: readonly string[]): Promise<void>;
   /** Advertise what this sync service supports. */
   capabilities?(): SyncCapabilities;
   /**
