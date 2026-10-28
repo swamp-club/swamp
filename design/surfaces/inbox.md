@@ -149,10 +149,10 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   request. It prints only after a command that succeeded, before the update
   banner; a failed command's output ends with its error. A run that reports
   its failure through the exit code, as a failed `workflow run` does, counts
-  as failed. `-q` hides it as it
-  hides the other post-command notices. These commands never show it: every
-  command the auth gate exempts, `inbox`, `subscription`, `auth`, and the
-  long-running `serve`, `worker`, `start` and `dashboard`.
+  as failed. `-q` hides it as it hides the other post-command notices. These
+  commands never show it: every command the auth gate exempts, `inbox`,
+  `subscription`, `auth`, and the long-running `serve`, `worker`, `start` and
+  `dashboard`.
 - **Switching it off.** `CI` set to anything but an empty string, `0` or
   `false` turns off both the poll and the notice; nobody reads a CI log for
   them. `SWAMP_NO_INBOX_NOTICE`, read the same way as `SWAMP_NO_UPDATE_CHECK`,

@@ -457,3 +457,14 @@ Deno.test("createInboxNoticeDeps: with no home directory the deps build, and the
     );
   }
 });
+
+Deno.test("showInboxNotice: a notice already announced is shown again without writing the cache", async () => {
+  const announced: InboxState = {
+    ...polledState(),
+    announcement: { id: ID_A, at: NOW - HOUR_MS },
+  };
+  await withHarness({ state: announced }, async ({ deps, rec }) => {
+    assertEquals(await showInboxNotice(deps), { unread: 2 });
+    assertEquals(rec.saves, 0);
+  });
+});

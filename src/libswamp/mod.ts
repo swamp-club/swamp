@@ -119,8 +119,6 @@ export {
 export {
   createInboxNoticeDeps,
   type CreateInboxNoticeDepsOptions,
-  INBOX_POLL_GRACE_MS,
-  INBOX_POLL_TIMEOUT_MS,
   type InboxNoticeDeps,
   type InboxPoll,
   showInboxNotice,

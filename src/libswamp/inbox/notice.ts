@@ -236,12 +236,13 @@ export async function showInboxNotice(
     const now = deps.now();
     const notice = noticeToShow(state, now);
     if (notice === null) return null;
-    if (deps.ownsConfigDir()) {
+    const recorded = recordNoticeShown(state, now);
+    // Only the first showing of a message changes the state. Saving an
+    // unchanged state would write the cache on every command and could put
+    // back a snapshot older than one another command just saved.
+    if (recorded !== state && deps.ownsConfigDir()) {
       try {
-        await deps.saveInboxState(
-          key.fingerprint,
-          recordNoticeShown(state, now),
-        );
+        await deps.saveInboxState(key.fingerprint, recorded);
       } catch (error: unknown) {
         logger.debug`Could not record the inbox notice: ${error}`;
       }
