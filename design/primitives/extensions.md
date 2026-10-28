@@ -831,9 +831,9 @@ Releases from swamp-club#1174 until swamp-club#4027 resolved relative paths
 against the git root even when the swamp repository sat below it, so `..` from
 `<git>/ext/example` mounted the parent of the git root. Paths recorded in that
 window still load: a relative path that matches nothing from the repository but
-does from the git root resolves there, with a warning to re-add it.
-`extension source add` validates against the repository only, so it never
-records that form again.
+does from the git root resolves there, with a warning to re-add it. A path that
+exists from both resolves from the repository. `extension source add` validates
+against the repository only, so it never records that form again.
 
 ### Source-Path Skill Installation
 
@@ -3422,11 +3422,12 @@ vs `/Users/...`). Unpruned, these phantom rows cause cross-aggregate
 `(kind, typeNormalized)` collisions that block every catalog write, including
 `rm` of unrelated extensions.
 
-Sources mounted through `.swamp-sources.yaml` can live outside the repo root
-(a sibling checkout, or a path in the git main worktree when the repo is a worktree). Each
-repository is built with `mountedSourceDirs`, the per-kind directories the
-current `.swamp-sources.yaml` resolves to (`resolveMountedSourceDirs`), and the
-prune keeps a row under one of them whose source file still exists
+Sources mounted through `.swamp-sources.yaml` can live outside the repo root (a
+sibling checkout, or a path in the git main worktree when the repo is a
+worktree). Each repository is built with `mountedSourceDirs`, the per-kind
+directories the current `.swamp-sources.yaml` resolves to
+(`resolveMountedSourceDirs`), and the prune keeps a row under one of them whose
+source file still exists
 (swamp-club#2563). Without that, every partial save (`extension pull`, `rm`,
 `update`, the loader's failure records) deleted the mounted rows until the next
 index. Keeping any out-of-root row whose source exists would be wrong: a repo

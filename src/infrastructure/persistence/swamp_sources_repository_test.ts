@@ -299,6 +299,32 @@ Deno.test("expandSourcePaths: keeps the repo-relative path when neither base has
   }
 });
 
+Deno.test({
+  name:
+    "expandSourcePaths: an unreadable repo-relative path does not fall back to the legacy base",
+  // chmod has no effect on Windows, and root reads through it.
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    const { tmp, gitRoot, repo } = await nestedRepoLayout();
+    const locked = join(repo, "locked");
+    try {
+      await Deno.mkdir(join(locked, "exts"), { recursive: true });
+      await Deno.mkdir(join(gitRoot, "locked", "exts"), { recursive: true });
+      await Deno.chmod(locked, 0o000);
+      const result = await expandSourcePaths(
+        { sources: [{ path: "locked/exts" }] },
+        repo,
+        repo,
+        gitRoot,
+      );
+      assertPathEquals(result[0].path, join(locked, "exts"));
+    } finally {
+      await Deno.chmod(locked, 0o755).catch(() => {});
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+});
+
 Deno.test("expandSourcePaths: leaves absolute paths alone with a legacy base", async () => {
   const { tmp, gitRoot, repo } = await nestedRepoLayout();
   try {

@@ -107,20 +107,24 @@ export async function* sourceList(
           }
         }
       } else {
-        const [{ path: absolutePath }] = await expandSourcePaths(
+        // A path that becomes a glob only after env expansion can expand
+        // to nothing.
+        const [first] = await expandSourcePaths(
           { sources: [source] },
           deps.repoDir,
           deps.sourceBaseDir,
           deps.legacyBaseDir,
         );
-        entry.expandedPaths = [absolutePath];
+        entry.expandedPaths = first ? [first.path] : [];
 
         let exists = false;
-        try {
-          const stat = await Deno.stat(absolutePath);
-          exists = stat.isDirectory;
-        } catch {
-          exists = false;
+        if (first) {
+          try {
+            const stat = await Deno.stat(first.path);
+            exists = stat.isDirectory;
+          } catch {
+            exists = false;
+          }
         }
 
         if (!exists) {

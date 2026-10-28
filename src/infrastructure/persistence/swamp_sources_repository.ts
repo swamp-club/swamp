@@ -136,7 +136,7 @@ export async function expandSourcePaths(
         expanded.push({ path, only: source.only });
       }
     } else if (
-      legacyPath !== undefined && !(await isDirectory(absolutePath)) &&
+      legacyPath !== undefined && await isMissing(absolutePath) &&
       await isDirectory(legacyPath)
     ) {
       warnLegacySource(source.path, legacyBaseDir!);
@@ -154,6 +154,17 @@ async function isDirectory(path: string): Promise<boolean> {
     return (await Deno.stat(path)).isDirectory;
   } catch {
     return false;
+  }
+}
+
+/** True only when nothing is at `path`: a path that cannot be read (for
+ * example permission denied) is not treated as absent. */
+async function isMissing(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return false;
+  } catch (error) {
+    return error instanceof Deno.errors.NotFound;
   }
 }
 
