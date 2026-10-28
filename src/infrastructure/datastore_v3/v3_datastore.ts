@@ -868,6 +868,14 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   // A checkout whose upstream is serve keeps a follower copy of serve's
   // log (swamp-club#3985): serve leaves out the commits it may not read.
   const serve = serveUpstreamAt(datastorePath);
+  // Opened before the copy's files: the copy id it records is then never
+  // older than the files this handle reads, so a reset by another command
+  // fences this one's catch-up writes (swamp-club#4089).
+  const serveState = serve !== undefined
+    ? ServeUpstreamState.open(
+      join(dirname(commitsDbPath), SERVE_UPSTREAM_STATE_FILE),
+    )
+    : undefined;
   const commitStore = SqliteCommitStore.open(commitsDbPath, {
     replicated: v3ReplicatesAt(datastorePath),
     ...(serve !== undefined ? { follower: true } : {}),
@@ -929,11 +937,6 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   // Bounds every commit's content uploads for the process's lifetime; close
   // aborts what is still in flight.
   const lifetime = new AbortController();
-  const serveState = serveClient !== undefined
-    ? ServeUpstreamState.open(
-      join(dirname(commitsDbPath), SERVE_UPSTREAM_STATE_FILE),
-    )
-    : undefined;
   if (serveClient !== undefined && serveState !== undefined) {
     serveClient.checkLog(
       serveLogCheck(serveState, serveClient.baseUrl, dirname(commitsDbPath)),

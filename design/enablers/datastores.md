@@ -6770,7 +6770,10 @@ while it pages the feed: its commits then went into the replaced
 `commits.db`. Each `ServeUpstreamState` handle remembers the copy id it opened
 under, and every write of the catch-up (the feed cursor and anchor, serve's
 heads, a loaded base, the log id, the access seen) checks it in the same
-transaction. A copy reset since refuses them
+transaction. The handle opens before the copy's `commits.db`, so the files a
+command reads are never a newer copy's than the id it holds, and a handle
+opened while another command is partway through a reset holds no id at all:
+the files it opened may be the ones that reset removes. A copy reset since refuses them
 (`datastore_v3_serve_copy_replaced`): the command fails and says to run it
 again, and the new copy reads from the start.
 

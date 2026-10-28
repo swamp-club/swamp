@@ -64,6 +64,9 @@ export class ServeCopyReplacedError extends UserError {
   }
 }
 
+/** The copy id a handle opened during a reset holds: never a real one. */
+const RESETTING_COPY = "";
+
 /** The file name, beside the checkout's `commits.db`. */
 export const SERVE_UPSTREAM_STATE_FILE = "serve_upstream.db";
 
@@ -186,7 +189,10 @@ export class ServeUpstreamState {
   /**
    * The copy's id when this handle opened: a reset by another handle gives
    * the copy another, and this handle's catch-up writes are then refused
-   * ({@link ServeCopyReplacedError}).
+   * ({@link ServeCopyReplacedError}). Opened during a reset, none: every
+   * catch-up write is refused. A handle is opened before the copy's
+   * `commits.db` (`openV3Datastore`), so the files it reads are never a
+   * newer copy's than this id.
    */
   #copyId: string;
   #closed = false;
@@ -194,7 +200,12 @@ export class ServeUpstreamState {
   private constructor(path: string, db: DatabaseSync) {
     this.path = path;
     this.#db = db;
-    this.#copyId = this.#currentCopyId();
+    // A handle opened while another resets the copy may already hold files
+    // that reset removes, or create ones it then removes: it records
+    // nothing.
+    this.#copyId = this.caller()?.resetting === true
+      ? RESETTING_COPY
+      : this.#currentCopyId();
   }
 
   #currentCopyId(): string {

@@ -497,3 +497,39 @@ Deno.test("ServeUpstreamState.recordAccessSeen: a copy that read the feed before
     }
   });
 });
+
+Deno.test("ServeUpstreamState: a handle opened while another resets the copy records nothing, and one opened after records again (swamp-club#4089)", async () => {
+  await withTempDir((dir) => {
+    const path = join(dir, "serve_upstream.db");
+    const resetter = ServeUpstreamState.open(path);
+    try {
+      resetter.stampCaller("token-a");
+      resetter.beginCallerReset();
+      // Opened between the reset's start and its end: the copy's files may
+      // be the ones the reset removes.
+      const during = ServeUpstreamState.open(path);
+      try {
+        assertThrows(
+          () => during.advanceFeedCursor(4, ANCHOR_A),
+          ServeCopyReplacedError,
+        );
+        assertThrows(
+          () => during.recordAccessSeen("a1"),
+          ServeCopyReplacedError,
+        );
+      } finally {
+        during.close();
+      }
+      resetter.finishCallerReset("token-a", 1_000);
+      assertEquals(resetter.feedCursor(), 0);
+      const after = ServeUpstreamState.open(path);
+      try {
+        assert(after.advanceFeedCursor(4, ANCHOR_A));
+      } finally {
+        after.close();
+      }
+    } finally {
+      resetter.close();
+    }
+  });
+});
