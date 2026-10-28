@@ -24,7 +24,13 @@ import {
   dispatchErrorPaths,
   DispatchParamsSchema,
   DispatchResultSchema,
+  DispatchSecretLoadRequestSchema,
   EnrollParamsSchema,
+  MAX_DISPATCH_SECRET_KEY_LENGTH,
+  MAX_DISPATCH_SECRET_LOAD_BODY_BYTES,
+  MAX_DISPATCH_SECRET_LOADS,
+  MAX_DISPATCH_SECRET_RESOURCE_NAME_LENGTH,
+  MAX_DISPATCH_SECRET_VAULT_NAME_LENGTH,
   parseRpcFrame,
   REMOTE_PROTOCOL_VERSION,
   ResolveSecretParamsSchema,
@@ -451,6 +457,47 @@ Deno.test("ResolveSecretParamsSchema: carries an optional resource claim (swamp-
         secretKey: "k",
         resource,
       })
+    );
+  }
+});
+
+Deno.test("DispatchSecretLoadRequestSchema: the body limit fits the largest request the schema admits", () => {
+  // Characters the JSON encoder escapes to six bytes, at every bound.
+  const longest = (length: number) => "\u0001".repeat(length);
+  const request = {
+    references: Array.from({ length: MAX_DISPATCH_SECRET_LOADS }, () => ({
+      vaultName: longest(MAX_DISPATCH_SECRET_VAULT_NAME_LENGTH),
+      key: longest(MAX_DISPATCH_SECRET_KEY_LENGTH),
+      resource: {
+        name: longest(MAX_DISPATCH_SECRET_RESOURCE_NAME_LENGTH),
+        version: Number.MAX_SAFE_INTEGER,
+      },
+    })),
+  };
+  DispatchSecretLoadRequestSchema.parse(request);
+  const bytes = new TextEncoder().encode(JSON.stringify(request)).byteLength;
+  assertEquals(bytes <= MAX_DISPATCH_SECRET_LOAD_BODY_BYTES, true);
+});
+
+Deno.test("DispatchSecretLoadRequestSchema: refuses unknown keys, empty requests and too many references", () => {
+  const reference = { vaultName: "default", key: "k" };
+  for (
+    const invalid of [
+      { references: [] },
+      { references: [{ ...reference, value: "x" }] },
+      { references: [reference], extra: true },
+      {
+        references: Array.from(
+          { length: MAX_DISPATCH_SECRET_LOADS + 1 },
+          () => reference,
+        ),
+      },
+      { references: [{ ...reference, key: "" }] },
+    ]
+  ) {
+    assertEquals(
+      DispatchSecretLoadRequestSchema.safeParse(invalid).success,
+      false,
     );
   }
 });

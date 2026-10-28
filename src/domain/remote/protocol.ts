@@ -535,6 +535,104 @@ export const ResolveSecretParamsSchema = z.object({
 
 export type ResolveSecretParams = z.infer<typeof ResolveSecretParamsSchema>;
 
+// ── Dispatch secret loads (data plane) ───────────────────────────────────
+
+/**
+ * The protected data-plane route a runner loads its dispatch's references
+ * through (design/enablers/typed-secrets.md Section 9). A data-plane route,
+ * not a capability verb, so adding it leaves REMOTE_PROTOCOL_VERSION
+ * unchanged; typed-secrets 5.2 raises the version when workers call it.
+ */
+export const DISPATCH_SECRETS_PATH = "/data/secrets";
+
+/** Most references one load request may name. */
+export const MAX_DISPATCH_SECRET_LOADS = 256;
+/** Longest vault name a load request may name. */
+export const MAX_DISPATCH_SECRET_VAULT_NAME_LENGTH = 256;
+/** Longest secret key a load request may name. */
+export const MAX_DISPATCH_SECRET_KEY_LENGTH = 1024;
+/** Longest resource name a load request's claim may name. */
+export const MAX_DISPATCH_SECRET_RESOURCE_NAME_LENGTH = 512;
+/**
+ * Largest load request body serve reads. Fits
+ * {@link MAX_DISPATCH_SECRET_LOADS} references at the longest names, each
+ * with a resource claim, so a request the schema admits is never refused
+ * for its size.
+ */
+export const MAX_DISPATCH_SECRET_LOAD_BODY_BYTES = 4 * 1024 * 1024;
+
+export const DispatchSecretLoadReferenceSchema = z.object({
+  vaultName: z.string().min(1).max(MAX_DISPATCH_SECRET_VAULT_NAME_LENGTH),
+  key: z.string().min(1).max(MAX_DISPATCH_SECRET_KEY_LENGTH),
+  /**
+   * A claim that the reference is held by a sensitive field of the
+   * dispatch's own resource `name` at `version`, as on `resolveSecret`
+   * (swamp-club#3529). The worker's resource reader sends it.
+   */
+  resource: z.object({
+    name: z.string().min(1).max(MAX_DISPATCH_SECRET_RESOURCE_NAME_LENGTH),
+    version: z.number().int().positive(),
+  }).strict().optional(),
+}).strict();
+
+export type DispatchSecretLoadReference = z.infer<
+  typeof DispatchSecretLoadReferenceSchema
+>;
+
+export const DispatchSecretLoadRequestSchema = z.object({
+  references: z.array(DispatchSecretLoadReferenceSchema).min(1).max(
+    MAX_DISPATCH_SECRET_LOADS,
+  ),
+}).strict();
+
+export type DispatchSecretLoadRequest = z.infer<
+  typeof DispatchSecretLoadRequestSchema
+>;
+
+export const DispatchSecretLoadResponseSchema = z.object({
+  /** One value per distinct reference, in order of first occurrence. */
+  values: z.array(
+    z.object({
+      vaultName: z.string(),
+      key: z.string(),
+      value: z.string(),
+    }).strict(),
+  ),
+}).strict();
+
+export type DispatchSecretLoadResponse = z.infer<
+  typeof DispatchSecretLoadResponseSchema
+>;
+
+/**
+ * Why serve refused a load. A refusal body carries the code and, when one
+ * reference caused it, that reference; never a value.
+ */
+export const DISPATCH_SECRET_LOAD_REFUSALS = [
+  "malformed_request",
+  "request_too_large",
+  "reserved_secret",
+  "not_in_dispatch",
+  "resource_claim_refused",
+  "vault_access_denied",
+  "vault_error",
+  "access_ended",
+  "internal_error",
+] as const;
+
+export type DispatchSecretLoadRefusal =
+  typeof DISPATCH_SECRET_LOAD_REFUSALS[number];
+
+export const DispatchSecretLoadRefusalSchema = z.object({
+  error: z.string(),
+  code: z.enum(DISPATCH_SECRET_LOAD_REFUSALS),
+  reference: z.object({ vaultName: z.string(), key: z.string() }).optional(),
+}).strict();
+
+export type DispatchSecretLoadRefusalBody = z.infer<
+  typeof DispatchSecretLoadRefusalSchema
+>;
+
 export const PutSecretParamsSchema = z.object({
   vaultName: z.string(),
   secretKey: z.string(),

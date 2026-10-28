@@ -78,7 +78,11 @@ import type {
 import type { ModelMethodRunner } from "./worker_gateway.ts";
 import type { WorkerSnapshot } from "./worker_gateway.ts";
 import { WorkerNotDispatchableError } from "./worker_gateway.ts";
-import type { ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
+import {
+  type ActiveDispatch,
+  bagReferenceSet,
+  type DispatchRegistry,
+} from "./dispatch_registry.ts";
 import { type BundleRegistry, hashAssetBytes } from "./bundle_registry.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { RemoteLockHolder } from "../domain/datastore/lock_holder_marker.ts";
@@ -797,6 +801,10 @@ export class DispatchService {
         extractVaultReferences(request.globalArgs, request.methodArgs),
         request.secretReferences,
       ),
+      // The step's bag, the only references the protected load route
+      // answers for this dispatch (design/enablers/typed-secrets.md
+      // Section 9).
+      bagReferences: bagReferenceSet(request.secretReferences),
       redactor: this.#buildDispatchRedactor(request.secretValues),
       traceHeaders: request.traceHeaders,
       // The dispatching run's vault scope, so the worker's secret reads and

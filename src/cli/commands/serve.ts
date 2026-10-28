@@ -5085,6 +5085,16 @@ export const serveCommand = new Command()
     // Every pending signal a wait takes on this server is audited, whether
     // the step, a signaller or the sweep took it (swamp-club#3213).
     auditTakenSignals(connectionCtx);
+    // The protected secret load route records metadata-only events through
+    // the same emitter, once one is configured.
+    dataPlane.setAudit(() =>
+      connectionCtx.auditEmitter && connectionCtx.instanceId !== undefined
+        ? {
+          emitter: connectionCtx.auditEmitter,
+          instanceId: connectionCtx.instanceId,
+        }
+        : undefined
+    );
 
     const ac = new AbortController();
 
@@ -6611,7 +6621,7 @@ export const serveCommand = new Command()
         }
 
         // Remote-execution data plane (bearer-authenticated worker routes)
-        const dataPlaneResponse = await dataPlane.handle(req);
+        const dataPlaneResponse = await dataPlane.handle(req, clientAddress());
         if (dataPlaneResponse) return dataPlaneResponse;
 
         // Webhook endpoints (POST only, checked before health)

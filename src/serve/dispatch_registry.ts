@@ -33,6 +33,7 @@ import type {
 } from "../domain/expressions/vault_reference_extractor.ts";
 import type { SecretRedactor } from "../domain/secrets/secret_redactor.ts";
 import type { RunVaultAccess } from "../domain/vaults/run_vault_access.ts";
+import type { SecretReference } from "../domain/vaults/secret_bag_registry.ts";
 import type { RunProgress } from "../domain/remote/run_progress.ts";
 
 export interface ActiveDispatch {
@@ -54,6 +55,14 @@ export interface ActiveDispatch {
   dataRepo?: UnifiedDataRepository;
   allowedSecrets?: VaultExtractionResult;
   /**
+   * The references behind the sentinels of the step's arguments, as
+   * {@link bagReferenceId}s: the dispatch's own bag, which the protected
+   * load route admits and nothing else (design/enablers/typed-secrets.md
+   * Section 9). Unlike {@link allowedSecrets}, no dynamic reference widens
+   * it, and an absent set admits nothing.
+   */
+  bagReferences?: ReadonlySet<string>;
+  /**
    * Per-dispatch redactor. Seeded with the secret values the step was
    * dispatched with, and grown with every value `resolveSecret` delivers to
    * the dispatch afterwards (swamp-club#3527). The data plane scrubs the
@@ -72,6 +81,20 @@ export interface ActiveDispatch {
    * the worker's vault operations for this dispatch to it.
    */
   vaultAccess?: RunVaultAccess;
+}
+
+/** The identity of a vault reference in {@link ActiveDispatch.bagReferences}. */
+export function bagReferenceId(vaultName: string, key: string): string {
+  return `${vaultName}\u0000${key}`;
+}
+
+/** The {@link ActiveDispatch.bagReferences} of `references`. */
+export function bagReferenceSet(
+  references: readonly SecretReference[] | undefined,
+): ReadonlySet<string> {
+  return new Set(
+    (references ?? []).map((ref) => bagReferenceId(ref.vaultName, ref.key)),
+  );
 }
 
 export class DispatchRegistry {

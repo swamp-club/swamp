@@ -1377,7 +1377,29 @@ Deno.test("dataPlaneOperation: names operations from the route shape only", () =
     dataPlaneOperation("POST", ["data", "writers", "w-1", "finalize"]),
     "writer_finalize",
   );
+  assertEquals(
+    dataPlaneOperation("POST", ["data", "secrets"]),
+    "load_secrets",
+  );
   assertEquals(dataPlaneOperation("PUT", ["data", "other"]), "unknown");
+});
+
+Deno.test("DataPlane: the secret load route takes no sole-dispatch fallback for a control credential", async () => {
+  await withHarness(async (h) => {
+    // The worker's only dispatch would answer any other data route.
+    h.dispatches.register(activeDispatch());
+    const response = await h.plane.handle(
+      request("/data/secrets", {
+        method: "POST",
+        body: JSON.stringify({
+          references: [{ vaultName: "default", key: "k" }],
+        }),
+      }),
+    );
+    assertEquals(response?.status, 401);
+    assertEquals(response?.headers.get("cache-control"), "no-store");
+    await response?.body?.cancel();
+  });
 });
 
 Deno.test("DataPlane: writes stage into a root unit over the repository context's hook (swamp-club#3056)", async () => {

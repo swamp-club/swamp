@@ -38,11 +38,17 @@
  *   POST   /data/writers/{id}/line                       durable line append
  *   POST   /data/writers/{id}/content                    stream bytes + finalize
  *   POST   /data/writers/{id}/finalize                   finalize a line writer
+ *   POST   /data/secrets                                 load dispatch references
  *   GET    /bundle/{fingerprint}                         fetch extension bundle
  *   GET    /bundle/{fingerprint}/file/{relPath}          fetch co-located asset
  */
 
 import type { z } from "zod";
+import {
+  DispatchSecretLoads,
+  type DispatchSecretLoadsAudit,
+  isDispatchSecretsRoute,
+} from "./dispatch_secret_loads.ts";
 function validRequestId(value: string | null): boolean {
   return value !== null &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
@@ -98,6 +104,9 @@ export interface DataPlaneOptions {
   /** Overridable for tests; defaults to VaultService.fromRepository. */
   createVaultService?: () => Promise<VaultService>;
 }
+
+/** A data-plane request's caller address, for serve audit. */
+const UNKNOWN_SOURCE_IP = "unknown";
 
 interface WriterSession {
   writer: DataWriter;
@@ -184,9 +193,27 @@ export class DataPlane {
     { count: number; idle: PromiseWithResolvers<void> }
   >();
   #vaultService: Promise<VaultService> | null = null;
+  #audit: (() => DispatchSecretLoadsAudit | undefined) | undefined;
+  readonly #secretLoads: DispatchSecretLoads;
 
   constructor(options: DataPlaneOptions) {
     this.#options = options;
+    this.#secretLoads = new DispatchSecretLoads({
+      sessions: options.sessions,
+      dispatches: options.dispatches,
+      vault: () => this.#vault(),
+      repoFor: (dispatch) =>
+        this.#repoForWorker(dispatch.workerName, dispatch.dispatchId),
+      audit: () => this.#audit?.(),
+    });
+  }
+
+  /**
+   * Where the protected secret load route's audit events go. Serve creates
+   * its audit emitter after the data plane, so it is read per request.
+   */
+  setAudit(audit: () => DispatchSecretLoadsAudit | undefined): void {
+    this.#audit = audit;
   }
 
   /** Number of open writer sessions (test introspection). */
@@ -274,7 +301,10 @@ export class DataPlane {
     this.#writtenByDispatch.set(dispatch.dispatchId, versions);
   }
 
-  async handle(req: Request): Promise<Response | null> {
+  async handle(
+    req: Request,
+    sourceIp: string = UNKNOWN_SOURCE_IP,
+  ): Promise<Response | null> {
     const url = new URL(req.url);
     const segments = url.pathname.split("/").filter((s) => s.length > 0);
     if (segments.length === 0) {
@@ -283,6 +313,23 @@ export class DataPlane {
     const [root] = segments;
     if (root !== "data" && root !== "bundle") {
       return null;
+    }
+
+    // The protected secret route authenticates the dispatch credential
+    // itself, with no sole-dispatch fallback, and needs no unit of work.
+    if (isDispatchSecretsRoute(segments)) {
+      return await this.#secretLoads.handle(
+        req,
+        sourceIp,
+        (caller, fn) =>
+          this.#inDispatchTrace(
+            req,
+            caller.workerName,
+            caller.dispatchId,
+            dataPlaneOperation(req.method, segments),
+            fn,
+          ),
+      );
     }
 
     const auth = this.#authenticate(req);
@@ -956,6 +1003,7 @@ export function dataPlaneOperation(
 ): string {
   const [root, kind] = segments;
   if (root === "bundle") return "fetch_bundle";
+  if (kind === "secrets" && segments.length === 2) return "load_secrets";
   if (method === "GET" && segments.length === 5) return "read";
   if (kind === "resource") {
     if (method === "POST") return "write_resource";

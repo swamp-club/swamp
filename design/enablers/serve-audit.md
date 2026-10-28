@@ -392,6 +392,26 @@ never carries a secret value. Like trigger audit writes, it never throws into
 the run. Implementation: `emitRunVaultDenial` in
 `src/serve/run_vault_access_policy.ts`.
 
+## Worker secret loads
+
+The worker data plane and capability verbs are not audited, with one
+exception: the protected secret load route (`POST /data/secrets`, see
+[typed-secrets § 9](typed-secrets.md#9-serve-and-workers)), the first worker
+data-plane traffic serve audits. Each request writes one event with no
+WebSocket behind it: category `secrets`, action `load_dispatch_secrets`, stage
+`response`, `resourceKind` `dispatch` and `resourceName` the dispatch id,
+principal kind `worker` and id the worker name (`anonymous` when the credential
+did not verify), outcome `success`, `denied` (an unverified credential, an
+ended dispatch or a refused reference) or `failure` (a malformed or oversized
+request, or a vault error), and the caller's address. Its `detail` holds only
+the refusal code (or `loaded`) and the number of references requested.
+
+The event carries metadata only, at every detail level: no reference, request
+body, response body or value reaches it, whatever the policy picks, and a
+`none` rule drops it as for any other event. Implementation: `#audit` in
+`src/serve/dispatch_secret_loads.ts`; serve hands the route its emitter through
+`DataPlane.setAudit`.
+
 ## System events
 
 The `system` audit category records infrastructure lifecycle events with
