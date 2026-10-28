@@ -33,6 +33,32 @@ import {
 import type { ExtensionKind } from "../../domain/repo/swamp_sources.ts";
 import { assertPathEquals } from "./path_test_helpers.ts";
 import { withMockedCommand } from "@swamp-club/swamp-testing";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { initializeLogging } from "../logging/logger.ts";
+
+/** Runs fn with warnings from the sources logger captured, returning them. */
+async function captureSourceWarnings(
+  fn: () => Promise<void>,
+): Promise<string[]> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["swamp", "sources"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await initializeLogging({ _reset: true });
+  }
+  return records.map((r) => r.message.map((p) => String(p)).join(""));
+}
 
 Deno.test("readSwampSources: returns null when file does not exist", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
@@ -152,6 +178,166 @@ Deno.test("expandSourcePaths: falls back to repoDir when sourceBaseDir not provi
     assertPathEquals(result[0].path, join(tmpDir, "..", "sibling"));
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+// swamp-club#4027: a swamp repo at <git>/ext/example, with relative sources
+// recorded against the git root by earlier releases.
+async function nestedRepoLayout(): Promise<
+  { tmp: string; gitRoot: string; repo: string }
+> {
+  const tmp = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
+  const gitRoot = join(tmp, "git");
+  const repo = join(gitRoot, "ext", "example");
+  await Deno.mkdir(repo, { recursive: true });
+  return { tmp, gitRoot, repo };
+}
+
+Deno.test("expandSourcePaths: prefers the repo-relative path when both bases have it", async () => {
+  const { tmp, gitRoot, repo } = await nestedRepoLayout();
+  try {
+    await Deno.mkdir(join(gitRoot, "ext", "lib"), { recursive: true });
+    await Deno.mkdir(join(gitRoot, "lib"), { recursive: true });
+    const warnings = await captureSourceWarnings(async () => {
+      const result = await expandSourcePaths(
+        { sources: [{ path: "../lib" }, { path: ".." }] },
+        repo,
+        repo,
+        gitRoot,
+      );
+      assertPathEquals(result[0].path, join(gitRoot, "ext", "lib"));
+      assertPathEquals(result[1].path, join(gitRoot, "ext"));
+    });
+    assertEquals(warnings, []);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("expandSourcePaths: falls back to the legacy git-root base with one warning", async () => {
+  const { tmp, gitRoot, repo } = await nestedRepoLayout();
+  try {
+    await Deno.mkdir(join(gitRoot, "shared", "exts"), { recursive: true });
+    const warnings = await captureSourceWarnings(async () => {
+      for (let i = 0; i < 2; i++) {
+        const result = await expandSourcePaths(
+          { sources: [{ path: "shared/exts", only: ["models"] }] },
+          repo,
+          repo,
+          gitRoot,
+        );
+        assertEquals(result.length, 1);
+        assertPathEquals(result[0].path, join(gitRoot, "shared", "exts"));
+        assertEquals(result[0].only, ["models"]);
+      }
+    });
+    assertEquals(warnings.length, 1);
+    assertEquals(warnings[0].includes("shared/exts"), true);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("expandSourcePaths: a legacy warning raised before logging starts is given later", async () => {
+  const { tmp, gitRoot, repo } = await nestedRepoLayout();
+  const expand = () =>
+    expandSourcePaths(
+      { sources: [{ path: "shared/exts" }] },
+      repo,
+      repo,
+      gitRoot,
+    );
+  try {
+    await Deno.mkdir(join(gitRoot, "shared", "exts"), { recursive: true });
+    // As at CLI startup, which expands sources before logging is set up.
+    await reset();
+    await expand();
+    const warnings = await captureSourceWarnings(async () => {
+      await expand();
+    });
+    assertEquals(warnings.length, 1);
+  } finally {
+    await initializeLogging({ _reset: true });
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("expandSourcePaths: falls back to the legacy base for a glob with no repo-relative match", async () => {
+  const { tmp, gitRoot, repo } = await nestedRepoLayout();
+  try {
+    await Deno.mkdir(join(gitRoot, "pkgs", "a"), { recursive: true });
+    await Deno.mkdir(join(gitRoot, "pkgs", "b"), { recursive: true });
+    const warnings = await captureSourceWarnings(async () => {
+      const result = await expandSourcePaths(
+        { sources: [{ path: "pkgs/*" }] },
+        repo,
+        repo,
+        gitRoot,
+      );
+      assertEquals(result.map((s) => basename(s.path)).sort(), ["a", "b"]);
+      assertPathEquals(dirname(result[0].path), join(gitRoot, "pkgs"));
+    });
+    assertEquals(warnings.length, 1);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("expandSourcePaths: keeps the repo-relative path when neither base has it", async () => {
+  const { tmp, gitRoot, repo } = await nestedRepoLayout();
+  try {
+    const result = await expandSourcePaths(
+      { sources: [{ path: "missing" }, { path: "gone/*" }] },
+      repo,
+      repo,
+      gitRoot,
+    );
+    assertEquals(result.length, 1);
+    assertPathEquals(result[0].path, join(repo, "missing"));
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test({
+  name:
+    "expandSourcePaths: an unreadable repo-relative path does not fall back to the legacy base",
+  // chmod has no effect on Windows, and root reads through it.
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    const { tmp, gitRoot, repo } = await nestedRepoLayout();
+    const locked = join(repo, "locked");
+    try {
+      await Deno.mkdir(join(locked, "exts"), { recursive: true });
+      await Deno.mkdir(join(gitRoot, "locked", "exts"), { recursive: true });
+      await Deno.chmod(locked, 0o000);
+      const result = await expandSourcePaths(
+        { sources: [{ path: "locked/exts" }] },
+        repo,
+        repo,
+        gitRoot,
+      );
+      assertPathEquals(result[0].path, join(locked, "exts"));
+    } finally {
+      await Deno.chmod(locked, 0o755).catch(() => {});
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+});
+
+Deno.test("expandSourcePaths: leaves absolute paths alone with a legacy base", async () => {
+  const { tmp, gitRoot, repo } = await nestedRepoLayout();
+  try {
+    const abs = join(tmp, "elsewhere");
+    const result = await expandSourcePaths(
+      { sources: [{ path: abs }] },
+      repo,
+      repo,
+      gitRoot,
+    );
+    assertPathEquals(result[0].path, abs);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
   }
 });
 
@@ -1015,6 +1201,23 @@ async function writeModel(dir: string, file = "m.ts"): Promise<void> {
     'export const model = { type: "@r/m" };',
   );
 }
+
+Deno.test("resolveExtensionKindsForSource: probes the legacy base only when given", async () => {
+  const { tmp, gitRoot, repo } = await nestedRepoLayout();
+  try {
+    await writeModel(join(gitRoot, "shared", "models"));
+    const source = { path: "shared/models" };
+    assertEquals(await resolveExtensionKindsForSource(source, repo), []);
+    await captureSourceWarnings(async () => {
+      assertEquals(
+        await resolveExtensionKindsForSource(source, repo, gitRoot),
+        ["models"],
+      );
+    });
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
 
 Deno.test("resolveExtensionKindsForSource: a source under an underscore-prefixed ancestor is scanned", async () => {
   const tmp = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });

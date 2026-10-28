@@ -283,7 +283,7 @@ import {
   readSwampSources,
   resolveSourceExtensionDirs,
 } from "../infrastructure/persistence/swamp_sources_repository.ts";
-import { resolveGitMainWorktreeRoot } from "../infrastructure/persistence/git_worktree.ts";
+import { resolveSourceBaseDirs } from "../infrastructure/persistence/git_worktree.ts";
 import type {
   ExtensionKind,
   ResolvedSourceDirs,
@@ -2679,17 +2679,24 @@ async function runInvocation(
 
   // Read extension sources (additional extension directories from
   // .swamp-sources.yaml). Resolved once and shared across all loaders.
-  // Relative paths resolve against the git main working tree root so
-  // worktrees see the same sibling sources as the main checkout.
+  // Relative paths resolve against the repo's place in the git main
+  // working tree, so worktrees see the same sibling sources as the main
+  // checkout.
   let resolvedSources: ResolvedSourceDirs[] = [];
   if (!hookMode) {
     const sourcesConfig = await readSwampSources(repoDir);
     if (sourcesConfig) {
-      const sourceBaseDir = await resolveGitMainWorktreeRoot(repoDir);
+      const { baseDir, legacyBaseDir } = await resolveSourceBaseDirs(
+        repoDir,
+      );
+      // Logging starts only after Cliffy parses: keep the warning for a
+      // source still resolved against the git root (swamp-club#4027).
+      if (legacyBaseDir !== undefined) await bufferStartupWarnings();
       const expanded = await expandSourcePaths(
         sourcesConfig,
         repoDir,
-        sourceBaseDir,
+        baseDir,
+        legacyBaseDir,
       );
       const { resolved } = await resolveSourceExtensionDirs(
         expanded,

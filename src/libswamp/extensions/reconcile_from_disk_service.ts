@@ -82,7 +82,7 @@ import {
   readSwampSources,
   resolveSourceExtensionDirs,
 } from "../../infrastructure/persistence/swamp_sources_repository.ts";
-import { resolveGitMainWorktreeRoot } from "../../infrastructure/persistence/git_worktree.ts";
+import { resolveSourceBaseDirs } from "../../infrastructure/persistence/git_worktree.ts";
 import { BEHAVIORS_DIR_NAME } from "../../domain/terminology/behavior_aliases.ts";
 import { createDenoInfoModuleGraphReader } from "../../infrastructure/runtime/deno_info_module_graph_reader.ts";
 
@@ -578,11 +578,14 @@ export class ReconcileFromDiskService {
     // Source-mounted extensions from .swamp-sources.yaml
     const config = await readSwampSources(this.repoDir);
     if (config) {
-      const sourceBaseDir = await resolveGitMainWorktreeRoot(this.repoDir);
+      const { baseDir, legacyBaseDir } = await resolveSourceBaseDirs(
+        this.repoDir,
+      );
       const expanded = await expandSourcePaths(
         config,
         this.repoDir,
-        sourceBaseDir,
+        baseDir,
+        legacyBaseDir,
       );
       const { resolved } = await resolveSourceExtensionDirs(expanded);
       for (const sourceDirs of resolved) {

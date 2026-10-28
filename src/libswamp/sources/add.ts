@@ -34,7 +34,7 @@ import {
   resolveExtensionKindsForSource,
   writeSwampSources,
 } from "../../infrastructure/persistence/swamp_sources_repository.ts";
-import { resolveGitMainWorktreeRoot } from "../../infrastructure/persistence/git_worktree.ts";
+import { resolveSourceBaseDirs } from "../../infrastructure/persistence/git_worktree.ts";
 import {
   copySourceSkills,
   removeSourceSkills,
@@ -74,7 +74,9 @@ export async function createSourceAddDeps(
 ): Promise<SourceAddDeps> {
   const resolvedTools = tools?.length ? tools : ["claude"];
   const dirs = skillsDirs?.length ? skillsDirs : [];
-  const sourceBaseDir = await resolveGitMainWorktreeRoot(repoDir);
+  // New entries resolve from the repository only, never the git-root
+  // fallback, so the legacy form is not recorded again (swamp-club#4027).
+  const { baseDir: sourceBaseDir } = await resolveSourceBaseDirs(repoDir);
   return {
     readSources: () => readSwampSources(repoDir),
     writeSources: (config) => writeSwampSources(repoDir, config),

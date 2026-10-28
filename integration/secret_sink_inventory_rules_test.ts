@@ -394,7 +394,7 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/infrastructure/editor/editor_service.ts: EditorService": TOOLING,
     "src/infrastructure/github/github_issue_service.ts: GitHubIssueService":
       TOOLING,
-    "src/infrastructure/persistence/git_worktree.ts: resolveGitMainWorktreeRoot":
+    "src/infrastructure/persistence/git_worktree.ts: probeSourceBaseDirs":
       TOOLING,
     "src/infrastructure/process/browser.ts: defaultDeps": TOOLING,
     "src/infrastructure/process/folder_picker.ts: createSystemFolderPicker":

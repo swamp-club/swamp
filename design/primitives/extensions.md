@@ -817,6 +817,24 @@ that kind. This closes a gap between dev and prod. Published bundles loaded
 every declared component, but local loading only found components in the
 matching kind directory.
 
+### Source Path Resolution
+
+A relative `path` in `.swamp-sources.yaml` is relative to the swamp repository
+directory, the same base the duplicate check against default extension
+directories in `extension source add` assumes. In a linked git worktree it
+resolves against the repository's counterpart in the main checkout
+(`resolveSourceBaseDirs`), so a worktree mounts the same sibling sources as the
+main checkout (swamp-club#1174). For a repository at the git root the two are
+the same directory.
+
+Releases from swamp-club#1174 until swamp-club#4027 resolved relative paths
+against the git root even when the swamp repository sat below it, so `..` from
+`<git>/ext/example` mounted the parent of the git root. Paths recorded in that
+window still load: a relative path that matches nothing from the repository but
+does from the git root resolves there, with a warning to re-add it. A path that
+exists from both resolves from the repository. `extension source add` validates
+against the repository only, so it never records that form again.
+
 ### Source-Path Skill Installation
 
 Source-path extensions (set up in `.swamp-sources.yaml`) can provide skills too.
@@ -3404,11 +3422,12 @@ vs `/Users/...`). Unpruned, these phantom rows cause cross-aggregate
 `(kind, typeNormalized)` collisions that block every catalog write, including
 `rm` of unrelated extensions.
 
-Sources mounted through `.swamp-sources.yaml` can live outside the repo root
-(a sibling checkout, or the git main worktree when the repo is a worktree). Each
-repository is built with `mountedSourceDirs`, the per-kind directories the
-current `.swamp-sources.yaml` resolves to (`resolveMountedSourceDirs`), and the
-prune keeps a row under one of them whose source file still exists
+Sources mounted through `.swamp-sources.yaml` can live outside the repo root (a
+sibling checkout, or a path in the git main worktree when the repo is a
+worktree). Each repository is built with `mountedSourceDirs`, the per-kind
+directories the current `.swamp-sources.yaml` resolves to
+(`resolveMountedSourceDirs`), and the prune keeps a row under one of them whose
+source file still exists
 (swamp-club#2563). Without that, every partial save (`extension pull`, `rm`,
 `update`, the loader's failure records) deleted the mounted rows until the next
 index. Keeping any out-of-root row whose source exists would be wrong: a repo

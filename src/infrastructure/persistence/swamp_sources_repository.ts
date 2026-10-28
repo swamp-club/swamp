@@ -20,12 +20,12 @@
 import { isAbsolute, relative, resolve } from "@std/path";
 import { walk } from "@std/fs";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
-import { getLogger } from "@logtape/logtape";
+import { getConfig, getLogger } from "@logtape/logtape";
 import { expandEnvVars } from "./env_path.ts";
 import { expandSourceGlob } from "./source_glob_expander.ts";
 import { swampSourcesPath } from "./paths.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
-import { resolveGitMainWorktreeRoot } from "./git_worktree.ts";
+import { resolveSourceBaseDirs } from "./git_worktree.ts";
 import {
   detectKindFromSource,
   EXTENSION_KINDS,
@@ -101,13 +101,18 @@ export async function removeSwampSources(repoDir: string): Promise<void> {
  * Each expanded path inherits the `only` filter from its parent source entry.
  *
  * @param sourceBaseDir - Base directory for resolving relative paths.
- *   Defaults to `repoDir`. In a worktree, pass the git main working tree
- *   root so relative paths resolve the same as from the main checkout.
+ *   Defaults to `repoDir`. Pass `baseDir` from `resolveSourceBaseDirs` so
+ *   a worktree resolves relative paths the same as the main checkout.
+ * @param legacyBaseDir - `legacyBaseDir` from `resolveSourceBaseDirs`. A
+ *   relative path that matches nothing under `sourceBaseDir` but does
+ *   under this directory resolves there, with a warning, so sources
+ *   recorded relative to the git root keep loading (swamp-club#4027).
  */
 export async function expandSourcePaths(
   sources: SwampSourcesConfig,
   repoDir: string,
   sourceBaseDir?: string,
+  legacyBaseDir?: string,
 ): Promise<SwampSource[]> {
   const expanded: SwampSource[] = [];
   const baseDir = sourceBaseDir ?? repoDir;
@@ -117,17 +122,63 @@ export async function expandSourcePaths(
     const absolutePath = isAbsolute(expandedPath)
       ? expandedPath
       : resolve(baseDir, expandedPath);
+    const legacyPath = isAbsolute(expandedPath) || legacyBaseDir === undefined
+      ? undefined
+      : resolve(legacyBaseDir, expandedPath);
 
     if (isGlobPattern(absolutePath)) {
-      for (const path of await expandSourceGlob(absolutePath)) {
+      let paths = await expandSourceGlob(absolutePath);
+      if (paths.length === 0 && legacyPath !== undefined) {
+        paths = await expandSourceGlob(legacyPath);
+        if (paths.length > 0) warnLegacySource(source.path, legacyBaseDir!);
+      }
+      for (const path of paths) {
         expanded.push({ path, only: source.only });
       }
+    } else if (
+      legacyPath !== undefined && await isMissing(absolutePath) &&
+      await isDirectory(legacyPath)
+    ) {
+      warnLegacySource(source.path, legacyBaseDir!);
+      expanded.push({ path: legacyPath, only: source.only });
     } else {
       expanded.push({ path: absolutePath, only: source.only });
     }
   }
 
   return expanded;
+}
+
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    return (await Deno.stat(path)).isDirectory;
+  } catch {
+    return false;
+  }
+}
+
+/** True only when nothing is at `path`: a path that cannot be read (for
+ * example permission denied) is not treated as absent. */
+async function isMissing(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return false;
+  } catch (error) {
+    return error instanceof Deno.errors.NotFound;
+  }
+}
+
+/** Source paths already warned about, so each warns once per process. */
+const warnedLegacySources = new Set<string>();
+
+function warnLegacySource(path: string, gitRoot: string): void {
+  const key = `${gitRoot}\0${path}`;
+  if (warnedLegacySources.has(key)) return;
+  // CLI startup expands sources before logging is configured, where the
+  // record is dropped; only a delivered warning counts as given.
+  if (getConfig() !== null) warnedLegacySources.add(key);
+  logger
+    .warn`Extension source ${path} resolved against the git repository root ${gitRoot}. Relative source paths are relative to the swamp repository: remove it with 'swamp extension source rm' and add it again with a path relative to the repository.`;
 }
 
 /**
@@ -479,8 +530,13 @@ export async function resolveMountedSourceDirs(
 ): Promise<string[]> {
   const config = await readSwampSources(repoDir);
   if (!config) return [];
-  const sourceBaseDir = await resolveGitMainWorktreeRoot(repoDir);
-  const expanded = await expandSourcePaths(config, repoDir, sourceBaseDir);
+  const { baseDir, legacyBaseDir } = await resolveSourceBaseDirs(repoDir);
+  const expanded = await expandSourcePaths(
+    config,
+    repoDir,
+    baseDir,
+    legacyBaseDir,
+  );
   const { resolved } = await resolveSourceExtensionDirs(expanded, {
     quiet: true,
   });
@@ -502,16 +558,26 @@ export async function resolveMountedSourceDirs(
  *   - A glob with ≥1 expansions unions kinds across expansions.
  *   - A concrete path with zero kinds from both layouts returns `[]` —
  *     callers reject it at add time.
+ *
+ * `legacyBaseDir` applies the git-root fallback of `expandSourcePaths`.
+ * `sourceList` passes it so a legacy entry lists the kinds it loads with;
+ * `sourceAdd` does not, so a new entry must resolve from the repository.
  */
 export async function resolveExtensionKindsForSource(
   source: SwampSource,
   repoDir: string,
+  legacyBaseDir?: string,
 ): Promise<ExtensionKind[]> {
   const only = source.only ?? EXTENSION_KINDS;
   const onlySet = new Set<ExtensionKind>(only);
   const union = new Set<ExtensionKind>();
 
-  const expanded = await expandSourcePaths({ sources: [source] }, repoDir);
+  const expanded = await expandSourcePaths(
+    { sources: [source] },
+    repoDir,
+    repoDir,
+    legacyBaseDir,
+  );
 
   for (const ex of expanded) {
     const marker = await readSourceMarker(ex.path);

@@ -22,6 +22,7 @@ import { join } from "@std/path";
 import { createSourceListDeps, sourceList } from "./list.ts";
 import { createLibSwampContext } from "../context.ts";
 import type { SourceListEvent } from "./source_events.ts";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 
 const ctx = createLibSwampContext({});
 
@@ -192,5 +193,21 @@ Deno.test("sourceList: preserves existing fields (path, only, expandedPaths, sta
     assertEquals(entry.only, ["models"]);
     assertEquals(entry.expandedPaths.length, 1);
     assertEquals(entry.status, "valid");
+  });
+});
+
+Deno.test("sourceList: a path that expands to an unmatched glob is path_not_found", async () => {
+  await withRepo(async (repo) => {
+    const envVar = `SWAMP_LIST_TEST_${
+      crypto.randomUUID().replaceAll("-", "_")
+    }`;
+    await writeSourcesYaml(repo, `sources:\n  - path: \$${envVar}\n`);
+    const deps = await createSourceListDeps(repo);
+    const data = await withMockedEnv(
+      { [envVar]: join(repo, "ext-*") },
+      async () => completedData(await collect(sourceList(ctx, deps))),
+    );
+    assertEquals(data.sources[0].status, "path_not_found");
+    assertEquals(data.sources[0].expandedPaths, []);
   });
 });
