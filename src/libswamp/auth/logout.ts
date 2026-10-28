@@ -135,8 +135,10 @@ export async function* authLogout(
 
   if (!credentials) {
     // An API-key run leaves its identity and scope caches and the gate's
-    // stamps without any login record, so they are cleared here too.
-    await deps.deleteCredentials();
+    // stamps without any login record, so they are cleared here too. Best
+    // effort: with no login there is nothing to log out, so a cache that
+    // cannot be removed does not fail the command.
+    await deps.deleteCredentials().catch(() => {});
     const data: AuthLogoutData = {
       loggedOut: false,
       reason: "not authenticated",

@@ -258,6 +258,21 @@ Deno.test("authLogout: yields completed with loggedOut false when not authentica
   assertEquals(data.reason, "not authenticated");
 });
 
+Deno.test("authLogout: a cache that cannot be removed does not fail logout without a login", async () => {
+  const deps = makeDeps({
+    loadCredentials: () => Promise.resolve(null),
+    deleteCredentials: () =>
+      Promise.reject(new Deno.errors.PermissionDenied("scope_cache.json")),
+  });
+
+  const data = completedData(
+    await collect<AuthLogoutEvent>(authLogout(createLibSwampContext(), deps)),
+  );
+
+  assertEquals(data.loggedOut, false);
+  assertEquals(data.reason, "not authenticated");
+});
+
 Deno.test("createAuthLogoutDeps: loads the stored login key even when SWAMP_API_KEY and SWAMP_CLUB_URL are set", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {

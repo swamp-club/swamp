@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import { exists } from "@std/fs";
+import { join } from "@std/path";
 import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
 import type { WhoamiResponse } from "../../infrastructure/http/swamp_club_client.ts";
 import { createLibSwampContext } from "../context.ts";
@@ -326,7 +327,7 @@ Deno.test("createAuthDeps: saveCredentials caches identity when SWAMP_API_KEY is
     assertEquals(loaded?.username, "adam");
     assertEquals(loaded?.collectives, ["myorg"]);
     // The identity is cached beside, never in, the login record.
-    assertEquals(await exists(`${tmpDir}/swamp/auth.json`), false);
+    assertEquals(await exists(join(tmpDir, "swamp", "auth.json")), false);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

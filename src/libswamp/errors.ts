@@ -68,8 +68,9 @@ export function noStoredLoginKey(): SwampError {
     code: "not_authenticated",
     message:
       "Not authenticated. auth.json holds identity cached from an earlier " +
-      "SWAMP_API_KEY or SWAMP_API_KEY_FILE run, but no login key. Run " +
-      "'swamp auth login' to sign in, or set the API key source again.",
+      "SWAMP_API_KEY, SWAMP_API_KEY_FILE or --club-api-key-file run, but no " +
+      "login key. Run 'swamp auth login' to sign in, set the API key source " +
+      "again, or run 'swamp auth logout' to remove the file.",
   };
 }
 
