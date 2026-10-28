@@ -95,6 +95,27 @@ execution service, and `data delete`, `rename`, `gc`, `prune` and
 `model delete`) pass the resolved setting; any other site keeps the
 constructor's default, off.
 
+A push refused because its model lock was lost (swamp-club#3485) deletes the
+refused versions, then puts back the datastore's copy of each removed file
+and `latest` marker (`discardRefusedVersions` in `repo_context.ts`). It writes
+in the same order as the repository (swamp-club#4033). It reads the markers
+first. A marker that names a version the cache does not hold, such as the new
+lock holder's next version, has that version's `metadata.yaml` restored with
+the content, plus its `raw` unless the cache hydrates lazily. All content is
+written next, then each restored version directory and every directory above
+it up to `data/` is synced once, then the markers are written. Syncing follows
+the `durable` setting; with it off the order holds but nothing is synced.
+
+Every marker that was read is written, even one naming a version the cache
+still lacks (the datastore holds no such version, or restoring it failed). A
+marker left removed stays marked dirty, and the next push would delete the
+datastore's copy. A local marker naming a missing version reads as no data
+until the next pull replaces it. So no single failure stops the markers: a
+marker that cannot be read is skipped, and a failed content restore or
+directory sync is logged before the markers are written. Only a clean restore
+keeps the promise that a durable marker never names content a power cut could
+lose.
+
 ### S3 (via `@swamp/s3-datastore` extension)
 
 Stores runtime data in an S3 bucket. All reads and writes use a local cache at

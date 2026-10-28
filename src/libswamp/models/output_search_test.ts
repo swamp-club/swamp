@@ -18,6 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { withDiagnosticArea } from "../../domain/diagnostics/diagnostic_phase.ts";
+import {
+  diagnosticPhases,
+  findSpan,
+  withObservedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -473,4 +479,52 @@ Deno.test("modelOutputSearch: scans no definitions when no output needs a name",
     ),
   );
   assertEquals(empty.results, []);
+});
+
+Deno.test("modelOutputSearch: exports its phases only inside the output_search area (swamp-club#4056)", async () => {
+  await withObservedSpans(async (spans) => {
+    const deps = makeDeps({
+      resolveWorkflowNames: () =>
+        Promise.resolve(new Map([["wf-1", "nightly"]])),
+    });
+    const input = { includeProvenance: true };
+
+    await collect(modelOutputSearch(createLibSwampContext(), deps, input));
+    for (
+      const phase of [
+        "candidate_scan",
+        "definition_names",
+        "workflow_names",
+      ] as const
+    ) {
+      assertEquals(diagnosticPhases(spans, phase).length, 0, phase);
+    }
+
+    const data = completedOf(
+      await withDiagnosticArea(
+        "output_search",
+        () => collect(modelOutputSearch(createLibSwampContext(), deps, input)),
+      ),
+    );
+
+    assertEquals(data.results.length, 2);
+    const attributes = (phase: string) =>
+      findSpan(spans, `swamp.diagnostic.${phase}`).attributes;
+    assertEquals(
+      attributes("candidate_scan")["swamp.diagnostic.candidates"],
+      2,
+    );
+    assertEquals(
+      attributes("definition_names")["swamp.diagnostic.definitions"],
+      2,
+    );
+    assertEquals(
+      attributes("workflow_names")["swamp.diagnostic.workflow_ids"],
+      1,
+    );
+    assertEquals(
+      attributes("candidate_scan")["swamp.diagnostic.area"],
+      "output_search",
+    );
+  });
 });

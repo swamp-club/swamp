@@ -26,7 +26,7 @@
 
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import { join } from "@std/path";
+import { basename, dirname, join } from "@std/path";
 import {
   createInMemoryRemote,
   type InMemoryRemote,
@@ -55,6 +55,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "../src/cli/repo_context.ts";
 import { VERSION } from "../src/cli/commands/version.ts";
+import type { AtomicWriteSync } from "../src/infrastructure/persistence/atomic_write.ts";
 
 await initializeLogging({});
 
@@ -149,7 +150,11 @@ class LockTable {
   }
 }
 
-async function initRepo(repoDir: string, typeName: string): Promise<void> {
+async function initRepo(
+  repoDir: string,
+  typeName: string,
+  durable = false,
+): Promise<void> {
   await Deno.mkdir(repoDir, { recursive: true });
   const homeDir = join(repoDir, "test-home");
   await new RepoService(VERSION, {
@@ -157,6 +162,11 @@ async function initRepo(repoDir: string, typeName: string): Promise<void> {
     configDir: join(homeDir, ".config", "swamp"),
   }).init(RepoPath.create(repoDir), { tools: [] });
   await configureTestDatastore(repoDir, typeName);
+  if (durable) {
+    const markerPath = join(repoDir, ".swamp.yaml");
+    const marker = await Deno.readTextFile(markerPath);
+    await Deno.writeTextFile(markerPath, marker + "  durable: true\n");
+  }
 }
 
 type Unlocked = Awaited<ReturnType<typeof requireInitializedRepoUnlocked>>;
@@ -165,8 +175,14 @@ type Unlocked = Awaited<ReturnType<typeof requireInitializedRepoUnlocked>>;
  * Takes the model lock in `repoDir` (pulling) and saves `body` as a new
  * version of data "x", leaving the push to the caller: `flush` publishes
  * the version and releases the lock, `close` closes the catalog after.
+ * `options.more` are saved as further versions in the same run.
  */
-async function lockAndSave(repoDir: string, modelId: string, body: string) {
+async function lockAndSave(
+  repoDir: string,
+  modelId: string,
+  body: string,
+  options: { more?: string[]; restoreWriteHooks?: AtomicWriteSync } = {},
+) {
   const ctx: Unlocked = await requireInitializedRepoUnlocked({
     repoDir,
     outputMode: "json",
@@ -178,23 +194,29 @@ async function lockAndSave(repoDir: string, modelId: string, body: string) {
     ctx.syncService,
     ctx.repoContext.catalogStore,
     undefined,
-    { repoContext: ctx.repoContext },
+    {
+      repoContext: ctx.repoContext,
+      restoreWriteHooks: options.restoreWriteHooks,
+    },
   );
   if (lock.synced) ctx.repoContext.catalogStore.invalidate();
-  const saved = await ctx.repoContext.unifiedDataRepo.save(
-    modelType,
-    modelId,
-    item(),
-    new TextEncoder().encode(body),
-  );
-  const written: WrittenVersion[] = [{
-    modelType: modelType.normalized,
-    modelId,
-    dataName: "x",
-    version: saved.version,
-  }];
+  const written: WrittenVersion[] = [];
+  for (const b of [body, ...options.more ?? []]) {
+    const saved = await ctx.repoContext.unifiedDataRepo.save(
+      modelType,
+      modelId,
+      item(),
+      new TextEncoder().encode(b),
+    );
+    written.push({
+      modelType: modelType.normalized,
+      modelId,
+      dataName: "x",
+      version: saved.version,
+    });
+  }
   return {
-    version: saved.version,
+    version: written[0].version,
     flush: () => lock.flush(written),
     /** An unlocked push of everything dirty, as `workflow run` ends with. */
     pushUnlocked: async () => {
@@ -208,6 +230,20 @@ async function lockAndSave(repoDir: string, modelId: string, body: string) {
     /** The versions of data "x" in this clone's cache. */
     localVersions: () =>
       ctx.repoContext.unifiedDataRepo.listVersions(modelType, modelId, "x"),
+    /** Data "x"'s directory in this clone's cache. */
+    nameDir: () =>
+      ctx.repoContext.unifiedDataRepo.getDataNameDir(modelType, modelId, "x"),
+    /** The content of `version` of data "x" in this clone's cache. */
+    content: async (version: number) => {
+      ctx.repoContext.catalogStore.invalidate();
+      const bytes = await ctx.repoContext.unifiedDataRepo.getContent(
+        modelType,
+        modelId,
+        "x",
+        version,
+      );
+      return bytes === null ? null : new TextDecoder().decode(bytes);
+    },
     close: async () => {
       await flushDatastoreSync();
       ctx.repoContext.catalogStore.close();
@@ -262,6 +298,8 @@ async function withClones(
     bSameProcess?: boolean;
     /** Clone A's sync service has no `fetchContent`. */
     noFetchA?: boolean;
+    /** Clone A's datastore block sets `durable: true`. */
+    durableA?: boolean;
   } = {},
 ): Promise<void> {
   const remote = createInMemoryRemote({
@@ -281,7 +319,7 @@ async function withClones(
     await withTempDir(async (dir) => {
       const repoA = join(dir, "a");
       const repoB = join(dir, "b");
-      await initRepo(repoA, typeA.typeName);
+      await initRepo(repoA, typeA.typeName, options.durableA);
       await initRepo(repoB, typeB.typeName);
       await fn({
         remote,
@@ -492,5 +530,291 @@ for (const twoPhaseSync of [true, false]) {
       assertEquals(remoteBodies(c.remote, c.modelId), ['{"by":"b"}']);
       assertEquals(remoteLatest(c.remote, c.modelId), ["1"]);
     }, { noFetchA: true });
+  });
+}
+
+/** The local latest marker of data "x" in `nameDir`, or undefined. */
+async function localLatest(nameDir: string): Promise<string | undefined> {
+  try {
+    return (await Deno.readTextFile(join(nameDir, "latest"))).trim();
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return undefined;
+    throw error;
+  }
+}
+
+/**
+ * Restore hooks that log each file a refusal's restore syncs (`file:`) and
+ * each directory (`dir:`), in order. `failFile` and `failDir` make a sync
+ * throw.
+ */
+function restoreSyncLog(
+  options: {
+    failFile?: (target: string) => boolean;
+    failDir?: boolean;
+  } = {},
+) {
+  const log: string[] = [];
+  const hooks: AtomicWriteSync = {
+    syncFile: (file, paths) => {
+      log.push(`file:${paths.target}`);
+      if (options.failFile?.(paths.target)) {
+        return Promise.reject(new Error(`sync of ${paths.target} failed`));
+      }
+      return file.sync();
+    },
+    syncDirectory: (dir) => {
+      log.push(`dir:${dir}`);
+      return options.failDir
+        ? Promise.reject(new Error(`sync of ${dir} failed`))
+        : Promise.resolve();
+    },
+  };
+  return { log, hooks };
+}
+
+/** The directories from `dir` up to the cache's `data` directory. */
+function dirsUpToDataRoot(dir: string): string[] {
+  const dirs = [dir];
+  while (basename(dir) !== "data" && dirname(dir) !== dir) {
+    dir = dirname(dir);
+    dirs.push(dir);
+  }
+  return dirs;
+}
+
+// A refusal's restore wrote each file unsynced and in the order it was
+// removed, so a latest marker could reach the disk before the content it
+// names, and a marker naming a version the cache never held was restored
+// (swamp-club#4033). With durable writes, content now comes first, then its
+// directories, then the markers; a marker's version is restored with it.
+for (const twoPhaseSync of [true, false]) {
+  Deno.test(`acquireModelLocks: a durable refusal restores content, then syncs each directory once, then the latest marker (twoPhaseSync=${twoPhaseSync})`, async () => {
+    await withClones(twoPhaseSync, async (c) => {
+      const sync = restoreSyncLog();
+      const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a1"}', {
+        more: ['{"by":"a2"}'],
+        restoreWriteHooks: sync.hooks,
+      });
+      let nameDir: string;
+      try {
+        c.locks.breakglass(c.modelId);
+        await saveAndPush(c.repoB, c.modelId, '{"by":"b1"}');
+        await saveAndPush(c.repoB, c.modelId, '{"by":"b2"}');
+        c.remote.failNext("pull");
+        await assertRejects(() => a.flush(), ModelLockLostError);
+        nameDir = a.nameDir();
+        assertEquals(await localLatest(nameDir), "2");
+        assertEquals(await a.content(2), '{"by":"b2"}');
+      } finally {
+        await a.close();
+      }
+      const latest = `file:${join(nameDir, "latest")}`;
+      const markerAt = sync.log.indexOf(latest);
+      assertEquals(sync.log.lastIndexOf(latest), markerAt);
+      const content = sync.log.slice(0, markerAt).filter((e) =>
+        e.startsWith("file:")
+      );
+      assertEquals(
+        content.sort(),
+        ["1/metadata.yaml", "1/raw", "2/metadata.yaml", "2/raw"]
+          .map((f) => `file:${join(nameDir, ...f.split("/"))}`),
+      );
+      const firstDir = sync.log.findIndex((e) => e.startsWith("dir:"));
+      assert(
+        sync.log.slice(firstDir, markerAt).every((e) => e.startsWith("dir:")),
+        `content synced after a directory: ${sync.log.join(", ")}`,
+      );
+      const dirs = sync.log.slice(firstDir, markerAt);
+      assertEquals(
+        [...dirs].sort(),
+        [
+          join(nameDir, "1"),
+          join(nameDir, "2"),
+          ...dirsUpToDataRoot(nameDir),
+        ].map((d) => `dir:${d}`).sort(),
+        "each directory up to the data root is synced once",
+      );
+      // The marker's own write syncs its directory.
+      assertEquals(sync.log.slice(markerAt + 1), [`dir:${nameDir}`]);
+    }, { durableA: true });
+  });
+
+  for (const durable of [true, false]) {
+    for (const later of ["push", "pull then push"] as const) {
+      Deno.test(`acquireModelLocks: a refusal restores the version the datastore's latest marker names before the marker, and a later ${later} keeps it (durable=${durable}, twoPhaseSync=${twoPhaseSync})`, async () => {
+        await withClones(twoPhaseSync, async (c) => {
+          const sync = restoreSyncLog();
+          const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a1"}', {
+            restoreWriteHooks: sync.hooks,
+          });
+          try {
+            c.locks.breakglass(c.modelId);
+            await saveAndPush(c.repoB, c.modelId, '{"by":"b1"}');
+            await saveAndPush(c.repoB, c.modelId, '{"by":"b2"}');
+            c.remote.failNext("pull");
+            await assertRejects(() => a.flush(), ModelLockLostError);
+            const nameDir = a.nameDir();
+            assertEquals(await localLatest(nameDir), "2");
+            assertEquals(await a.content(2), '{"by":"b2"}');
+            if (durable) {
+              const markerAt = sync.log.indexOf(
+                `file:${join(nameDir, "latest")}`,
+              );
+              for (const f of ["metadata.yaml", "raw"]) {
+                const at = sync.log.indexOf(`file:${join(nameDir, "2", f)}`);
+                assert(at >= 0 && at < markerAt, `2/${f} before the marker`);
+              }
+            } else {
+              assertEquals(sync.log, [], "durable off syncs nothing");
+            }
+            await (later === "push" ? a.pushUnlocked() : a.syncUnlocked());
+          } finally {
+            await a.close();
+          }
+          assertEquals(remoteLatest(c.remote, c.modelId), ["2"]);
+          assertEquals(
+            remoteBodies(c.remote, c.modelId).sort(),
+            ['{"by":"b1"}', '{"by":"b2"}'],
+          );
+        }, { durableA: durable });
+      });
+    }
+  }
+
+  Deno.test(`acquireModelLocks: a refusal restores a latest marker naming a version the datastore lacks, so a later push keeps the datastore's marker (twoPhaseSync=${twoPhaseSync})`, async () => {
+    await withClones(twoPhaseSync, async (c) => {
+      const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a1"}');
+      try {
+        c.locks.breakglass(c.modelId);
+        await saveAndPush(c.repoB, c.modelId, '{"by":"b1"}');
+        // B publishes a marker naming version 3, which it never wrote.
+        const b: Unlocked = await requireInitializedRepoUnlocked({
+          repoDir: c.repoB,
+          outputMode: "json",
+        });
+        try {
+          await Deno.writeTextFile(
+            join(
+              b.repoContext.unifiedDataRepo.getDataNameDir(
+                modelType,
+                c.modelId,
+                "x",
+              ),
+              "latest",
+            ),
+            "3",
+          );
+          await b.syncService!.markDirty();
+          await b.syncService!.pushChanged();
+        } finally {
+          b.repoContext.catalogStore.close();
+        }
+        assertEquals(remoteLatest(c.remote, c.modelId), ["3"]);
+        c.remote.failNext("pull");
+        await assertRejects(() => a.flush(), ModelLockLostError);
+        assertEquals(await localLatest(a.nameDir()), "3");
+        assertEquals(await a.content(1), '{"by":"b1"}');
+        await a.pushUnlocked();
+      } finally {
+        await a.close();
+      }
+      assertEquals(remoteLatest(c.remote, c.modelId), ["3"]);
+    }, { durableA: true });
+  });
+
+  Deno.test(`acquireModelLocks: a refusal whose directory sync fails still restores the latest marker (twoPhaseSync=${twoPhaseSync})`, async () => {
+    await withClones(twoPhaseSync, async (c) => {
+      const sync = restoreSyncLog({ failDir: true });
+      const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a1"}', {
+        more: ['{"by":"a2"}'],
+        restoreWriteHooks: sync.hooks,
+      });
+      try {
+        c.locks.breakglass(c.modelId);
+        await saveAndPush(c.repoB, c.modelId, '{"by":"b1"}');
+        await saveAndPush(c.repoB, c.modelId, '{"by":"b2"}');
+        c.remote.failNext("pull");
+        await assertRejects(() => a.flush(), ModelLockLostError);
+        assertEquals(await localLatest(a.nameDir()), "2");
+        await a.pushUnlocked();
+      } finally {
+        await a.close();
+      }
+      assertEquals(remoteLatest(c.remote, c.modelId), ["2"]);
+    }, { durableA: true });
+  });
+
+  Deno.test(`acquireModelLocks: a refusal whose content restore fails fetches nothing more and still restores the latest marker (twoPhaseSync=${twoPhaseSync})`, async () => {
+    await withClones(twoPhaseSync, async (c) => {
+      let nameDir = "";
+      const sync = restoreSyncLog({
+        failFile: (target) => dirname(target) === join(nameDir, "2"),
+      });
+      const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a1"}', {
+        more: ['{"by":"a2"}'],
+        restoreWriteHooks: sync.hooks,
+      });
+      nameDir = a.nameDir();
+      try {
+        c.locks.breakglass(c.modelId);
+        await saveAndPush(c.repoB, c.modelId, '{"by":"b1"}');
+        await saveAndPush(c.repoB, c.modelId, '{"by":"b2"}');
+        const before = c.remote.ops().length;
+        c.remote.failNext("pull");
+        await assertRejects(() => a.flush(), ModelLockLostError);
+        const fetched = c.remote.ops().slice(before)
+          .filter((op) => op.op === "fetch")
+          .flatMap((op) => op.paths)
+          .filter((path) => path.includes(c.modelId));
+        assert(
+          fetched.at(-1)?.includes("/x/2/"),
+          `the failed x/2 file is the last fetched: ${fetched.join(", ")}`,
+        );
+        assertEquals(
+          sync.log.filter((e) => e.startsWith(`file:${join(nameDir, "2")}`))
+            .length,
+          1,
+          "only one x/2 file was written",
+        );
+        assertEquals(await localLatest(nameDir), "2");
+        await a.pushUnlocked();
+      } finally {
+        await a.close();
+      }
+      assertEquals(remoteLatest(c.remote, c.modelId), ["2"]);
+    }, { durableA: true });
+  });
+
+  Deno.test(`acquireModelLocks: a refusal whose latest marker cannot be read still restores the refused version's content (twoPhaseSync=${twoPhaseSync})`, async () => {
+    await withClones(twoPhaseSync, async (c) => {
+      const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a1"}');
+      try {
+        c.locks.breakglass(c.modelId);
+        await saveAndPush(c.repoB, c.modelId, '{"by":"b1"}');
+        await saveAndPush(c.repoB, c.modelId, '{"by":"b2"}');
+        const before = c.remote.ops().length;
+        c.remote.failNext("pull");
+        // The restore reads the markers first: this fails the read of x/latest.
+        c.remote.failNext("fetch");
+        await assertRejects(() => a.flush(), ModelLockLostError);
+        const fetched = c.remote.ops().slice(before)
+          .filter((op) => op.op === "fetch")
+          .flatMap((op) => op.paths)
+          .filter((path) => path.includes(c.modelId));
+        assert(
+          fetched.some((path) => path.endsWith("/x/1/raw")),
+          `the content restore ran: ${fetched.join(", ")}`,
+        );
+        assertEquals(await a.content(1), '{"by":"b1"}');
+        await a.pushUnlocked();
+      } finally {
+        await a.close();
+      }
+      assert(
+        remoteBodies(c.remote, c.modelId).includes('{"by":"b1"}'),
+        "the datastore keeps the new holder's version 1",
+      );
+    }, { durableA: true });
   });
 }

@@ -116,6 +116,49 @@ function parseOutputFileName(
     : { definitionId: match[1], stamp: match[2] };
 }
 
+/**
+ * How many directories {@link YamlOutputRepository.findAllGlobalSince} lists,
+ * or files it reads, at once (swamp-club#4056). An async listing of a large
+ * directory takes dozens of event-loop turns, and a read one more, so awaiting
+ * them one at a time made a busy serve's scan as slow as its turns added up.
+ * Under the definition index's 32 open files, so the two together stay
+ * bounded.
+ */
+const SCAN_CONCURRENCY = 16;
+
+/**
+ * `fn` of each item, at most `limit` at once, in the items' order. Once one
+ * call fails no further item starts, and the failure is raised only after
+ * every started call has settled, so none is left running.
+ */
+async function mapBounded<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  let failed = false;
+  const workers = Array.from(
+    { length: Math.min(limit, items.length) },
+    async () => {
+      while (!failed && next < items.length) {
+        const index = next++;
+        try {
+          results[index] = await fn(items[index]);
+        } catch (error) {
+          failed = true;
+          throw error;
+        }
+      }
+    },
+  );
+  for (const outcome of await Promise.allSettled(workers)) {
+    if (outcome.status === "rejected") throw outcome.reason;
+  }
+  return results;
+}
+
 /** Counts the `candidate_scan` phase always exports, zero included. */
 const CANDIDATE_SCAN_COUNTS = [
   "considered",
@@ -353,8 +396,39 @@ export class YamlOutputRepository implements OutputRepository {
     return outputs;
   }
 
-  /** {@link findAll} without the unreadable-record warning. */
-  private async readAll(type: ModelType): Promise<ModelOutput[]> {
+  /**
+   * The outputs of `definitionId`, for listing its history: like
+   * {@link findByDefinition}, but a file whose name says it belongs to
+   * another definition is skipped without being read (swamp-club#4056), as
+   * {@link findAllGlobalSince} trusts a name's stamp. A name not in
+   * {@link getPath}'s form is read. Callers that must find every record of
+   * the definition whatever its file is named (deleting it, authorizing a
+   * read) use {@link findByDefinition}.
+   */
+  async findHistoryByDefinition(
+    type: ModelType,
+    definitionId: DefinitionId,
+  ): Promise<ModelOutput[]> {
+    const outputs = await this.readAll(type, (name) => {
+      const named = OUTPUT_FILE_NAME.exec(name)?.[1];
+      return named === undefined || named === definitionId;
+    });
+    await warnUnreadableLeftOut(
+      this.unreadableContent,
+      this.getTypeDir(type),
+      (entry) => parseOutputFileName(entry.path)?.definitionId === definitionId,
+    );
+    return outputs.filter((output) => output.definitionId === definitionId);
+  }
+
+  /**
+   * {@link findAll} without the unreadable-record warning. With `readsName`,
+   * a file whose name it refuses is skipped without being read.
+   */
+  private async readAll(
+    type: ModelType,
+    readsName?: (name: string) => boolean,
+  ): Promise<ModelOutput[]> {
     const typeDir = this.getTypeDir(type);
     const outputs: ModelOutput[] = [];
     // Every record of the type is read, whatever the caller then keeps.
@@ -376,6 +450,10 @@ export class YamlOutputRepository implements OutputRepository {
           // Iterate over output files in method directory
           for (const entry of await readDirSorted(methodDir)) {
             if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
+            if (readsName && !readsName(entry.name)) {
+              tally.add("skipped_by_name");
+              continue;
+            }
             const path = join(methodDir, entry.name);
 
             // Per-file try/catch closes the TOCTOU window: a concurrent
@@ -453,14 +531,24 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   /**
-   * Finds all outputs whose `startedAt` is at or after the cutoff using a
-   * two-stage filter (mtime pre-filter, then parse-and-verify) so old YAML
-   * files are skipped without being parsed. See the matching docstring on
-   * `YamlWorkflowRunRepository.findAllGlobalSince` for the invariant.
+   * Finds all outputs whose `startedAt` is at or after the cutoff, skipping
+   * old records without reading them (swamp-club#4056). A file's name carries
+   * the `startedAt` its record was saved with (see {@link getPath}), and
+   * `startedAt` never changes, so a name stamped before the cutoff is skipped
+   * without even a stat; that holds however recently the file was written,
+   * which matters because a v3 read-model replay rewrites every record. A name
+   * not in that form falls back to the mtime pre-filter: a record is saved
+   * when its run starts and again when it ends, both at or after its
+   * `startedAt`, so a file last modified before the cutoff cannot have started
+   * on or after it. Every record read is checked against the cutoff again.
    *
-   * Output YAML is written exactly once at completion (`save()` does not
-   * rewrite an existing file), so mtime ≈ startedAt + duration on disk.
-   * Files older than the cutoff cannot have a startedAt on or after it.
+   * Directories are listed and files read {@link SCAN_CONCURRENCY} at a
+   * time: every awaited listing or read waits for a turn of the event loop,
+   * so on a busy serve a scan that awaited them one by one took as long as
+   * the turns added up. The result is in walk order all the same.
+   *
+   * Inside a diagnostic phase the scan is counted (directories, entries,
+   * names skipped, stats, reads) into that phase's tally.
    */
   async findAllGlobalSince(
     cutoff: Date,
@@ -468,74 +556,120 @@ export class YamlOutputRepository implements OutputRepository {
     // Load extension types before walking them; see findAllGlobal.
     await modelRegistry.ensureLoaded();
 
-    const results: { output: ModelOutput; type: ModelType; method: string }[] =
-      [];
     const cutoffMs = cutoff.getTime();
+    // A cutoff outside years 0000-9999 has a signed stamp, which sorts
+    // before every name's: then no name is skipped, only stat'ed.
+    const cutoffStamp = fileStamp(cutoff);
+    const tally = currentDiagnosticTally();
 
-    for (const modelType of modelRegistry.types()) {
-      const typeDir = this.getTypeDir(modelType);
-      try {
-        for (const methodEntry of await readDirSorted(typeDir)) {
-          if (!methodEntry.isDirectory) continue;
-          const methodDir = join(typeDir, methodEntry.name);
-
-          // Per-method-directory try/catch closes the directory-level
-          // TOCTOU window: a concurrent bulk delete can remove the
-          // method directory between readDir(typeDir) and
-          // readDir(methodDir). NotFound on a single method directory
-          // means "skip it" — never "abandon results already collected
-          // from earlier method directories of this type."
-          try {
-            for (const entry of await readDirSorted(methodDir)) {
-              if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
-              const path = join(methodDir, entry.name);
-
-              // Per-file try/catch closes the TOCTOU window: a concurrent
-              // delete can remove the file between readDir and stat or
-              // between stat and readTextFile. NotFound on a single file
-              // means "skip it" — never "abandon the rest of the current
-              // method directory or model type."
-              try {
-                // Stage A: mtime pre-filter
-                const stat = await Deno.stat(path);
-                const mtimeMs = stat.mtime?.getTime();
-                if (mtimeMs !== undefined && mtimeMs < cutoffMs) continue;
-
-                // Stage B: parse and verify
-                const content = await Deno.readTextFile(path);
-                const data = parseYaml(content) as ModelOutputData | null;
-                if (!data) continue;
-                if (data.logFile) {
-                  data.logFile = toAbsolutePath(this.repoDir, data.logFile);
-                }
-                const output = ModelOutput.fromData(data);
-                if (output.startedAt.getTime() < cutoffMs) continue;
-
-                results.push({
-                  output,
-                  type: modelType,
-                  method: output.methodName,
-                });
-              } catch (error) {
-                this.skipUnreadableRecord(path, error);
-              }
-            }
-          } catch (error) {
-            if (error instanceof Deno.errors.NotFound) continue;
-            throw error;
-          }
+    // Each stage keeps its items in walk order, so the result is in the
+    // order a sequential walk returns it (swamp-club#3067).
+    const methodDirs = (await mapBounded(
+      [...modelRegistry.types()],
+      SCAN_CONCURRENCY,
+      async (modelType) => {
+        const typeDir = this.getTypeDir(modelType);
+        try {
+          const methodEntries = await readDirSorted(typeDir);
+          tally.add("type_dirs");
+          return methodEntries
+            .filter((entry) => entry.isDirectory)
+            .map((entry) => ({ modelType, dir: join(typeDir, entry.name) }));
+        } catch (error) {
+          // The type directory itself doesn't exist.
+          if (error instanceof Deno.errors.NotFound) return [];
+          throw error;
         }
-      } catch (error) {
-        // Outer catch handles "type directory itself doesn't exist."
-        // Per-method-dir and per-file NotFound are handled above.
-        if (error instanceof Deno.errors.NotFound) continue;
-        throw error;
-      }
-    }
+      },
+    )).flat();
+
+    const files = (await mapBounded(
+      methodDirs,
+      SCAN_CONCURRENCY,
+      async ({ modelType, dir }) => {
+        // A concurrent bulk delete can remove the method directory between
+        // listing its type and listing it. NotFound on a single method
+        // directory means "skip it" — never "abandon results already
+        // collected from other method directories."
+        let entries: Deno.DirEntry[];
+        try {
+          entries = await readDirSorted(dir);
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) return [];
+          throw error;
+        }
+        tally.add("method_dirs");
+        const found: { modelType: ModelType; path: string; named: boolean }[] =
+          [];
+        for (const entry of entries) {
+          if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
+          tally.add("entries");
+          // Stage A: the name's stamp, or the mtime when the name has none
+          const stamp = OUTPUT_FILE_NAME.exec(entry.name)?.[2];
+          if (stamp !== undefined && stamp < cutoffStamp) {
+            tally.add("skipped_by_name");
+            continue;
+          }
+          found.push({
+            modelType,
+            path: join(dir, entry.name),
+            named: stamp !== undefined,
+          });
+        }
+        return found;
+      },
+    )).flat();
+
+    const read = await mapBounded(
+      files,
+      SCAN_CONCURRENCY,
+      async ({ modelType, path, named }) => {
+        // Per-file try/catch closes the TOCTOU window: a concurrent delete
+        // can remove the file between readDir and stat or between stat and
+        // readTextFile. NotFound on a single file means "skip it" — never
+        // "abandon the rest of the scan."
+        try {
+          if (!named) {
+            const stat = await tally.measure("stat", () => Deno.stat(path));
+            tally.add("stats");
+            const mtimeMs = stat.mtime?.getTime();
+            if (mtimeMs !== undefined && mtimeMs < cutoffMs) {
+              tally.add("skipped_by_mtime");
+              return undefined;
+            }
+          }
+
+          // Stage B: parse and verify
+          const content = await tally.measure(
+            "read",
+            () => Deno.readTextFile(path),
+          );
+          tally.add("files_read");
+          if (tally.recording) {
+            tally.add("bytes_read", utf8ByteLength(content));
+          }
+          const data = tally.measureSync(
+            "parse",
+            () => parseYaml(content),
+          ) as ModelOutputData | null;
+          if (!data) return undefined;
+          if (data.logFile) {
+            data.logFile = toAbsolutePath(this.repoDir, data.logFile);
+          }
+          const output = ModelOutput.fromData(data);
+          if (output.startedAt.getTime() < cutoffMs) return undefined;
+          return { output, type: modelType, method: output.methodName };
+        } catch (error) {
+          this.skipUnreadableRecord(path, error);
+          return undefined;
+        }
+      },
+    );
+    const results = read.filter((found) => found !== undefined);
+
     // Only the ones whose file name says they started at or after the
     // cutoff, as this listing's own pre-filter would; one whose name does
     // not say is named too.
-    const cutoffStamp = fileStamp(cutoff);
     await warnUnreadableLeftOut(
       this.unreadableContent,
       this.baseDir,

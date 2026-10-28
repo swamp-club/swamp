@@ -31,7 +31,7 @@ import {
 } from "./unreadable_records_test_helpers.ts";
 import { assertPathStringIncludes } from "./path_test_helpers.ts";
 import { ensureDir } from "@std/fs";
-import { dirname, join, SEPARATOR } from "@std/path";
+import { basename, dirname, join, SEPARATOR } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import {
   createModelOutputId,
@@ -2364,3 +2364,417 @@ Deno.test("YamlOutputRepository: reads outside a diagnostic area export nothing"
     });
   });
 });
+
+// --- Bounded history reads (swamp-club#4056) ---
+
+/**
+ * Runs `fn` counting the files it stats and reads. Patches the globals as
+ * {@link withPhantomReadDirEntry} does: the walkers call them directly.
+ */
+async function countFileOps<T>(
+  fn: () => Promise<T>,
+): Promise<{ result: T; stats: string[]; reads: string[] }> {
+  const stat = Deno.stat;
+  const readTextFile = Deno.readTextFile;
+  const stats: string[] = [];
+  const reads: string[] = [];
+  (Deno as { stat: typeof Deno.stat }).stat = (path) => {
+    stats.push(String(path));
+    return stat(path);
+  };
+  (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile = (
+    path,
+    options,
+  ) => {
+    reads.push(String(path));
+    return readTextFile(path, options);
+  };
+  try {
+    return { result: await fn(), stats, reads };
+  } finally {
+    (Deno as { stat: typeof Deno.stat }).stat = stat;
+    (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile =
+      readTextFile;
+  }
+}
+
+/** Writes `output`'s record under `name` in its method directory. */
+async function writeRecordAs(
+  repo: YamlOutputRepository,
+  output: ModelOutput,
+  name: string,
+): Promise<string> {
+  const path = join(dirname(repo.getPath(registeredType, "run", output)), name);
+  await ensureDir(dirname(path));
+  await Deno.writeTextFile(
+    path,
+    stringifyYaml(JSON.parse(JSON.stringify(output.toData()))),
+  );
+  return path;
+}
+
+Deno.test(
+  "findAllGlobalSince: skips a file named before the cutoff without a stat or read, however fresh its mtime",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      // Saved just now, so its mtime is fresh, as after a v3 replay.
+      await makeOutput(repo, new Date(Date.now() - 7 * DAY_MS));
+      const fresh = await makeOutput(repo, new Date());
+
+      const { result, stats, reads } = await countFileOps(() =>
+        repo.findAllGlobalSince(new Date(Date.now() - HOUR_MS))
+      );
+
+      assertEquals(result.map((r) => r.output.id), [fresh.id]);
+      assertEquals(stats, []);
+      assertEquals(reads, [repo.getPath(registeredType, "run", fresh)]);
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: includes a record started exactly at the cutoff",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const cutoff = new Date(Date.now() - HOUR_MS);
+      const atCutoff = await makeOutput(repo, cutoff);
+      await makeOutput(repo, new Date(cutoff.getTime() - 1));
+
+      const found = await repo.findAllGlobalSince(cutoff);
+
+      assertEquals(found.map((r) => r.output.id), [atCutoff.id]);
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: a name not in the output form falls back to its mtime, then its startedAt",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const old = new Date(Date.now() - 7 * DAY_MS);
+      const cutoff = new Date(Date.now() - HOUR_MS);
+      const record = (startedAt: Date) =>
+        ModelOutput.create({
+          definitionId: createDefinitionId(crypto.randomUUID()),
+          methodName: "run",
+          status: "succeeded",
+          startedAt,
+          provenance: defaultProvenance,
+        });
+      const oldMtime = await writeRecordAs(repo, record(old), "a.yaml");
+      await Deno.utime(oldMtime, old, old);
+      // Fresh mtime, old startedAt: read, then left out.
+      await writeRecordAs(repo, record(old), "b.yaml");
+      const recent = record(new Date());
+      await writeRecordAs(repo, recent, "c.yaml");
+
+      const { result, stats, reads } = await countFileOps(() =>
+        repo.findAllGlobalSince(cutoff)
+      );
+
+      assertEquals(result.map((r) => r.output.id), [recent.id]);
+      assertEquals(stats.length, 3);
+      assertEquals(reads.length, 2);
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: a record whose name is recent but whose startedAt is older than the cutoff is left out",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const old = ModelOutput.create({
+        definitionId: createDefinitionId(crypto.randomUUID()),
+        methodName: "run",
+        status: "succeeded",
+        startedAt: new Date(Date.now() - 7 * DAY_MS),
+        provenance: defaultProvenance,
+      });
+      const recentName = basename(
+        repo.getPath(
+          registeredType,
+          "run",
+          ModelOutput.create({
+            definitionId: old.definitionId,
+            methodName: "run",
+            startedAt: new Date(),
+            provenance: defaultProvenance,
+          }),
+        ),
+      );
+      await writeRecordAs(repo, old, recentName);
+
+      const found = await repo.findAllGlobalSince(
+        new Date(Date.now() - HOUR_MS),
+      );
+
+      assertEquals(found, []);
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: a cutoff outside years 0000-9999 skips no file by name",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const output = await makeOutput(repo, new Date());
+
+      for (
+        const [cutoff, expected] of [
+          [new Date(Date.UTC(10000, 0, 1)), []],
+          [new Date(Date.UTC(-1, 0, 1)), [output.id]],
+        ] as const
+      ) {
+        const { result, reads } = await countFileOps(() =>
+          repo.findAllGlobalSince(cutoff)
+        );
+        assertEquals(result.map((r) => r.output.id), [...expected]);
+        assertEquals(reads.length, 1);
+      }
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: counts the scan into the running output_search phase, with no paths",
+  async () => {
+    await withTempDir(async (dir) => {
+      await withObservedSpans(async (spans) => {
+        const repo = new YamlOutputRepository(dir);
+        await makeOutput(repo, new Date(Date.now() - 7 * DAY_MS));
+        await makeOutput(repo, new Date(Date.now() - 8 * DAY_MS));
+        await makeOutput(repo, new Date());
+
+        await withDiagnosticArea(
+          "output_search",
+          () =>
+            observeDiagnosticPhase(
+              "candidate_scan",
+              {},
+              () => repo.findAllGlobalSince(new Date(Date.now() - DAY_MS)),
+            ),
+        );
+
+        const scan = phaseAttributes(spans, "candidate_scan");
+        assertEquals(scan["swamp.diagnostic.area"], "output_search");
+        assertEquals(scan["swamp.diagnostic.entries"], 3);
+        assertEquals(scan["swamp.diagnostic.skipped_by_name"], 2);
+        assertEquals(scan["swamp.diagnostic.files_read"], 1);
+        assertEquals(scan["swamp.diagnostic.stats"], undefined);
+        assertEquals(scan["swamp.diagnostic.method_dirs"], 1);
+        assert(Number(scan["swamp.diagnostic.type_dirs"]) >= 1);
+        assert(Number(scan["swamp.diagnostic.bytes_read"]) > 0);
+        for (const span of spans) {
+          for (const value of Object.values(span.attributes)) {
+            assert(!String(value).includes(dir));
+          }
+        }
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findHistoryByDefinition: reads only files named for the definition, and names not in the output form",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      const mine = (startedAt: Date) =>
+        ModelOutput.create({
+          definitionId,
+          methodName: "run",
+          status: "succeeded",
+          startedAt,
+          provenance: defaultProvenance,
+        });
+      const first = mine(new Date(Date.now() - DAY_MS));
+      const second = mine(new Date());
+      await repo.save(registeredType, "run", first);
+      await repo.save(registeredType, "run", second);
+      const other = await makeOutput(repo, new Date());
+      const unnamed = mine(new Date(Date.now() - HOUR_MS));
+      await writeRecordAs(repo, unnamed, "unnamed.yaml");
+
+      const { result, reads } = await countFileOps(() =>
+        repo.findHistoryByDefinition(registeredType, definitionId)
+      );
+
+      assertEquals(
+        result.map((o) => o.id).sort(),
+        [first.id, second.id, unnamed.id].sort(),
+      );
+      assertEquals(reads.length, 3);
+      assert(!reads.includes(repo.getPath(registeredType, "run", other)));
+    });
+  },
+);
+
+Deno.test(
+  "findByDefinition: still finds a record whose file is named for another definition",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      const output = ModelOutput.create({
+        definitionId,
+        methodName: "run",
+        status: "succeeded",
+        startedAt: new Date(),
+        provenance: defaultProvenance,
+      });
+      const misnamed = basename(repo.getPath(registeredType, "run", output))
+        .replace(definitionId, crypto.randomUUID());
+      await writeRecordAs(repo, output, misnamed);
+
+      const all = await repo.findByDefinition(registeredType, definitionId);
+      const history = await repo.findHistoryByDefinition(
+        registeredType,
+        definitionId,
+      );
+
+      // Deleting a model reads its outputs this way, so it still finds this.
+      assertEquals(all.map((o) => o.id), [output.id]);
+      assertEquals(history, []);
+    });
+  },
+);
+
+/** Runs `fn` tracking the most reads of `Deno.readTextFile` in flight at once. */
+async function trackReads<T>(
+  fn: () => Promise<T>,
+): Promise<{ result: T; maxInFlight: number }> {
+  const readTextFile = Deno.readTextFile;
+  let inFlight = 0;
+  let maxInFlight = 0;
+  (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile = async (
+    path,
+    options,
+  ) => {
+    inFlight++;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    try {
+      // A macrotask, so concurrent reads overlap even on a fast disk.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return await readTextFile(path, options);
+    } finally {
+      inFlight--;
+    }
+  };
+  try {
+    return { result: await fn(), maxInFlight };
+  } finally {
+    (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile =
+      readTextFile;
+  }
+}
+
+Deno.test(
+  "findAllGlobalSince: reads at most 16 records at once and returns them in walk order",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const startedAt = new Date();
+      for (const method of ["c", "a", "b"]) {
+        for (let i = 0; i < 20; i++) {
+          const output = ModelOutput.create({
+            definitionId: createDefinitionId(crypto.randomUUID()),
+            methodName: method,
+            status: "succeeded",
+            startedAt: new Date(startedAt.getTime() - i),
+            provenance: defaultProvenance,
+          });
+          await repo.save(registeredType, method, output);
+        }
+      }
+      // A sequential walk: methods, then file names, each sorted.
+      const expected: string[] = [];
+      for (const method of ["a", "b", "c"]) {
+        const methodDir = join(
+          dir,
+          ".swamp",
+          "outputs",
+          registeredType.normalized,
+          method,
+        );
+        const names = [...Deno.readDirSync(methodDir)].map((e) => e.name)
+          .sort();
+        for (const name of names) {
+          const data = parseYaml(
+            await Deno.readTextFile(join(methodDir, name)),
+          ) as ModelOutputData;
+          expected.push(data.id);
+        }
+      }
+
+      const { result, maxInFlight } = await trackReads(() =>
+        repo.findAllGlobalSince(new Date(startedAt.getTime() - HOUR_MS))
+      );
+
+      assertEquals(result.map((r) => r.output.id), expected);
+      assertEquals(maxInFlight, 16);
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: an I/O error on one read fails the scan once every started read has settled",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      for (let i = 0; i < 40; i++) {
+        await makeOutput(repo, new Date(Date.now() - i));
+      }
+      const methodDir = join(
+        dir,
+        ".swamp",
+        "outputs",
+        registeredType.normalized,
+        "run",
+      );
+      // The first file the walk reads.
+      const failing = join(
+        methodDir,
+        [...Deno.readDirSync(methodDir)].map((e) => e.name).sort()[0],
+      );
+      const readTextFile = Deno.readTextFile;
+      let started = 0;
+      let inFlight = 0;
+      (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile =
+        async (path, options) => {
+          started++;
+          inFlight++;
+          try {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            if (String(path) === failing) {
+              throw Object.assign(
+                new Error("Permission denied (os error 13)"),
+                { code: "EACCES" },
+              );
+            }
+            return await readTextFile(path, options);
+          } finally {
+            inFlight--;
+          }
+        };
+      try {
+        await assertRejects(
+          () => repo.findAllGlobalSince(new Date(Date.now() - HOUR_MS)),
+          Error,
+          "Permission denied",
+        );
+        assertEquals(inFlight, 0);
+        // The reads started with it, and none after it failed.
+        assert(started <= 16, `${started} reads started`);
+      } finally {
+        (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile =
+          readTextFile;
+      }
+    });
+  },
+);

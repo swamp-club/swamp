@@ -365,6 +365,27 @@ Deno.test("startDiagnosticPhase: output retention exports its own phases and gat
   });
 });
 
+Deno.test("startDiagnosticPhase: the output_search area exports its own phases and not another area's", async () => {
+  await withObservedSpans(async (spans) => {
+    await withDiagnosticArea("output_search", () => {
+      startDiagnosticPhase("candidate_scan").end();
+      startDiagnosticPhase("authorization").end();
+      startDiagnosticPhase("definition_lookup").end();
+      startDiagnosticPhase("prepare").end();
+      return Promise.resolve();
+    });
+    await withDiagnosticArea("enrollment", () => {
+      startDiagnosticPhase("authorization").end();
+      return Promise.resolve();
+    });
+    const scan = findSpan(spans, "swamp.diagnostic.candidate_scan");
+    assertEquals(scan.attributes["swamp.diagnostic.area"], "output_search");
+    assertEquals(diagnosticPhases(spans, "authorization").length, 1);
+    assertEquals(diagnosticPhases(spans, "definition_lookup").length, 1);
+    assertEquals(diagnosticPhases(spans, "prepare").length, 0);
+  });
+});
+
 Deno.test("diagnosticSpanAttributes: tags a span as a phase only inside an area that exports it", async () => {
   assertEquals(diagnosticSpanAttributes("gate_wait"), {});
   await withDiagnosticArea(
