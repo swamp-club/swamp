@@ -1950,10 +1950,12 @@ export async function handleModelOutputSearch(
     const workflowRepo = ctx.repoContext.workflowRepo.memoizedView?.() ??
       ctx.repoContext.workflowRepo;
 
+    // The scans stop when the request is cancelled, so it gives up its
+    // place among the shared scan permits (swamp-club#4070).
     const deps: ModelOutputSearchDeps = {
-      findAllOutputsGlobal: () => outputRepo.findAllGlobal(),
+      findAllOutputsGlobal: () => outputRepo.findAllGlobal(controller.signal),
       findAllOutputsGlobalSince: (cutoff) =>
-        outputRepo.findAllGlobalSince(cutoff),
+        outputRepo.findAllGlobalSince(cutoff, controller.signal),
       findAllDefinitions: () => definitionRepo.findAllIncludingAutoGlobal(),
       resolveModel: async (idOrName) => {
         const found = new Map<string, ModelOutputSearchModel>();
@@ -1980,6 +1982,7 @@ export async function handleModelOutputSearch(
           ModelType.create(type.normalized),
           createDefinitionId(definitionId),
           window,
+          controller.signal,
         ),
       resolveWorkflowNames: async (ids) => {
         const names = new Map<string, string>();
@@ -2060,6 +2063,11 @@ export async function handleModelOutputSearch(
       });
     }, controller.signal);
   } catch (error) {
+    // A scan stopped by the cancel answers as one that ran to the end does.
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
     const message = sanitizeErrorForClient(error);
     sendError(
       socket,
@@ -2280,8 +2288,9 @@ export async function handleModelMethodHistorySearch(
     const outputRepo = ctx.repoContext.outputRepo;
     const definitionRepo = ctx.repoContext.definitionRepo;
 
+    // The scan stops when the request is cancelled (swamp-club#4070).
     const deps: ModelOutputSearchDeps = {
-      findAllOutputsGlobal: () => outputRepo.findAllGlobal(),
+      findAllOutputsGlobal: () => outputRepo.findAllGlobal(controller.signal),
       findAllDefinitions: () => definitionRepo.findAllIncludingAutoGlobal(),
     };
 
@@ -2339,6 +2348,11 @@ export async function handleModelMethodHistorySearch(
       });
     }, controller.signal);
   } catch (error) {
+    // A scan stopped by the cancel answers as one that ran to the end does.
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
     const message = sanitizeErrorForClient(error);
     sendError(
       socket,

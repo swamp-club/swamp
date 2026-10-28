@@ -140,7 +140,10 @@ function parseOutputFileName(
  * findByIds and the like) do not take a permit, so the process holds at most
  * 16 scan descriptors plus one or two per such lookup, beside the definition
  * index's 32. Every repository in the process shares the permits, so scans of
- * a slow filesystem can delay scans of another.
+ * a slow filesystem can delay scans of another. A scan given an AbortSignal
+ * (a serve request's) stops waiting for permits once it aborts, starts no
+ * further listing or read, and gives back each permit it holds as that
+ * listing or read settles (swamp-club#4070).
  */
 const SCAN_CONCURRENCY = 16;
 
@@ -150,11 +153,19 @@ const scanPermits = new Semaphore(SCAN_CONCURRENCY);
 /**
  * `open` once one of the shared scan permits is free, releasing it when
  * `open` settles. `open` is one listing, stat or read: it never waits for
- * another permit, so scans cannot deadlock on each other.
+ * another permit, so scans cannot deadlock on each other. Once `signal`
+ * aborts, a scan waiting for a permit leaves the queue without one and
+ * `open` does not start; either rejects with the abort reason.
  */
-async function withScanPermit<T>(open: () => Promise<T>): Promise<T> {
-  await scanPermits.acquire();
+async function withScanPermit<T>(
+  open: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  await scanPermits.acquire(signal);
   try {
+    // Inside the try: an abort that lands after a release handed this scan
+    // its permit, but before this runs, must still give the permit back.
+    signal?.throwIfAborted();
     return await open();
   } finally {
     scanPermits.release();
@@ -163,13 +174,16 @@ async function withScanPermit<T>(open: () => Promise<T>): Promise<T> {
 
 /**
  * `fn` of each item, at most `limit` at once, in the items' order. Once one
- * call fails no further item starts, and the failure is raised only after
- * every started call has settled, so none is left running.
+ * call fails, or `signal` aborts, no further item starts, and the failure is
+ * raised only after every started call has settled, so none is left running.
+ * Once `signal` has aborted, its reason is the failure, whichever call
+ * failed first.
  */
 async function mapBounded<T, R>(
   items: readonly T[],
   limit: number,
   fn: (item: T) => Promise<R>,
+  signal?: AbortSignal,
 ): Promise<R[]> {
   const results = new Array<R>(items.length);
   let next = 0;
@@ -180,6 +194,7 @@ async function mapBounded<T, R>(
       while (!failed && next < items.length) {
         const index = next++;
         try {
+          signal?.throwIfAborted();
           results[index] = await fn(items[index]);
         } catch (error) {
           failed = true;
@@ -189,7 +204,10 @@ async function mapBounded<T, R>(
     },
   );
   for (const outcome of await Promise.allSettled(workers)) {
-    if (outcome.status === "rejected") throw outcome.reason;
+    if (outcome.status === "rejected") {
+      signal?.throwIfAborted();
+      throw outcome.reason;
+    }
   }
   return results;
 }
@@ -447,11 +465,16 @@ export class YamlOutputRepository implements OutputRepository {
    * {@link findAllGlobalSince}; its mtime says nothing about `until`, so
    * otherwise it is read. Every record read is checked against the window
    * again.
+   *
+   * Once `signal` aborts, the scan starts no further listing or read and
+   * rejects with its reason (swamp-club#4070); one that had already started
+   * its last read returns as usual.
    */
   async findHistoryByDefinition(
     type: ModelType,
     definitionId: DefinitionId,
     window?: { since?: Date; until?: Date },
+    signal?: AbortSignal,
   ): Promise<ModelOutput[]> {
     const sinceMs = window?.since?.getTime();
     const untilMs = window?.until?.getTime();
@@ -470,6 +493,7 @@ export class YamlOutputRepository implements OutputRepository {
         return match[1] === definitionId && inWindow(match[2]);
       },
       window?.since,
+      signal,
     );
     // Only the ones whose file name says they are this definition's and
     // started in the window, as the listing's own pre-filter would.
@@ -493,12 +517,14 @@ export class YamlOutputRepository implements OutputRepository {
    * {@link findAll} without the unreadable-record warning. With `readsName`,
    * a file whose name it refuses is skipped without being read. With
    * `unnamedSince`, a file whose name is not in {@link getPath}'s form and
-   * whose mtime is before it is skipped after a stat.
+   * whose mtime is before it is skipped after a stat. Once `signal` aborts,
+   * the scan starts no further listing or read and rejects with its reason.
    */
   private async readAll(
     type: ModelType,
     readsName?: (name: string) => boolean,
     unnamedSince?: Date,
+    signal?: AbortSignal,
   ): Promise<ModelOutput[]> {
     const typeDir = this.getTypeDir(type);
     // Every record of the type is read, whatever the caller then keeps.
@@ -506,7 +532,10 @@ export class YamlOutputRepository implements OutputRepository {
 
     let methodEntries: Deno.DirEntry[];
     try {
-      methodEntries = await withScanPermit(() => readDirSorted(typeDir));
+      methodEntries = await withScanPermit(
+        () => readDirSorted(typeDir),
+        signal,
+      );
     } catch (error) {
       // The type directory itself doesn't exist.
       if (error instanceof Deno.errors.NotFound) return [];
@@ -530,7 +559,10 @@ export class YamlOutputRepository implements OutputRepository {
         // from other method directories of this type."
         let entries: Deno.DirEntry[];
         try {
-          entries = await withScanPermit(() => readDirSorted(methodDir));
+          entries = await withScanPermit(
+            () => readDirSorted(methodDir),
+            signal,
+          );
         } catch (error) {
           if (error instanceof Deno.errors.NotFound) return [];
           throw error;
@@ -549,6 +581,7 @@ export class YamlOutputRepository implements OutputRepository {
         }
         return found;
       },
+      signal,
     )).flat();
 
     const outputs = await mapBounded(
@@ -561,8 +594,9 @@ export class YamlOutputRepository implements OutputRepository {
         // file means "skip it" — never "abandon the rest of the scan."
         try {
           if (unnamedSince !== undefined && !named) {
-            const stat = await withScanPermit(() =>
-              tally.measure("stat", () => Deno.stat(path))
+            const stat = await withScanPermit(
+              () => tally.measure("stat", () => Deno.stat(path)),
+              signal,
             );
             tally.add("stats");
             const mtimeMs = stat.mtime?.getTime();
@@ -571,8 +605,9 @@ export class YamlOutputRepository implements OutputRepository {
               return undefined;
             }
           }
-          const content = await withScanPermit(() =>
-            tally.measure("read", () => Deno.readTextFile(path))
+          const content = await withScanPermit(
+            () => tally.measure("read", () => Deno.readTextFile(path)),
+            signal,
           );
           tally.add("files_read");
           if (tally.recording) {
@@ -588,15 +623,24 @@ export class YamlOutputRepository implements OutputRepository {
           }
           return ModelOutput.fromData(data);
         } catch (error) {
+          // A cancelled scan is not an unreadable record: it ends the scan.
+          signal?.throwIfAborted();
           this.skipUnreadableRecord(path, error);
           return undefined;
         }
       },
+      signal,
     );
     return outputs.filter((output) => output !== undefined);
   }
 
-  async findAllGlobal(): Promise<
+  /**
+   * Every output of every registered type. Once `signal` aborts, the scan
+   * starts no further listing or read and rejects with its reason
+   * (swamp-club#4070); one that had already started its last read returns
+   * as usual.
+   */
+  async findAllGlobal(signal?: AbortSignal): Promise<
     { output: ModelOutput; type: ModelType; method: string }[]
   > {
     // Output directories are found by walking the registered model types. The
@@ -612,7 +656,12 @@ export class YamlOutputRepository implements OutputRepository {
 
     // Iterate over all registered model types
     for (const modelType of modelRegistry.types()) {
-      const typeOutputs = await this.readAll(modelType);
+      const typeOutputs = await this.readAll(
+        modelType,
+        undefined,
+        undefined,
+        signal,
+      );
       for (const output of typeOutputs) {
         results.push({
           output,
@@ -645,9 +694,14 @@ export class YamlOutputRepository implements OutputRepository {
    *
    * Inside a diagnostic phase the scan is counted (directories, entries,
    * names skipped, stats, reads) into that phase's tally.
+   *
+   * Once `signal` aborts, the scan starts no further listing or read and
+   * rejects with its reason (swamp-club#4070); one that had already started
+   * its last read returns as usual.
    */
   async findAllGlobalSince(
     cutoff: Date,
+    signal?: AbortSignal,
   ): Promise<{ output: ModelOutput; type: ModelType; method: string }[]> {
     // Load extension types before walking them; see findAllGlobal.
     await modelRegistry.ensureLoaded();
@@ -666,8 +720,9 @@ export class YamlOutputRepository implements OutputRepository {
       async (modelType) => {
         const typeDir = this.getTypeDir(modelType);
         try {
-          const methodEntries = await withScanPermit(() =>
-            readDirSorted(typeDir)
+          const methodEntries = await withScanPermit(
+            () => readDirSorted(typeDir),
+            signal,
           );
           tally.add("type_dirs");
           return methodEntries
@@ -679,6 +734,7 @@ export class YamlOutputRepository implements OutputRepository {
           throw error;
         }
       },
+      signal,
     )).flat();
 
     const files = (await mapBounded(
@@ -691,7 +747,10 @@ export class YamlOutputRepository implements OutputRepository {
         // collected from other method directories."
         let entries: Deno.DirEntry[];
         try {
-          entries = await withScanPermit(() => readDirSorted(dir));
+          entries = await withScanPermit(
+            () => readDirSorted(dir),
+            signal,
+          );
         } catch (error) {
           if (error instanceof Deno.errors.NotFound) return [];
           throw error;
@@ -716,6 +775,7 @@ export class YamlOutputRepository implements OutputRepository {
         }
         return found;
       },
+      signal,
     )).flat();
 
     const read = await mapBounded(
@@ -728,8 +788,9 @@ export class YamlOutputRepository implements OutputRepository {
         // "abandon the rest of the scan."
         try {
           if (!named) {
-            const stat = await withScanPermit(() =>
-              tally.measure("stat", () => Deno.stat(path))
+            const stat = await withScanPermit(
+              () => tally.measure("stat", () => Deno.stat(path)),
+              signal,
             );
             tally.add("stats");
             const mtimeMs = stat.mtime?.getTime();
@@ -740,8 +801,9 @@ export class YamlOutputRepository implements OutputRepository {
           }
 
           // Stage B: parse and verify
-          const content = await withScanPermit(() =>
-            tally.measure("read", () => Deno.readTextFile(path))
+          const content = await withScanPermit(
+            () => tally.measure("read", () => Deno.readTextFile(path)),
+            signal,
           );
           tally.add("files_read");
           if (tally.recording) {
@@ -759,10 +821,13 @@ export class YamlOutputRepository implements OutputRepository {
           if (output.startedAt.getTime() < cutoffMs) return undefined;
           return { output, type: modelType, method: output.methodName };
         } catch (error) {
+          // A cancelled scan is not an unreadable record: it ends the scan.
+          signal?.throwIfAborted();
           this.skipUnreadableRecord(path, error);
           return undefined;
         }
       },
+      signal,
     );
     const results = read.filter((found) => found !== undefined);
 
