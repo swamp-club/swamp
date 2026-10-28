@@ -253,3 +253,24 @@ Deno.test("withScanPermit: searches across callers share SEARCH_SCAN_SHARE permi
     await Promise.allSettled(calls);
   }
 });
+
+Deno.test("mapBounded: once the signal aborts, starts no further item and rejects with its reason", async () => {
+  const abort = new AbortController();
+  const started: number[] = [];
+  await assertRejects(
+    () =>
+      mapBounded(
+        [0, 1, 2, 3, 4, 5],
+        1,
+        async (item) => {
+          started.push(item);
+          if (item === 1) abort.abort(new Error("cancelled"));
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        },
+        abort.signal,
+      ),
+    Error,
+    "cancelled",
+  );
+  assertEquals(started, [0, 1]);
+});
