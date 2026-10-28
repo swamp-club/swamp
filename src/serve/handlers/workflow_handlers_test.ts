@@ -2508,6 +2508,8 @@ Deno.test("handleWorkflowApprovals: a request cancelled while its suspended-run 
       // Answered while the share is still held: the read gave up its place
       // rather than waiting for a permit. The handler replies only once the
       // read has settled, so no listing or record read outlives the reply.
+      // A read that kept waiting fails here rather than hanging the test.
+      await waitFor(() => frames.length > 0, "the cancelled reply");
       await request;
       assertEquals(runRepo.signals, [controller.signal]);
       assertEquals(frames.map((f) => f.type), ["error"]);

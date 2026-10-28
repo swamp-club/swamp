@@ -958,7 +958,7 @@ export async function* workflowRun(
             )
             : undefined;
           if (supersedeInputs && deps.supersede) {
-            let superseded: SupersedeResult;
+            let superseded: SupersedeResult | undefined;
             try {
               superseded = await supersedeSuspendedRuns(
                 workflow,
@@ -968,26 +968,22 @@ export async function* workflowRun(
                 ctx.signal,
               );
             } catch (error) {
-              // A run cancelled while its suspended runs are read ends as
-              // a cancelled one, whatever reason it was aborted with
+              // A run cancelled while its suspended runs are read, whatever
+              // reason it was aborted with, supersedes none of them and is
+              // still recorded as cancelled by the run below
               // (swamp-club#4088).
-              if (ctx.signal.aborted) {
-                yield {
-                  kind: "error",
-                  error: cancelled(error instanceof Error ? error : undefined),
-                };
-                return;
-              }
-              throw error;
+              if (!ctx.signal.aborted) throw error;
             }
-            const { cancelledRunIds, skippedRuns, ...nested } = superseded;
-            if (cancelledRunIds.length > 0 || skippedRuns.length > 0) {
-              yield {
-                kind: "superseded_runs",
-                cancelledRunIds,
-                ...nestedCascadeFields(nested),
-                ...(skippedRuns.length > 0 ? { skippedRuns } : {}),
-              };
+            if (superseded) {
+              const { cancelledRunIds, skippedRuns, ...nested } = superseded;
+              if (cancelledRunIds.length > 0 || skippedRuns.length > 0) {
+                yield {
+                  kind: "superseded_runs",
+                  cancelledRunIds,
+                  ...nestedCascadeFields(nested),
+                  ...(skippedRuns.length > 0 ? { skippedRuns } : {}),
+                };
+              }
             }
           }
 
