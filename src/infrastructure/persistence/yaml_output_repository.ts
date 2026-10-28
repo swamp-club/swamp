@@ -49,6 +49,7 @@ import {
 import { assertSafePath } from "./safe_path.ts";
 import { isIoError } from "./io_errors.ts";
 import { readDirSorted } from "./sorted_dir_entries.ts";
+import { Semaphore } from "../stream/semaphore.ts";
 import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import type {
@@ -130,13 +131,32 @@ function parseOutputFileName(
 /**
  * How many directories {@link YamlOutputRepository.findAllGlobalSince}
  * (swamp-club#4056) and the per-type listings (swamp-club#4058) list, or files
- * they read, at once. An async listing of a large directory takes dozens of
- * event-loop turns, and a read one more, so awaiting them one at a time made
- * a busy serve's scan as slow as its turns added up.
- * Under the definition index's 32 open files, so the two together stay
- * bounded.
+ * they read, at once, between every scan in the process. An async listing of
+ * a large directory takes dozens of event-loop turns, and a read one more, so
+ * awaiting them one at a time made a busy serve's scan as slow as its turns
+ * added up. The bound is shared, not per scan, because concurrent requests
+ * each scan: 16 per scan ran a serve under a low hard open-file limit out of
+ * descriptors. With the definition index's 32 open files the two together
+ * stay bounded however many scans run.
  */
 const SCAN_CONCURRENCY = 16;
+
+/** The {@link SCAN_CONCURRENCY} permits all scans' listings and reads share. */
+const scanPermits = new Semaphore(SCAN_CONCURRENCY);
+
+/**
+ * `open` once one of the shared scan permits is free, releasing it when
+ * `open` settles. `open` is one listing, stat or read: it never waits for
+ * another permit, so scans cannot deadlock on each other.
+ */
+async function withScanPermit<T>(open: () => Promise<T>): Promise<T> {
+  await scanPermits.acquire();
+  try {
+    return await open();
+  } finally {
+    scanPermits.release();
+  }
+}
 
 /**
  * `fn` of each item, at most `limit` at once, in the items' order. Once one
@@ -419,10 +439,11 @@ export class YamlOutputRepository implements OutputRepository {
    *
    * With a `window`, only outputs started at or after `since` and before
    * `until` are returned, and a file whose name is stamped outside it is
-   * skipped without being read (swamp-club#4058). A name not in that form whose mtime is
-   * before `since` is skipped after a stat, as in {@link findAllGlobalSince};
-   * its mtime says nothing about `until`, so otherwise it is read. Every
-   * record read is checked against the window again.
+   * skipped without being read (swamp-club#4058). A name not in that form
+   * whose mtime is before `since` is skipped after a stat, as in
+   * {@link findAllGlobalSince}; its mtime says nothing about `until`, so
+   * otherwise it is read. Every record read is checked against the window
+   * again.
    */
   async findHistoryByDefinition(
     type: ModelType,
@@ -482,7 +503,7 @@ export class YamlOutputRepository implements OutputRepository {
 
     let methodEntries: Deno.DirEntry[];
     try {
-      methodEntries = await readDirSorted(typeDir);
+      methodEntries = await withScanPermit(() => readDirSorted(typeDir));
     } catch (error) {
       // The type directory itself doesn't exist.
       if (error instanceof Deno.errors.NotFound) return [];
@@ -506,7 +527,7 @@ export class YamlOutputRepository implements OutputRepository {
         // from other method directories of this type."
         let entries: Deno.DirEntry[];
         try {
-          entries = await readDirSorted(methodDir);
+          entries = await withScanPermit(() => readDirSorted(methodDir));
         } catch (error) {
           if (error instanceof Deno.errors.NotFound) return [];
           throw error;
@@ -537,7 +558,9 @@ export class YamlOutputRepository implements OutputRepository {
         // file means "skip it" — never "abandon the rest of the scan."
         try {
           if (unnamedSince !== undefined && !named) {
-            const stat = await tally.measure("stat", () => Deno.stat(path));
+            const stat = await withScanPermit(() =>
+              tally.measure("stat", () => Deno.stat(path))
+            );
             tally.add("stats");
             const mtimeMs = stat.mtime?.getTime();
             if (mtimeMs !== undefined && mtimeMs < unnamedSince.getTime()) {
@@ -545,9 +568,8 @@ export class YamlOutputRepository implements OutputRepository {
               return undefined;
             }
           }
-          const content = await tally.measure(
-            "read",
-            () => Deno.readTextFile(path),
+          const content = await withScanPermit(() =>
+            tally.measure("read", () => Deno.readTextFile(path))
           );
           tally.add("files_read");
           if (tally.recording) {
@@ -641,7 +663,9 @@ export class YamlOutputRepository implements OutputRepository {
       async (modelType) => {
         const typeDir = this.getTypeDir(modelType);
         try {
-          const methodEntries = await readDirSorted(typeDir);
+          const methodEntries = await withScanPermit(() =>
+            readDirSorted(typeDir)
+          );
           tally.add("type_dirs");
           return methodEntries
             .filter((entry) => entry.isDirectory)
@@ -664,7 +688,7 @@ export class YamlOutputRepository implements OutputRepository {
         // collected from other method directories."
         let entries: Deno.DirEntry[];
         try {
-          entries = await readDirSorted(dir);
+          entries = await withScanPermit(() => readDirSorted(dir));
         } catch (error) {
           if (error instanceof Deno.errors.NotFound) return [];
           throw error;
@@ -701,7 +725,9 @@ export class YamlOutputRepository implements OutputRepository {
         // "abandon the rest of the scan."
         try {
           if (!named) {
-            const stat = await tally.measure("stat", () => Deno.stat(path));
+            const stat = await withScanPermit(() =>
+              tally.measure("stat", () => Deno.stat(path))
+            );
             tally.add("stats");
             const mtimeMs = stat.mtime?.getTime();
             if (mtimeMs !== undefined && mtimeMs < cutoffMs) {
@@ -711,9 +737,8 @@ export class YamlOutputRepository implements OutputRepository {
           }
 
           // Stage B: parse and verify
-          const content = await tally.measure(
-            "read",
-            () => Deno.readTextFile(path),
+          const content = await withScanPermit(() =>
+            tally.measure("read", () => Deno.readTextFile(path))
           );
           tally.add("files_read");
           if (tally.recording) {

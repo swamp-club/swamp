@@ -3162,3 +3162,82 @@ Deno.test(
     });
   },
 );
+
+Deno.test(
+  "scans running at once keep at most 16 directories and files open between them",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      for (const method of ["a", "b", "c"]) {
+        for (let i = 0; i < 40; i++) {
+          await repo.save(
+            registeredType,
+            method,
+            historyOutput(definitionId, new Date(Date.now() - i)),
+          );
+        }
+      }
+      const readTextFile = Deno.readTextFile;
+      const readDir = Deno.readDir;
+      let open = 0;
+      let peak = 0;
+      const opened = () => {
+        open++;
+        peak = Math.max(peak, open);
+      };
+      (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile =
+        async (path, options) => {
+          if (!String(path).startsWith(dir)) {
+            return await readTextFile(path, options);
+          }
+          opened();
+          try {
+            // A macrotask, so concurrent reads overlap even on a fast disk.
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return await readTextFile(path, options);
+          } finally {
+            open--;
+          }
+        };
+      (Deno as { readDir: typeof Deno.readDir }).readDir = (path) => {
+        if (!String(path).startsWith(dir)) return readDir(path);
+        return (async function* () {
+          opened();
+          try {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            yield* readDir(path);
+          } finally {
+            open--;
+          }
+        })();
+      };
+      const since = new Date(Date.now() - HOUR_MS);
+      try {
+        await Promise.all([
+          ...Array.from(
+            { length: 4 },
+            () => repo.findHistoryByDefinition(registeredType, definitionId),
+          ),
+          ...Array.from(
+            { length: 4 },
+            () =>
+              repo.findHistoryByDefinition(registeredType, definitionId, {
+                since,
+              }),
+          ),
+          repo.findAllGlobalSince(since),
+          repo.findAllGlobalSince(since),
+          repo.findAll(registeredType),
+          repo.findByDefinition(registeredType, definitionId),
+        ]);
+      } finally {
+        (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile =
+          readTextFile;
+        (Deno as { readDir: typeof Deno.readDir }).readDir = readDir;
+      }
+      assertEquals(open, 0);
+      assertEquals(peak, 16);
+    });
+  },
+);

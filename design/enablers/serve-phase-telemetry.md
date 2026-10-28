@@ -281,9 +281,12 @@ read under `until` alone. A search with neither reads every output.
 | `read_work_ms`, `parse_work_ms`                  | Reading and parsing them                                                        |
 
 Both a `since` search and a search for one model list directories and read
-files up to 16 at a time, so their `*_work_ms` values are cumulative across
-concurrent operations and can exceed the phase's duration. Its duration is mostly the listing and the turns the event
-loop gave the scan; compare it with the request's event-loop lag. Counters are
+files concurrently, with at most 16 listings and reads in flight across every
+scan in the process (lab #4058), so their `*_work_ms` values are cumulative
+across concurrent operations and can exceed the phase's duration. Their
+duration is mostly the listing, the turns the event loop gave the scan, and
+waiting for one of the 16 while other requests scan; compare it with the
+request's event-loop lag. Counters are
 exported only when counted: a scan that stat'ed nothing has no `stats`. They are
 counts and durations only: no path, definition id or model name.
 

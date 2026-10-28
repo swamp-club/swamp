@@ -20,9 +20,9 @@
 // An output file's name carries its startedAt, and findAllGlobalSince skips
 // a name stamped before the cutoff without reading it (swamp-club#4056), as
 // findHistoryByDefinition skips one stamped outside its since and until
-// (swamp-club#4058). The
-// skip is safe only if comparing stamps orders records as comparing their
-// instants does: then no record started inside the window is skipped.
+// (swamp-club#4058). The skip is safe only if comparing stamps orders records
+// as comparing their instants does: then no record started inside the window
+// is skipped.
 
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
