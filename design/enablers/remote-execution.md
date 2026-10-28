@@ -1629,9 +1629,9 @@ credentials and extensions onto workers:
   at enrollment rather than failing on its first secret-bearing dispatch.
 
   **The protected load route (typed-secrets 5.1).** `POST /data/secrets`
-  (`src/serve/dispatch_secret_loads.ts`) answers a list of vault references
-  with their values, so that from typed-secrets 5.2 a runner loads its step's
-  bag itself and the dispatch carries references only
+  (`src/serve/dispatch_secret_loads.ts`) answers a list of vault references with
+  their values, so that from typed-secrets 5.2 a runner loads its step's bag
+  itself and the dispatch carries references only
   (design/enablers/typed-secrets.md Section 9). It accepts the per-dispatch
   credential alone, with none of the sole-dispatch fallback the other data
   routes take. It answers only for references in the dispatch's bag
@@ -1642,16 +1642,16 @@ credentials and extensions onto workers:
   per request. A legacy untagged record admits nothing until typed-secrets 5.2
   settles its schema fallback. The reserved vaults and keys stay refused. A bad
   credential is `unauthenticated` (401) and an ended dispatch `access_ended`
-  (410). The reads run under the dispatching run's vault access,
-  each value joins the dispatch's redactor, and after the reads serve checks
-  again that the credential and the registration still hold, so a read in
-  flight when the dispatch ends gets 410 and no value. Every reply is
-  `no-store`, and serve audit records one metadata-only event per request.
-  In 5.1 nothing calls the route, so `REMOTE_PROTOCOL_VERSION` stays 5 and
-  every dispatch keeps the frame above. From 5.2 serve enrolls protocol
-  versions 5 and 6: a version 6 worker receives references only, and a
-  version 5 worker keeps this frame, with its plaintext, until 5.3 removes it.
-  A version 6 worker under a version 5 serve is still refused at enrollment.
+  (410). The reads run under the dispatching run's vault access, each value
+  joins the dispatch's redactor, and after the reads serve checks again that the
+  credential and the registration still hold, so a read in flight when the
+  dispatch ends gets 410 and no value. Every reply is `no-store`, and serve
+  audit records one metadata-only event per request. In 5.1 nothing calls the
+  route, so `REMOTE_PROTOCOL_VERSION` stays 5 and every dispatch keeps the frame
+  above. From 5.2 serve enrolls protocol versions 5 and 6: a version 6 worker
+  receives references only, and a version 5 worker keeps this frame, with its
+  plaintext, until 5.3 removes it. A version 6 worker under a version 5 serve is
+  still refused at enrollment.
 
   **Secret redaction.** Vault-derived values must be scrubbed from all persisted
   output (log resources, result resources and workflow-run records) before they

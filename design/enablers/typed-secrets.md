@@ -1209,20 +1209,21 @@ worker for protocol version 6, and 5.3 removes the version 5 frame.
   this route, at every detail level, and in fail-secure mode the route refuses
   with 503 (`audit_unavailable`) before any vault read while audit cannot
   durably record ([serve-audit](./serve-audit.md)).
-- **The route** is `POST /data/secrets` (`DISPATCH_SECRETS_PATH`), with its
-  wire contract in `src/domain/remote/protocol.ts`. A request names up to 256
+- **The route** is `POST /data/secrets` (`DISPATCH_SECRETS_PATH`), with its wire
+  contract in `src/domain/remote/protocol.ts`. A request names up to 256
   references (`MAX_DISPATCH_SECRET_LOADS`), each a vault name of at most 256
   characters and a key of at most 1024, optionally with a resource claim whose
   name is at most 512. One request claims at most 16 distinct resources
   (`MAX_DISPATCH_SECRET_CLAIMS`), which bounds the record reads it costs and
   keeps it from emptying the bounded claim cache; a request over the cap is
-  refused as `malformed_request` (400) before any record read. Serve reads at most 4 MiB of body
-  (`MAX_DISPATCH_SECRET_LOAD_BODY_BYTES`), which fits the largest request the
-  schema admits, and refuses a longer one with 413 before any vault read. The
-  reply holds one value per distinct reference, in order of first occurrence.
-  It is all or nothing: one refused reference returns no value. A refusal names
-  its code (`DISPATCH_SECRET_LOAD_REFUSALS`) and the reference, never a value,
-  and a vault provider's own message is neither echoed nor logged.
+  refused as `malformed_request` (400) before any record read. Serve reads at
+  most 4 MiB of body (`MAX_DISPATCH_SECRET_LOAD_BODY_BYTES`), which fits the
+  largest request the schema admits, and refuses a longer one with 413 before
+  any vault read. The reply holds one value per distinct reference, in order of
+  first occurrence. It is all or nothing: one refused reference returns no
+  value. A refusal names its code (`DISPATCH_SECRET_LOAD_REFUSALS`) and the
+  reference, never a value, and a vault provider's own message is neither echoed
+  nor logged.
 - **The credential** must be a dispatch credential. A worker's control
   credential is refused, with none of the sole-dispatch fallback the other data
   routes take, and a forged, revoked or expired one is refused alike, with 401
@@ -1826,8 +1827,8 @@ shell targets with matching serve and worker versions.
 Add the protected data-plane route of Section 9 with no caller, so the protocol
 version stays 5 and no existing dispatch behavior changes. The resource claim
 check and the reserved vaults and keys move into
-`src/serve/dispatch_secret_authorization.ts`, which `resolveSecret` and the route
-share. The route verifies tagged resource claims only; the legacy untagged
+`src/serve/dispatch_secret_authorization.ts`, which `resolveSecret` and the
+route share. The route verifies tagged resource claims only; the legacy untagged
 schema fallback moves to 5.2 (Section 9).
 
 **Exit:** integration tests with a port-0 serve: an in-bag reference loads under

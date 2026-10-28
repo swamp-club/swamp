@@ -481,7 +481,7 @@ export class DispatchSecretLoads {
       initiatedBy: caller ? `worker:${caller.workerName}` : "ghost",
       sourceIp,
       requestId,
-      detail: `${reply.code ?? "loaded"}; ${reply.count} references`,
+      detail: `${reply.code ?? "loaded"}; references=${reply.count}`,
     }));
   }
 }

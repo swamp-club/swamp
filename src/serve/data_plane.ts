@@ -44,11 +44,6 @@
  */
 
 import type { z } from "zod";
-import {
-  DispatchSecretLoads,
-  type DispatchSecretLoadsAudit,
-  isDispatchSecretsRoute,
-} from "./dispatch_secret_loads.ts";
 function validRequestId(value: string | null): boolean {
   return value !== null &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
@@ -86,6 +81,11 @@ import {
   withSpan,
 } from "../infrastructure/tracing/mod.ts";
 import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
+import {
+  DispatchSecretLoads,
+  type DispatchSecretLoadsAudit,
+  isDispatchSecretsRoute,
+} from "./dispatch_secret_loads.ts";
 
 const logger = getSwampLogger(["serve", "data-plane"]);
 
@@ -105,7 +105,7 @@ export interface DataPlaneOptions {
   createVaultService?: () => Promise<VaultService>;
 }
 
-/** A data-plane request's caller address, for serve audit. */
+/** The caller address serve audit records when none is passed to `handle`. */
 const UNKNOWN_SOURCE_IP = "unknown";
 
 interface WriterSession {

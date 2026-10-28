@@ -483,24 +483,24 @@ Deno.test("DispatchSecretLoads: every request is audited with metadata only", as
   assertEquals(
     f.events.map((e) => [e.category, e.action, e.outcome, e.detail]),
     [
-      ["secrets", "worker.secrets.load", "success", "loaded; 1 references"],
+      ["secrets", "worker.secrets.load", "success", "loaded; references=1"],
       [
         "secrets",
         "worker.secrets.load",
         "denied",
-        "not_in_dispatch; 1 references",
+        "not_in_dispatch; references=1",
       ],
       [
         "secrets",
         "worker.secrets.load",
         "denied",
-        "unauthenticated; 0 references",
+        "unauthenticated; references=0",
       ],
       [
         "secrets",
         "worker.secrets.load",
         "failure",
-        "malformed_request; 0 references",
+        "malformed_request; references=0",
       ],
     ],
   );
