@@ -34,7 +34,9 @@ import {
 } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { ExtensionContributor } from "./extension_precedence.ts";
-import { modelRegistry } from "../models/model.ts";
+import { modelRegistry, resolveMethodKind } from "../models/model.ts";
+import type { DenoRuntime } from "../runtime/deno_runtime.ts";
+import type { RegistrationContext } from "./kind_adapter.ts";
 import {
   getExtensionLoadWarnings,
   resetExtensionLoadWarnings,
@@ -447,6 +449,91 @@ Deno.test("processSecondaryExport: no collision — all methods merged normally"
       warnings.filter((w) => w.error.includes("already exists")).length,
       0,
     );
+  } finally {
+    modelRegistry.invalidateType(type);
+    resetExtensionLoadWarnings();
+  }
+});
+
+Deno.test("register: a method kind declared by an extension model is kept", () => {
+  const type = `@test/declared-kind-${crypto.randomUUID().slice(0, 8)}`;
+  const stubDenoRuntime: DenoRuntime = {
+    ensureDeno: () => Promise.resolve("/usr/bin/false"),
+    getDenoEnv: () => ({}),
+  };
+  const context: RegistrationContext = {
+    absolutePath: "/ext/declared_kind.ts",
+    denoPath: "/usr/bin/false",
+    denoRuntime: stubDenoRuntime,
+    repoDir: null,
+  };
+  const validated = modelKindAdapter.validatePrimaryExport(
+    makeValidModel({
+      type,
+      methods: {
+        probe: {
+          description: "Probe the target",
+          kind: "read",
+          arguments: testArgs,
+          execute: () => Promise.resolve({}),
+        },
+      },
+    }),
+  );
+  assertEquals(validated.success, true);
+  try {
+    modelKindAdapter.register(
+      type,
+      (validated as { data: Record<string, unknown> }).data,
+      {},
+      context,
+    );
+
+    const probe = modelRegistry.get(type)?.methods.probe;
+    assertEquals(probe?.kind, "read");
+    assertEquals(resolveMethodKind("probe", probe), {
+      kind: "read",
+      source: "declared",
+    });
+  } finally {
+    modelRegistry.invalidateType(type);
+  }
+});
+
+Deno.test("processSecondaryExport: a method kind declared by an extension is kept", () => {
+  const type = `@test/extension-kind-${crypto.randomUUID().slice(0, 8)}`;
+  resetExtensionLoadWarnings();
+  registerTestModel(type, { run: true });
+  try {
+    const result = {
+      loaded: [] as string[],
+      extended: [] as string[],
+      failed: [] as { file: string; error: string }[],
+    };
+    modelKindAdapter.processSecondaryExport!(
+      "extensions/models/inspect.ts",
+      {
+        type,
+        methods: [{
+          inspect: {
+            description: "Inspect the target",
+            kind: "list",
+            arguments: testArgs,
+            execute: () => Promise.resolve({ dataHandles: [] }),
+          },
+        }],
+      },
+      result,
+      localContributor("/repo/extensions/models/inspect.ts"),
+    );
+
+    assertEquals(result.failed.length, 0);
+    const inspect = modelRegistry.get(type)?.methods.inspect;
+    assertEquals(inspect?.kind, "list");
+    assertEquals(resolveMethodKind("inspect", inspect), {
+      kind: "list",
+      source: "declared",
+    });
   } finally {
     modelRegistry.invalidateType(type);
     resetExtensionLoadWarnings();

@@ -131,6 +131,7 @@ Deno.test("JsonModelSearchRenderer: includes methods and globalArgumentsSchema w
         properties: { message: { type: "string" } },
         required: ["message"],
       },
+      kindSource: "none" as const,
     },
   ];
   const globalArgumentsSchema = {
@@ -168,7 +169,12 @@ Deno.test("JsonModelSearchRenderer: includes methods and globalArgumentsSchema w
 Deno.test("JsonModelSearchRenderer: deduplicates type resolution across models of the same type", async () => {
   let fetchCount = 0;
   const methods = [
-    { name: "run", description: "Run it", arguments: {} },
+    {
+      name: "run",
+      description: "Run it",
+      arguments: {},
+      kindSource: "none" as const,
+    },
   ];
   const fetchPreview: ModelPreviewFetcher = (item) => {
     fetchCount++;

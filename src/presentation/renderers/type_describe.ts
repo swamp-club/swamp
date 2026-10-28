@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, cyan, dim } from "@std/fmt/colors";
-import type { DataOutputSpecDescribeData } from "../../libswamp/types/schema_helpers.ts";
+import type {
+  DataOutputSpecDescribeData,
+  MethodDescribeData,
+} from "../../libswamp/types/schema_helpers.ts";
 import type { EventHandlers } from "../../libswamp/stream.ts";
 import type {
   TypeDescribeData,
@@ -49,6 +52,8 @@ interface CompactMethod {
   name: string;
   description: string;
   arguments: object;
+  kind?: MethodDescribeData["kind"];
+  kindSource: MethodDescribeData["kindSource"];
 }
 
 interface CompactTypeDescribe {
@@ -71,6 +76,8 @@ function toCompactOutput(data: TypeDescribeData): CompactTypeDescribe {
       name: m.name,
       description: m.description,
       arguments: compactSchema(m.arguments),
+      ...(m.kind ? { kind: m.kind } : {}),
+      kindSource: m.kindSource,
     })),
   };
 }

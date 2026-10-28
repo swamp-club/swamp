@@ -33,6 +33,7 @@ import {
   type MethodDefinition,
   type ModelDefinition,
   ModelRegistry,
+  resolveMethodKind,
   ResourceWriteOverridesSchema,
 } from "./model.ts";
 import { ModelType } from "./model_type.ts";
@@ -909,6 +910,55 @@ Deno.test("inferMethodKind - returns undefined for unrecognized names", () => {
 Deno.test("inferMethodKind - explicit kind overrides name inference", () => {
   assertEquals(inferMethodKind("delete", { kind: "action" }), "action");
   assertEquals(inferMethodKind("create", { kind: "read" }), "read");
+});
+
+// --- resolveMethodKind tests ---
+
+Deno.test("resolveMethodKind - reports a kind set on the definition as declared", () => {
+  assertEquals(resolveMethodKind("probe", { kind: "read" }), {
+    kind: "read",
+    source: "declared",
+  });
+  assertEquals(resolveMethodKind("run", { kind: "action" }), {
+    kind: "action",
+    source: "declared",
+  });
+});
+
+Deno.test("resolveMethodKind - a declared kind wins over the name and stays declared", () => {
+  assertEquals(resolveMethodKind("delete", { kind: "read" }), {
+    kind: "read",
+    source: "declared",
+  });
+});
+
+Deno.test("resolveMethodKind - reports a kind found from the name as inferred", () => {
+  assertEquals(resolveMethodKind("create"), {
+    kind: "create",
+    source: "inferred",
+  });
+  assertEquals(resolveMethodKind("get", {}), {
+    kind: "read",
+    source: "inferred",
+  });
+  assertEquals(resolveMethodKind("patch"), {
+    kind: "update",
+    source: "inferred",
+  });
+  assertEquals(resolveMethodKind("Destroy"), {
+    kind: "delete",
+    source: "inferred",
+  });
+  assertEquals(resolveMethodKind("search"), {
+    kind: "list",
+    source: "inferred",
+  });
+});
+
+Deno.test("resolveMethodKind - reports none with no kind for an unrecognized name", () => {
+  const resolved = resolveMethodKind("sync", {});
+  assertEquals(resolved, { source: "none" });
+  assertEquals("kind" in resolved, false);
 });
 
 // --- isMutatingKind tests ---
