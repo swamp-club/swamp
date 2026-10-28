@@ -3270,9 +3270,11 @@ async function discardRefusedVersions(
       continue;
     }
     if (bytes === null) {
-      // The datastore has no marker: a name that still has one here does
-      // not match it.
-      if (await exists(join(nameDir, "latest"))) failed.add(nameDir);
+      // The datastore has no marker: a name that still has one here, or
+      // whose marker cannot be checked, does not match it.
+      if (await exists(join(nameDir, "latest")).catch(() => true)) {
+        failed.add(nameDir);
+      }
       continue;
     }
     const named = parseInt(new TextDecoder().decode(bytes).trim(), 10);
@@ -3350,7 +3352,8 @@ async function discardRefusedVersions(
   if (!clearDirty || !discarded) return;
   const cleared: string[] = [];
   for (const [nameDir, rels] of marked) {
-    if (!failed.has(nameDir)) cleared.push(...rels);
+    if (failed.has(nameDir)) continue;
+    for (const rel of rels) cleared.push(rel);
   }
   if (cleared.length === 0) return;
   try {
