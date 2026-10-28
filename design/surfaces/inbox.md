@@ -1,6 +1,6 @@
 ---
 audience: everyone
-last-verified: 2026-10-27 @ HEAD
+last-verified: 2026-10-28 @ HEAD
 ---
 
 # Inbox
@@ -26,15 +26,15 @@ one copy per user, so read state is per user.
 
 ```
 InboxSummary {
-  unread: number              // count of unread messages
-  newestId: string | null     // newest unread message id
+  unread: number              // count of unread messages that raise the notice
+  newestId: string | null     // newest unread message id among them
   newestAt: string | null     // ISO 8601
   pollAfterSeconds: number    // the CLI waits at least this long before polling again; floor 900
 }
 
 Message {
   id: string                  // ULID: sortable, so "newer than" is a string compare
-  kind: string                // "announcement" | "issue_update" | "points" | "direct" today; a string so new kinds still parse
+  kind: string                // any kind the web inbox carries ("mention", "issue_shipped", …); a string so new kinds still parse
   title: string               // one line, plain text, at most 120 characters
   body: string                // markdown, at most 8 KiB
   createdAt: string           // ISO 8601
@@ -43,6 +43,13 @@ Message {
   readAt: string | null       // ISO 8601
 }
 ```
+
+`/messages` carries every message the user's web inbox does. `/summary` counts
+only the kinds that should interrupt a command: announcements, direct messages,
+points, system messages and issue status (`issue_shipped`, `issue_closed`,
+`issue_update`). A mention moves the ETag but not `unread` or `newestId`, so it
+is listed without raising the notice. Swamp Club decides which kinds count;
+the client needs no list of its own.
 
 Status codes that apply to every endpoint:
 
