@@ -260,6 +260,7 @@ Deno.test({
       await upgradeAuthorizationHeaders(
         "file.secret",
         () => parseWorkflowRun(["--json"]),
+        withMockedEnv,
       ),
       [null],
     );
@@ -267,6 +268,7 @@ Deno.test({
       await upgradeAuthorizationHeaders(
         "file.secret",
         (url) => parseWorkflowRun(["--json", "--server", url]),
+        withMockedEnv,
       ),
       ["Bearer file.secret"],
     );

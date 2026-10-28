@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join } from "@std/path";
-import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import {
   resetImplicitServeRouting,
   resetMarkerServerAddress,
@@ -36,11 +35,18 @@ import { resetWithheldTokenFiles } from "../../domain/auth/server_login_hint.ts"
  * or leave the address to the marker. The command's own failure (the serve
  * ends every request at once) is ignored: only the headers matter.
  *
+ * `withEnv` is the caller's `withMockedEnv`: this file is not a `_test.ts`
+ * file, so it may not import the test helper itself.
+ *
  * @returns the Authorization header of each upgrade, `null` when none was sent.
  */
 export async function upgradeAuthorizationHeaders(
   tokenFileContent: string,
   run: (serverUrl: string) => Promise<void>,
+  withEnv: (
+    env: Record<string, string | undefined>,
+    fn: () => Promise<void>,
+  ) => Promise<void>,
 ): Promise<(string | null)[]> {
   const headers: (string | null)[] = [];
   const server = Deno.serve(
@@ -63,7 +69,7 @@ export async function upgradeAuthorizationHeaders(
   resetWithheldTokenFiles();
   setMarkerServerAddress(url);
   try {
-    await withMockedEnv({
+    await withEnv({
       SWAMP_SERVE_URL: undefined,
       SWAMP_SERVER_URL: undefined,
       SWAMP_SERVER_TOKEN: undefined,

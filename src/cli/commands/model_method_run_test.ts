@@ -22,6 +22,7 @@ import { Command } from "@cliffy/command";
 import { registerCompletionTypes } from "../completion_types.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { upgradeAuthorizationHeaders } from "./remote_token_test_helpers.ts";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
@@ -150,6 +151,7 @@ Deno.test({
       await upgradeAuthorizationHeaders(
         "file.secret",
         () => parseModelMethodRun([]),
+        withMockedEnv,
       ),
       [null],
     );
@@ -157,6 +159,7 @@ Deno.test({
       await upgradeAuthorizationHeaders(
         "file.secret",
         (url) => parseModelMethodRun(["--server", url]),
+        withMockedEnv,
       ),
       ["Bearer file.secret"],
     );
