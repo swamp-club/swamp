@@ -249,6 +249,8 @@ Deno.test("inboxReadNext: stops paging after MAX_INBOX_READ_PAGES pages of dropp
   assertEquals(last.view.message, null);
   assertEquals(rec.listed.length, MAX_INBOX_READ_PAGES);
   assertEquals(last.view.dropped, 2 * MAX_INBOX_READ_PAGES);
+  // Older pages are left unlisted, so more unread messages remain.
+  assertEquals(last.view.moreUnread, true);
   assertEquals(rec.marked, []);
 });
 

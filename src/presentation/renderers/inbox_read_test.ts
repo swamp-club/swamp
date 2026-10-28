@@ -144,6 +144,16 @@ Deno.test("LogInboxReadRenderer: nothing unread", () => {
   );
 });
 
+Deno.test("LogInboxReadRenderer: nothing shown while more unread remain past the page cap", () => {
+  assertEquals(
+    capture(
+      makeView({ message: null, marked: false, moreUnread: true, dropped: 10 }),
+      "log",
+    ).stdout,
+    "No unread message could be shown; more unread messages remain.",
+  );
+});
+
 Deno.test("LogInboxReadRenderer: warns on stderr about dropped and unmarked messages", () => {
   assertEquals(
     capture(makeView({ message: null, marked: false, dropped: 1 }), "log")

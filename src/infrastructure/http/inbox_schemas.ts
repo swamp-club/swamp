@@ -328,11 +328,11 @@ const messageSchema = z.object({
   const link = parseLink(m.link);
   const action = parseAction(m.action);
   // Only the id: the refused text is the server's, and stays out of logs.
-  if (m.link !== undefined && link === undefined) {
+  if (m.link != null && link === undefined) {
     logger
       .debug`Inbox message ${m.id}: dropped a link that is not a plain https URL`;
   }
-  if (m.action !== undefined && action === undefined) {
+  if (m.action != null && action === undefined) {
     logger
       .debug`Inbox message ${m.id}: dropped an action whose command is not allowed`;
   }

@@ -160,6 +160,29 @@ Deno.test("renderUntrustedMarkdownToTerminal: a bare www or email autolink print
   assert(!result.includes("mailto:"));
 });
 
+Deno.test("renderUntrustedMarkdownToTerminal: a bare www autolink with a look-alike host prints as punycode", () => {
+  const result = stripAnsiCode(
+    renderUntrustedMarkdownToTerminal(
+      "Visit www.sw\u0430mp-club.com/update now.",
+    ),
+  );
+  assertStringIncludes(result, "Visit www.xn--swmp-club-1yh.com/update now.");
+  assert(!result.includes("\u0430"));
+});
+
+Deno.test("renderUntrustedMarkdownToTerminal: an email link whose address is not plain ASCII is removed", () => {
+  // GFM links only an ASCII bare address, so the written-out form is the one
+  // that reaches the renderer with a look-alike host.
+  const address = "team@sw\u0430mp-club.com";
+  const result = stripAnsiCode(
+    renderUntrustedMarkdownToTerminal(
+      `Write to [${address}](mailto:${address}).`,
+    ),
+  );
+  assertStringIncludes(result, LINK_REMOVED);
+  assert(!result.includes("mailto:"));
+});
+
 Deno.test("renderUntrustedMarkdownToTerminal: an http link whose text differs from its target is still removed", () => {
   const result = stripAnsiCode(
     renderUntrustedMarkdownToTerminal(

@@ -287,7 +287,8 @@ export async function* inboxReadNext(
         view: {
           message: null,
           marked: false,
-          moreUnread: false,
+          // Listing stopped at the page cap with older messages left.
+          moreUnread: page.nextCursor !== null,
           dropped,
         },
       };

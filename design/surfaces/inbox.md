@@ -149,32 +149,31 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   `401` from a proxy never ends polling for good. An answer to a request sent
   before the stop was recorded leaves the stop in place: it predates whatever
   stopped the key.
-- **The cache.** The last summary and its `ETag` are cached locally, so a `304`
+-  **The cache.** The last summary and its `ETag` are cached locally, so a `304`
   costs nothing and the notice needs no network call. Each API key has its own
   file per server, `inbox-v2/<hash>.json` in the swamp config directory, named
   from a hash of the server's origin and the key's fingerprint. A personal key
-  and a collective key never share or overwrite state, and neither does one
-  key used against two servers (staging and production), so one server's
-  answers never decide when the other is polled or what its notice says. The
-  file holds neither the key nor the server's URL, is readable by its owner
-  only (mode 0600, as `auth.json` is), and `swamp auth logout` removes it.
-  Each snapshot records when the request that fetched it was sent, and a
-  snapshot fetched earlier never replaces one fetched later, so a slow poll
-  sent before `swamp inbox read` marked a message read cannot bring its notice
-  back. A stored time later than now (the clock went back) never blocks a new
-  snapshot. At most 8 keys are kept and the least recently saved is dropped.
-  The first layout, `inbox/<fingerprint>.json`, shared one file across
-  servers; it is left to older swamps, and logout removes the key's file
-  there too. Logout removes the file for the server the stored login names
-  only: state the same key left for another server (through
-  `SWAMP_CLUB_URL`) cannot be found from its hashed name, holds no secret,
-  and goes with the 8-key cap. Upgrading to this layout starts every key from
-  an empty state once: the next slow command polls, and a message already
-  announced but still unread may be announced again. A file that is missing, corrupt or out of bounds
-  reads as a key never polled. Changes to the file format are additive only,
-  and each added field must be safe to lose, since an older swamp drops fields
-  it does not know when it saves. A breaking change moves to a new directory,
-  so two installed versions never share a file.
+  and a collective key never share or overwrite state, and neither does one key
+  used against two servers (staging and production), so one server's answers
+  never decide when the other is polled or what its notice says. The file holds
+  neither the key nor the server's URL, is readable by its owner only (mode
+  0600, as `auth.json` is), and `swamp auth logout` removes it. Each snapshot
+  records when the request that fetched it was sent, and a snapshot fetched
+  earlier never replaces one fetched later, so a slow poll sent before
+  `swamp inbox read` marked a message read cannot bring its notice back. A
+  stored time later than now (the clock went back) never blocks a new snapshot.
+  At most 8 keys are kept and the least recently saved is dropped. The first
+  layout, `inbox/<fingerprint>.json`, shared one file across servers; it is left
+  to older swamps, and logout removes the key's file there too. Logout removes
+  the file for the server the stored login names only: state the same key left
+  for another server (through `SWAMP_CLUB_URL`) cannot be found from its hashed
+  name, holds no secret, and goes with the 8-key cap. Upgrading to this layout
+  starts every key from an empty state once: the next slow command polls, and a
+  message already announced but still unread may be announced again. A file that
+  is missing, corrupt or out of bounds reads as a key never polled. Changes to
+  the file format are additive only, and each added field must be safe to lose,
+  since an older swamp drops fields it does not know when it saves. A breaking
+  change moves to a new directory, so two installed versions never share a file.
 - **The notice.** After a command finishes, the CLI prints a notice when there
   are unread messages newer than the last one it announced. It goes to stderr,
   in log mode only, after the command's output:
@@ -185,28 +184,27 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   ```
 
   With more than one unread message, the first line reads
-  `ℹ 3 unread messages from Swamp Club are waiting for you.` The second line never
-  changes; its `To …:` label matches `To approve:` and `To signal:` in the
+  `ℹ 3 unread messages from Swamp Club are waiting for you.` The second line
+  never changes; its `To …:` label matches `To approve:` and `To signal:` in the
   workflow renderer. The text is fixed: no message title or other server text
   appears in it, so an agent's context holds nothing Swamp Club wrote until the
   user asks to read the inbox. The notice never appears in `--json` mode, so an
   agent running commands with `--json` never sees it, and JSON output never
   carries it. The `swamp` skill quotes the second line, so the two must change
   together. A notice retires after 24 hours, whether or not the user reads the
-  message, and at once if its announcement is dated after now, as when the
-  clock went back. If the clock then returns past that time, the same
-  message shows again for what remains of its 24 hours. A message's first
-  showing is shown only once it is
-  recorded in the cache, so a notice that could never retire, in a config
-  directory this process cannot write, is never shown. Deciding it reads only the cache, so a fast command shows the notice
-  a slow command's poll found, at the cost of one small file read and no
-  request. It prints only after a command that succeeded, before the update
-  banner; a failed command's output ends with its error. A run that reports
-  its failure through the exit code, as a failed `workflow run` does, counts
-  as failed. `-q` hides it as it hides the other post-command notices. These
-  commands never show it: every command the auth gate exempts, `inbox`,
-  `subscription`, `auth`, and the long-running `serve`, `worker`, `start` and
-  `dashboard`.
+  message, and at once if its announcement is dated after now, as when the clock
+  went back. If the clock then returns past that time, the same message shows
+  again for what remains of its 24 hours. A message's first showing is shown
+  only once it is recorded in the cache, so a notice that could never retire, in
+  a config directory this process cannot write, is never shown. Deciding it
+  reads only the cache, so a fast command shows the notice a slow command's poll
+  found, at the cost of one small file read and no request. It prints only after
+  a command that succeeded, before the update banner; a failed command's output
+  ends with its error. A run that reports its failure through the exit code, as
+  a failed `workflow run` does, counts as failed. `-q` hides it as it hides the
+  other post-command notices. These commands never show it: every command the
+  auth gate exempts, `inbox`, `subscription`, `auth`, and the long-running
+  `serve`, `worker`, `start` and `dashboard`.
 - **Switching it off.** `CI` set to anything but an empty string, `0` or
   `false` turns off both the poll and the notice; nobody reads a CI log for
   them. `SWAMP_NO_INBOX_NOTICE`, read the same way as `SWAMP_NO_UPDATE_CHECK`,
@@ -281,10 +279,10 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   unseen, still reachable through the picker. Message body text reaches stdout
   only when the user asks to read it.
 - **Marking read updates the cache.** Every path that marks messages read
-  (Enter, Ctrl-r, Ctrl-a and `swamp inbox read`) sends only those ids, then
-  asks `/api/inbox/summary` once, without an `ETag`, and applies the answer to
-  the key's cache for the server it asked, as a poll, so the notice stops at
-  once. The cache is saved only when the process owns the config directory. The refresh is bounded by
-  a 5-second timeout. A refresh that fails is not recorded, so it does not
-  put off the next poll, and it is not an error: the messages are already
-  read, and the next poll corrects the cache.
+  (Enter, Ctrl-r, Ctrl-a and `swamp inbox read`) sends only those ids, then asks
+  `/api/inbox/summary` once, without an `ETag`, and applies the answer to the
+  key's cache for the server it asked, as a poll, so the notice stops at once.
+  The cache is saved only when the process owns the config directory. The
+  refresh is bounded by a 5-second timeout. A refresh that fails is not
+  recorded, so it does not put off the next poll, and it is not an error: the
+  messages are already read, and the next poll corrects the cache.

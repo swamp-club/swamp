@@ -56,7 +56,12 @@ function plainMessageLines(message: InboxMessageView): string[] {
 }
 
 function readLines(view: InboxReadNextView): string[] {
-  if (view.message === null) return ["No unread messages."];
+  if (view.message === null) {
+    // Listing stopped before reaching a message it could show.
+    return view.moreUnread
+      ? ["No unread message could be shown; more unread messages remain."]
+      : ["No unread messages."];
+  }
   const lines = plainMessageLines(view.message);
   if (view.moreUnread) {
     lines.push("", `${yellow("To read the next:")}  swamp inbox read`);
