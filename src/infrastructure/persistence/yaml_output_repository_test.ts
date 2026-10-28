@@ -2925,7 +2925,9 @@ Deno.test(
       );
 
       assertEquals(result.map((r) => r.output.id), expected);
-      assertEquals(maxInFlight, 16);
+      // Bounded, and concurrent: how many overlap depends on timing.
+      assert(maxInFlight <= 16, `${maxInFlight} reads in flight`);
+      assert(maxInFlight > 1, `${maxInFlight} reads in flight`);
     });
   },
 );
@@ -3033,7 +3035,9 @@ Deno.test(
       );
 
       assertEquals(result.map((o) => o.id), expected);
-      assertEquals(maxInFlight, 16);
+      // Bounded, and concurrent: how many overlap depends on timing.
+      assert(maxInFlight <= 16, `${maxInFlight} reads in flight`);
+      assert(maxInFlight > 1, `${maxInFlight} reads in flight`);
     });
   },
 );
@@ -3237,7 +3241,10 @@ Deno.test(
         (Deno as { readDir: typeof Deno.readDir }).readDir = readDir;
       }
       assertEquals(open, 0);
-      assertEquals(peak, 16);
+      // Bounded across the scans, and concurrent: how many overlap depends
+      // on timing (192 were open at once with a bound per scan).
+      assert(peak <= 16, `${peak} open at once`);
+      assert(peak > 1, `${peak} open at once`);
     });
   },
 );

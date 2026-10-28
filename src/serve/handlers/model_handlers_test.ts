@@ -1796,7 +1796,8 @@ Deno.test("handleModelOutputSearch: a model's search skips its outputs named out
         );
         const scan = findSpan(spans, "swamp.diagnostic.candidate_scan")
           .attributes;
-        // files_read also counts the definition lookup's reads.
+        // Asserts candidates rather than files_read, which also counts the
+        // definition lookup's reads.
         assertEquals(scan["swamp.diagnostic.candidates"], read);
         assertEquals(scan["swamp.diagnostic.skipped_by_name"], 4 - read);
       });

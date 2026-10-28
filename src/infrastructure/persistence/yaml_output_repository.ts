@@ -131,13 +131,16 @@ function parseOutputFileName(
 /**
  * How many directories {@link YamlOutputRepository.findAllGlobalSince}
  * (swamp-club#4056) and the per-type listings (swamp-club#4058) list, or files
- * they read, at once, between every scan in the process. An async listing of
- * a large directory takes dozens of event-loop turns, and a read one more, so
- * awaiting them one at a time made a busy serve's scan as slow as its turns
- * added up. The bound is shared, not per scan, because concurrent requests
- * each scan: 16 per scan ran a serve under a low hard open-file limit out of
- * descriptors. With the definition index's 32 open files the two together
- * stay bounded however many scans run.
+ * they read, at once, between all of those scans in the process. An async
+ * listing of a large directory takes dozens of event-loop turns, and a read
+ * one more, so awaiting them one at a time made a busy serve's scan as slow as
+ * its turns added up. The bound is shared, not per scan, because concurrent
+ * requests each scan: 16 per scan ran a serve under a low hard open-file limit
+ * out of descriptors. Lookups that open one file at a time (findById,
+ * findByIds and the like) do not take a permit, so the process holds at most
+ * 16 scan descriptors plus one or two per such lookup, beside the definition
+ * index's 32. Every repository in the process shares the permits, so scans of
+ * a slow filesystem can delay scans of another.
  */
 const SCAN_CONCURRENCY = 16;
 
