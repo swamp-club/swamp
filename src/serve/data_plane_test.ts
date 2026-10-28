@@ -1150,39 +1150,45 @@ Deno.test("DataPlane: dataOutputOverrides on dispatch override resource lifetime
     },
     methods: {},
   };
-  await withHarness(async (h) => {
-    const d: ActiveDispatch = {
-      workerName: "w1",
-      dispatchId: "d-1",
-      leaseId: "l-1",
-      modelDef: ephemeralModelDef,
-      modelType: MODEL_TYPE,
-      modelId: "m-1",
-      methodName: "status",
-      definitionName: "test-def",
-      definitionTags: {},
-      dataOutputOverrides: [
-        { specName: "statusResult", lifetime: "infinite" },
-      ],
-    };
-    h.dispatches.register(d);
+  for (const lifetime of ["ephemeral", "infinite"] as const) {
+    await withHarness(async (h) => {
+      const d: ActiveDispatch = {
+        workerName: "w1",
+        dispatchId: "d-1",
+        leaseId: "l-1",
+        modelDef: ephemeralModelDef,
+        modelType: MODEL_TYPE,
+        modelId: "m-1",
+        methodName: "status",
+        definitionName: "test-def",
+        definitionTags: {},
+        dataOutputOverrides: [
+          { specName: "statusResult", lifetime },
+        ],
+      };
+      h.dispatches.register(d);
 
-    const resp = await h.plane.handle(
-      request("/data/resource", {
-        method: "POST",
-        body: JSON.stringify({
-          specName: "statusResult",
-          name: "status",
-          data: { clean: true },
+      const resp = await h.plane.handle(
+        request("/data/resource", {
+          method: "POST",
+          body: JSON.stringify({
+            specName: "statusResult",
+            name: "status",
+            data: { clean: true },
+          }),
         }),
-      }),
-    );
-    assertEquals(resp?.status, 200);
+      );
+      assertEquals(resp?.status, 200);
 
-    const key = `${MODEL_TYPE.normalized}/m-1/status`;
-    const entry = h.stored.get(key);
-    assertEquals(entry?.lifetime, "infinite");
-  });
+      const key = `${MODEL_TYPE.normalized}/m-1/status`;
+      const entry = h.stored.get(key);
+      assertEquals(entry?.lifetime, lifetime);
+      assertEquals(
+        (await h.plane.writtenVersions("d-1", 1000)).length,
+        lifetime === "ephemeral" ? 0 : 1,
+      );
+    });
+  }
 });
 
 Deno.test("DataPlane: tagOverrides on dispatch are applied to written resources", async () => {

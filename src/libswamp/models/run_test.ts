@@ -2239,7 +2239,14 @@ Deno.test("modelMethodRun: tells onWrittenVersions what a completed run wrote (s
     ...createTestDeps(definition, modelDef),
     createExecutionService: () =>
       ({
-        executeWorkflow: () => Promise.resolve({ dataHandles: [dataHandle] }),
+        executeWorkflow: () =>
+          Promise.resolve({
+            dataHandles: [dataHandle, {
+              ...dataHandle,
+              name: "ephemeral",
+              metadata: { ...dataHandle.metadata, lifetime: "ephemeral" },
+            }],
+          }),
         // deno-lint-ignore no-explicit-any
       }) as any,
     onWrittenVersions: (versions, outcome) => told.push([versions, outcome]),
@@ -2284,6 +2291,11 @@ Deno.test("modelMethodRun: tells onWrittenVersions what a failed run wrote, a wo
     tags: {},
     metadata: { contentType: "application/json" },
   } as DataHandle];
+  error.dataHandles.push({
+    ...error.dataHandles[0],
+    name: "ephemeral",
+    metadata: { ...error.dataHandles[0].metadata, lifetime: "ephemeral" },
+  });
   error.writtenVersions = [fromWorker];
   const told: [readonly WrittenVersion[], string][] = [];
   const deps: ModelMethodRunDeps = {

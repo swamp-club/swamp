@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { stepRetrievalCommand } from "../../data/data_query_command.ts";
+import {
+  renderDataPointer,
+  retrievalCommands,
+  stepDataPointers,
+} from "./data_pointers.ts";
 import type {
   ReportContext,
   StepSkipReasonInfo,
@@ -136,6 +140,7 @@ export const verificationSummaryReport: ReportDefinition = {
       taskType: string;
       errorMessage?: string;
       retrievalCommands: string[];
+      dataProduced?: ReturnType<typeof stepDataPointers>;
     }> = [];
 
     for (const [jobName, steps] of jobGroups) {
@@ -157,6 +162,14 @@ export const verificationSummaryReport: ReportDefinition = {
           `  ${stepIcon} ${step.stepName}  —  ${typeLabel}  (${step.status})`,
         );
 
+        if (step.status !== "failed") {
+          for (const pointer of stepDataPointers(workflowRunId, step)) {
+            if (pointer.availability === "ephemeral") {
+              lines.push(`    ${renderDataPointer(pointer)}`);
+            }
+          }
+        }
+
         if (step.status === "skipped") {
           lines.push(`    ${describeSkipReason(step.skipReason)}`);
         }
@@ -172,21 +185,18 @@ export const verificationSummaryReport: ReportDefinition = {
             });
             lines.push(`    ${step.errorMessage}`);
           } else if (step.dataHandles.length > 0) {
-            const cmds = step.dataHandles.map((h) =>
-              stepRetrievalCommand(workflowRunId, step, {
-                name: h.name,
-                version: h.version,
-                contentType: h.metadata.contentType,
-              })
+            const cmds = retrievalCommands(
+              stepDataPointers(workflowRunId, step),
             );
             failureDetails.push({
               job: step.jobName,
               step: step.stepName,
               taskType: step.taskType,
               retrievalCommands: cmds,
+              dataProduced: stepDataPointers(workflowRunId, step),
             });
-            for (const cmd of cmds) {
-              lines.push(`    → \`${cmd}\``);
+            for (const pointer of stepDataPointers(workflowRunId, step)) {
+              lines.push(`    → ${renderDataPointer(pointer)}`);
             }
           }
         }
@@ -230,14 +240,9 @@ export const verificationSummaryReport: ReportDefinition = {
         reason: s.status === "skipped"
           ? describeSkipReason(s.skipReason)
           : undefined,
+        dataProduced: stepDataPointers(workflowRunId, s),
         retrievalCommands: s.status === "failed"
-          ? s.dataHandles.map((h) =>
-            stepRetrievalCommand(workflowRunId, s, {
-              name: h.name,
-              version: h.version,
-              contentType: h.metadata.contentType,
-            })
-          )
+          ? retrievalCommands(stepDataPointers(workflowRunId, s))
           : undefined,
       })),
 

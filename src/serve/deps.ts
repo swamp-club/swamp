@@ -386,6 +386,7 @@ export async function createModelMethodRunDeps(
         defaultVaultName: options?.defaultVault,
       }),
     dataRepo: repoContext.unifiedDataRepo,
+    catalogStore: repoContext.catalogStore,
     definitionRepo: repoContext.definitionRepo,
     outputRepo: repoContext.outputRepo,
     dataQueryService: new DataQueryService(

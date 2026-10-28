@@ -1,7 +1,7 @@
 ---
 audience: maintainer, extension-author
 enables: [behaviors, workflows]
-last-verified: 2026-08-28 @ 3d5955a9
+last-verified: 2026-10-28 @ e7f38146
 ---
 
 # Reports
@@ -10,6 +10,23 @@ Reports are analysis functions that run after a method completes, or on demand.
 They turn behavior and workflow execution context into markdown and JSON, saved
 as data artifacts. Reports work on whatever context they get at runtime, not on
 specific behavior types, so report logic stays separate from behavior code.
+
+## Output availability in built-in summaries
+
+Method, workflow and verification summaries describe each produced artifact in
+`dataProduced`, including its effective `lifetime` and `availability`.
+`availability: ephemeral` means the bytes live only in the current run. These
+items have no `retrievalCommand`; Markdown explains that they are unavailable
+after the run. Reports retain their metadata, never a copy of their contents.
+Workflow and verification `retrievalCommands` arrays include only persistent
+outputs. Mixed outputs and outputs written before a failure follow the same rule.
+
+Persistent method pointers select the behavior's type and id, data name and
+version, plus the workflow run id when recorded. Workflow pointers also select
+the job and step. Commands keep their exact version after a later run writes the
+same name. Normal retention or explicit deletion can still remove that version.
+To retrieve an ephemeral spec's output later, override its lifetime with a durable
+one such as `infinite` before running it.
 
 ## Report Definition
 

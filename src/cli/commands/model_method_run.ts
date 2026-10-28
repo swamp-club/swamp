@@ -488,6 +488,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                 defaultVaultName: marker?.defaultVault,
               }),
             dataRepo: repoContext.unifiedDataRepo,
+            catalogStore: repoContext.catalogStore,
             definitionRepo: repoContext.definitionRepo,
             outputRepo: repoContext.outputRepo,
             dataQueryService: new DataQueryService(
