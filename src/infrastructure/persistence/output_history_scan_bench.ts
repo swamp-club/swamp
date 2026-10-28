@@ -40,7 +40,8 @@ import { stringify as stringifyYaml } from "@std/yaml";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ModelOutput } from "../../domain/models/model_output.ts";
-import { YamlOutputRepository } from "./yaml_output_repository.ts";
+import { createRepositoryContext } from "./repository_factory.ts";
+import type { YamlOutputRepository } from "./yaml_output_repository.ts";
 import "../../domain/models/models.ts";
 
 const SIZES = (Deno.args[0] ?? "10000,50000").split(",").map(Number);
@@ -61,7 +62,8 @@ async function seed(
   fresh: boolean,
 ): Promise<YamlOutputRepository> {
   const repoDir = join(root, `${size}-${fresh ? "fresh" : "settled"}`);
-  const repo = new YamlOutputRepository(repoDir);
+  const repo = createRepositoryContext({ repoDir, enableIndexing: false })
+    .outputRepo;
   const definitions = Array.from(
     { length: 200 },
     () => createDefinitionId(crypto.randomUUID()),
