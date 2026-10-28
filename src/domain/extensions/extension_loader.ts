@@ -2588,7 +2588,9 @@ export class ExtensionLoader {
     if (
       !row || !isIndexedRow(row) || !row.source_fingerprint ||
       !this.adapter.catalogKinds.includes(row.kind) ||
-      row.bundle_path !== bundlePath ||
+      // Reconcile records the bundle path canonicalized (lowercased, `/` on
+      // Windows), so compare the canonical spellings.
+      canonicalizePath(row.bundle_path) !== canonicalizePath(bundlePath) ||
       catalog.findSourceModules(absolutePath) === undefined ||
       catalog.isSourceGraphPending(absolutePath)
     ) {

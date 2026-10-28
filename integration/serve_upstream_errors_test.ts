@@ -672,12 +672,14 @@ for (
           ? join(scratch.dir, "abs-evil")
           : hostile;
         const real = `data/${type.normalized}/${web}/vpc/1/raw`;
-        // Every reply that names the record names the hostile key instead.
+        // Every reply that names the record names the hostile key instead,
+        // escaped as a JSON string so a Windows path's `\` stays valid JSON.
+        const evilInJson = JSON.stringify(evil).slice(1, -1);
         const proxy = startProxy(serve.origin, async (request, forward) => {
           if (request.method !== "GET") return undefined;
           const response = await forward();
           const text = await response.text();
-          return new Response(text.replaceAll(real, evil), {
+          return new Response(text.replaceAll(real, evilInJson), {
             status: response.status,
             headers: response.headers,
           });
