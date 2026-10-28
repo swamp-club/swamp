@@ -1750,11 +1750,12 @@ credentials and extensions onto workers:
      `result.error` goes through the same redactor before the step-lease fail
      record and the step's error (swamp-club#3525), so a worker that predates
      the runner-side scrub cannot put a value in a durable lease record.
-     The streamed `method_event` events and the result's console capture go
-     through it too before they reach the run log and the WS stream, read as
-     each arrives so it holds every value delivered so far: a version 6 run
-     loads nothing on serve, so the run's own redactor never sees the step's
-     values and this is the second scrub of that output.
+     The output lines of streamed `method_event` events and the result's
+     console capture go through it too before they reach the run log and the
+     WS stream, with each event's type, stream and level left as sent. It is
+     read as each line arrives, so it holds every value delivered so far: a
+     version 6 run loads nothing on serve, so the run's own redactor never
+     sees the step's values and this is the second scrub of that output.
      **Known limit:** the file-writer path (`POST /data/writers` and its
      `line`/`content` requests) does not get the redactor (`#openWriter` in
      `src/serve/data_plane.ts`), so file outputs rely on the worker-side layer

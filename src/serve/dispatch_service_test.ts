@@ -2301,12 +2301,14 @@ Deno.test("DispatchService: a hook that fails after a version 6 worker validated
   );
 });
 
-Deno.test("DispatchService: a worker's method events and console output reach the run through the dispatch's redactor, with the values served mid-dispatch (typed-secrets 5.2)", async () => {
+Deno.test("DispatchService: a worker's output lines and console output reach the run through the dispatch's redactor, with the values served mid-dispatch, and an event's type, stream and level stay as sent (typed-secrets 5.2)", async () => {
   const h = createHarness();
   h.setBehavior((name, params, options) => {
     // As the load route adds each value it serves to the registration.
     const registration = h.dispatches.forDispatch(name, params.dispatchId)!;
     (registration.redactor ??= new SecretRedactor()).addSecret("s3cret-loaded");
+    // A value that is also text of the event's structure.
+    registration.redactor.addSecret("out");
     options?.onEvent?.({
       kind: "method_event",
       event: {
@@ -2314,13 +2316,17 @@ Deno.test("DispatchService: a worker's method events and console output reach th
         line: "token=s3cret-loaded seed=literal-seed",
         stream: "stdout",
         level: "info",
-        nested: { values: ["s3cret-loaded"] },
       },
+    });
+    // Only an output line is text the method wrote.
+    options?.onEvent?.({
+      kind: "method_event",
+      event: { type: "progress", label: "s3cret-loaded" },
     });
     return Promise.resolve<DispatchResult>({
       status: "success",
       outputs: [],
-      logs: ["console s3cret-loaded"],
+      logs: ["console s3cret-loaded out"],
       durationMs: 1,
     });
   });
@@ -2335,11 +2341,11 @@ Deno.test("DispatchService: a worker's method events and console output reach th
       line: "token=*** seed=***",
       stream: "stdout",
       level: "info",
-      nested: { values: ["***"] },
     },
+    { type: "progress", label: "s3cret-loaded" },
     {
       type: "output",
-      line: "console ***",
+      line: "console *** ***",
       stream: "stdout",
       level: "info",
     },

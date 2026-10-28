@@ -172,19 +172,20 @@ interface DispatchFrame {
   redactorSeeds: string[] | undefined;
 }
 
-/** `value` with every string in it, at any depth, passed through `redactor`. */
-function redactedStrings<T>(value: T, redactor: SecretRedactor): T {
-  const walk = (item: unknown): unknown => {
-    if (typeof item === "string") return redactor.redact(item);
-    if (Array.isArray(item)) return item.map(walk);
-    if (item !== null && typeof item === "object") {
-      return Object.fromEntries(
-        Object.entries(item).map(([key, entry]) => [key, walk(entry)]),
-      );
-    }
-    return item;
-  };
-  return walk(value) as T;
+/**
+ * `event` with the text of an output line passed through `redactor`, as the
+ * worker scrubs it: only the line is text the method wrote, and its type,
+ * stream and level stay as sent so the run log reads it as the worker meant.
+ */
+function scrubbedOutputEvent(
+  event: RpcStreamEvent,
+  redactor: SecretRedactor,
+): RpcStreamEvent {
+  const inner = event.event;
+  if (typeof inner !== "object" || inner === null) return event;
+  const { type, line } = inner as Record<string, unknown>;
+  if (type !== "output" || typeof line !== "string") return event;
+  return { ...event, event: { ...inner, line: redactor.redact(line) } };
 }
 
 export interface DispatchServiceOptions {
@@ -951,12 +952,12 @@ export class DispatchService {
     // value the load route and resolveSecret have served the dispatch so
     // far: a version 6 run's own redactor never sees those values, so this
     // is the scrub after the worker's own.
-    const scrubbed = <T>(value: T): T => {
+    const dispatchRedactor = () => {
       const redactor = this.#options.dispatches.forDispatch(
         workerName,
         dispatchId,
       )?.redactor;
-      return redactor?.hasSecrets ? redactedStrings(value, redactor) : value;
+      return redactor?.hasSecrets ? redactor : undefined;
     };
     const onEvent = (event: RpcStreamEvent) => {
       if (event.kind === ARGUMENTS_VALIDATED_EVENT) {
@@ -970,8 +971,11 @@ export class DispatchService {
         }
         return;
       }
+      const redactor = dispatchRedactor();
       request.onEvent?.(
-        event.kind === "method_event" ? scrubbed(event) : event,
+        redactor && event.kind === "method_event"
+          ? scrubbedOutputEvent(event, redactor)
+          : event,
       );
     };
 
@@ -1011,7 +1015,7 @@ export class DispatchService {
             kind: "method_event",
             event: {
               type: "output",
-              line: scrubbed(line),
+              line: dispatchRedactor()?.redact(line) ?? line,
               stream: "stdout",
               level: "info",
             },

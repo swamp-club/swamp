@@ -1316,7 +1316,7 @@ worker for protocol version 6, and 5.3 removes the version 5 frame.
 Redaction stays after the trusted boundary. Worker result errors are already
 scrubbed on both hops, by the runner before the result frame and by serve
 before the lease record and the step error (swamp-club#3525); runner stderr
-follows (swamp-club#3526). Serve also passes a worker's streamed method events
+follows (swamp-club#3526). Serve also passes a worker's streamed output lines
 and console capture through the dispatch's redactor before the run log, since
 a version 6 run's own redactor never holds the values the worker loaded. Off loopback, serve keeps requiring TLS and an auth
 mode (`assertOffLoopbackSecurity`).
