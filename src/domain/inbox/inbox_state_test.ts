@@ -17,8 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
-import { InboxState, isStorableEtag, MAX_ETAG_LENGTH } from "./inbox_state.ts";
+import { assertEquals, assertNotEquals, assertThrows } from "@std/assert";
+import {
+  InboxCacheKey,
+  InboxState,
+  isStorableEtag,
+  MAX_ETAG_LENGTH,
+} from "./inbox_state.ts";
 
 Deno.test("InboxState.empty: has no snapshot, schedule or announcement", () => {
   assertEquals(InboxState.empty(), {
@@ -46,4 +51,22 @@ Deno.test("isStorableEtag: refuses empty, over-long and non-printable values", (
   assertEquals(isStorableEtag("x".repeat(MAX_ETAG_LENGTH + 1)), false);
   assertEquals(isStorableEtag('"a\nb"'), false);
   assertEquals(isStorableEtag('"aé"'), false);
+});
+
+Deno.test("InboxCacheKey.of: keys by the server's origin, whatever its path or case", () => {
+  const fingerprint = "0123456789abcdef";
+  const key = InboxCacheKey.of("https://Swamp-Club.com/api/", fingerprint);
+  assertEquals(key, { origin: "https://swamp-club.com", fingerprint });
+  assertEquals(
+    InboxCacheKey.of("https://swamp-club.com", fingerprint),
+    key,
+  );
+  assertNotEquals(
+    InboxCacheKey.of("https://staging.swamp-club.com", fingerprint),
+    key,
+  );
+});
+
+Deno.test("InboxCacheKey.of: throws on a server URL that does not parse", () => {
+  assertThrows(() => InboxCacheKey.of("not a url", "0123456789abcdef"));
 });

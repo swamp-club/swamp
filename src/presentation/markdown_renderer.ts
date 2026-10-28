@@ -69,10 +69,38 @@ interface LinkToken {
   tokens: unknown[];
 }
 
+interface ImageToken {
+  href: string;
+  text: string;
+}
+
+/** What an untrusted link prints in place of a target it refuses. */
+export const LINK_REMOVED = "(link removed)";
+
+/**
+ * The target an untrusted link may print: the parsed URL, so a look-alike
+ * host shows as punycode and the path is encoded. Undefined for anything but
+ * an `https:` URL without a username or password, which could disguise where
+ * it leads.
+ */
+function safeHref(href: string): string | undefined {
+  try {
+    const url = new URL(href);
+    return url.protocol === "https:" && url.username === "" &&
+        url.password === ""
+      ? url.href
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * A terminal renderer whose links always print their target. marked-terminal
  * turns a link into an OSC 8 hyperlink where the terminal supports one, which
- * shows only the link text and so can disguise where it leads.
+ * shows only the link text and so can disguise where it leads. Autolinks and
+ * reference links reach the same hook; images print their target the same
+ * way.
  */
 function visibleLinkRenderer(rendererOptions: Record<string, unknown>) {
   // deno-lint-ignore no-explicit-any
@@ -85,10 +113,26 @@ function visibleLinkRenderer(rendererOptions: Record<string, unknown>) {
     token: LinkToken,
   ): string {
     const text = this.parser.parseInline(token.tokens);
-    const href = this.o.href(token.href);
+    const target = safeHref(token.href);
+    if (target === undefined) {
+      return text ? `${text} ${LINK_REMOVED}` : LINK_REMOVED;
+    }
+    const href = this.o.href(target);
     return this.o.link(
-      text && text !== token.href ? `${text} (${href})` : href,
+      text && text !== token.href && text !== target
+        ? `${text} (${href})`
+        : href,
     );
+  };
+  renderer.image = function (
+    this: { o: { href(s: string): string } },
+    token: ImageToken,
+  ): string {
+    const target = safeHref(token.href);
+    const text = token.text ? `![${token.text}]` : "![]";
+    return target === undefined
+      ? `${text} ${LINK_REMOVED}`
+      : `${text}(${this.o.href(target)})`;
   };
   return renderer;
 }

@@ -59,17 +59,38 @@ Status codes that apply to every endpoint:
 response as untrusted. The schemas in `src/infrastructure/http/inbox_schemas.ts`
 translate it into swamp's own values, so nothing past them sees raw server text:
 
-- **Terminal escapes are stripped.** `kind`, `title` and `action` are reduced to
-  one line with no ANSI escape sequences or control characters. `body` keeps
-  newlines and tabs and loses every other control character.
-- **An action is always a single, plain `swamp` command.** The command must be
+- **Terminal escapes and invisible characters are stripped.** `kind`, `title`
+  and `action` are reduced to one line with no ANSI escape sequences or control
+  characters. `body` keeps newlines and tabs and loses every other control
+  character. `kind`, `title`, the action's label, `body` and `link` also lose
+  bidi controls (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069)
+  and zero-width characters (U+200B to U+200D, U+2060, U+FEFF), which print
+  nothing yet can reorder the text around them or hide a difference between
+  two strings. The action's command is not stripped: one holding such a
+  character breaks the rule below and is dropped.
+- **An action is always one allowed `swamp` command.** The command must be
   `swamp` followed by words made of letters, digits and the characters `@`, `%`,
-  `+`, `,`, `.`, `/`, `:`, `=`, `_` and `-`, such as `swamp update` or
-  `swamp extension pull @swamp/aws-ec2`. Quotes, `;`, `|`, `&`, `$`, backticks,
-  redirects, globs and `~` are refused, so the text can never chain or
-  substitute a second command after `swamp`. A command that breaks this, or is
-  longer than 200 characters, drops the action; the message is kept. A command
-  is never shortened, because a shortened command would not run.
+  `+`, `,`, `.`, `/`, `:`, `=`, `_` and `-`. Quotes, `;`, `|`, `&`, `$`,
+  backticks, redirects, globs and `~` are refused, so the text can never chain
+  or substitute a second command after `swamp`. It must also be, word for word,
+  one of the commands in `INBOX_ACTION_COMMANDS`:
+  - `swamp update`
+  - `swamp quest`
+  - `swamp inbox`, `swamp inbox read`
+  - `swamp subscription status`, `swamp subscription start`,
+    `swamp subscription start --collective <slug>`
+  - `swamp extension pull <@scope/name>`
+  - `swamp extension search <words>` (words that never start with `-`)
+  - `swamp issue get <number>`
+
+  Any other subcommand or flag is refused, as is any word holding `://`, so a
+  message can never suggest a command that points swamp at another server,
+  such as `swamp auth login --club …`. The action reaches the `Next:` line and
+  `action.command` in `swamp inbox read --json`, where an agent may run it.
+  Swamp Club's send-time check mirrors this list. A command that breaks either
+  rule, or is longer than 200 characters, drops the action; the message is
+  kept. A command is never shortened, because a shortened command would not
+  run.
 - **A link is always `https:`, with no username or password.** Any other link is
   dropped; the message is kept.
 - **The page cursor is a message id.** `nextCursor` must be a ULID or null, as
@@ -79,8 +100,10 @@ translate it into swamp's own values, so nothing past them sees raw server text:
 - **Ids are ULIDs and dates are ISO 8601.** A message that breaks either, or
   whose body is over 8 KiB, is dropped and the rest of the list is kept. The
   page reports how many it dropped, so a server that drifts from this contract
-  shows up rather than losing messages silently. An over-long title is
-  shortened.
+  shows up rather than losing messages silently. An over-long title, kind or
+  action label is shortened, counted and cut in code points, so a character
+  outside the Basic Multilingual Plane is never split into half a surrogate
+  pair.
 - **`pollAfterSeconds` is passed through as sent.** The poller enforces the
   900-second floor.
 
@@ -114,14 +137,29 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   on success and on error alike, the CLI waits at most 250 ms more, aborts a
   poll still running (saved as a failed poll), and only then writes the
   cache, so a command that exits early loses at most one request, never a
-  half-written state. A process that cannot write the config directory does
-  not poll, since it could not record the poll.
+  half-written state. A process that cannot write the cache does not poll,
+  since it could not record the poll: before a poll, the CLI checks that it
+  owns the config directory and creates and removes a file in the cache
+  directory. A key that a later answer shows working, an `ok` or a `304` from
+  the refresh that follows marking read, is no longer stopped, so one wrong
+  `401` from a proxy never ends polling for good.
 - **The cache.** The last summary and its `ETag` are cached locally, so a `304`
   costs nothing and the notice needs no network call. Each API key has its own
-  file, `inbox/<fingerprint>.json` in the swamp config directory, so a personal
-  key and a collective key never share or overwrite state; the file holds the
-  key's fingerprint, never the key. At most 8 keys are kept and the least
-  recently saved is dropped. A file that is missing, corrupt or out of bounds
+  file per server, `inbox-v2/<hash>.json` in the swamp config directory, named
+  from a hash of the server's origin and the key's fingerprint. A personal key
+  and a collective key never share or overwrite state, and neither does one
+  key used against two servers (staging and production), so one server's
+  answers never decide when the other is polled or what its notice says. The
+  file holds neither the key nor the server's URL, is readable by its owner
+  only (mode 0600, as `auth.json` is), and `swamp auth logout` removes it.
+  Each snapshot records when the request that fetched it was sent, and a
+  snapshot fetched earlier never replaces one fetched later, so a slow poll
+  sent before `swamp inbox read` marked a message read cannot bring its notice
+  back. A stored time later than now (the clock went back) never blocks a new
+  snapshot. At most 8 keys are kept and the least recently saved is dropped.
+  The first layout, `inbox/<fingerprint>.json`, shared one file across
+  servers; it is left to older swamps, and logout removes the key's file
+  there too. A file that is missing, corrupt or out of bounds
   reads as a key never polled. Changes to the file format are additive only,
   and each added field must be safe to lose, since an older swamp drops fields
   it does not know when it saves. A breaking change moves to a new directory,
@@ -136,7 +174,7 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   ```
 
   With more than one unread message, the first line reads
-  `ℹ 3 new messages from Swamp Club are waiting for you.` The second line never
+  `ℹ 3 unread messages from Swamp Club are waiting for you.` The second line never
   changes; its `To …:` label matches `To approve:` and `To signal:` in the
   workflow renderer. The text is fixed: no message title or other server text
   appears in it, so an agent's context holds nothing Swamp Club wrote until the
@@ -144,7 +182,10 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   agent running commands with `--json` never sees it, and JSON output never
   carries it. The `swamp` skill quotes the second line, so the two must change
   together. A notice retires after 24 hours, whether or not the user reads the
-  message. Deciding it reads only the cache, so a fast command shows the notice
+  message, and at once if its announcement is dated after now, as when the
+  clock went back. A message's first showing is shown only once it is
+  recorded in the cache, so a notice that could never retire, in a config
+  directory this process cannot write, is never shown. Deciding it reads only the cache, so a fast command shows the notice
   a slow command's poll found, at the cost of one small file read and no
   request. It prints only after a command that succeeded, before the update
   banner; a failed command's output ends with its error. A run that reports
@@ -179,7 +220,11 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   the list's columns, typing filters on title and kind, and the preview shows
   the highlighted message whole: kind and date, title, body, then its
   `Link:` and `Next:` lines. Previewing makes no request and marks nothing
-  read. Enter opens the message: it is marked read and left in the scrollback.
+  read. Every preview row is wrapped to the pane, so a long body link or
+  `Link:` line shows whole rather than cut to its start, and the preview
+  scrolls to its last row. Enter opens the message: it is marked read and left
+  in the scrollback. When Swamp Club does not confirm an unread message Enter
+  opened, the picker says so on stderr, as `swamp inbox read` does.
   Ctrl-r marks the highlighted message read and Ctrl-a marks every unread
   message on the loaded page read, including rows the filter hides; both close
   the picker and say how many were marked. Like every action key, Ctrl-a acts
@@ -188,17 +233,27 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   keys need Ctrl because plain letters type into the filter, and Ctrl-m is the
   same key as Enter. `swamp inbox read` starts on the newest unread message on
   the page, or on the first row when none on the page is unread. An empty
-  inbox opens no picker and prints `Your inbox is empty.` The picker never
-  runs a message's suggested command.
+  inbox opens no picker and prints `Your inbox is empty.` When the loaded page
+  has another one after it, the picker ends, whatever was chosen, with
+  `To see older:  swamp inbox --all --before <id>`. The picker never runs a
+  message's suggested command.
 - **Body links show where they lead.** A message body is markdown that Swamp
-  Club wrote. Rendered for the terminal, every link in it prints as
-  `text (href)`, never as a terminal hyperlink, which would show only the text
-  and could disguise its target the way the `link` field's rules prevent.
+  Club wrote. Rendered for the terminal, every link in it, autolinks, reference
+  links and images included, prints as `text (href)`, never as a terminal
+  hyperlink, which would show only the text and could disguise its target.
+  Each href gets the `link` field's rules: it is parsed as a URL and printed
+  in its parsed form, so a look-alike host shows as punycode
+  (`https://xn--swmp-club-1yh.com/…`) and the path is encoded. An href that is
+  not `https:`, carries a username or password, or does not parse prints the
+  link text followed by `(link removed)`.
 - **`swamp inbox read` outside a terminal** prints the newest unread message
   (kind and date, title, the body as plain markdown, `Link:` and `Next:`) and
   marks it read. While more are unread it ends with
   `To read the next:  swamp inbox read`. With nothing unread it prints
-  `No unread messages.` and exits 0. `--json` prints
+  `No unread messages.` and exits 0. Unread messages are listed two at a time;
+  while every entry on a page broke the contract and another page follows,
+  listing goes on, at most 5 pages. `moreUnread` is true when a second valid
+  message, a later page or a left-out entry exists. `--json` prints
   `{ message, moreUnread, dropped }`, with `message: null` when nothing is
   unread. The message's `readAt` is the CLI's own clock at the time it marked
   it, since `POST /api/inbox/read` returns ids only. `dropped` counts unread
@@ -209,8 +264,8 @@ applied; marking read is idempotent, so retrying the whole call is safe.
 - **Marking read updates the cache.** Every path that marks messages read
   (Enter, Ctrl-r, Ctrl-a and `swamp inbox read`) sends only those ids, then
   asks `/api/inbox/summary` once, without an `ETag`, and applies the answer to
-  the key's cache as a poll, so the notice stops at once. The cache is saved
-  only when the process owns the config directory. The refresh is bounded by
+  the key's cache for the server it asked, as a poll, so the notice stops at
+  once. The cache is saved only when the process owns the config directory. The refresh is bounded by
   a 5-second timeout. A refresh that fails is not recorded, so it does not
   put off the next poll, and it is not an error: the messages are already
   read, and the next poll corrects the cache.

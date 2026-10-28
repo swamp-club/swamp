@@ -43,7 +43,7 @@ Deno.test("renderInboxNotice: one unread message prints the singular notice", ()
 Deno.test("renderInboxNotice: more than one unread message prints the plural first line", () => {
   assertEquals(rendered(3), [
     "",
-    "ℹ 3 new messages from Swamp Club are waiting for you.",
+    "ℹ 3 unread messages from Swamp Club are waiting for you.",
     "  To read it:  swamp inbox read",
   ]);
 });
@@ -58,6 +58,6 @@ Deno.test("inboxNoticeFirstLine: one or fewer reads as the singular line, two or
   assertEquals(inboxNoticeFirstLine(1), INBOX_NOTICE_SINGLE_LINE);
   assertEquals(
     inboxNoticeFirstLine(2),
-    "ℹ 2 new messages from Swamp Club are waiting for you.",
+    "ℹ 2 unread messages from Swamp Club are waiting for you.",
   );
 });

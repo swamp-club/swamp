@@ -453,6 +453,8 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/domain/models/bundle.ts: bundleExtension": UNEVALUATED_TEMP,
     "src/infrastructure/datastore_v3/litestream/litestream_binary_provider.ts: denoLitestreamFs":
       UNEVALUATED_TEMP,
+    "src/infrastructure/inbox/inbox_cache_file_repository.ts: InboxCacheFileRepository":
+      "An empty probe file that canWrite creates and removes at once to learn whether the inbox cache can be written (swamp-club#4079); nothing is ever written to it.",
     "src/infrastructure/source/http_source_downloader.ts: HttpSourceDownloader":
       UNEVALUATED_TEMP,
     "src/infrastructure/update/http_update_checker.ts: HttpUpdateChecker":

@@ -21,6 +21,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { bold, cyan, dim, yellow } from "@std/fmt/colors";
+import wrapAnsi from "wrap-ansi";
 import { maxOf } from "../../domain/array_extrema.ts";
 import type {
   InboxBrowseEvent,
@@ -37,7 +38,7 @@ import {
   type PickerResult,
   renderInteractivePicker,
 } from "./components/search_picker.tsx";
-import { droppedWarning, localDate } from "./inbox_list.ts";
+import { droppedWarning, localDate, olderPageLine } from "./inbox_list.ts";
 
 const UNREAD_MARKER = "●";
 
@@ -94,7 +95,17 @@ export function toInboxPickerSelection(
   }
 }
 
-/** The message as text: heading, body, then its link and suggested command. */
+/** The preview's width inside the pane, past its left margin. */
+function previewInnerWidth(width: number): number {
+  return Math.max(10, width - 1);
+}
+
+/**
+ * The message as text: heading, body, then its link and suggested command.
+ * With `width`, every line is wrapped to it, breaking a word longer than the
+ * width, so each entry is exactly one rendered row: nothing is cut off, and
+ * a long link always shows whole rather than as a trusted-looking start.
+ */
 export function inboxMessageLines(
   message: InboxMessageView,
   width?: number,
@@ -117,7 +128,10 @@ export function inboxMessageLines(
   if (message.action !== undefined) {
     lines.push(`${yellow("Next:")}  ${message.action.command}`);
   }
-  return lines;
+  if (width === undefined) return lines;
+  return lines.flatMap((line) =>
+    wrapAnsi(line, width, { hard: true, trim: false }).split("\n")
+  );
 }
 
 export interface InboxPickerConfig {
@@ -131,6 +145,11 @@ export interface InboxPickerConfig {
     height: number,
   ) => React.ReactElement;
   renderScrollback: (item: InboxMessageView, detail: unknown) => string;
+  previewLineCount: (
+    item: InboxMessageView,
+    detail: unknown,
+    width: number,
+  ) => number;
   actions: ActionDef[];
   initialIndex: number;
 }
@@ -154,7 +173,7 @@ export function inboxPickerConfig(
       </Text>
     ),
     renderPreview: (m, _detail, width) => {
-      const innerWidth = Math.max(10, width - 1);
+      const innerWidth = previewInnerWidth(width);
       return (
         <Box flexDirection="column" marginLeft={1} width={innerWidth}>
           {inboxMessageLines(m, innerWidth).map((line, i) => (
@@ -164,6 +183,8 @@ export function inboxPickerConfig(
       );
     },
     renderScrollback: (m) => inboxMessageLines(m).join("\n"),
+    previewLineCount: (m, _detail, width) =>
+      inboxMessageLines(m, previewInnerWidth(width)).length,
     actions: INBOX_PICKER_ACTIONS,
     initialIndex: highlightNewestUnread ? newestUnreadIndex(view.messages) : 0,
   };
@@ -172,15 +193,28 @@ export function inboxPickerConfig(
 export interface InboxPickerRenderer extends Renderer<InboxBrowseEvent> {
   /** The user's choice; cancelled until the picker has closed. */
   selection(): InboxPickerSelection;
+  /**
+   * Prints the command for older messages when the loaded page was not the
+   * last. Called once the picker has closed and its choice is carried out.
+   */
+  printOlderPageLine(): void;
 }
 
 class InkInboxPickerRenderer implements InboxPickerRenderer {
   private _selection: InboxPickerSelection = { kind: "cancelled", ids: [] };
+  private nextCursor: string | null = null;
 
   constructor(private readonly highlightNewestUnread: boolean) {}
 
   selection(): InboxPickerSelection {
     return this._selection;
+  }
+
+  printOlderPageLine(): void {
+    // The picker lists read and unread messages, so the next page does too.
+    if (this.nextCursor !== null) {
+      writeOutput(olderPageLine(this.nextCursor, true));
+    }
   }
 
   handlers(): EventHandlers<InboxBrowseEvent> {
@@ -191,6 +225,7 @@ class InkInboxPickerRenderer implements InboxPickerRenderer {
         const warning = droppedWarning(view.dropped);
         // stderr, and before the picker, so it is on screen once it closes.
         if (warning) console.error(yellow(warning));
+        this.nextCursor = view.nextCursor;
         if (view.messages.length === 0) {
           writeOutput("Your inbox is empty.");
           return;
@@ -206,6 +241,7 @@ class InkInboxPickerRenderer implements InboxPickerRenderer {
           "messages",
           {
             commandName: "inbox",
+            previewLineCount: config.previewLineCount,
             actions: config.actions,
             initialIndex: config.initialIndex,
           },

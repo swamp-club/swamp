@@ -28,7 +28,7 @@ import {
   keyFingerprint,
 } from "../../domain/auth/auth_credentials.ts";
 import { UserError } from "../../domain/errors.ts";
-import { InboxState } from "../../domain/inbox/inbox_state.ts";
+import { InboxCacheKey, InboxState } from "../../domain/inbox/inbox_state.ts";
 import {
   type InboxListOptions,
   type InboxMessagePage,
@@ -43,6 +43,7 @@ import {
   type InboxReadNextEvent,
   markRead,
   type MarkReadEvent,
+  MAX_INBOX_READ_PAGES,
 } from "./read.ts";
 
 const fixture = JSON.parse(
@@ -86,7 +87,7 @@ interface Recorder {
   listed: InboxListOptions[];
   marked: string[][];
   summaries: number;
-  saved: { fingerprint: string; state: InboxState }[];
+  saved: { key: InboxCacheKey; state: InboxState }[];
 }
 
 function makeDeps(overrides: Partial<InboxReadDeps> & {
@@ -115,8 +116,8 @@ function makeDeps(overrides: Partial<InboxReadDeps> & {
       return Promise.resolve(overrides.summary ?? okSummary);
     },
     loadInboxState: () => Promise.resolve(InboxState.empty()),
-    saveInboxState: (fingerprint, state) => {
-      rec.saved.push({ fingerprint, state });
+    saveInboxState: (key, state) => {
+      rec.saved.push({ key, state });
       return Promise.resolve();
     },
     ownsConfigDir: () => true,
@@ -158,6 +159,8 @@ Deno.test("inboxReadNext: moreUnread follows a second message or a cursor", asyn
     [{ messages: one, nextCursor: null, dropped: 0 }, false],
     [{ messages: one, nextCursor: one[0].id, dropped: 0 }, true],
     [unreadPage, true],
+    // The second entry broke the contract: it is still an unread message.
+    [{ messages: one, nextCursor: null, dropped: 1 }, true],
   ];
   for (const [page, expected] of cases) {
     const { deps } = makeDeps({ page });
@@ -195,6 +198,60 @@ Deno.test("inboxReadNext: nothing unread marks nothing and reports dropped", asy
   assertEquals(rec.summaries, 0);
 });
 
+Deno.test("inboxReadNext: pages past entries that were all dropped", async () => {
+  const [valid] = unreadPage.messages;
+  const pages: InboxMessagePage[] = [
+    { messages: [], nextCursor: "01JBX5Q8ZK00000000000000Z1", dropped: 2 },
+    { messages: [], nextCursor: "01JBX5Q8ZK00000000000000Z0", dropped: 2 },
+    { messages: [valid], nextCursor: null, dropped: 0 },
+  ];
+  const { deps, rec } = makeDeps({
+    listMessages: (_url, _key, options) => {
+      rec.listed.push(options);
+      return Promise.resolve(pages[rec.listed.length - 1]);
+    },
+  });
+
+  const last = lastOf(
+    await collect<InboxReadNextEvent>(
+      inboxReadNext(createLibSwampContext(), deps),
+    ),
+  );
+
+  assert(last.kind === "completed");
+  assertEquals(last.view.message?.id, valid.id);
+  assertEquals(last.view.dropped, 4);
+  assertEquals(last.view.moreUnread, true);
+  assertEquals(rec.marked, [[valid.id]]);
+  assertEquals(rec.listed, [
+    { status: "unread", limit: 2 },
+    { status: "unread", limit: 2, before: "01JBX5Q8ZK00000000000000Z1" },
+    { status: "unread", limit: 2, before: "01JBX5Q8ZK00000000000000Z0" },
+  ]);
+});
+
+Deno.test("inboxReadNext: stops paging after MAX_INBOX_READ_PAGES pages of dropped entries", async () => {
+  const { deps, rec } = makeDeps({
+    page: {
+      messages: [],
+      nextCursor: "01JBX5Q8ZK00000000000000Z1",
+      dropped: 2,
+    },
+  });
+
+  const last = lastOf(
+    await collect<InboxReadNextEvent>(
+      inboxReadNext(createLibSwampContext(), deps),
+    ),
+  );
+
+  assert(last.kind === "completed");
+  assertEquals(last.view.message, null);
+  assertEquals(rec.listed.length, MAX_INBOX_READ_PAGES);
+  assertEquals(last.view.dropped, 2 * MAX_INBOX_READ_PAGES);
+  assertEquals(rec.marked, []);
+});
+
 Deno.test("inboxReadNext: an id swamp-club does not confirm stays unread", async () => {
   const { deps } = makeDeps({ markInboxRead: () => Promise.resolve([]) });
 
@@ -219,8 +276,11 @@ Deno.test("inboxReadNext: the refreshed summary goes into the key's cache", asyn
   assertEquals(rec.summaries, 1);
   assertEquals(rec.saved.length, 1);
   assertEquals(
-    rec.saved[0].fingerprint,
-    await keyFingerprint(credentials.apiKey),
+    rec.saved[0].key,
+    InboxCacheKey.of(
+      credentials.serverUrl,
+      await keyFingerprint(credentials.apiKey),
+    ),
   );
   assertEquals(rec.saved[0].state.snapshot, {
     unread: 1,
@@ -228,8 +288,22 @@ Deno.test("inboxReadNext: the refreshed summary goes into the key's cache", asyn
     newestAt: "2026-10-25T17:30:00.000Z",
     pollAfterSeconds: 900,
     etag: '"v2"',
+    fetchedAt: NOW,
   });
   assertEquals(rec.saved[0].state.schedule.lastPolledAt, NOW);
+});
+
+Deno.test("inboxReadNext: the refresh is kept under the server it asked, not the stored one", async () => {
+  const { deps, rec } = makeDeps({
+    serverUrlOverride: "https://staging.swamp-club.com/",
+  });
+
+  await collect<InboxReadNextEvent>(
+    inboxReadNext(createLibSwampContext(), deps),
+  );
+
+  assertEquals(rec.saved.length, 1);
+  assertEquals(rec.saved[0].key.origin, "https://staging.swamp-club.com");
 });
 
 Deno.test("inboxReadNext: a failed refresh leaves the cache and still succeeds", async () => {

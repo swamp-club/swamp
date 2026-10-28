@@ -19,9 +19,12 @@
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  INBOX_ACTION_COMMANDS,
   INBOX_REQUIRES_USER,
+  isAllowedInboxActionCommand,
   isInboxMessageId,
   MAX_INBOX_ACTION_COMMAND_LENGTH,
+  MAX_INBOX_ACTION_LABEL_LENGTH,
   MAX_INBOX_BODY_BYTES,
   MAX_INBOX_TITLE_LENGTH,
   parseInboxErrorCode,
@@ -144,13 +147,19 @@ Deno.test("parseInboxMessage: drops an action whose command carries shell syntax
   }
 });
 
-Deno.test("parseInboxMessage: keeps an action with a plain swamp command", () => {
+Deno.test("parseInboxMessage: keeps an action with an allowed swamp command", () => {
   for (
     const command of [
       "swamp update",
+      "swamp quest",
+      "swamp inbox",
+      "swamp inbox read",
+      "swamp subscription status",
+      "swamp subscription start",
+      "swamp subscription start --collective acme-corp",
       "swamp extension pull @swamp/aws-ec2",
-      "swamp update --version 1.42.0",
-      "swamp workflow run nightly --input region=us-east-1",
+      "swamp extension pull @swamp/cve/dirtyfrag",
+      "swamp extension search aws ec2",
       "swamp issue get 3990",
     ]
   ) {
@@ -159,6 +168,61 @@ Deno.test("parseInboxMessage: keeps an action with a plain swamp command", () =>
       action: { label: "Run", command },
     });
     assertEquals(parsed?.action, { label: "Run", command }, command);
+  }
+});
+
+Deno.test("parseInboxMessage: drops an action whose command is not on the allow-list and keeps the message", () => {
+  for (
+    const command of [
+      "swamp auth login --club https://evil.example",
+      "swamp auth login",
+      "swamp auth logout",
+      "swamp workflow run x",
+      "swamp update --version 1.42.0",
+      "swamp update --repo-dir /tmp",
+      "swamp --repo-dir /tmp update",
+      "swamp inbox read --repo-dir /tmp",
+      "swamp extension search --repo-dir /tmp",
+      "swamp extension search https://evil.example",
+      "swamp extension pull @swamp/aws-ec2 --repo-dir /tmp",
+      "swamp extension pull swamp/aws-ec2",
+      "swamp extension pull https://evil.example/x",
+      "swamp subscription start --collective",
+      "swamp subscription start --collective Acme",
+      "swamp issue get 0",
+      "swamp issue get 12a",
+      "swamp issue get 1 2",
+      "swamp quest x",
+      "swamp Update",
+    ]
+  ) {
+    const parsed = parseInboxMessage({
+      ...message(),
+      action: { label: "Run", command },
+    });
+    assert(parsed, command);
+    assertEquals(parsed.action, undefined, command);
+  }
+});
+
+Deno.test("isAllowedInboxActionCommand: refuses any word holding ://", () => {
+  assertEquals(
+    isAllowedInboxActionCommand("swamp extension search a://b"),
+    false,
+  );
+  assertEquals(isAllowedInboxActionCommand("swamp extension search ab"), true);
+});
+
+Deno.test("INBOX_ACTION_COMMANDS: every shape with its slot filled is allowed", () => {
+  const fill = { extension: "@a/b", collective: "c", issue: "7", words: "w" };
+  for (const shape of INBOX_ACTION_COMMANDS) {
+    const command = [
+      "swamp",
+      ...shape.words,
+      ...(shape.slot ? [fill[shape.slot]] : []),
+    ]
+      .join(" ");
+    assert(isAllowedInboxActionCommand(command), command);
   }
 });
 
@@ -216,6 +280,79 @@ Deno.test("parseInboxMessage: strips terminal escapes from text fields", () => {
   assertEquals(parsed.title, "Hello world");
   assertEquals(parsed.body, "line one\nline two\tend");
   assertEquals(parsed.action, { label: "Up date", command: "swamp update" });
+});
+
+Deno.test("parseInboxMessage: strips bidi and zero-width characters from every text field", () => {
+  const invisibles = [
+    "\u061c",
+    "\u200b",
+    "\u200c",
+    "\u200d",
+    "\u200e",
+    "\u200f",
+    "\u202a",
+    "\u202b",
+    "\u202c",
+    "\u202d",
+    "\u202e",
+    "\u2060",
+    "\u2066",
+    "\u2067",
+    "\u2068",
+    "\u2069",
+    "\ufeff",
+  ];
+  for (const c of invisibles) {
+    const parsed = parseInboxMessage({
+      ...message(),
+      kind: `ann${c}ouncement`,
+      title: `Hel${c}lo`,
+      body: `[x${c}](https://swamp${c}-club.com)`,
+      link: `https://swamp${c}-club.com/blog`,
+      action: { label: `Up${c}date`, command: "swamp update" },
+    });
+    const name = `U+${c.codePointAt(0)!.toString(16)}`;
+    assert(parsed, name);
+    assertEquals(parsed.kind, "announcement", name);
+    assertEquals(parsed.title, "Hello", name);
+    assertEquals(parsed.body, "[x](https://swamp-club.com)", name);
+    assertEquals(parsed.link, "https://swamp-club.com/blog", name);
+    assertEquals(parsed.action?.label, "Update", name);
+  }
+});
+
+Deno.test("parseInboxMessage: drops a command holding an invisible character rather than stripping it", () => {
+  const parsed = parseInboxMessage({
+    ...message(),
+    action: { label: "Run", command: "swamp up\u200bdate" },
+  });
+  assert(parsed);
+  assertEquals(parsed.action, undefined);
+});
+
+Deno.test("parseInboxMessage: cuts a title on code points, never inside a surrogate pair", () => {
+  // The emoji straddles the cut: code unit MAX - 2 starts it.
+  const title = "t".repeat(MAX_INBOX_TITLE_LENGTH - 2) + "😀😀😀";
+  const parsed = parseInboxMessage({ ...message(), title });
+  assert(parsed);
+  const codePoints = Array.from(parsed.title);
+  assertEquals(codePoints.length, MAX_INBOX_TITLE_LENGTH);
+  assertEquals(codePoints.at(-1), "…");
+  assertEquals(codePoints.at(-2), "😀");
+  assert(parsed.title.isWellFormed());
+  // Well formed in JSON too.
+  assertEquals(JSON.parse(JSON.stringify(parsed.title)), parsed.title);
+});
+
+Deno.test("parseInboxMessage: measures an action label in code points", () => {
+  // 40 code points, 42 code units: fits whole.
+  const label = "l".repeat(MAX_INBOX_ACTION_LABEL_LENGTH - 2) + "😀😀";
+  const parsed = parseInboxMessage({
+    ...message(),
+    action: { label, command: "swamp update" },
+  });
+  assert(parsed?.action);
+  assertEquals(parsed.action.label, label);
 });
 
 Deno.test("parseInboxMessage: truncates an over-long title", () => {

@@ -31,6 +31,7 @@ import type { OutputMode } from "../output/output.ts";
 import {
   createInboxReadRenderer,
   createMarkReadRenderer,
+  NOT_MARKED_WARNING,
 } from "./inbox_read.ts";
 
 /** An ISO timestamp at local noon, so its local date holds in every zone. */
@@ -201,17 +202,31 @@ Deno.test("createInboxReadRenderer: an error event throws a UserError", () => {
 function markRead(
   marked: string[],
   announce: boolean,
-): string {
+  openedId?: string,
+): { stdout: string; stderr: string } {
   const handlers: EventHandlers<MarkReadEvent> = createMarkReadRenderer({
     announce,
+    ...(openedId !== undefined ? { openedId } : {}),
   }).handlers();
-  return captureOutput(() => handlers.completed({ kind: "completed", marked }))
-    .stdout;
+  return captureOutput(() => handlers.completed({ kind: "completed", marked }));
 }
 
 Deno.test("createMarkReadRenderer: counts what was marked, only when announcing", () => {
-  assertEquals(markRead(["A"], true), "Marked 1 message read.");
-  assertEquals(markRead(["A", "B"], true), "Marked 2 messages read.");
-  assertEquals(markRead([], true), "Marked 0 messages read.");
-  assertEquals(markRead(["A"], false), "");
+  assertEquals(markRead(["A"], true).stdout, "Marked 1 message read.");
+  assertEquals(markRead(["A", "B"], true).stdout, "Marked 2 messages read.");
+  assertEquals(markRead([], true).stdout, "Marked 0 messages read.");
+  assertEquals(markRead(["A"], false).stdout, "");
+});
+
+Deno.test("createMarkReadRenderer: warns when the message Enter opened was not confirmed", () => {
+  const id = "01JBX5Q8ZK00000000000000ZX";
+  assertEquals(markRead([], false, id), {
+    stdout: "",
+    stderr: NOT_MARKED_WARNING,
+  });
+  // Confirmed, in either case: no warning.
+  assertEquals(markRead([id], false, id).stderr, "");
+  assertEquals(markRead([id.toLowerCase()], false, id).stderr, "");
+  // Nothing opened unread (an already read message): nothing to confirm.
+  assertEquals(markRead([], false).stderr, "");
 });

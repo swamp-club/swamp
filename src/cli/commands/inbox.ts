@@ -89,15 +89,23 @@ async function runInboxPicker(
   );
 
   const selection = picker.selection();
-  if (selection.kind === "cancelled") return;
-  await consumeStream(
-    markRead(
-      ctx,
-      createInboxReadDeps({ serverUrlOverride, identity }),
-      selection.ids,
-    ),
-    createMarkReadRenderer({ announce: selection.kind !== "open" }).handlers(),
-  );
+  if (selection.kind !== "cancelled") {
+    // Enter on an unread message marks it; one already read marks nothing,
+    // so there is nothing for Swamp Club to confirm.
+    const openedId = selection.kind === "open" ? selection.ids[0] : undefined;
+    await consumeStream(
+      markRead(
+        ctx,
+        createInboxReadDeps({ serverUrlOverride, identity }),
+        selection.ids,
+      ),
+      createMarkReadRenderer({
+        announce: selection.kind !== "open",
+        ...(openedId !== undefined ? { openedId } : {}),
+      }).handlers(),
+    );
+  }
+  picker.printOlderPageLine();
 }
 
 const inboxReadCommand = new Command()

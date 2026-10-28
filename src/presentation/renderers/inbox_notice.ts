@@ -38,11 +38,12 @@ export const INBOX_NOTICE_READ_LINE =
 
 /**
  * The first line: singular for one unread message, plural for more. The
- * policy only shows a notice with at least one unread message.
+ * plural says unread, not new: the count includes messages announced before.
+ * The policy only shows a notice with at least one unread message.
  */
 export function inboxNoticeFirstLine(unread: number): string {
   return unread > 1
-    ? `ℹ ${unread} new messages from Swamp Club are waiting for you.`
+    ? `ℹ ${unread} unread messages from Swamp Club are waiting for you.`
     : INBOX_NOTICE_SINGLE_LINE;
 }
 

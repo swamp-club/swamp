@@ -28,7 +28,10 @@ import {
   recordNoticeShown,
   shouldPoll,
 } from "../../domain/inbox/inbox_policy.ts";
-import type { InboxState } from "../../domain/inbox/inbox_state.ts";
+import {
+  InboxCacheKey,
+  type InboxState,
+} from "../../domain/inbox/inbox_state.ts";
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import type { InboxSummaryResult } from "../../infrastructure/http/inbox_schemas.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
@@ -55,10 +58,13 @@ export interface InboxNoticeDeps {
     etag: string | null,
     signal: AbortSignal,
   ) => Promise<InboxSummaryResult>;
-  loadInboxState: (fingerprint: string) => Promise<InboxState>;
-  saveInboxState: (fingerprint: string, state: InboxState) => Promise<void>;
-  /** Whether this process may write the swamp config directory. */
-  ownsConfigDir: () => boolean;
+  loadInboxState: (key: InboxCacheKey) => Promise<InboxState>;
+  saveInboxState: (key: InboxCacheKey, state: InboxState) => Promise<void>;
+  /**
+   * Whether this process owns the swamp config directory and can write the
+   * inbox cache there. Never rejects.
+   */
+  configDirWritable: () => Promise<boolean>;
   now: () => number;
   /**
    * Resolves after `ms`, or as soon as `signal` aborts. Never rejects, so a
@@ -107,9 +113,15 @@ export function createInboxNoticeDeps(
         etag,
         signal,
       ),
-    loadInboxState: (fingerprint) => cache().load(fingerprint),
-    saveInboxState: (fingerprint, state) => cache().save(fingerprint, state),
-    ownsConfigDir: processOwnsConfigDir,
+    loadInboxState: (key) => cache().load(key),
+    saveInboxState: (key, state) => cache().save(key, state),
+    configDirWritable: async () => {
+      try {
+        return processOwnsConfigDir() && await cache().canWrite();
+      } catch {
+        return false;
+      }
+    },
     now: () => Date.now(),
     wait: waitOrAbort,
   };
@@ -118,9 +130,10 @@ export function createInboxNoticeDeps(
 interface ActiveKey {
   serverUrl: string;
   apiKey: string;
-  fingerprint: string;
+  cacheKey: InboxCacheKey;
 }
 
+/** The credential in use, or null. Throws when its server URL does not parse. */
 async function activeKey(deps: InboxNoticeDeps): Promise<ActiveKey | null> {
   const credentials = await deps.loadCredentials();
   // An empty key is the identity cache an env-key run leaves in auth.json:
@@ -129,7 +142,10 @@ async function activeKey(deps: InboxNoticeDeps): Promise<ActiveKey | null> {
   return {
     serverUrl: credentials.serverUrl,
     apiKey: credentials.apiKey,
-    fingerprint: await keyFingerprint(credentials.apiKey),
+    cacheKey: InboxCacheKey.of(
+      credentials.serverUrl,
+      await keyFingerprint(credentials.apiKey),
+    ),
   };
 }
 
@@ -146,7 +162,7 @@ export interface InboxPoll {
  * Starts the inbox poll for the active key when one is due, or returns null.
  * Nothing is written until {@link InboxPoll.settle}, so a command that exits
  * early loses at most this one request. A process that cannot write the
- * config directory does not poll: it could not record the poll, so every run
+ * inbox cache does not poll: it could not record the poll, so every run
  * would poll again. Never throws.
  */
 export async function startInboxPoll(
@@ -155,16 +171,16 @@ export async function startInboxPoll(
   let key: ActiveKey | null;
   let state: InboxState;
   try {
-    if (!deps.ownsConfigDir()) return null;
     key = await activeKey(deps);
     if (key === null) return null;
-    state = await deps.loadInboxState(key.fingerprint);
+    state = await deps.loadInboxState(key.cacheKey);
     if (!shouldPoll(state, deps.now())) return null;
+    if (!await deps.configDirWritable()) return null;
   } catch (error: unknown) {
     logger.debug`Could not start the inbox poll: ${error}`;
     return null;
   }
-  const { serverUrl, apiKey, fingerprint } = key;
+  const { serverUrl, apiKey, cacheKey } = key;
 
   const controller = new AbortController();
   const signal = AbortSignal.any([
@@ -172,6 +188,7 @@ export async function startInboxPoll(
     AbortSignal.timeout(INBOX_POLL_TIMEOUT_MS),
   ]);
   let done = false;
+  const sentAt = deps.now();
   let request: Promise<InboxSummaryResult>;
   try {
     request = deps.inboxSummary(
@@ -205,10 +222,10 @@ export async function startInboxPoll(
     try {
       // Reloaded, not the state the poll started from: another command may
       // have saved this key's state since.
-      const current = await deps.loadInboxState(fingerprint);
+      const current = await deps.loadInboxState(cacheKey);
       await deps.saveInboxState(
-        fingerprint,
-        applyPollOutcome(current, toPollOutcome(result), deps.now()),
+        cacheKey,
+        applyPollOutcome(current, toPollOutcome(result, sentAt), deps.now()),
       );
     } catch (error: unknown) {
       logger.debug`Could not save the inbox poll: ${error}`;
@@ -223,8 +240,9 @@ export async function startInboxPoll(
 
 /**
  * The notice to print after the command, from the cache alone: it never
- * contacts swamp-club. Records the notice as shown when this process may
- * write the config directory. Never throws.
+ * contacts swamp-club. A message's first showing is shown only once it is
+ * recorded, so a notice that could never retire, as in a config directory
+ * this process cannot write, is never shown at all. Never throws.
  */
 export async function showInboxNotice(
   deps: InboxNoticeDeps,
@@ -232,20 +250,26 @@ export async function showInboxNotice(
   try {
     const key = await activeKey(deps);
     if (key === null) return null;
-    const state = await deps.loadInboxState(key.fingerprint);
+    const state = await deps.loadInboxState(key.cacheKey);
     const now = deps.now();
-    const notice = noticeToShow(state, now);
-    if (notice === null) return null;
-    const recorded = recordNoticeShown(state, now);
+    const shown = noticeToShow(state, now);
+    if (shown === null) return null;
     // Only the first showing of a message changes the state. Saving an
-    // unchanged state would write the cache on every command and could put
-    // back a snapshot older than one another command just saved.
-    if (recorded !== state && deps.ownsConfigDir()) {
-      try {
-        await deps.saveInboxState(key.fingerprint, recorded);
-      } catch (error: unknown) {
-        logger.debug`Could not record the inbox notice: ${error}`;
-      }
+    // unchanged state would write the cache on every command.
+    if (recordNoticeShown(state, now) === state) return shown;
+    if (!await deps.configDirWritable()) return null;
+    // Reloaded, so the save never puts back a snapshot older than one
+    // another command saved since the first load.
+    const current = await deps.loadInboxState(key.cacheKey);
+    const notice = noticeToShow(current, now);
+    if (notice === null) return null;
+    const recorded = recordNoticeShown(current, now);
+    if (recorded === current) return notice;
+    try {
+      await deps.saveInboxState(key.cacheKey, recorded);
+    } catch (error: unknown) {
+      logger.debug`Could not record the inbox notice: ${error}`;
+      return null;
     }
     return notice;
   } catch (error: unknown) {
