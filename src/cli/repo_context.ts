@@ -3178,7 +3178,9 @@ interface FetchedMarker {
  * every write and sync succeeded), the marks are then dropped with
  * `clearDirty`: the refused version directories, the files restored or
  * left removed, the latest marker and the data-name directory. A name with
- * any failure keeps its marks.
+ * any failure keeps its marks. A sync service without `clearDirty` keeps
+ * every mark, so the refusal warns once, naming the data names, that a
+ * later push can delete or overwrite the other run's versions there.
  */
 async function discardRefusedVersions(
   refused: readonly WrittenVersion[],
@@ -3200,6 +3202,8 @@ async function discardRefusedVersions(
   // marks are dropped once that name's restore matched the datastore.
   const owner = new Map<string, string>();
   const marked = new Map<string, Set<string>>();
+  // Each refused data name as a user reads it, by data-name directory.
+  const names = new Map<string, string>();
   const markedUnder = (nameDir: string, rel: string | undefined) => {
     if (rel === undefined) return;
     owner.set(rel, nameDir);
@@ -3221,6 +3225,7 @@ async function discardRefusedVersions(
         const type = ModelType.create(w.modelType);
         const versionDir = repo.getPath(type, w.modelId, w.dataName, w.version);
         const nameDir = repo.getDataNameDir(type, w.modelId, w.dataName);
+        names.set(nameDir, `${w.modelType}/${w.modelId}/${w.dataName}`);
         try {
           for await (const entry of walk(versionDir, { includeDirs: false })) {
             const rel = cacheRelativePath(cachePath, entry.path);
@@ -3241,6 +3246,12 @@ async function discardRefusedVersions(
   } catch (error) {
     discarded = false;
     logger.debug`Discarding the refused data versions failed: ${error}`;
+  }
+  if (!syncService.clearDirty && marked.size > 0) {
+    const kept = [...marked.keys()].map((nameDir) => names.get(nameDir))
+      .join(", ");
+    logger
+      .warn`This datastore's extension cannot clear the dirty marks the refused push left on ${kept}, so a later push from this checkout can delete or overwrite the versions the other run wrote there (swamp-club#4091). Updating the datastore extension fixes this once a release implements clearDirty.`;
   }
   const fetchContent = syncService.fetchContent;
   if (!fetchContent || (content.size === 0 && markers.size === 0)) return;

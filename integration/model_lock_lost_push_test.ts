@@ -25,7 +25,13 @@
 // (swamp-club#3373). The old holder now refuses its push and fails.
 
 import "../src/domain/models/models.ts";
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
+import { configure, type LogRecord } from "@logtape/logtape";
 import { basename, dirname, join, relative, SEPARATOR } from "@std/path";
 import {
   createInMemoryRemote,
@@ -834,6 +840,31 @@ function remoteVersions(remote: InMemoryRemote, modelId: string): number[] {
     .sort((p, q) => p - q);
 }
 
+/**
+ * The warnings logged while `fn` runs, as text. LogTape's configuration is
+ * process-global, so the normal setup is restored afterwards.
+ */
+async function warningsDuring(fn: () => Promise<void>): Promise<string[]> {
+  const captured: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => captured.push(record) },
+    loggers: [
+      { category: [], lowestLevel: "warning", sinks: ["capture"] },
+      { category: ["logtape", "meta"], lowestLevel: "fatal", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await initializeLogging({ _reset: true });
+  }
+  return captured.map((record) =>
+    record.message.map((part) => typeof part === "string" ? part : String(part))
+      .join("")
+  );
+}
+
 /** The marks clone `repoDir` holds under data "x"'s directory. */
 async function marksUnderName(
   remote: InMemoryRemote,
@@ -917,6 +948,25 @@ for (const twoPhaseSync of [true, false]) {
     });
   }
 
+  Deno.test(`acquireModelLocks: with clearDirty, a refusal gives no warning about marks it could not clear (swamp-club#4091, twoPhaseSync=${twoPhaseSync})`, async () => {
+    await withClones(twoPhaseSync, async (c) => {
+      const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a"}');
+      try {
+        c.locks.breakglass(c.modelId);
+        await saveAndPush(c.repoB, c.modelId, '{"by":"b"}');
+        const warnings = await warningsDuring(async () => {
+          await assertRejects(() => a.flush(), ModelLockLostError);
+        });
+        assertEquals(
+          warnings.filter((text) => text.includes("clear the dirty marks")),
+          [],
+        );
+      } finally {
+        await a.close();
+      }
+    });
+  });
+
   Deno.test(`acquireModelLocks: a refusal whose restore cannot read the datastore keeps the marks its writes left (swamp-club#4091, twoPhaseSync=${twoPhaseSync})`, async () => {
     await withClones(twoPhaseSync, async (c) => {
       const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a"}');
@@ -940,13 +990,22 @@ for (const twoPhaseSync of [true, false]) {
     });
   });
 
-  Deno.test(`acquireModelLocks: without clearDirty, a refusal leaves its marks as before (swamp-club#4091, twoPhaseSync=${twoPhaseSync})`, async () => {
+  Deno.test(`acquireModelLocks: without clearDirty, a refusal leaves its marks as before and warns once, naming the data name, that a later push can delete the other run's versions (swamp-club#4091, twoPhaseSync=${twoPhaseSync})`, async () => {
     await withClones(twoPhaseSync, async (c) => {
       const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a"}');
       try {
         c.locks.breakglass(c.modelId);
         await saveAndPush(c.repoB, c.modelId, '{"by":"b"}');
-        await assertRejects(() => a.flush(), ModelLockLostError);
+        const warnings = (await warningsDuring(async () => {
+          await assertRejects(() => a.flush(), ModelLockLostError);
+        })).filter((text) => text.includes("clear the dirty marks"));
+        assertEquals(warnings.length, 1, warnings.join("\n"));
+        assertStringIncludes(warnings[0], `${c.modelId}/x`);
+        assertStringIncludes(
+          warnings[0],
+          "a later push from this checkout can delete or overwrite the versions the other run wrote there",
+        );
+        assertStringIncludes(warnings[0], "Updating the datastore extension");
         assertEquals(await a.localVersions(), [1]);
         assert(
           (await marksUnderName(c.remote, c.repoA, await a.nameDir())).length >

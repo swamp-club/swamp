@@ -128,7 +128,10 @@ directories, the files restored or left removed, the `latest` marker and the
 data-name directory. A name with any failure keeps its marks. A sync service
 without `clearDirty`, which today includes the S3 and GCS extensions, keeps
 every mark, and the deletion stays possible until the extension implements
-it. A cache whose per-path marks have overflowed pushes with a whole-cache
+it. The refusal then warns once, naming the data names whose marks stay, that
+a later push from the checkout can delete or overwrite the other run's
+versions there, and that updating the extension fixes it once a release
+implements `clearDirty`. A cache whose per-path marks have overflowed pushes with a whole-cache
 walk that deletes what the cache lacks; `clearDirty` cannot help there.
 
 ### S3 (via `@swamp/s3-datastore` extension)
