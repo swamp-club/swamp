@@ -26,11 +26,14 @@ import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import type { ReportDefinition } from "../../domain/reports/report.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
+import type { FindStoredReports } from "../../domain/reports/stored_report_data.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import { findLatestReportData } from "../../infrastructure/persistence/catalog_report_adapter.ts";
+import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import {
   createCatalogStore,
   namespaceFromResolver,
@@ -56,10 +59,8 @@ export interface ReportSearchInput {
  * Dependencies for the report search operation.
  */
 export interface ReportSearchDeps {
-  findAllGlobal: () => Promise<
-    Array<{ data: Data; modelType: ModelType; modelId: string }>
-  >;
-  findAllForModel: (type: ModelType, modelId: string) => Promise<Data[]>;
+  /** Every stored report, or one owner's; see {@link FindStoredReports}. */
+  findReportData: FindStoredReports;
   lookupDefinition: (
     idOrName: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
@@ -85,18 +86,22 @@ export async function createReportSearchDeps(
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
   const definitionRepo = new YamlDefinitionRepository(repoDir);
+  const catalogStore = createCatalogStore(repoDir, datastoreResolver);
   const dataRepo = new FileSystemUnifiedDataRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),
-    createCatalogStore(repoDir, datastoreResolver),
+    catalogStore,
     undefined,
     undefined,
     namespaceFromResolver(datastoreResolver),
   );
+  const dataQueryService = new DataQueryService(catalogStore, dataRepo);
   const workflowRepo = new YamlWorkflowRepository(repoDir);
   return {
-    findAllGlobal: () => dataRepo.findAllGlobal(),
-    findAllForModel: (type, modelId) => dataRepo.findAllForModel(type, modelId),
+    findReportData: (owner) =>
+      findLatestReportData(dataQueryService, catalogStore, dataRepo, {
+        owner,
+      }),
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
     lookupDefinitionById: (type, id) =>
@@ -155,15 +160,10 @@ export async function* reportSearch(
           yield { kind: "error", error: behaviorNotFound(input.model) };
           return;
         }
-        const items = await deps.findAllForModel(
-          result.type,
-          result.definition.id,
-        );
-        candidates = items.map((d) => ({
-          data: d,
-          modelType: result.type,
+        candidates = await deps.findReportData({
+          type: result.type,
           modelId: result.definition.id,
-        }));
+        });
       } else if (input.workflow) {
         const wf = await deps.findWorkflowByName(input.workflow);
         if (!wf) {
@@ -174,14 +174,12 @@ export async function* reportSearch(
           "../../domain/models/model_type.ts"
         );
         const workflowModelType = MT.create("workflow");
-        const items = await deps.findAllForModel(workflowModelType, wf.id);
-        candidates = items.map((d) => ({
-          data: d,
-          modelType: workflowModelType,
+        candidates = await deps.findReportData({
+          type: workflowModelType,
           modelId: wf.id,
-        }));
+        });
       } else {
-        candidates = await deps.findAllGlobal();
+        candidates = await deps.findReportData();
       }
 
       // Filter to report markdown entries

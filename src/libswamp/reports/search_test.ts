@@ -24,6 +24,7 @@ import { reportSearch } from "./search.ts";
 import type { ReportSearchDeps } from "./search.ts";
 import { Data } from "../../domain/data/data.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import { Definition } from "../../domain/definitions/definition.ts";
 
 function makeReportData(
   name: string,
@@ -50,9 +51,15 @@ function makeDeps(
   }> = [],
 ): ReportSearchDeps {
   return {
-    findAllGlobal: () => Promise.resolve(globalData),
-    findAllForModel: (_type: ModelType, _modelId: string) =>
-      Promise.resolve([] as Data[]),
+    findReportData: (scope) =>
+      Promise.resolve(
+        scope
+          ? globalData.filter((c) =>
+            c.modelType.normalized === scope.type.normalized &&
+            c.modelId === scope.modelId
+          )
+          : globalData,
+      ),
     lookupDefinition: () => Promise.resolve(null),
     lookupDefinitionById: () => Promise.resolve(null),
     findWorkflowByName: () => Promise.resolve(null),
@@ -364,4 +371,33 @@ Deno.test("reportSearch - errors when workflow not found", async () => {
   if (last.kind === "error") {
     assertEquals(last.error.code, "not_found");
   }
+});
+
+Deno.test("reportSearch: a model or workflow filter asks for that owner's reports only", async () => {
+  const modelType = ModelType.create("test/model");
+  const definition = Definition.create({ name: "alpha", type: "test/model" });
+  const workflowType = ModelType.create("workflow");
+  const scopes: Array<{ type: string; modelId: string } | undefined> = [];
+  const deps: ReportSearchDeps = {
+    ...makeDeps(),
+    findReportData: (scope) => {
+      scopes.push(
+        scope && { type: scope.type.normalized, modelId: scope.modelId },
+      );
+      return Promise.resolve([]);
+    },
+    lookupDefinition: () => Promise.resolve({ definition, type: modelType }),
+    findWorkflowByName: () => Promise.resolve({ id: "wf-id", name: "deploy" }),
+  };
+  const ctx = createLibSwampContext();
+
+  await collect(reportSearch(ctx, deps, { model: "alpha" }));
+  await collect(reportSearch(ctx, deps, { workflow: "deploy" }));
+  await collect(reportSearch(ctx, deps, {}));
+
+  assertEquals(scopes, [
+    { type: "test/model", modelId: definition.id },
+    { type: workflowType.normalized, modelId: "wf-id" },
+    undefined,
+  ]);
 });

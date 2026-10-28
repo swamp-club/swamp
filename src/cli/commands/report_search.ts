@@ -29,6 +29,7 @@ import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { canonicalReportScope } from "../../domain/reports/report.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
+import { findLatestReportData } from "../../infrastructure/persistence/catalog_report_adapter.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import { reportGet, type ReportGetDeps } from "../../libswamp/reports/get.ts";
@@ -58,9 +59,13 @@ async function buildSearchDeps(
 ): Promise<ReportSearchDeps> {
   await reportRegistry.ensureLoaded();
   return {
-    findAllGlobal: () => repoContext.unifiedDataRepo.findAllGlobal(),
-    findAllForModel: (type, modelId) =>
-      repoContext.unifiedDataRepo.findAllForModel(type, modelId),
+    findReportData: (owner) =>
+      findLatestReportData(
+        repoContext.dataQueryService,
+        repoContext.catalogStore,
+        repoContext.unifiedDataRepo,
+        { owner },
+      ),
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(repoContext.definitionRepo, idOrName),
     lookupDefinitionById: (type, id) =>
@@ -85,9 +90,13 @@ async function buildSearchDeps(
 
 function buildGetDeps(repoContext: RepositoryContext): ReportGetDeps {
   return {
-    findAllGlobal: () => repoContext.unifiedDataRepo.findAllGlobal(),
-    findAllForModel: (type, modelId) =>
-      repoContext.unifiedDataRepo.findAllForModel(type, modelId),
+    findReportData: (owner) =>
+      findLatestReportData(
+        repoContext.dataQueryService,
+        repoContext.catalogStore,
+        repoContext.unifiedDataRepo,
+        { owner },
+      ),
     findDataByVersion: (type, modelId, dataName, version) =>
       repoContext.unifiedDataRepo.findByName(type, modelId, dataName, version),
     getContent: (type, modelId, dataName, version) =>
