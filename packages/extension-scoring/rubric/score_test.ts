@@ -171,6 +171,11 @@ Deno.test("composeScore: dependency-trust at one of two points is partial", () =
   assertEquals([row.earnedPoints, row.status], [1, "partial"]);
   assertEquals(row.label, "Dependencies pass trust audit");
   assertStringIncludes(row.remediation ?? "", "3 loose dependency specifier");
+  assertStringIncludes(
+    row.remediation ?? "",
+    "Commit a valid lock (deno.lock, or a package-lock.json that matches " +
+      "node_modules) or pin exact versions to earn the second point.",
+  );
 });
 
 Deno.test("composeScore: unaudited code and a broken canonical form each name their cause and fix", () => {
