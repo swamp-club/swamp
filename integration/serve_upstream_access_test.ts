@@ -27,6 +27,7 @@
 
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { join } from "@std/path";
 import { configure, type LogRecord } from "@logtape/logtape";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -400,6 +401,103 @@ Deno.test({
       } finally {
         await proxy.close();
       }
+    });
+  },
+});
+
+/** Holds the writer lease of `root` from a Worker until `release` is called. */
+async function holdLease(root: string): Promise<{ release(): Promise<void> }> {
+  const worker = new Worker(
+    new URL("./serve_upstream_lease_holder_worker.ts", import.meta.url).href,
+    { type: "module" },
+  );
+  const messages: string[] = [];
+  worker.onmessage = (event: MessageEvent<string>) =>
+    void messages.push(event.data);
+  const reply = async (expected: string) => {
+    await waitFor(
+      () => messages.some((m) => m === expected || m.startsWith("failed")),
+      `the lease holder to answer ${expected}`,
+      { timeoutMs: 60_000 },
+    );
+    const failed = messages.find((m) => m.startsWith("failed"));
+    if (failed !== undefined) {
+      worker.terminate();
+      throw new Error(failed);
+    }
+  };
+  await reply("loaded");
+  worker.postMessage({ kind: "hold", root });
+  await reply("held");
+  return {
+    async release() {
+      worker.postMessage("release");
+      try {
+        await reply("released");
+      } finally {
+        worker.terminate();
+      }
+    },
+  };
+}
+
+Deno.test({
+  name:
+    "serve access: while another command of the checkout writes, a change of access waits for it instead of holding up or failing a read",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({
+        grants: BOB_WEB,
+        models: ["secret"],
+      });
+      const bucket = scratch.bucket();
+      const alice = await scratch.client("a", { bucket });
+      const { type, web, secret } = await seed(scratch, serve, alice);
+
+      const bob = await scratch.client("b", { bucket });
+      // Short, so a read that waited for the lease fails fast.
+      const bobEnv = {
+        ...serveEnv(serve, "bob-token"),
+        SWAMP_LOCK_TIMEOUT_MS: "2000",
+      };
+      const read = () =>
+        readCommand(scratch, bob, bobEnv, async (repos) => ({
+          vpc: await latestOf(repos, type, web, "vpc"),
+          key: await latestOf(repos, type, secret, "key"),
+        }));
+      await read();
+      await serve.setGrants(BOB_BOTH);
+      await read();
+      const built = copyState(bob, serve);
+      assert(built.access.seen !== built.access.built, "the change was seen");
+
+      const holder = await holdLease(
+        serveUpstreamLocalRoot(bob.repoDir, serve.origin, ""),
+      );
+      let waited: Awaited<ReturnType<typeof withWarnings<unknown>>>;
+      try {
+        waited = await withWarnings(read);
+      } finally {
+        await holder.release();
+      }
+      assertEquals(waited.result, {
+        vpc: { version: 1, content: "1" },
+        key: null,
+      });
+      assertEquals(
+        waited.warnings.filter((w) => w.includes("another command")).length,
+        1,
+      );
+      assertEquals(copyState(bob, serve).copyId, built.copyId);
+
+      // Once it has finished, the next command rebuilds the copy.
+      assertEquals(await read(), {
+        vpc: { version: 1, content: "1" },
+        key: { version: 1, content: "1" },
+      });
+      assert(copyState(bob, serve).copyId !== built.copyId);
     });
   },
 });

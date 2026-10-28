@@ -122,6 +122,39 @@ export interface ServeCopyAccess {
   readonly resetAt?: number;
 }
 
+/**
+ * How long after a reset for a change of read access another change only
+ * warns (swamp-club#4089): serve replicas whose access data disagree send
+ * a caller two fingerprints in turn, which must not reset the copy on
+ * every command.
+ */
+export const ACCESS_RESET_COOLDOWN_MS = 10 * 60 * 1000;
+
+/**
+ * What a copy whose caller is current does about its read access at `now`
+ * (epoch ms): `"current"` when serve last sent the access the copy was
+ * built under (or a serve too old to send one sent none), `"reset"` when it
+ * sent another, and `"cooling"` when it sent another within
+ * {@link ACCESS_RESET_COOLDOWN_MS} of the last reset for access. A reset in
+ * the future (the clock moved back) does not hold one off.
+ */
+export function accessResetDue(
+  access: ServeCopyAccess,
+  now: number,
+): "current" | "reset" | "cooling" {
+  if (
+    access.built === undefined || access.seen === undefined ||
+    access.built === access.seen
+  ) {
+    return "current";
+  }
+  const since = access.resetAt === undefined ? undefined : now - access.resetAt;
+  return since !== undefined && since >= 0 &&
+      since < ACCESS_RESET_COOLDOWN_MS
+    ? "cooling"
+    : "reset";
+}
+
 /** The schema version this swamp writes. */
 export const SERVE_UPSTREAM_STATE_SCHEMA_VERSION = MIGRATIONS.length;
 

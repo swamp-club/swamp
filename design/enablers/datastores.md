@@ -6720,7 +6720,9 @@ until the copy is reset: the copy took that reply, so a later reply under the
 built access (replicas that disagree, in turn) does not make it current again.
 A value not shaped like a fingerprint is ignored. A different one does
 not interrupt the command that sees it, since serve already filters its
-replies: the command warns once that the next command rebuilds the copy.
+replies: the command warns once that the next command rebuilds the copy (or,
+within the cooldown below, that a later one does); a later command whose
+binding already found the mismatch says why it waits instead.
 The next command's binding then resets the copy as a token switch does
 (`resetCopyForCaller`, `accessResetDue`), with two differences:
 
@@ -6728,6 +6730,12 @@ The next command's binding then resets the copy as a token switch does
   reset with a warning instead of refusing, since the member cannot return to
   the old grants to settle them. A writing command lands them as it would
   anyway, and the next command resets.
+- **A busy checkout waits.** The reset takes the copy's writer lease without
+  waiting: when another command of the checkout is writing, this command
+  warns and reads the copy as it is, rather than waiting the lock timeout and
+  failing as writer-busy. The first command after that writer finishes
+  resets. A token switch still waits for the lease, since a copy built for
+  another caller is never read.
 - **A cooldown.** Serve replicas behind a load balancer hold their own policy
   snapshot and reload it separately, so while two disagree a member's replies
   name two fingerprints in turn. A change seen within

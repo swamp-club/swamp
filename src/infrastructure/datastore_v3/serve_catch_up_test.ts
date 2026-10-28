@@ -1204,10 +1204,49 @@ Deno.test("serveAccessCheck: records each access serve sends, warns once when it
       assertEquals(state.access().seen, "b2");
       // A state that cannot record is no reason to fail the reply.
       serveAccessCheck({
+        access: () => ({}),
         recordAccessSeen: () => {
           throw new Error("database is locked");
         },
       }, SERVE_URL)("d4");
+    } finally {
+      await reset();
+    }
+  });
+});
+
+Deno.test("serveAccessCheck: warns only for a mismatch the reply records, and within the cooldown says the rebuild waits (swamp-club#4089)", async () => {
+  await withCheckout(async ({ state }) => {
+    const captured: LogRecord[] = [];
+    await configure({
+      sinks: { capture: (record: LogRecord) => captured.push(record) },
+      loggers: [
+        {
+          category: ["datastore", "v3", "serve"],
+          lowestLevel: "warning",
+          sinks: ["capture"],
+        },
+        { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+      ],
+      reset: true,
+    });
+    const texts = () =>
+      captured.map((record) => record.message.map(String).join(""));
+    try {
+      state.stampCaller("token-a");
+      state.recordAccessSeen("a1");
+      state.beginCallerReset();
+      state.finishCallerReset("token-a", 1_000);
+      state.recordAccessSeen("a1");
+      // Within the cooldown of that reset: the rebuild waits, and it says so.
+      serveAccessCheck(state, SERVE_URL, () => 2_000)("b2");
+      assertEquals(texts().length, 1);
+      assertStringIncludes(texts()[0], "changed again within 10 minutes");
+      assert(!texts()[0].includes("the next command rebuilds"));
+      // A later command whose binding found the mismatch says nothing more.
+      serveAccessCheck(state, SERVE_URL, () => 3_000)("b2");
+      serveAccessCheck(state, SERVE_URL, () => 3_000)("c3");
+      assertEquals(texts().length, 1);
     } finally {
       await reset();
     }

@@ -19,11 +19,11 @@
 
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { serveCallerFingerprint } from "./checkout_view.ts";
+import { serveUpstreamLocalRoot } from "./serve_upstream_binding.ts";
 import {
   ACCESS_RESET_COOLDOWN_MS,
   accessResetDue,
-  serveUpstreamLocalRoot,
-} from "./serve_upstream_binding.ts";
+} from "./serve_upstream_state.ts";
 
 Deno.test("serveUpstreamLocalRoot: one copy per serve and namespace, whatever the token", () => {
   const root = (url: string, ns: string) =>

@@ -56,8 +56,9 @@ import {
 import { ServeDatastoreClient } from "./serve_datastore_client.ts";
 import { registerServeUpstream } from "./serve_upstream_registry.ts";
 import {
+  ACCESS_RESET_COOLDOWN_MS,
+  accessResetDue,
   SERVE_UPSTREAM_STATE_FILE,
-  type ServeCopyAccess,
   ServeUpstreamState,
 } from "./serve_upstream_state.ts";
 import {
@@ -70,42 +71,9 @@ import {
   v3MarkerState,
   v3OutboxPath,
 } from "./v3_datastore.ts";
-import { acquireV3WriterLock } from "./v3_writer_lock.ts";
+import { acquireV3WriterLock, V3WriterBusyError } from "./v3_writer_lock.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "serve"]);
-
-/**
- * How long after a reset for a change of read access another change only
- * warns (swamp-club#4089): serve replicas whose access data disagree send
- * a caller two fingerprints in turn, which must not reset the copy on
- * every command.
- */
-export const ACCESS_RESET_COOLDOWN_MS = 10 * 60 * 1000;
-
-/**
- * What a copy whose caller is current does about its read access at `now`
- * (epoch ms): `"current"` when serve last sent the access the copy was
- * built under (or a serve too old to send one sent none), `"reset"` when it
- * sent another, and `"cooling"` when it sent another within
- * {@link ACCESS_RESET_COOLDOWN_MS} of the last reset for access. A reset in
- * the future (the clock moved back) does not hold one off.
- */
-export function accessResetDue(
-  access: ServeCopyAccess,
-  now: number,
-): "current" | "reset" | "cooling" {
-  if (
-    access.built === undefined || access.seen === undefined ||
-    access.built === access.seen
-  ) {
-    return "current";
-  }
-  const since = access.resetAt === undefined ? undefined : now - access.resetAt;
-  return since !== undefined && since >= 0 &&
-      since < ACCESS_RESET_COOLDOWN_MS
-    ? "cooling"
-    : "reset";
-}
 
 /**
  * The local root of the datastore that serve at `serverUrl` writes, for the
@@ -230,12 +198,28 @@ async function resetCopyForCaller(
 ): Promise<void> {
   const fingerprint = serveCallerFingerprint(target.token);
   const statePath = join(root, SERVE_UPSTREAM_STATE_FILE);
-  if (callerIsCurrent(statePath, fingerprint, target.serverUrl, Date.now())) {
+  const due = copyResetDue(
+    statePath,
+    fingerprint,
+    target.serverUrl,
+    Date.now(),
+  );
+  if (due === "current") return;
+  let release: () => Promise<void>;
+  try {
+    // A copy built for another caller is never read: wait for the lease.
+    // A change of access is freshness, not safety: a writer of this
+    // checkout holding the lease must not hold up, or fail, a command that
+    // would only read the copy as it is.
+    release = await acquireV3WriterLock(root, {
+      maxWaitMs: due === "access" ? 0 : resolveLockTimeoutMs(),
+    });
+  } catch (error) {
+    if (!(due === "access" && error instanceof V3WriterBusyError)) throw error;
+    logger
+      .warn`Your access to the datastore at serve ${target.serverUrl} changed, but another command in this checkout is writing to it. This command reads the copy as it is; a command run once that one has finished rebuilds the copy to match your access.`;
     return;
   }
-  const release = await acquireV3WriterLock(root, {
-    maxWaitMs: resolveLockTimeoutMs(),
-  });
   try {
     const state = ServeUpstreamState.open(statePath);
     try {
@@ -281,21 +265,25 @@ async function resetCopyForCaller(
 }
 
 /**
- * Whether the copy whose serve-mode state is at `statePath` was built for
- * the caller `fingerprint` names under the read access serve last
- * reported, stamping a copy that records no caller. A change of access
- * within the cooldown counts as current, with a warning.
+ * What the copy whose serve-mode state is at `statePath` needs, stamping a
+ * copy that records no caller: nothing (`"current"`), a reset because serve
+ * reported another read access for the caller `fingerprint` names
+ * (`"access"`), or a reset because it was built for another caller or its
+ * reset was cut short (`"caller"`). A change of access within the cooldown
+ * counts as current, with a warning.
  */
-function callerIsCurrent(
+function copyResetDue(
   statePath: string,
   fingerprint: string,
   serverUrl: string,
   now: number,
-): boolean {
+): "current" | "access" | "caller" {
   const state = ServeUpstreamState.open(statePath);
   try {
     const caller = state.stampCaller(fingerprint);
-    if (caller.resetting || caller.fingerprint !== fingerprint) return false;
+    if (caller.resetting || caller.fingerprint !== fingerprint) {
+      return "caller";
+    }
     const due = accessResetDue(state.access(), now);
     if (due === "cooling") {
       logger
@@ -303,7 +291,7 @@ function callerIsCurrent(
         ACCESS_RESET_COOLDOWN_MS / 60_000
       } minutes of this checkout's copy being rebuilt for the last change. Serve's replicas may disagree on your access, so the copy is not rebuilt again yet; a command after that rebuilds it if your access still differs.`;
     }
-    return due !== "reset";
+    return due === "reset" ? "access" : "current";
   } finally {
     state.close();
   }
