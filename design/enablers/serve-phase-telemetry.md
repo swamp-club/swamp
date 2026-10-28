@@ -267,22 +267,28 @@ A `since` search walks every type and method directory and skips a file whose
 name says it started before the cutoff without a stat or a read; only a file
 whose name is not in the output form is stat'ed for its mtime. A search for one
 model reads that model's files of its type, skipping files named for another
-definition. A search with neither reads every output.
+definition; with `since` or `until` it also skips the model's files whose name
+says they started outside that window, without a stat or a read (lab #4058). A
+file not in the output form is stat'ed for its mtime only against `since`, and
+read under `until` alone. A search with neither reads every output.
 
 | Attribute                                        | Meaning                                                                         |
 | ------------------------------------------------ | ------------------------------------------------------------------------------- |
-| `type_dirs`, `method_dirs`, `entries`            | Directories listed and output files found by a `since` search                   |
+| `type_dirs`, `method_dirs`, `entries`            | Directories listed and output files found by a `since` search without `model`   |
 | `skipped_by_name`                                | Files skipped unread because their name is outside the window or the definition |
 | `stats`, `skipped_by_mtime`, `stat_work_ms`      | Files stat'ed because their name is not in the output form, and those skipped   |
 | `files_read`, `bytes_read`                       | Records read                                                                    |
 | `read_work_ms`, `parse_work_ms`                  | Reading and parsing them                                                        |
 
-A `since` search lists directories and reads files up to 16 at a time, so its
-`*_work_ms` values are cumulative across concurrent operations and can exceed
-the phase's duration. Its duration is mostly the listing and the turns the event
-loop gave the scan; compare it with the request's event-loop lag. Counters are
-exported only when counted: a scan that stat'ed nothing has no `stats`. They are
-counts and durations only: no path, definition id or model name.
+Both a `since` search and a search for one model list directories and read
+files concurrently, with at most 16 listings and reads in flight across every
+scan in the process (lab #4058), so their `*_work_ms` values are cumulative
+across concurrent operations and can exceed the phase's duration. Their
+duration is mostly the listing, the turns the event loop gave the scan, and
+waiting for one of the 16 while other requests scan; compare it with the
+request's event-loop lag. Counters are exported only when counted: a scan that
+stat'ed nothing has no `stats`. They are counts and durations only: no path,
+definition id or model name.
 
 ## Worker deletion
 

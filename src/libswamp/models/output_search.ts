@@ -123,10 +123,15 @@ export interface ModelOutputSearchDeps {
    * instead of every output.
    */
   resolveModel?(idOrName: string): Promise<ModelOutputSearchModel[]>;
-  /** The outputs of one definition. */
+  /**
+   * The outputs of one definition. With a `window` (the search's `since`
+   * and `until`) it may leave out outputs started outside it without
+   * reading them; the search checks every output against them anyway.
+   */
   findOutputsByDefinition?(
     type: { normalized: string },
     definitionId: string,
+    window?: { since?: Date; until?: Date },
   ): Promise<ModelOutputSearchOutput[]>;
   /**
    * The current names of the given workflow ids, looked up together. An id
@@ -233,7 +238,7 @@ export async function* modelOutputSearch(
         "candidate_scan",
         {},
         async (phase) => {
-          const found = await findCandidates(deps, input.model, since);
+          const found = await findCandidates(deps, input.model, since, until);
           phase.tally.add("candidates", found.length);
           return found;
         },
@@ -352,13 +357,15 @@ export async function* modelOutputSearch(
 
 /**
  * The outputs worth considering: only the named model's when the
- * repository can look them up by definition, otherwise every output (since
- * the `since` cutoff when the repository can skip older ones).
+ * repository can look them up by definition (within `since` and `until`
+ * when it can skip the rest), otherwise every output (since the `since`
+ * cutoff when the repository can skip older ones).
  */
 async function findCandidates(
   deps: ModelOutputSearchDeps,
   model: string | undefined,
   since: Date | undefined,
+  until: Date | undefined,
 ): Promise<
   Array<{
     output: ModelOutputSearchOutput;
@@ -378,6 +385,9 @@ async function findCandidates(
       const outputs = await deps.findOutputsByDefinition(
         definition.type,
         definition.definitionId,
+        since === undefined && until === undefined
+          ? undefined
+          : { since, until },
       );
       for (const output of outputs) {
         found.push({
