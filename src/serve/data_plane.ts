@@ -265,6 +265,8 @@ export class DataPlane {
   }
 
   #recordVersion(dispatch: ActiveDispatch, handle: DataHandle): void {
+    // Only durable writes can be published after a failed dispatch.
+    if (handle.metadata.lifetime === "ephemeral") return;
     const versions = this.#writtenByDispatch.get(dispatch.dispatchId) ?? [];
     versions.push({
       modelType: dispatch.modelType.normalized,

@@ -90,7 +90,7 @@ Deno.test("methodSummaryReport: succeeded method with data handles shows narrati
   assertStringIncludes(result.markdown, "| Name | Kind | Retrieval Command |");
   assertStringIncludes(
     result.markdown,
-    '| **output.json** | file | `swamp data query \'modelName == "my-server" && name == "output.json" && version == 1\' --select content` |',
+    '| **output.json** | file | `swamp data query \'modelType == "server" && modelId == "def-123" && name == "output.json" && version == 1\' --select content` |',
   );
   // No schema in markdown — that's JSON-only for agents
   assertEquals(result.markdown.includes("## Output Schema"), false);
@@ -120,7 +120,7 @@ Deno.test("methodSummaryReport: succeeded method with data handles shows narrati
   assertEquals(items[0].specName, "output");
   assertEquals(
     items[0].retrievalCommand,
-    'swamp data query \'modelName == "my-server" && name == "output.json" && version == 1\' --select content',
+    'swamp data query \'modelType == "server" && modelId == "def-123" && name == "output.json" && version == 1\' --select content',
   );
 });
 
@@ -297,15 +297,15 @@ Deno.test("methodSummaryReport: multiple data handles grouped by specName", asyn
   assertStringIncludes(result.markdown, "## Data Output");
   assertStringIncludes(
     result.markdown,
-    '| **item-1** | resource | `swamp data query \'modelName == "my-server" && name == "item-1" && version == 1\' --select content` |',
+    '| **item-1** | resource | `swamp data query \'modelType == "server" && modelId == "def-123" && name == "item-1" && version == 1\' --select content` |',
   );
   assertStringIncludes(
     result.markdown,
-    '| **item-2** | resource | `swamp data query \'modelName == "my-server" && name == "item-2" && version == 1\' --select content` |',
+    '| **item-2** | resource | `swamp data query \'modelType == "server" && modelId == "def-123" && name == "item-2" && version == 1\' --select content` |',
   );
   assertStringIncludes(
     result.markdown,
-    '| **log.txt** | file | `swamp data query \'modelName == "my-server" && name == "log.txt" && version == 1\' --select content` |',
+    '| **log.txt** | file | `swamp data query \'modelType == "server" && modelId == "def-123" && name == "log.txt" && version == 1\' --select content` |',
   );
 
   // JSON dataProduced includes specName
@@ -403,7 +403,15 @@ Deno.test("methodSummaryReport: JSON output structure matches expected shape", a
   assertEquals(items.length, 1);
   assertEquals(
     Object.keys(items[0]).sort(),
-    ["kind", "name", "retrievalCommand", "specName", "version"],
+    [
+      "availability",
+      "kind",
+      "lifetime",
+      "name",
+      "retrievalCommand",
+      "specName",
+      "version",
+    ],
   );
 });
 
@@ -450,7 +458,7 @@ Deno.test("methodSummaryReport: a binary data handle is read with its content en
   const result = await methodSummaryReport.execute(ctx);
   assertStringIncludes(
     result.markdown,
-    '`swamp data query \'modelName == "my-server" && name == "logo.png" && ' +
+    '`swamp data query \'modelType == "server" && modelId == "def-123" && name == "logo.png" && ' +
       'version == 2\' --select \'{"content": content, "contentEncoding": ' +
       "contentEncoding}' --json`",
   );
@@ -511,4 +519,65 @@ Deno.test("methodSummaryReport: no provenance leaves the JSON key and markdown s
 
   assertEquals("provenance" in result.json, false);
   assertEquals(result.markdown.includes("## Provenance"), false);
+});
+
+function lifetimeHandle(
+  lifetime: "ephemeral" | "infinite",
+  kind: "file" | "resource",
+) {
+  return {
+    name: `${lifetime}-${kind}`,
+    specName: "same-spec",
+    kind,
+    dataId: createDataId(crypto.randomUUID()),
+    version: 1,
+    size: 8,
+    tags: {},
+    attributes: { value: "ephemeral-body-must-not-be-persisted" },
+    metadata: {
+      contentType: "application/json",
+      lifetime,
+      garbageCollection: 10,
+      streaming: false,
+      tags: { type: kind },
+      ownerDefinition: {
+        ownerType: "model-method" as const,
+        ownerRef: "def-123",
+        workflowRunId: "actual-run",
+      },
+    },
+  };
+}
+
+Deno.test("methodSummaryReport: effective lifetime determines retrieval for mixed outputs on success and failure", async () => {
+  for (const executionStatus of ["succeeded", "failed"] as const) {
+    const dataHandles = [
+      lifetimeHandle("ephemeral", "resource"),
+      lifetimeHandle("infinite", "file"),
+    ];
+    const result = await methodSummaryReport.execute(
+      makeMethodContext({ executionStatus, dataHandles }),
+    );
+    const produced = result.json.dataProduced as Array<Record<string, unknown>>;
+    assertEquals(produced[0].availability, "ephemeral");
+    assertEquals(produced[0].lifetime, "ephemeral");
+    assertEquals("retrievalCommand" in produced[0], false);
+    assertEquals(produced[1].availability, "persistent");
+    assertStringIncludes(
+      String(produced[1].retrievalCommand),
+      'workflowRunId == "actual-run"',
+    );
+    assertStringIncludes(
+      String(produced[1].retrievalCommand),
+      'modelId == "def-123"',
+    );
+    assertStringIncludes(
+      result.markdown,
+      "ephemeral — unavailable after the run",
+    );
+    assertEquals(
+      JSON.stringify(result).includes("ephemeral-body-must-not-be-persisted"),
+      false,
+    );
+  }
 });

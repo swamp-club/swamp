@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { stepRetrievalCommand } from "../../data/data_query_command.ts";
+import {
+  renderDataPointer,
+  retrievalCommands,
+  stepDataPointers,
+} from "./data_pointers.ts";
 import type {
   ReportContext,
   WorkflowReportContext,
@@ -86,18 +90,13 @@ export const workflowSummaryReport: ReportDefinition = {
             `| ${step.jobName} | **${step.stepName}** | ${label} | No data output. |`,
           );
         } else {
-          const [firstCmd, ...otherCmds] = step.dataHandles.map((h) =>
-            stepRetrievalCommand(workflowRunId, step, {
-              name: h.name,
-              version: h.version,
-              contentType: h.metadata.contentType,
-            })
-          );
+          const [firstCmd, ...otherCmds] = stepDataPointers(workflowRunId, step)
+            .map(renderDataPointer);
           lines.push(
-            `| ${step.jobName} | **${step.stepName}** | ${label} | \`${firstCmd}\` |`,
+            `| ${step.jobName} | **${step.stepName}** | ${label} | ${firstCmd} |`,
           );
           for (const cmd of otherCmds) {
-            lines.push(`| | | | \`${cmd}\` |`);
+            lines.push(`| | | | ${cmd} |`);
           }
         }
       }
@@ -133,6 +132,14 @@ export const workflowSummaryReport: ReportDefinition = {
           );
         }
       }
+      for (const step of steps) {
+        if (step.status === "failed") continue;
+        for (const pointer of stepDataPointers(workflowRunId, step)) {
+          if (pointer.availability === "ephemeral") {
+            lines.push("", `${step.stepName}: ${renderDataPointer(pointer)}`);
+          }
+        }
+      }
     }
 
     const markdown = lines.join("\n");
@@ -154,12 +161,9 @@ export const workflowSummaryReport: ReportDefinition = {
         modelName: s.modelName || undefined,
         methodName: s.methodName || undefined,
         errorMessage: s.errorMessage,
-        retrievalCommands: s.dataHandles.map((h) =>
-          stepRetrievalCommand(workflowRunId, s, {
-            name: h.name,
-            version: h.version,
-            contentType: h.metadata.contentType,
-          })
+        dataProduced: stepDataPointers(workflowRunId, s),
+        retrievalCommands: retrievalCommands(
+          stepDataPointers(workflowRunId, s),
         ),
       })),
       steps: stepExecutions.map((s) => ({
@@ -171,12 +175,9 @@ export const workflowSummaryReport: ReportDefinition = {
         methodName: s.methodName || undefined,
         status: s.status,
         errorMessage: s.errorMessage,
-        retrievalCommands: s.dataHandles.map((h) =>
-          stepRetrievalCommand(workflowRunId, s, {
-            name: h.name,
-            version: h.version,
-            contentType: h.metadata.contentType,
-          })
+        dataProduced: stepDataPointers(workflowRunId, s),
+        retrievalCommands: retrievalCommands(
+          stepDataPointers(workflowRunId, s),
         ),
       })),
     };

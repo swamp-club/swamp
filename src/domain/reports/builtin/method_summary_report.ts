@@ -17,18 +17,19 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { modelRetrievalCommand } from "../../data/data_query_command.ts";
+import { dataPointer, renderDataPointer } from "./data_pointers.ts";
 import type { MethodReportContext, ReportContext } from "../report_context.ts";
 import type { DataHandle } from "../../models/model.ts";
 import type { ExecutionProvenance } from "../../models/model_output.ts";
 import type { ReportDefinition, ReportResult } from "../report.ts";
 
-/** The command that reads one version of a model's data back. */
-function modelDataQuery(modelName: string, handle: DataHandle): string {
-  return modelRetrievalCommand(modelName, {
-    name: handle.name,
+function methodDataPointer(context: MethodReportContext, handle: DataHandle) {
+  return dataPointer(handle, {
+    modelType: context.modelType.normalized,
+    modelId: context.modelId,
+    dataName: handle.name,
     version: handle.version,
-    contentType: handle.metadata.contentType,
+    workflowRunId: handle.metadata.ownerDefinition?.workflowRunId,
   });
 }
 
@@ -82,7 +83,7 @@ function buildNarrative(
  * with one example retrieval command.
  */
 function renderPointersMarkdown(
-  definitionName: string,
+  context: MethodReportContext,
   dataHandles: DataHandle[],
 ): string[] {
   if (dataHandles.length === 0) {
@@ -93,8 +94,10 @@ function renderPointersMarkdown(
   lines.push("| Name | Kind | Retrieval Command |");
   lines.push("| ---- | ---- | ----------------- |");
   for (const handle of dataHandles) {
-    const cmd = modelDataQuery(definitionName, handle);
-    lines.push(`| **${handle.name}** | ${handle.kind} | \`${cmd}\` |`);
+    const pointer = methodDataPointer(context, handle);
+    lines.push(
+      `| **${handle.name}** | ${handle.kind} | ${renderDataPointer(pointer)} |`,
+    );
   }
 
   return lines;
@@ -203,7 +206,7 @@ export const methodSummaryReport: ReportDefinition = {
     }
 
     if (dataHandles.length > 0) {
-      for (const line of renderPointersMarkdown(definition.name, dataHandles)) {
+      for (const line of renderPointersMarkdown(context, dataHandles)) {
         lines.push(line);
       }
     }
@@ -224,13 +227,7 @@ export const methodSummaryReport: ReportDefinition = {
       globalArgs: globalKeys,
       methodArgs: methodKeys,
       ...(outputSpecs && outputSpecs.length > 0 ? { outputSpecs } : {}),
-      dataProduced: dataHandles.map((h) => ({
-        name: h.name,
-        kind: h.kind,
-        specName: h.specName,
-        version: h.version,
-        retrievalCommand: modelDataQuery(definition.name, h),
-      })),
+      dataProduced: dataHandles.map((h) => methodDataPointer(context, h)),
     };
 
     return Promise.resolve({ markdown, json });

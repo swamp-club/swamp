@@ -1,6 +1,6 @@
 ---
 audience: maintainer, operator
-last-verified: 2026-09-07 @ 58652907
+last-verified: 2026-10-28 @ e7f38146
 ---
 
 # Data
@@ -447,6 +447,12 @@ workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
   past that
   (`src/infrastructure/persistence/ephemeral_store.ts`;
   [data-query.md §Ephemeral Data](../enablers/data-query.md#ephemeral-data)).
+  Standalone CLI and serve method runs also supply the catalog to their run
+  dependencies, so they use the same in-memory route as workflow steps. A new
+  ephemeral write does not advance or replace an older persistent version of
+  the same name. Publication receipts include only durable writes. Built-in
+  summaries label ephemeral outputs and omit post-run retrieval commands
+  ([reports.md](../enablers/reports.md#output-availability-in-built-in-summaries)).
 - **Remote data plane.** Workers have no datastore configuration. Large byte
   traffic goes over HTTP to the orchestrator (`src/serve/data_plane.ts`).
   Reads use `GET /data/{type}/{modelId}/{dataName}/{version}`. Writes use

@@ -280,6 +280,7 @@ Deno.test("workflowSummaryReport: JSON output structure matches expected shape",
   const steps = json.steps as Array<Record<string, unknown>>;
   assertEquals(steps.length, 1);
   const stepKeys = [
+    "dataProduced",
     "jobName",
     "stepName",
     "taskType",
@@ -428,4 +429,69 @@ Deno.test("workflowSummaryReport: mixed model-method and assert steps — correc
   const steps = result.json.steps as Array<Record<string, unknown>>;
   assertEquals(steps.length, 2);
   assertEquals(steps[1].taskType, "assert");
+});
+
+function lifetimeHandle(
+  lifetime: "ephemeral" | "infinite",
+  kind: "file" | "resource",
+) {
+  return {
+    name: `${lifetime}-${kind}`,
+    specName: "same-spec",
+    kind,
+    dataId: createDataId(crypto.randomUUID()),
+    version: 1,
+    size: 8,
+    tags: {},
+    attributes: { value: "ephemeral-body-must-not-be-persisted" },
+    metadata: {
+      contentType: "application/json",
+      lifetime,
+      garbageCollection: 10,
+      streaming: false,
+      tags: { type: kind },
+      ownerDefinition: {
+        ownerType: "model-method" as const,
+        ownerRef: "def-123",
+        workflowRunId: "actual-run",
+      },
+    },
+  };
+}
+
+Deno.test("workflowSummaryReport: mixed ephemeral outputs are explained without retrieval commands", async () => {
+  for (const status of ["succeeded", "failed"] as const) {
+    const dataHandles = [
+      lifetimeHandle("ephemeral", "resource"),
+      lifetimeHandle("infinite", "file"),
+    ];
+    const result = await workflowSummaryReport.execute(makeWorkflowContext({
+      workflowStatus: status,
+      stepExecutions: [makeStepExecution({ status, dataHandles })],
+    }));
+    const [step] = result.json.steps as Array<Record<string, unknown>>;
+    const produced = step.dataProduced as Array<Record<string, unknown>>;
+    assertEquals(produced[0].availability, "ephemeral");
+    assertEquals("retrievalCommand" in produced[0], false);
+    assertEquals(produced[1].availability, "persistent");
+    assertStringIncludes(
+      String(produced[1].retrievalCommand),
+      'workflowRunId == "run-1"',
+    );
+    if (step.retrievalCommands) {
+      assertEquals(step.retrievalCommands, [produced[1].retrievalCommand]);
+    }
+    assertStringIncludes(
+      result.markdown,
+      "ephemeral — unavailable after the run",
+    );
+    assertEquals(
+      JSON.stringify(result).includes("ephemeral-body-must-not-be-persisted"),
+      false,
+    );
+    if (status === "failed") {
+      const [failure] = result.json.failures as Array<Record<string, unknown>>;
+      assertEquals(failure.retrievalCommands, [produced[1].retrievalCommand]);
+    }
+  }
 });

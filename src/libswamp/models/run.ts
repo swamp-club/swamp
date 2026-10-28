@@ -1616,12 +1616,16 @@ export async function* modelMethodRun(
                 }
 
                 deps.onWrittenVersions?.([
-                  ...recoveredDataHandles(error).map((handle) => ({
-                    modelType: modelType.normalized,
-                    modelId: evaluatedDefinition.id,
-                    dataName: handle.name,
-                    version: handle.version,
-                  })),
+                  ...recoveredDataHandles(error)
+                    .filter((handle) =>
+                      handle.metadata.lifetime !== "ephemeral"
+                    )
+                    .map((handle) => ({
+                      modelType: modelType.normalized,
+                      modelId: evaluatedDefinition.id,
+                      dataName: handle.name,
+                      version: handle.version,
+                    })),
                   ...writtenVersionsOf(error),
                 ], "failed");
 
@@ -1662,12 +1666,16 @@ export async function* modelMethodRun(
               );
               const dataArtifacts: DataArtifactView[] = [];
               deps.onWrittenVersions?.(
-                (execResult.dataHandles ?? []).map((handle) => ({
-                  modelType: modelType.normalized,
-                  modelId: evaluatedDefinition.id,
-                  dataName: handle.name,
-                  version: handle.version,
-                })),
+                (execResult.dataHandles ?? [])
+                  .filter((handle) =>
+                    handle.metadata.lifetime !== "ephemeral"
+                  )
+                  .map((handle) => ({
+                    modelType: modelType.normalized,
+                    modelId: evaluatedDefinition.id,
+                    dataName: handle.name,
+                    version: handle.version,
+                  })),
                 "completed",
               );
               if (execResult.dataHandles && execResult.dataHandles.length > 0) {
