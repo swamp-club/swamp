@@ -2119,7 +2119,8 @@ export async function handleModelOutputSearch(
           selectReadable,
         ),
       findAllDefinitions: () => definitionRepo.findAllIncludingAutoGlobal(),
-      resolveModelNames: (keys) => resolveModelNames(canonical, keys),
+      resolveModelNames: (keys) =>
+        resolveModelNames(canonical, keys, controller.signal),
       resolveModel: async (idOrName) => {
         const found = new Map<string, ModelOutputSearchModel>();
         const add = (definition: Definition, type: ModelType) => {
@@ -2477,7 +2478,8 @@ export async function handleModelMethodHistorySearch(
     const deps: ModelOutputSearchDeps = {
       findAllOutputsGlobal: () => outputRepo.findAllGlobal(controller.signal),
       findAllDefinitions: () => definitionRepo.findAllIncludingAutoGlobal(),
-      resolveModelNames: (keys) => resolveModelNames(canonical, keys),
+      resolveModelNames: (keys) =>
+        resolveModelNames(canonical, keys, controller.signal),
     };
 
     // Exported as the output_search diagnostic area's phases
@@ -3155,18 +3157,51 @@ type OutputReadKey = Pick<
 >;
 
 /**
+ * How many definitions naming an output search's results are looked up at
+ * once, so a request's open definition files stay bounded (swamp-club#4150).
+ */
+const MODEL_NAME_LOOKUP_CONCURRENCY = 8;
+
+/**
  * The names of the definitions an output search asks for, in order, from the
- * request's owner lookups, which authorizing its items then reuses. One at a
- * time, as authorization looks them up, so the files open at once stay
- * bounded.
+ * request's owner lookups, which authorizing its items then reuses.
+ * {@link MODEL_NAME_LOOKUP_CONCURRENCY} at a time: each id is looked up once
+ * per request, so overlapping lookups still read each definition once
+ * (swamp-club#4150). A cancel or a failed lookup starts no further lookup,
+ * and those already started finish before this returns.
  */
 async function resolveModelNames(
   canonical: CanonicalResources,
   keys: ReadonlyArray<{ type: { normalized: string }; definitionId: string }>,
+  signal: AbortSignal,
 ): Promise<Array<string | undefined>> {
-  const names: Array<string | undefined> = [];
-  for (const { type, definitionId } of keys) {
-    names.push(await canonical.modelName(definitionId, type.normalized));
+  const names = new Array<string | undefined>(keys.length);
+  let next = 0;
+  let failed = false;
+  const lookUp = async () => {
+    try {
+      while (!failed && next < keys.length) {
+        signal.throwIfAborted();
+        const index = next++;
+        const { type, definitionId } = keys[index];
+        names[index] = await canonical.modelName(
+          definitionId,
+          type.normalized,
+        );
+      }
+    } catch (error) {
+      failed = true;
+      throw error;
+    }
+  };
+  const settled = await Promise.allSettled(
+    Array.from(
+      { length: Math.min(MODEL_NAME_LOOKUP_CONCURRENCY, keys.length) },
+      lookUp,
+    ),
+  );
+  for (const result of settled) {
+    if (result.status === "rejected") throw result.reason;
   }
   return names;
 }

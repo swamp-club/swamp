@@ -1206,6 +1206,224 @@ Deno.test("handleModelOutputSearch and handleModelMethodHistorySearch: with a de
   });
 });
 
+/**
+ * A repo of `owning` definitions with one output each and two owning none,
+ * behind a settled definition index, whose definition reads after setup each
+ * wait to be released (swamp-club#4150).
+ */
+async function withHeldDefinitionReads(
+  owning: number,
+  fn: (fixture: {
+    ctx: ConnectionContext;
+    owners: Definition[];
+    unused: Definition[];
+    definitionRepo: YamlDefinitionRepository;
+    reads: {
+      held: Array<PromiseWithResolvers<void>>;
+      byPath: Map<string, number>;
+      inFlight: number;
+      peak: number;
+    };
+  }) => Promise<void>,
+): Promise<void> {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const owners: Definition[] = [];
+    for (let i = 0; i < owning; i++) {
+      const owner = await saveEditModel(definitionRepo, `owner-${i}`);
+      owners.push(owner);
+      await outputRepo.save(
+        EDIT_TEST_TYPE,
+        "execute",
+        ModelOutput.create({
+          definitionId: owner.id,
+          methodName: "execute",
+          status: "succeeded",
+          startedAt: new Date(Date.UTC(2026, 0, 1, 0, i)),
+          provenance: {
+            definitionHash: "h",
+            modelVersion: "1",
+            triggeredBy: "manual",
+          },
+        }),
+      );
+    }
+    const unused = [
+      await saveEditModel(definitionRepo, "unused-1"),
+      await saveEditModel(definitionRepo, "unused-2"),
+    ];
+    // Settled at once, so a request's check of the index relists nothing.
+    const definitionIndex = new DefinitionIdIndex(definitionRepo, {
+      racyWindowMs: 0,
+    });
+    await definitionIndex.begin();
+
+    // Held only after the index's first check, which reads every file.
+    const reads = {
+      held: [] as Array<PromiseWithResolvers<void>>,
+      byPath: new Map<string, number>(),
+      inFlight: 0,
+      peak: 0,
+    };
+    const readFile = definitionRepo.readDefinitionFile.bind(definitionRepo);
+    definitionRepo.readDefinitionFile = async (path, segments, isSymlink) => {
+      reads.byPath.set(path, (reads.byPath.get(path) ?? 0) + 1);
+      reads.inFlight++;
+      reads.peak = Math.max(reads.peak, reads.inFlight);
+      const hold = Promise.withResolvers<void>();
+      reads.held.push(hold);
+      try {
+        await hold.promise;
+        return await readFile(path, segments, isSymlink);
+      } finally {
+        reads.inFlight--;
+      }
+    };
+
+    const ctx: ConnectionContext = {
+      ...createPolicyEditCtx(dir, definitionRepo, [
+        grant({ actions: ["read"] }),
+      ]),
+      definitionIndex,
+      repoContext: {
+        definitionRepo,
+        outputRepo,
+        workflowRepo: new YamlWorkflowRepository(dir),
+      } as unknown as ConnectionContext["repoContext"],
+    };
+    modelRegistry.register({
+      type: EDIT_TEST_TYPE,
+      version: "2026.01.01.1",
+      methods: {},
+    });
+    try {
+      await fn({ ctx, owners, unused, definitionRepo, reads });
+    } finally {
+      modelRegistry.invalidateType(EDIT_TEST_TYPE);
+    }
+  });
+}
+
+Deno.test("handleModelOutputSearch: looks up the definitions naming its outputs at most 8 at a time, each once, and names each output after its own (swamp-club#4150)", async () => {
+  await withHeldDefinitionReads(
+    12,
+    async ({ ctx, owners, unused, definitionRepo, reads }) => {
+      await withObservedSpans(async (spans) => {
+        const socket = createMockSocket();
+        const search = handleModelOutputSearch(
+          socket,
+          ctx,
+          "req-search",
+          new AbortController(),
+          EDITOR,
+          {},
+        );
+        await waitFor(() => reads.held.length === 8, "8 lookups in flight");
+        // Finishing out of order starts the rest.
+        for (const hold of [...reads.held].reverse()) hold.resolve();
+        for (let i = 8; i < owners.length; i++) {
+          await waitFor(() => reads.held.length > i, `lookup ${i + 1}`);
+          reads.held[i].resolve();
+        }
+        await search;
+
+        assertEquals(reads.peak, 8);
+        const [response] = frames(socket);
+        const names = new Map(owners.map((o) => [o.id as string, o.name]));
+        const results = response.payload.data.results as Array<
+          { definitionId: string; modelName?: string }
+        >;
+        assertEquals(results.length, owners.length);
+        for (const result of results) {
+          assertEquals(result.modelName, names.get(result.definitionId));
+        }
+
+        // Each owning definition is read once; one owning none never is.
+        assertEquals(
+          Object.fromEntries(reads.byPath),
+          Object.fromEntries(
+            owners.map((
+              o,
+            ) => [definitionRepo.getPath(EDIT_TEST_TYPE, o.id), 1]),
+          ),
+        );
+        for (const definition of unused) {
+          assertEquals(
+            reads.byPath.has(
+              definitionRepo.getPath(EDIT_TEST_TYPE, definition.id),
+            ),
+            false,
+          );
+        }
+
+        // Authorization reuses every lookup the names phase made.
+        const authorization =
+          findSpan(spans, "swamp.diagnostic.authorization").attributes;
+        assertEquals(authorization["swamp.diagnostic.files_read"], undefined);
+        assertEquals(
+          authorization["swamp.diagnostic.owner_lookups_reused"],
+          authorization["swamp.diagnostic.owner_lookups"],
+        );
+      });
+    },
+  );
+});
+
+Deno.test("handleModelOutputSearch: a cancel starts no further definition lookup and replies cancelled (swamp-club#4150)", async () => {
+  await withHeldDefinitionReads(12, async ({ ctx, reads }) => {
+    const socket = createMockSocket();
+    const controller = new AbortController();
+    const search = handleModelOutputSearch(
+      socket,
+      ctx,
+      "req-search",
+      controller,
+      EDITOR,
+      {},
+    );
+    await waitFor(() => reads.held.length === 8, "8 lookups in flight");
+    controller.abort();
+    for (const hold of reads.held) hold.resolve();
+    await search;
+
+    assertEquals(reads.held.length, 8);
+    const [response] = frames(socket);
+    assertEquals(response.error.code, "cancelled");
+  });
+});
+
+Deno.test("handleModelOutputSearch: a failed definition lookup starts no further one, and replies only after those in flight finish (swamp-club#4150)", async () => {
+  await withHeldDefinitionReads(12, async ({ ctx, reads }) => {
+    let inFlightAtReply: number | undefined;
+    const socket = createMockSocket();
+    const sendFrame = socket.send.bind(socket);
+    socket.send = (data: string) => {
+      inFlightAtReply ??= reads.inFlight;
+      sendFrame(data);
+    };
+    const search = handleModelOutputSearch(
+      socket,
+      ctx,
+      "req-search",
+      new AbortController(),
+      EDITOR,
+      {},
+    );
+    await waitFor(() => reads.held.length === 8, "8 lookups in flight");
+    const [failing, ...rest] = reads.held;
+    failing.reject(new Deno.errors.PermissionDenied("denied"));
+    await waitFor(() => reads.inFlight === 7, "the failed read to finish");
+    for (const hold of rest) hold.resolve();
+    await search;
+
+    assertEquals(reads.held.length, 8);
+    assertEquals(inFlightAtReply, 0);
+    const [response] = frames(socket);
+    assertEquals(response.error.code, "model_output_search_failed");
+  });
+});
+
 Deno.test("redactWorkflowLinks: keeps every linkage without authorization, drops an unresolved one with it", async () => {
   const items = () => [{
     id: "o1",
