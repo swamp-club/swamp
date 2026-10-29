@@ -155,6 +155,16 @@ export function inboxQuitLine(
   return undefined;
 }
 
+/**
+ * The stderr line after the inbox closes for marks that failed or were cut
+ * off at quit; undefined when there were none.
+ */
+export function inboxUnmarkedLine(unmarked: number): string | undefined {
+  return unmarked > 0
+    ? `${messages(unmarked)} could not be marked read.`
+    : undefined;
+}
+
 /** Why opening a message or marking one read is sent. */
 export type InboxMarkReason = "read" | "marked";
 
@@ -271,14 +281,13 @@ export function InboxTui(props: InboxTuiProps): React.ReactElement {
       };
       backend.markRead(ids, reason).then(
         (outcome) => {
-          if (outcome.kind === "failed") {
-            restore(ids, outcome.reason);
-            return;
-          }
+          // A failed request may have been partly applied.
           const confirmed = new Set(outcome.ids.map((c) => c.toUpperCase()));
           restore(
             ids.filter((id) => !confirmed.has(id.toUpperCase())),
-            "Swamp Club did not confirm it",
+            outcome.kind === "failed"
+              ? outcome.reason
+              : "Swamp Club did not confirm it",
           );
         },
         (error: unknown) => restore(ids, errorReason(error)),
@@ -618,7 +627,7 @@ class InkInboxTuiRenderer implements Renderer<InboxBrowseEvent> {
 
   private async run(view: InboxBrowseView): Promise<void> {
     const connection = connectInboxTui(this.options);
-    let closed: InboxTuiClosed = { dropped: 0 };
+    let closed: InboxTuiClosed = { unmarked: 0, dropped: 0 };
     const isTTY = Deno.stdout.isTerminal();
     // The alternate screen keeps the inbox out of the scrollback.
     if (isTTY) Deno.stdout.writeSync(new TextEncoder().encode("\x1b[?1049h"));
@@ -642,6 +651,8 @@ class InkInboxTuiRenderer implements Renderer<InboxBrowseEvent> {
       closed = await connection.close();
     }
     if (closed.line !== undefined) writeOutput(closed.line);
+    const unmarked = inboxUnmarkedLine(closed.unmarked);
+    if (unmarked) console.error(yellow(unmarked));
     const warning = droppedWarning(closed.dropped);
     if (warning) console.error(yellow(warning));
   }
@@ -662,6 +673,8 @@ export interface InboxTuiConnection {
 export interface InboxTuiClosed {
   /** The quit line; undefined when nothing was read or marked. */
   line?: string;
+  /** Messages whose mark failed or was cut off, and not confirmed later. */
+  unmarked: number;
   /** Entries Swamp Club sent on older pages that were left out. */
   dropped: number;
 }
@@ -679,13 +692,24 @@ export function connectInboxTui(
     return promise;
   };
   const tally = { read: 0, marked: 0, dropped: 0 };
+  // Upper-cased ids whose mark failed or was cut off.
+  const unmarked = new Set<string>();
   return {
     backend: {
       markRead: (ids, reason) =>
         track(
           markSession.mark(ids).then((outcome) => {
-            if (outcome.kind === "confirmed") {
-              tally[reason] += outcome.ids.length;
+            // A failed request may have been partly applied.
+            tally[reason] += outcome.ids.length;
+            const confirmed = new Set(
+              outcome.ids.map((id) => id.toUpperCase()),
+            );
+            for (const id of confirmed) unmarked.delete(id);
+            if (outcome.kind === "failed") {
+              for (const id of ids) {
+                const key = id.toUpperCase();
+                if (!confirmed.has(key)) unmarked.add(key);
+              }
             }
             return outcome;
           }),
@@ -705,6 +729,7 @@ export function connectInboxTui(
       const line = inboxQuitLine(tally.read, tally.marked);
       return {
         ...(line !== undefined ? { line } : {}),
+        unmarked: unmarked.size,
         dropped: tally.dropped,
       };
     },

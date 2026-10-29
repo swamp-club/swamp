@@ -521,12 +521,56 @@ Deno.test("markInboxRead: a failed later batch throws after earlier batches were
       ? Response.json({ read: (req.body as { ids: string[] }).ids })
       : Response.json({ error: "maintenance" }, { status: 503 })
   );
+  const reported: string[][] = [];
   await assertRejects(
-    () => client.markInboxRead(KEY, ids),
+    () => client.markInboxRead(KEY, ids, undefined, (c) => reported.push(c)),
     UserError,
     "Failed to mark messages read (HTTP 503): maintenance",
   );
   assertEquals(requests.length, 2);
+  assertEquals(reported, [ids.slice(0, 100)]);
+});
+
+Deno.test("markInboxRead: reports each batch's confirmed ids in request order", async () => {
+  const ids = Array.from({ length: 150 }, (_, i) => `id-${i}`);
+  const { client } = stubClient((req) => {
+    const sent = (req.body as { ids: string[] }).ids;
+    // The server leaves one id out of each batch and confirms in reverse.
+    return Response.json({ read: sent.slice(1).reverse() });
+  });
+  const reported: string[][] = [];
+  await client.markInboxRead(KEY, ids, undefined, (c) => reported.push(c));
+  assertEquals(reported, [ids.slice(1, 100), ids.slice(101)]);
+});
+
+Deno.test("markInboxRead: an abort during a later batch keeps the earlier batch reported", async () => {
+  const ids = Array.from({ length: 150 }, (_, i) => `id-${i}`);
+  const controller = new AbortController();
+  const { client, requests } = stubClient((req) =>
+    Response.json({ read: (req.body as { ids: string[] }).ids })
+  );
+  const reported: string[][] = [];
+  await assertRejects(() =>
+    client.markInboxRead(KEY, ids, controller.signal, (c) => {
+      reported.push(c);
+      controller.abort();
+    })
+  );
+  assertEquals(requests.length, 1);
+  assertEquals(reported, [ids.slice(0, 100)]);
+});
+
+Deno.test("markInboxRead: reports nothing when the first batch fails or nothing is sent", async () => {
+  const reported: string[][] = [];
+  const failing = stubClient(() =>
+    Response.json({ error: "maintenance" }, { status: 503 })
+  );
+  await assertRejects(() =>
+    failing.client.markInboxRead(KEY, ["a"], undefined, (c) => reported.push(c))
+  );
+  const empty = stubClient(() => Response.json({ read: [] }));
+  await empty.client.markInboxRead(KEY, [], undefined, (c) => reported.push(c));
+  assertEquals(reported, []);
 });
 
 Deno.test("markInboxRead: 403 inbox_requires_user and 404 throw plain messages", async () => {
