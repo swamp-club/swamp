@@ -8026,15 +8026,19 @@ refreshes its resource does. `methodRunLockMode`
   pushes. The CLI exits non-zero; serve, which has answered its client
   before it publishes, logs it.
 - Every push made under a behavior's lock with a repository context also
-  publishes the versions earlier runs deferred for it, and then removes
-  their records. Under the read's own publish lock they get the remote check
-  above. Under a lock that pulled the behavior first (a mutating run), the
-  pull already replaced any version another clone also wrote with that
-  clone's copy, so a deferred version whose local data id is no longer the
-  one the run wrote is discarded and restored, with a warning, and never
-  pushed. Marks that restore leaves push nothing after the pull, so only an
-  `"incomplete"` restore stops that push. A version no longer on this host is
-  dropped.
+  publishes the versions earlier runs deferred for it, and removes their
+  records once the push succeeds; a failed push keeps them. A pull since the
+  deferral (a read's own pre-run pull, or a mutating run's pull under the
+  lock) replaced any version another clone also wrote with that clone's
+  copy, so a deferred version whose local data id is no longer the one the
+  run wrote is discarded and restored, with a warning, and never pushed.
+  That pull brought the name's cache up to date after the other clone
+  wrote, so only an `"incomplete"` restore stops the push. Under the read's
+  own publish lock the rest get the remote check above, but a deferred
+  version that conflicts is discarded alone, with a warning, and never takes
+  the current run's versions of that name with it. A version no longer on
+  this host is dropped, and a record naming another behavior's versions too
+  waits for a lock that holds them all.
 - A run that wrote no data version takes no publish lock. When the CLI
   publish fails other than by a refusal or a busy lock (an unreadable
   remote), a run that succeeded fails with that error, or with

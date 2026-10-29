@@ -893,7 +893,14 @@ export class DataVersionConflictError extends UserError {
 
   constructor(
     versions: readonly WrittenVersion[],
-    options: { restored?: boolean } = {},
+    options: {
+      restored?: boolean;
+      /**
+       * Set when the versions are an earlier run's, which another run held
+       * the lock against and this host had left to publish.
+       */
+      deferred?: boolean;
+    } = {},
   ) {
     const names = versions.map((v) =>
       `${v.modelType}/${v.modelId} ${v.dataName} version ${v.version}`
@@ -907,10 +914,14 @@ export class DataVersionConflictError extends UserError {
         `datastore's copy. Run 'swamp datastore sync --pull' to fetch it before ` +
         `anything else in this repository pushes, then run the method ` +
         `again to write and publish it.`;
+    const when = options.deferred
+      ? `before this host published an earlier run's data with the same ` +
+        `version, so that data was not `
+      : `while this run was running, so this run's data with the same ` +
+        `version was not `;
     super(
       `Another swamp process, most likely another clone of this ` +
-        `repository, wrote ${names} while this run was running, so this ` +
-        `run's data with the same version was not ${outcome}`,
+        `repository, wrote ${names} ${when}${outcome}`,
       "datastore_data_version_conflict",
     );
     this.name = "DataVersionConflictError";

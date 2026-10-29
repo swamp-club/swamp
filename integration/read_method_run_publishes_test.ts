@@ -631,3 +631,40 @@ Deno.test("model method run: a deferred version another clone also wrote is drop
     assertEquals(await pendingRecords(c.repoA), 0);
   });
 });
+
+Deno.test("model method run: a read run after a deferred version was overwritten publishes its own version and drops the deferred one (swamp-club#3934)", async () => {
+  await withClones(async (c) => {
+    const holder = await requireInitializedRepoUnlocked({
+      repoDir: c.repoB,
+      outputMode: "json",
+    });
+    const writerLock = await acquireModelLocks(
+      holder.datastoreConfig,
+      [{
+        modelType: c.type.normalized,
+        modelId: c.definition.id,
+      }],
+      c.repoB,
+      holder.syncService,
+      holder.repoContext.catalogStore,
+      undefined,
+      { repoContext: holder.repoContext },
+    );
+    try {
+      await runMethod(c.repoA, "observe", "from-a");
+    } finally {
+      await writerLock.flush();
+      await flushDatastoreSync();
+      holder.repoContext.catalogStore.close();
+    }
+    await runMethod(c.repoB, "write", "from-b");
+
+    // The pre-run pull replaces A's deferred version 1 with B's; this run
+    // writes version 2, which conflicts with nothing.
+    await runMethod(c.repoA, "observe", "from-a-again");
+    assertEquals(remoteValue(c, 1), "from-b", "B's version is kept");
+    assertEquals(remoteValue(c, 2), "from-a-again");
+    assertEquals(remoteLatest(c), "2");
+    assertEquals(await pendingRecords(c.repoA), 0);
+  });
+});
