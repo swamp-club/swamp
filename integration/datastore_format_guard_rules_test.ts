@@ -212,8 +212,10 @@ const GUARDED_PINNED = [
   "src/cli/commands/doctor_datastores.ts:createRepairDeps",
   // swamp-club#3473: serve's retention pass compacts v3 history through the
   // handle of the config requireInitializedRepoUnlocked checked; so does the
-  // evaluation trust serve gives its repository context (swamp-club#3922).
-  "src/cli/commands/serve.ts:serveCommand (x6)",
+  // evaluation trust serve gives its repository context (swamp-club#3922),
+  // and a follower reading the lease's current fence to trust the leader
+  // record (swamp-club#4120).
+  "src/cli/commands/serve.ts:serveCommand (x7)",
   // swamp-club#3473: the end-of-command retention pass opens the repository
   // through requireInitializedRepo and resolveDatastoreForRepo, then
   // compacts v3 history through that checked config.
