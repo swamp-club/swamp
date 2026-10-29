@@ -34,11 +34,11 @@ import type { RepositoryContext } from "../../infrastructure/persistence/reposit
  * - `"run"`: for the whole run. The lock's pull comes first and its push
  *   publishes what the run wrote.
  * - `"publish"`: a read or list run on a v2 extension datastore. It pulls
- *   without the lock, runs without it, and takes it only to publish what it
- *   wrote (`pull: false`, `refuseForeignVersions`), so it never waits on a
- *   writer's lock while it runs (swamp-club#1992).
+ *   without the lock, runs without it, and tries the lock only to publish
+ *   what it wrote, leaving it to the next lock holder on this host when the
+ *   lock is busy, so it never waits on a writer (swamp-club#1992).
  * - `"none"`: a read or list run on a filesystem or v3 datastore, which
- *   needs no lock to publish.
+ *   needs no lock to publish, or with no sync service to publish through.
  */
 export type MethodRunLockMode = "run" | "publish" | "none";
 
@@ -82,7 +82,7 @@ export async function methodRunLockMode(options: {
   ) {
     return "none";
   }
-  // Without a sync service the caller has nothing to publish through, so
-  // the run holds the lock as a mutating run does.
-  return options.syncService ? "publish" : "run";
+  // Without a sync service there is nothing to pull or publish through, so
+  // a lock would only make the read wait behind a writer (swamp-club#1992).
+  return options.syncService ? "publish" : "none";
 }

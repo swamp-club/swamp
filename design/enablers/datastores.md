@@ -7996,6 +7996,8 @@ refreshes its resource does. `methodRunLockMode`
 
 - On a filesystem or v3 datastore it takes no lock: a filesystem datastore has
   no push, and a v3 root commits through its commit log whatever the locks.
+  Nor does it on a v2 extension datastore whose provider builds no sync
+  service, which has nothing to pull or publish through.
 - On a v2 extension datastore the model lock is the only path that pulls
   before a run and publishes what it wrote, and each clone numbers data
   versions from its own cache. So the run pulls the behavior without the lock
