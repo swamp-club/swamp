@@ -48,8 +48,6 @@ import {
   type InboxReadDeps,
   inboxReadNext,
   type InboxReadNextEvent,
-  markRead,
-  type MarkReadEvent,
   MAX_INBOX_READ_PAGES,
 } from "./read.ts";
 
@@ -687,53 +685,6 @@ Deno.test("inboxReadNext: an abort while fetching the announced message is cance
   assert(last.kind === "error");
   assertEquals(last.error.code, "cancelled");
   assertEquals(rec.marked, []);
-});
-
-Deno.test("markRead: marks exactly the given ids and refreshes the cache", async () => {
-  const ids = ["01JBX5Q8ZK0000000000000104", "01JBX5Q8ZK00000000000000ZX"];
-  const { deps, rec } = makeDeps();
-
-  const last = lastOf(
-    await collect<MarkReadEvent>(markRead(createLibSwampContext(), deps, ids)),
-  );
-
-  assert(last.kind === "completed");
-  assertEquals(last.marked, ids);
-  assertEquals(rec.marked, [ids]);
-  assertEquals(rec.listed, []);
-  assertEquals(rec.saved.length, 1);
-});
-
-Deno.test("markRead: no ids makes no request and loads no credentials", async () => {
-  let loaded = false;
-  const { deps, rec } = makeDeps({
-    loadCredentials: () => {
-      loaded = true;
-      return Promise.resolve(credentials);
-    },
-  });
-
-  const events = await collect<MarkReadEvent>(
-    markRead(createLibSwampContext(), deps, []),
-  );
-
-  assertEquals(events, [{ kind: "completed", marked: [] }]);
-  assertEquals(loaded, false);
-  assertEquals(rec.marked, []);
-  assertEquals(rec.summaries, 0);
-});
-
-Deno.test("markRead: a client UserError propagates unchanged", async () => {
-  const thrown = new UserError("https://swamp-club.com has no inbox.");
-  const { deps } = makeDeps({ markInboxRead: () => Promise.reject(thrown) });
-
-  const error = await assertRejects(() =>
-    collect<MarkReadEvent>(
-      markRead(createLibSwampContext(), deps, ["01JBX5Q8ZK0000000000000104"]),
-    )
-  );
-
-  assertStrictEquals(error, thrown);
 });
 
 const UNREAD_ID = "01JBX5Q8ZK00000000000000ZX";

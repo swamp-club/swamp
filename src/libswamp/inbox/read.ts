@@ -129,12 +129,6 @@ export function createInboxReadDeps(
   };
 }
 
-export type MarkReadEvent =
-  | { kind: "loading_credentials" }
-  | { kind: "contacting_server"; serverUrl: string }
-  | { kind: "completed"; marked: string[] }
-  | { kind: "error"; error: SwampError };
-
 export interface InboxReadNextView {
   /**
    * The message the notice announced, or else the newest unread message, now
@@ -301,34 +295,6 @@ async function markAndRefresh(
   );
   await refreshInboxCache(ctx, deps, session);
   return marked;
-}
-
-/**
- * Marks exactly these messages read, then refreshes the inbox cache. With no
- * ids it completes at once, with no request. A client failure propagates as
- * the UserError the client threw.
- */
-export async function* markRead(
-  ctx: LibSwampContext,
-  deps: InboxReadDeps,
-  ids: readonly string[],
-): AsyncIterable<MarkReadEvent> {
-  if (ids.length === 0) {
-    yield { kind: "completed", marked: [] };
-    return;
-  }
-  const session = yield* openSession(deps);
-  if (!session) return;
-  try {
-    const marked = await markAndRefresh(ctx, deps, session, ids);
-    yield { kind: "completed", marked };
-  } catch (error: unknown) {
-    if (isAbort(error)) {
-      yield { kind: "error", error: cancelled(error) };
-      return;
-    }
-    throw error;
-  }
 }
 
 /**

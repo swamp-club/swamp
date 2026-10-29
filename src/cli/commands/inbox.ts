@@ -51,6 +51,31 @@ import { loadIdentity } from "../load_identity.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+type Logger = ReturnType<typeof createContext>["logger"];
+
+/**
+ * What the inbox commands' actions call. `createInboxCommand` takes them so
+ * tests can drive the actions with stubs.
+ */
+export interface InboxCommandDeps {
+  stdinIsTty: () => boolean;
+  stdoutIsTty: () => boolean;
+  /** Opens the interactive inbox. */
+  runInbox: (logger: Logger, input: InboxListInput) => Promise<void>;
+  /** Prints a page of messages, marking nothing read. */
+  listInbox: (
+    logger: Logger,
+    outputMode: OutputMode,
+    input: InboxListInput,
+  ) => Promise<void>;
+  /** Prints the message with this id, or else the next one, and marks it read. */
+  readInbox: (
+    logger: Logger,
+    outputMode: OutputMode,
+    messageId: string | undefined,
+  ) => Promise<void>;
+}
+
 /**
  * Whether `swamp inbox` opens the interactive inbox: only in log mode with
  * both stdin and stdout on a terminal. `interactiveOutputMode` does not fit
@@ -58,7 +83,7 @@ type AnyOptions = any;
  * `swamp inbox` must keep printing its plain list. `swamp inbox read` never
  * opens it.
  */
-export function inboxPickerApplies(
+export function inboxInteractiveApplies(
   outputMode: OutputMode,
   stdinIsTty: boolean,
   stdoutIsTty: boolean,
@@ -72,7 +97,7 @@ export function inboxPickerApplies(
  * once closed prints what was read and marked.
  */
 async function runInbox(
-  logger: ReturnType<typeof createContext>["logger"],
+  logger: Logger,
   input: InboxListInput,
 ): Promise<void> {
   const ctx = createLibSwampContext({ logger });
@@ -117,90 +142,128 @@ async function runInbox(
   );
 }
 
-const inboxReadCommand = new Command()
-  .name("read")
-  .description(
-    "Print one message and mark it read: the message with that id, or else " +
-      "the next one to read. Never interactive.",
-  )
-  .arguments("[message_id:string]")
-  .example("Read the next message", "swamp inbox read")
-  .example(
-    "Read one message by its id",
-    "swamp inbox read 01JBX5Q8ZK0000000000000104",
-  )
-  .example("Read it as JSON", "swamp inbox read --json")
-  .action(async function (options: AnyOptions, messageId?: string) {
-    const cliCtx = createContext(options as GlobalOptions, ["inbox", "read"]);
-    cliCtx.logger.debug("Executing inbox read command");
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const identity = await loadIdentity();
-    const deps = createInboxReadDeps({
-      serverUrlOverride: Deno.env.get("SWAMP_CLUB_URL"),
-      identity,
-    });
-    await consumeStream(
-      messageId === undefined
-        ? inboxReadNext(ctx, deps)
-        : inboxReadById(ctx, deps, messageId),
-      createInboxReadRenderer(cliCtx.outputMode).handlers(),
-    );
-
-    cliCtx.logger.debug("Inbox read command completed");
+async function listInbox(
+  logger: Logger,
+  outputMode: OutputMode,
+  input: InboxListInput,
+): Promise<void> {
+  const ctx = createLibSwampContext({ logger });
+  const identity = await loadIdentity();
+  const deps = createInboxListDeps({
+    serverUrlOverride: Deno.env.get("SWAMP_CLUB_URL"),
+    identity,
   });
+  await consumeStream(
+    inboxList(ctx, deps, input),
+    createInboxListRenderer(outputMode).handlers(),
+  );
+}
 
-// The action sits on `inbox` itself; `read` is a subcommand beside it.
-export const inboxCommand = new Command()
-  .name("inbox")
-  .description(
-    "Browse your Swamp Club inbox. In a terminal, an interactive inbox " +
-      "where opening a message marks it read. Otherwise a list of messages " +
-      "with their ids, which marks nothing read.",
-  )
-  .option(
-    "--all",
-    "Include messages you have already read; the interactive inbox always includes them",
-  )
-  .option(
-    "--limit <n:integer>",
-    `How many messages to load, 1 to ${MAX_INBOX_LIST_LIMIT} (default ${DEFAULT_INBOX_LIST_LIMIT})`,
-  )
-  .option(
-    "--before <id:string>",
-    "Load the messages older than this message id",
-  )
-  .example("Browse your inbox", "swamp inbox")
-  .example("List read and unread messages as JSON", "swamp inbox --all --json")
-  .example(
-    "List the next page",
-    "swamp inbox --all --before 01JBX5Q8ZK00000000000000ZP",
-  )
-  .action(async function (options: AnyOptions) {
-    const cliCtx = createContext(options as GlobalOptions, ["inbox"]);
-    cliCtx.logger.debug("Executing inbox command");
+async function readInbox(
+  logger: Logger,
+  outputMode: OutputMode,
+  messageId: string | undefined,
+): Promise<void> {
+  const ctx = createLibSwampContext({ logger });
+  const identity = await loadIdentity();
+  const deps = createInboxReadDeps({
+    serverUrlOverride: Deno.env.get("SWAMP_CLUB_URL"),
+    identity,
+  });
+  await consumeStream(
+    messageId === undefined
+      ? inboxReadNext(ctx, deps)
+      : inboxReadById(ctx, deps, messageId),
+    createInboxReadRenderer(outputMode).handlers(),
+  );
+}
 
-    const input: InboxListInput = {
-      all: options.all === true,
-      limit: options.limit,
-      before: options.before,
-    };
+const defaultInboxCommandDeps: InboxCommandDeps = {
+  stdinIsTty: isStdinTty,
+  stdoutIsTty: isStdoutTty,
+  runInbox,
+  listInbox,
+  readInbox,
+};
 
-    if (inboxPickerApplies(cliCtx.outputMode, isStdinTty(), isStdoutTty())) {
-      await runInbox(cliCtx.logger, input);
-    } else {
-      const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const identity = await loadIdentity();
-      const deps = createInboxListDeps({
-        serverUrlOverride: Deno.env.get("SWAMP_CLUB_URL"),
-        identity,
-      });
-      await consumeStream(
-        inboxList(ctx, deps, input),
-        createInboxListRenderer(cliCtx.outputMode).handlers(),
-      );
-    }
+/** Builds `swamp inbox` and its `read` subcommand over these dependencies. */
+export function createInboxCommand(deps: InboxCommandDeps) {
+  const readCommand = new Command()
+    .name("read")
+    .description(
+      "Print one message and mark it read: the message with that id, or else " +
+        "the next one to read. Never interactive.",
+    )
+    .arguments("[message_id:string]")
+    .example("Read the next message", "swamp inbox read")
+    .example(
+      "Read one message by its id",
+      "swamp inbox read 01JBX5Q8ZK0000000000000104",
+    )
+    .example("Read it as JSON", "swamp inbox read --json")
+    .action(async function (options: AnyOptions, messageId?: string) {
+      const cliCtx = createContext(options as GlobalOptions, ["inbox", "read"]);
+      cliCtx.logger.debug("Executing inbox read command");
 
-    cliCtx.logger.debug("Inbox command completed");
-  })
-  .command("read", inboxReadCommand);
+      await deps.readInbox(cliCtx.logger, cliCtx.outputMode, messageId);
+
+      cliCtx.logger.debug("Inbox read command completed");
+    });
+
+  // The action sits on `inbox` itself; `read` is a subcommand beside it.
+  return new Command()
+    .name("inbox")
+    .description(
+      "Browse your Swamp Club inbox. In a terminal, an interactive inbox " +
+        "where opening a message marks it read. Otherwise a list of messages " +
+        "with their ids, which marks nothing read.",
+    )
+    .option(
+      "--all",
+      "Include messages you have already read; the interactive inbox always includes them",
+    )
+    .option(
+      "--limit <n:integer>",
+      `How many messages to load, 1 to ${MAX_INBOX_LIST_LIMIT} (default ${DEFAULT_INBOX_LIST_LIMIT})`,
+    )
+    .option(
+      "--before <id:string>",
+      "Load the messages older than this message id",
+    )
+    .example("Browse your inbox", "swamp inbox")
+    .example(
+      "List read and unread messages as JSON",
+      "swamp inbox --all --json",
+    )
+    .example(
+      "List the next page",
+      "swamp inbox --all --before 01JBX5Q8ZK00000000000000ZP",
+    )
+    .action(async function (options: AnyOptions) {
+      const cliCtx = createContext(options as GlobalOptions, ["inbox"]);
+      cliCtx.logger.debug("Executing inbox command");
+
+      const input: InboxListInput = {
+        all: options.all === true,
+        limit: options.limit,
+        before: options.before,
+      };
+
+      if (
+        inboxInteractiveApplies(
+          cliCtx.outputMode,
+          deps.stdinIsTty(),
+          deps.stdoutIsTty(),
+        )
+      ) {
+        await deps.runInbox(cliCtx.logger, input);
+      } else {
+        await deps.listInbox(cliCtx.logger, cliCtx.outputMode, input);
+      }
+
+      cliCtx.logger.debug("Inbox command completed");
+    })
+    .command("read", readCommand);
+}
+
+export const inboxCommand = createInboxCommand(defaultInboxCommandDeps);

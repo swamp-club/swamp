@@ -17,11 +17,20 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { Command } from "@cliffy/command";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import type { OutputMode } from "../../presentation/output/output.ts";
-import { inboxCommand, inboxPickerApplies } from "./inbox.ts";
+import {
+  createInboxCommand,
+  inboxCommand,
+  inboxInteractiveApplies,
+} from "./inbox.ts";
 
-Deno.test("inboxPickerApplies: only in log mode with stdin and stdout on a terminal", () => {
+await initializeLogging({});
+
+Deno.test("inboxInteractiveApplies: only in log mode with stdin and stdout on a terminal", () => {
   const cases: [OutputMode, boolean, boolean, boolean][] = [
     ["log", true, true, true],
     ["log", true, false, false],
@@ -34,7 +43,7 @@ Deno.test("inboxPickerApplies: only in log mode with stdin and stdout on a termi
   ];
   for (const [mode, stdinIsTty, stdoutIsTty, expected] of cases) {
     assertEquals(
-      inboxPickerApplies(mode, stdinIsTty, stdoutIsTty),
+      inboxInteractiveApplies(mode, stdinIsTty, stdoutIsTty),
       expected,
       `${mode} stdin=${stdinIsTty} stdout=${stdoutIsTty}`,
     );
@@ -57,20 +66,88 @@ Deno.test("inbox read: takes an optional id and says it is never interactive", (
   ]);
 });
 
-Deno.test("inbox read: its action never opens the interactive inbox", async () => {
-  // In a terminal the read command must print inline, as it does when piped,
-  // so its action never consults the terminal check or starts the inbox.
-  const source = await Deno.readTextFile(
-    new URL("./inbox.ts", import.meta.url),
+/**
+ * Runs `args` through `swamp inbox` built over recording stubs, under a root
+ * that carries `--json` as the real CLI does. Returns the calls made, in order.
+ */
+async function runInboxWith(
+  args: string[],
+  tty: { stdin: boolean; stdout: boolean },
+): Promise<string[]> {
+  const calls: string[] = [];
+  const command = createInboxCommand({
+    stdinIsTty: () => {
+      calls.push("stdinIsTty");
+      return tty.stdin;
+    },
+    stdoutIsTty: () => {
+      calls.push("stdoutIsTty");
+      return tty.stdout;
+    },
+    runInbox: (_logger, input) => {
+      calls.push(`runInbox all=${input.all}`);
+      return Promise.resolve();
+    },
+    listInbox: (_logger, outputMode, input) => {
+      calls.push(`listInbox ${outputMode} all=${input.all}`);
+      return Promise.resolve();
+    },
+    readInbox: (_logger, outputMode, messageId) => {
+      calls.push(`readInbox ${outputMode} ${messageId ?? "next"}`);
+      return Promise.resolve();
+    },
+  });
+  const root = new Command()
+    .globalOption("--json", "JSON output")
+    .command("inbox", command);
+  await withMockedEnv(
+    { SWAMP_CLI_OUTPUT_JSON: undefined },
+    () => root.parse(["inbox", ...args]),
   );
-  const start = source.indexOf("const inboxReadCommand");
-  const end = source.indexOf("export const inboxCommand");
-  assert(start !== -1 && end > start);
-  const readCommand = source.slice(start, end);
+  return calls;
+}
 
-  assert(!readCommand.includes("inboxPickerApplies"));
-  assert(!readCommand.includes("runInbox("));
-  assert(!readCommand.includes("isStdoutTty"));
+const TERMINAL = { stdin: true, stdout: true };
+const NOT_BOTH_TERMINAL = [
+  { stdin: false, stdout: true },
+  { stdin: true, stdout: false },
+];
+
+Deno.test("inbox read: in a terminal it reads the next message and never opens the interactive inbox", async () => {
+  assertEquals(await runInboxWith(["read"], TERMINAL), ["readInbox log next"]);
+});
+
+Deno.test("inbox read: passes the message id, and --json, to the read", async () => {
+  const id = "01JBX5Q8ZK0000000000000104";
+  assertEquals(await runInboxWith(["read", id], TERMINAL), [
+    `readInbox log ${id}`,
+  ]);
+  assertEquals(await runInboxWith(["read", "--json"], TERMINAL), [
+    "readInbox json next",
+  ]);
+});
+
+Deno.test("inbox: opens the interactive inbox in log mode with stdin and stdout on a terminal", async () => {
+  assertEquals(await runInboxWith(["--all"], TERMINAL), [
+    "stdinIsTty",
+    "stdoutIsTty",
+    "runInbox all=true",
+  ]);
+});
+
+Deno.test("inbox: lists instead with --json or without a terminal on both ends", async () => {
+  assertEquals(await runInboxWith(["--json"], TERMINAL), [
+    "stdinIsTty",
+    "stdoutIsTty",
+    "listInbox json all=false",
+  ]);
+  for (const tty of NOT_BOTH_TERMINAL) {
+    assertEquals(
+      (await runInboxWith([], tty)).at(-1),
+      "listInbox log all=false",
+      `stdin=${tty.stdin} stdout=${tty.stdout}`,
+    );
+  }
 });
 
 Deno.test("inbox: says it browses, and when it marks messages read", () => {
