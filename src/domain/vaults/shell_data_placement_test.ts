@@ -81,6 +81,13 @@ Deno.test("placeShellData: data in shell arithmetic is refused, quoted or not", 
     ['echo "${arr[', ']}"'],
     ["echo ${s:", ":2}"],
     ['echo "${#arr[', ']}"'],
+    ['echo "${arr[@]:', '}"'],
+    ["echo ${arr[0]:1:", "}"],
+    ["echo ${@:", "}"],
+    ["echo ${1:", ":2}"],
+    ["echo ${x:${y:", "}}"],
+    ["arr=([", "]=v)"],
+    ["declare -a arr=([0]=a [", "]=b)"],
   ];
   for (const [before, after] of cases) {
     const { command, ranges } = spliced(before, "a[$(id)]", after);
@@ -96,6 +103,9 @@ Deno.test("placeShellData: data in shell arithmetic is refused, quoted or not", 
   for (
     const [before, after, expected] of [
       ["echo ${X:-", "}", 'echo ${X:-"${__SWAMP_IN_0}"}'],
+      ["echo ${@:-", "}", 'echo ${@:-"${__SWAMP_IN_0}"}'],
+      ["echo ${X#", "}", 'echo ${X#"${__SWAMP_IN_0}"}'],
+      ["arr=(a ", ")", 'arr=(a "${__SWAMP_IN_0}")'],
       ["ls file[", "].txt", 'ls file["${__SWAMP_IN_0}"].txt'],
     ]
   ) {

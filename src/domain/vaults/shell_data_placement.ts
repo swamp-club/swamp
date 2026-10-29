@@ -152,8 +152,9 @@ function matching(
  * Spans of `command` that bash evaluates as an arithmetic expression after
  * expansion, read from the text alone and regardless of quoting, so it errs
  * toward more spans: `((...))` wherever it is written (`for((`, `while((`),
- * `$[...]`, a subscript or substring offset inside `${...}`, and an array
- * element assignment's subscript. The shell context scanner finds the
+ * `$[...]`, a subscript or substring offset inside `${...}` of any
+ * parameter, and the subscript of an array element assignment, plain or
+ * compound. The shell context scanner finds the
  * plain `$(( ))` and `(( ))` forms too; this pass covers what its grammar
  * does not.
  */
@@ -167,19 +168,37 @@ function bashArithmeticSpans(command: string): DataRange[] {
     const start = m.index + 2;
     spans.push([start, matching(command, start, "[", "]")]);
   }
-  // ${name[subscript]} and ${name:offset:length}, but not ${name:-word}.
+  // A parameter expansion, as bash's grammar reads it:
+  // ${ [#|!] parameter [ [subscript] ] [ :offset[:length] ] ... }, where the
+  // parameter is a name, a positional number or one of @ * # ? $ ! -. The
+  // subscript and an offset (a colon not followed by - = + ?) are
+  // arithmetic; ${name:-word} and the pattern operators are not.
   for (
     const m of command.matchAll(
-      /\$\{[#!]?[A-Za-z_][A-Za-z0-9_]*(\[|:(?![-=+?]))/g,
+      /\$\{[#!]?(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])/g,
     )
   ) {
-    const start = m.index + m[0].length;
-    spans.push([
-      start,
-      m[1] === "["
-        ? matching(command, start, "[", "]")
-        : matching(command, start, "{", "}"),
-    ]);
+    const close = matching(command, m.index + 2, "{", "}");
+    let i = m.index + m[0].length;
+    if (command[i] === "[") {
+      const end = matching(command, i + 1, "[", "]");
+      spans.push([i + 1, end]);
+      i = end + 1;
+    }
+    if (command[i] === ":" && !/[-=+?]/.test(command[i + 1] ?? "")) {
+      spans.push([i + 1, close]);
+    }
+  }
+  // A compound array assignment, name=( [subscript]=value ... ).
+  for (const m of command.matchAll(/[A-Za-z_][A-Za-z0-9_]*\+?=\(/g)) {
+    const bodyStart = m.index + m[0].length;
+    const bodyEnd = matching(command, bodyStart, "(", ")");
+    for (let i = bodyStart; i < bodyEnd; i++) {
+      if (command[i] !== "[") continue;
+      const end = matching(command, i + 1, "[", "]");
+      if (/^\]\+?=/.test(command.slice(end, end + 3))) spans.push([i + 1, end]);
+      i = end;
+    }
   }
   // name[subscript]= and name[subscript]+=, including after declare/local.
   for (const m of command.matchAll(/[A-Za-z_][A-Za-z0-9_]*\[/g)) {

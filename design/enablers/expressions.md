@@ -1570,7 +1570,8 @@ argument (its provenance), and the shell behavior places each data range of
 gets: `"${__SWAMP_IN_0}"` unquoted, `${__SWAMP_IN_0}` inside double quotes, a
 break-out `'"${__SWAMP_IN_0}"'` inside single quotes, and `"$env:__SWAMP_IN_0"`
 on PowerShell (`${env:__SWAMP_IN_0}` inside double quotes, so text written
-right after it is not read as part of the name). The text reaches the shell as one literal word.
+right after it is not read as part of the name). The text reaches the shell as
+one literal word.
 
 ```yaml
 # Caller input: name = "x; touch /tmp/p"
@@ -1637,8 +1638,8 @@ author still decides where data may go:
 - in command position (`${{ inputs.tool }} --version`) the value names the
   program that runs;
 - bash evaluates the operands of `[[ ... -eq ... ]]` and the other arithmetic
-  comparisons, `let`, `declare -i` and `printf -v` targets as expressions, as
-  it does in `$(( ))`;
+  comparisons, `let`, and a value assigned to a variable declared integer
+  (`declare -i`, `local -i`) as expressions, as it does in `$(( ))`;
 - `eval`, `sh -c`, `Invoke-Expression` and similar commands run what they are
   given.
 

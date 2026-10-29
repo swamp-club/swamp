@@ -561,8 +561,10 @@ export function dataSplicePlacer(
     const placedMethodArgs = { ...stepMethodArgs };
     for (const [key, value] of Object.entries(changes)) {
       // Written where it was authored; the method argument wins the merge.
+      // A global the merge left out (it still holds an expression) is never
+      // replaced: the method did not see it, so the change goes beside it.
       if (
-        Object.hasOwn(stepMethodArgs, key) || !Object.hasOwn(globalArgs, key)
+        Object.hasOwn(stepMethodArgs, key) || !Object.hasOwn(merged, key)
       ) {
         placedMethodArgs[key] = value;
       } else {

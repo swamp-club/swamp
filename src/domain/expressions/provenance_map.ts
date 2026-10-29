@@ -26,7 +26,11 @@ import {
 } from "../vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 
-/** A `[start, end)` character range of a string that came from data. */
+/**
+ * A `[start, end)` character range of a string that came from data.
+ * Mirrored in src/domain/vaults/shell_data_placement.ts, which may not
+ * depend on expressions; keep the two the same.
+ */
 export type DataRange = readonly [number, number];
 
 /**

@@ -1047,10 +1047,7 @@ function posixVaultReference(envName: string, quote: QuoteContext): string {
 }
 
 /** The PowerShell reference an occurrence becomes in `quote`. */
-export function powerShellReference(
-  envName: string,
-  quote: QuoteContext,
-): string {
+function powerShellReference(envName: string, quote: QuoteContext): string {
   return quote === "double" ? `$env:${envName}` : `"$env:${envName}"`;
 }
 
