@@ -1575,7 +1575,7 @@ on PowerShell. The text reaches the shell as one literal word.
 # Caller input: name = "x; touch /tmp/p"
 # POSIX shell receives: echo hello "${__SWAMP_IN_0}"
 # env __SWAMP_IN_0="x; touch /tmp/p"
-# Output: hello x; touch /tmp/p  (nothing else runs)
+# Output: hello x; touch /tmp/p  (the shell never parses the text)
 methods:
   execute:
     arguments:
@@ -1585,16 +1585,24 @@ methods:
 Authored text is unchanged: the definition's own text, `self.*`, and an input
 whose value equals its schema default or static trigger literal are spliced
 inline as before. Arguments a calling behavior's own code routes in through
-`runModel`, and a method argument an operator sets whole with `--input`
-(`--input 'run=echo hi'` in direct execution), are that code's or that
-operator's own text for the argument and read as authored too. An `--input`
-value for a definition input that is spliced into `run` is data.
+`runModel` (method and global arguments alike), and a method argument an
+operator sets whole with `--input` (`--input 'run=echo hi'` in direct
+execution), are that code's or that operator's own text for the argument and
+read as authored too. What an expression in such text reads at run time
+(`env.*`, a deferred `data.*` read) is still data, placed like any other. A
+value given with `--literal-inputs` (or `literalInputs` over serve) is data,
+whole, and an `--input` value for a definition input that is spliced into `run`
+is data.
 
 Placement is refused, with code `shell_data_placement_refused`, where no
 reference can expand or the text cannot be placed safely:
 
 - data in a here-document with a quoted delimiter (POSIX) or inside single
   quotes (PowerShell);
+- data inside shell arithmetic, `$(( ... ))` or `(( ... ))`, quoted or not:
+  bash evaluates an expanded value there again as an expression, and an array
+  subscript in it (`a[$(id)]`) runs a command substitution, so no reference
+  keeps the value literal;
 - a `run` that is nothing but data, which as one literal word could only name a
   program;
 - a host whose shell swamp does not know, and a remote step dispatched to such
@@ -1616,6 +1624,21 @@ run: deploy $FLAGS
 # run: eval "$SCRIPT"
 # PowerShell: $env:FLAGS -split ' ', or Invoke-Expression $env:SCRIPT
 ```
+
+Placement keeps the shell from parsing data as syntax. It cannot stop a
+command from treating its own argument as code or as the program to run, so the
+author still decides where data may go:
+
+- in command position (`${{ inputs.tool }} --version`) the value names the
+  program that runs;
+- bash evaluates the operands of `[[ ... -eq ... ]]` and the other arithmetic
+  comparisons, `let`, `declare -i` and `printf -v` targets as expressions, as
+  it does in `$(( ))`;
+- `eval`, `sh -c`, `Invoke-Expression` and similar commands run what they are
+  given.
+
+Pass such a value through `env` and check it is what the step expects (a
+number, a name from a fixed list) before using it there.
 
 The recorded `command` attribute of a run shows the references, not the data.
 A remote step is placed for the shell of the worker that runs it, on every

@@ -554,11 +554,16 @@ export class ModelInvocationService {
     for (const [key, value] of Object.entries(templatedGlobalArgs)) {
       resolvedDefinition.setGlobalArgument(key, value);
     }
-    // A method argument the calling behavior's code routes in is that
-    // code's own text, as trusted as a process it could start itself, so it
-    // reads as authored where it replaces what the passes evaluated
-    // (swamp-club#3868).
-    let argumentProvenance = runtimeResult.provenance;
+    // An argument the calling behavior's code routes in is that code's own
+    // text, as trusted as a process it could start itself, so it reads as
+    // authored where it replaces what the passes evaluated (swamp-club#3868).
+    // Neither kind of routed global holds a runtime splice: a templated one
+    // is set after the passes, a template-free one is whole data to them.
+    let argumentProvenance = Object.keys(routedGlobalArgs).reduce(
+      (map, key) =>
+        map.graft(keyPath("globalArguments", key), ProvenanceMap.authored()),
+      runtimeResult.provenance,
+    );
     for (const [key, value] of Object.entries(routedMethodArgs)) {
       evaluatedDefinition.setMethodArgument(methodName, key, value);
       resolvedDefinition.setMethodArgument(methodName, key, value);

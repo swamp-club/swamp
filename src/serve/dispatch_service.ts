@@ -729,13 +729,18 @@ export class DispatchService {
     request: RemoteStepRequest,
   ): Promise<DispatchFrame> {
     const worker = this.#gateway!.worker(workerName);
-    const protocolVersion = worker?.protocolVersion ?? REMOTE_PROTOCOL_VERSION;
+    // A worker that left the pool after it was chosen has no platform to
+    // place for; the step goes back to the scheduler, as the gateway's own
+    // refusal to send to it would send it.
+    if (!worker) {
+      throw new WorkerNotDispatchableError(workerName, "not_in_pool");
+    }
+    const protocolVersion = worker.protocolVersion ?? REMOTE_PROTOCOL_VERSION;
     // Data text in the arguments is placed for this worker's shell, on every
     // attempt, since a re-dispatch can choose a worker of another platform
-    // (swamp-club#3868). A worker that left the pool has no platform to
-    // place for, so arguments holding data are refused.
+    // (swamp-club#3868).
     const place = (args: Pick<DispatchFrame, "globalArgs" | "methodArgs">) =>
-      request.placeArguments(args, worker?.platform ?? "");
+      request.placeArguments(args, worker.platform);
     if (shipsReferencesOnly(protocolVersion)) {
       const placed = place(request);
       return {
@@ -756,6 +761,8 @@ export class DispatchService {
       globalArgs: legacy?.globalArgs ?? request.globalArgs,
       methodArgs: legacy?.methodArgs ?? request.methodArgs,
     });
+    // unresolvedMethodArgs already holds the global arguments merged under
+    // the method's, as the version 5 shell reads them, so it is placed whole.
     const unresolvedMethodArgs = legacy?.unresolvedMethodArgs &&
       place({ globalArgs: {}, methodArgs: legacy.unresolvedMethodArgs })
         .methodArgs;

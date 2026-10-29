@@ -1263,6 +1263,23 @@ export async function* modelMethodRun(
                   ),
                 ),
               });
+              // A whole argument the operator typed with --input is the
+              // operator's own command text, so a command/shell run given that
+              // way runs as written; the splices the runtime pass makes into
+              // it are still data, recorded on top. Under literalInputs the
+              // caller said the text is data, so it stays data. Every
+              // expression the operator typed is already authored, so this
+              // changes nothing the pass resolves.
+              const placementProvenance = input.literalInputs
+                ? executedProvenance
+                : operatorArgumentKeys.reduce(
+                  (map, key) =>
+                    map.graft(
+                      methodArgumentPath(input.methodName, key),
+                      ProvenanceMap.authored(),
+                    ),
+                  executedProvenance,
+                );
               // Scoped to the invoked method: another method's vault and env
               // expressions are left as authored, neither checked, loaded nor
               // failed on, as its failed definition-pass expressions are never
@@ -1276,7 +1293,7 @@ export async function* modelMethodRun(
                   {
                     secretBag: stepSecretBag,
                     rawGlobalArguments: evaluatedDefinition.globalArguments,
-                    provenance: executedProvenance,
+                    provenance: placementProvenance,
                     methodName: input.methodName,
                   },
                 );
@@ -1504,14 +1521,7 @@ export async function* modelMethodRun(
                             redactor,
                           ),
                           onArgumentsValidated: saveEvaluation,
-                          argumentProvenance: operatorArgumentKeys.reduce(
-                            (map, key) =>
-                              map.graft(
-                                methodArgumentPath(input.methodName, key),
-                                ProvenanceMap.authored(),
-                              ),
-                            runtimeResult.provenance,
-                          ),
+                          argumentProvenance: runtimeResult.provenance,
                           unreadReferences: sensitiveValues,
                         },
                       )),

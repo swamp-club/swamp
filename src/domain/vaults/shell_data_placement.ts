@@ -29,10 +29,11 @@
  * Safety). Shell variable expansion happens after the command is parsed, so
  * metacharacters in the text stay literal. Where no reference expands (a
  * here-document with a quoted delimiter on POSIX, single quotes on
- * PowerShell), placement is refused rather than pasting the text in.
+ * PowerShell), or where the shell evaluates the expanded text again (POSIX
+ * arithmetic), placement is refused rather than pasting the text in.
  */
 
-import { classifyShellPositions } from "./shell_context_scanner.ts";
+import { scanShellPositions } from "./shell_context_scanner.ts";
 import {
   getQuoteContext,
   posixDataReference,
@@ -82,9 +83,32 @@ export function shellDialectFor(platform: string): ShellDialect | undefined {
 export interface RefusedDataPlacement {
   /** The position as a user reads it. */
   readonly where: string;
+  /** Why data text cannot be passed safely there. */
+  readonly why: string;
   /** What to write instead. */
   readonly fix: string;
 }
+
+const QUOTED_HEREDOC_REFUSAL: RefusedDataPlacement = {
+  where: "a here-document with a quoted delimiter",
+  why: "no environment variable reference expands there",
+  fix: "use an unquoted here-document delimiter",
+};
+
+const POWERSHELL_SINGLE_REFUSAL: RefusedDataPlacement = {
+  where: "PowerShell single quotes",
+  why: "no environment variable reference expands there",
+  fix: "use double quotes",
+};
+
+// bash evaluates an expanded value inside arithmetic again, array subscripts
+// included, so a quoted reference there still runs a command substitution.
+const ARITHMETIC_REFUSAL: RefusedDataPlacement = {
+  where: "shell arithmetic, $(( ... )) or (( ... ))",
+  why: "the shell evaluates an expanded value there again, as code",
+  fix:
+    "pass the value through env and check it is a number before using it in arithmetic",
+};
 
 /** A command with its data text placed through the environment. */
 export interface ShellDataPlacement {
@@ -186,33 +210,23 @@ export function placeShellData(
     return name;
   };
 
-  const references: (string | undefined)[] = dialect === "posix"
-    ? classifyShellPositions(inert, positions).map((context, i) =>
-      posixDataReference(
-        nameFor(command.slice(pieces[i][0], pieces[i][1])),
-        context,
-      )
-    )
+  const textOf = (i: number) => command.slice(pieces[i][0], pieces[i][1]);
+  const references: (string | RefusedDataPlacement)[] = dialect === "posix"
+    ? scanShellPositions(inert, positions).map(({ context, arithmetic }, i) => {
+      if (arithmetic) return ARITHMETIC_REFUSAL;
+      return posixDataReference(nameFor(textOf(i)), context) ??
+        QUOTED_HEREDOC_REFUSAL;
+    })
     : positions.map((position, i) => {
       const quote = getQuoteContext(inert, position);
-      return quote === "single" ? undefined : powerShellReference(
-        nameFor(command.slice(pieces[i][0], pieces[i][1])),
-        quote,
-      );
+      return quote === "single"
+        ? POWERSHELL_SINGLE_REFUSAL
+        : powerShellReference(nameFor(textOf(i)), quote);
     });
 
-  if (references.some((reference) => reference === undefined)) {
-    return {
-      command,
-      env: {},
-      wholeCommandIsData,
-      refused: dialect === "posix"
-        ? {
-          where: "a here-document with a quoted delimiter",
-          fix: "use an unquoted here-document delimiter",
-        }
-        : { where: "PowerShell single quotes", fix: "use double quotes" },
-    };
+  const refused = references.find((reference) => typeof reference !== "string");
+  if (refused !== undefined) {
+    return { command, env: {}, wholeCommandIsData, refused };
   }
 
   let placed = "";

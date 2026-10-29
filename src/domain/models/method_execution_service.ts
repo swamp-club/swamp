@@ -546,7 +546,9 @@ export function dataSplicePlacer(
           throw new UserError(
             `Refused to run ${methodName}: argument ${key} holds text from ` +
               `data, and its text changed after evaluation, so swamp cannot ` +
-              `tell which part is data (shell_data_placement_refused)`,
+              `tell which part is data. Pass the value in the env argument ` +
+              `and reference the variable instead of splicing it into ` +
+              `${key} (shell_data_placement_refused)`,
             "shell_data_placement_refused",
           );
         }

@@ -46,6 +46,11 @@ import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts
 import { WorkflowExecutionService } from "../src/domain/workflows/execution_service.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
+import { createRepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import { modelMethodRun } from "../src/libswamp/models/run.ts";
+import { collect } from "../src/libswamp/testing.ts";
+import { createModelMethodRunDeps } from "../src/serve/deps.ts";
 import { initializeTestRepo } from "./test_helpers.ts";
 
 await initializeLogging({});
@@ -155,6 +160,35 @@ async function runWorkflow(
     return outcome;
   } finally {
     catalogStore.close();
+  }
+}
+
+/**
+ * Runs `execute` on the shell definition `model` directly, as
+ * `swamp behavior run` does, with `inputs` given as `--input` values. Returns
+ * the error events, as text.
+ */
+async function runDirect(
+  repoDir: string,
+  model: string,
+  inputs: Record<string, unknown>,
+  options: { literalInputs?: boolean } = {},
+): Promise<string> {
+  const repo = createRepositoryContext({ repoDir });
+  try {
+    const deps = await createModelMethodRunDeps(repoDir, repo);
+    const events = await collect(modelMethodRun(createLibSwampContext(), deps, {
+      modelIdOrName: model,
+      methodName: "execute",
+      inputs,
+      literalInputs: options.literalInputs,
+      lastEvaluated: false,
+    }));
+    return events.filter((e) => e.kind === "error").map((e) =>
+      JSON.stringify(e)
+    ).join("\n");
+  } finally {
+    repo.catalogStore.close();
   }
 }
 
@@ -383,6 +417,73 @@ Deno.test(
       const [result] = await shellResults(repoDir);
       assert(result.stdout.startsWith("[a][b]"), result.stdout);
       assertEquals(result.command, "printf '[%s]' a b; echo");
+    });
+  },
+);
+
+Deno.test(
+  "shell data splice: data in shell arithmetic is refused, as bash evaluates it again",
+  posix,
+  async () => {
+    await withRepo(async (repoDir) => {
+      const marker = join(repoDir, "PWNED");
+      await saveShell(repoDir, "arith", "echo $(( ${{ inputs.value }} + 1 ))");
+      const outcome = await runWorkflow(repoDir, workflowFor("arith"), {
+        inputs: { value: `a[$(touch ${marker})]` },
+      });
+      assertEquals(outcome.status, "failed");
+      assertEquals(await exists(marker), false, "the injected command ran");
+      const errors = outcome.errors.join("\n");
+      assertStringIncludes(errors, "shell_data_placement_refused");
+      assertStringIncludes(errors, "shell arithmetic");
+    });
+  },
+);
+
+Deno.test(
+  "shell data splice: a run the operator types with --input runs as written, and what it reads at run time is data",
+  posix,
+  async () => {
+    await withRepo(async (repoDir) => {
+      const marker = join(repoDir, "PWNED");
+      await saveShell(repoDir, "direct", "echo authored");
+      await withMockedEnv(
+        { SWAMP_3868_VALUE: `a; touch ${marker}` },
+        async () => {
+          assertEquals(
+            await runDirect(repoDir, "direct", {
+              run: "printf '[%s]' a b; echo v=${{ env.SWAMP_3868_VALUE }}",
+            }),
+            "",
+          );
+        },
+      );
+      assertEquals(await exists(marker), false, "the injected command ran");
+      const [result] = await shellResults(repoDir);
+      assertEquals(result.stdout, `[a][b]v=a; touch ${marker}`);
+      assertEquals(
+        result.command,
+        `printf '[%s]' a b; echo v="\${__SWAMP_IN_0}"`,
+      );
+    });
+  },
+);
+
+Deno.test(
+  "shell data splice: a run given as a literal input is data, so it is refused whole",
+  posix,
+  async () => {
+    await withRepo(async (repoDir) => {
+      const marker = join(repoDir, "PWNED");
+      await saveShell(repoDir, "literal", "echo authored");
+      const errors = await runDirect(
+        repoDir,
+        "literal",
+        { run: `touch ${marker}` },
+        { literalInputs: true },
+      );
+      assertStringIncludes(errors, "shell_data_placement_refused");
+      assertEquals(await exists(marker), false, "the literal run ran");
     });
   },
 );

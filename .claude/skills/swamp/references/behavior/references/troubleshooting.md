@@ -416,13 +416,16 @@ recorded `command` shows `"${__SWAMP_IN_0}"`, or the step fails with
 **Cause**: data spliced into `run` is passed through a generated environment
 variable so it is never parsed as shell syntax. Authored text, including an
 input equal to its default, is unchanged. Refused: data inside a quoted
-here-document (`<<'EOF'`) or PowerShell single quotes, and a `run` that is
-nothing but data.
+here-document (`<<'EOF'`) or PowerShell single quotes, data inside shell
+arithmetic (`$(( ))`, `(( ))`), and a `run` that is nothing but data.
 
 **Solutions**:
 
 1. Use an unquoted here-document delimiter or double quotes.
-2. To split a value into words or run it as code, pass it in `env` and choose
+2. For arithmetic, pass the value in `env`, check it is a number, then use it:
+   `case $N in *[!0-9]*|'') exit 1;; esac; echo $((N + 1))`. Check the same way
+   before `[[ -eq ]]`, `let`, or putting a value in command position.
+3. To split a value into words or run it as code, pass it in `env` and choose
    explicitly in `run`:
 
    ```yaml

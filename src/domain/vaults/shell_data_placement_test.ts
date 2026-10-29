@@ -67,6 +67,31 @@ Deno.test("placeShellData: data in a quoted here-document is refused", () => {
   assertEquals(placed.env, {});
 });
 
+Deno.test("placeShellData: data in shell arithmetic is refused, quoted or not", () => {
+  const cases: [string, string][] = [
+    ["echo $(( ", " + 1 ))"],
+    ['echo "n=$(( ', ' + 1 ))"'],
+    ["(( ", " > 3 )) && echo big"],
+    ["echo $(( (", ") * 2 ))"],
+  ];
+  for (const [before, after] of cases) {
+    const { command, ranges } = spliced(before, "a[$(id)]", after);
+    const placed = placeShellData(command, ranges, [], "posix");
+    assertEquals(
+      placed.refused?.where,
+      "shell arithmetic, $(( ... )) or (( ... ))",
+      before,
+    );
+    assertEquals(placed.env, {});
+  }
+  // Text after the arithmetic is back in its own context.
+  const after = spliced('echo "$(( 1 + 1 )) ', "$(id)", '"');
+  assertEquals(
+    placeShellData(after.command, after.ranges, [], "posix").command,
+    'echo "$(( 1 + 1 )) ${__SWAMP_IN_0}"',
+  );
+});
+
 Deno.test("placeShellData: PowerShell double and bare data expand, single quotes are refused", () => {
   const bare = spliced("Write-Output ", "a; calc");
   assertEquals(
