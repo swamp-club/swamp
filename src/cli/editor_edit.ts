@@ -19,6 +19,7 @@
 
 import type { Logger } from "@logtape/logtape";
 import { markErrorPaths } from "../domain/errors.ts";
+import { markModelWording, modelWording } from "../domain/behavior_wording.ts";
 import { configEditConflictOf } from "../domain/datastore_v3/config_edit_conflict.ts";
 import type { EditorSessionResult } from "../libswamp/editor_session.ts";
 
@@ -51,9 +52,13 @@ export async function saveEditedCopy(
     await save();
   } catch (error) {
     if (error instanceof Error) {
-      error.message = `${error.message}\n` +
-        `Your edit is kept at ${edit.tempPath}.` +
+      const suffix = `\nYour edit is kept at ${edit.tempPath}.` +
         retryHint(error, edit.tempPath, hints);
+      // `swamp model edit` prints the error's model spelling, a separate
+      // copy of the message, so it gets the same suffix.
+      const modelText = modelWording(error);
+      error.message += suffix;
+      if (modelText !== undefined) markModelWording(error, modelText + suffix);
       markErrorPaths(error, [edit.tempPath]);
     }
     throw error;

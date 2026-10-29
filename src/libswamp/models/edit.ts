@@ -57,12 +57,12 @@ export interface ModelEditData {
    * with nothing to save, `opened` when a file that is not a stored
    * definition was edited in place.
    */
+  status: "opened" | "updated" | "unchanged";
   /**
    * With `unchanged`: where the copy was kept, because the editor is not
    * known to wait and may have returned before the person saved.
    */
   keptPath?: string;
-  status: "opened" | "updated" | "unchanged";
   name: string;
   type: string;
   editType: "definition";

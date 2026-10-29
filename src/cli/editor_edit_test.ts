@@ -23,6 +23,7 @@ import { UserError } from "../domain/errors.ts";
 import { ConfigEditConflictError } from "../domain/datastore_v3/config_edit_conflict.ts";
 import { getLogger } from "@logtape/logtape";
 import { warnIfCopyKept } from "./editor_edit.ts";
+import { markModelWording, messageFor } from "../domain/behavior_wording.ts";
 
 function editedCopy() {
   const calls: string[] = [];
@@ -167,4 +168,37 @@ Deno.test("warnIfCopyKept: without a piped retry, says what to do with the kept 
   assertStringIncludes(text, "with the copy at /tmp/x/wf.yaml");
   assertStringIncludes(text, "paste the kept copy");
   assertEquals(text.includes(" < "), false);
+});
+
+Deno.test("saveEditedCopy: the kept copy is named in the model spelling too, which swamp model edit prints", async () => {
+  const { edit } = editedCopy();
+
+  const error = await assertRejects(
+    () =>
+      saveEditedCopy(
+        edit,
+        { retry: "swamp model edit web --allow-rename" },
+        () =>
+          Promise.reject(
+            markModelWording(
+              new UserError("Invalid behavior YAML from the editor: bad"),
+              "Invalid model YAML from the editor: bad",
+            ),
+          ),
+      ),
+    UserError,
+  );
+
+  for (const surface of ["model", "behavior"] as const) {
+    const text = messageFor(error, surface);
+    assertStringIncludes(text, `Invalid ${surface} YAML from the editor`);
+    assertStringIncludes(
+      text,
+      "Your edit is kept at /tmp/swamp-edit-x/web.yaml.",
+    );
+    assertStringIncludes(
+      text,
+      "retry with: swamp model edit web --allow-rename",
+    );
+  }
 });

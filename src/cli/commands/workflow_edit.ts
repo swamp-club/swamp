@@ -231,7 +231,7 @@ export const workflowEditCommand = withRemoteOptions(
           file.kind === "workflow"
             ? { retry: `swamp workflow edit ${name} --allow-rename` }
             : {
-              manual: `run 'swamp workflow edit ${
+              manual: `Run 'swamp workflow edit ${
                 name ?? id
               }' again and paste the kept copy into the editor.`,
             },

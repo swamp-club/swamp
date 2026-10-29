@@ -60,12 +60,12 @@ export interface WorkflowEditData {
    * with nothing to save, `opened` when a file that is not a stored workflow
    * was edited in place.
    */
+  status: "opened" | "updated" | "unchanged";
   /**
    * With `unchanged`: where the copy was kept, because the editor is not
    * known to wait and may have returned before the person saved.
    */
   keptPath?: string;
-  status: "opened" | "updated" | "unchanged";
   name: string;
   id: string;
   /** Set when the edit replaced a workflow file that did not parse. */
@@ -595,7 +595,9 @@ async function* repairBrokenWorkflow(
   yield {
     kind: "completed",
     data: {
-      path: file.path,
+      // The save writes the file named after the workflow and removes the
+      // broken one, so the repaired workflow lives at `target`.
+      path: target,
       ...(input.editor ? { editor: input.editor } : {}),
       status: "updated",
       name: repaired.name,
