@@ -1091,6 +1091,32 @@ Deno.test("createInboxMarkSession: finish aborts a request still running at the 
   assertEquals(rec.summaries, 1);
 });
 
+Deno.test("createInboxMarkSession: a mark that starts only after finish aborted is not sent and makes no refresh", async () => {
+  let release: (() => void) | undefined;
+  const { deps, rec } = makeDeps({
+    loadCredentials: () =>
+      new Promise((resolve) => release = () => resolve(credentials)),
+    markInboxRead: (_url, _key, ids, signal) => {
+      signal.throwIfAborted();
+      rec.marked.push([...ids]);
+      return Promise.resolve([...ids]);
+    },
+  });
+  const session = createInboxMarkSession(createLibSwampContext(), deps, {
+    finishTimeoutMs: 0,
+  });
+
+  const pending = session.mark([UNREAD_ID]);
+  const finished = session.finish();
+  // Same delay, created after finish's own timer, so it fires after the abort.
+  setTimeout(() => release?.(), 0);
+  await finished;
+
+  assertEquals(await pending, { kind: "failed", reason: "cancelled", ids: [] });
+  assertEquals(rec.marked, []);
+  assertEquals(rec.summaries, 0);
+});
+
 Deno.test("createInboxMarkSession: not signed in fails the mark with the sign-in hint", async () => {
   const { deps, rec } = makeDeps({ credentials: null });
   const session = createInboxMarkSession(createLibSwampContext(), deps);

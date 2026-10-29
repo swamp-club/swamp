@@ -592,7 +592,8 @@ class InboxMarkSessionImpl implements InboxMarkSession {
       if (!("apiKey" in session)) {
         return { kind: "failed", reason: session.message, ids: [] };
       }
-      this.sentAny = true;
+      // A mark queued behind one finish() aborted is never sent.
+      if (!this.requestCtx.signal.aborted) this.sentAny = true;
       return {
         kind: "confirmed",
         ids: await this.deps.markInboxRead(
@@ -600,7 +601,9 @@ class InboxMarkSessionImpl implements InboxMarkSession {
           session.apiKey,
           ids,
           this.requestCtx.signal,
-          (batch) => confirmed.push(...batch),
+          (batch) => {
+            for (const id of batch) confirmed.push(id);
+          },
         ),
       };
     } catch (error: unknown) {
