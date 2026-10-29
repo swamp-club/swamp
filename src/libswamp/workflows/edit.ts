@@ -169,6 +169,11 @@ export interface WorkflowEditDeps {
   saveRepaired: (workflow: Workflow) => Promise<void>;
   /** The file a save of `workflow` writes. */
   writePathFor: (workflow: Workflow) => string;
+  /**
+   * Every workflow that loads and declares `id`. Files that do not parse
+   * are skipped, so a broken file being repaired is never among them.
+   */
+  findAllById: (id: WorkflowId) => Promise<Workflow[]>;
   /** Whether `path` is a workflow file in the repository's workflows dir. */
   isStoredFile: (path: string) => boolean;
   /**
@@ -215,6 +220,10 @@ export function createWorkflowEditDeps(
     prepareEditor: (path) =>
       editorService.prepareOpenFile(path, { requireWait: true }),
     saveRepaired: (workflow) => workflowRepo.save(workflow),
+    findAllById: async (id) =>
+      workflowRepo.findAllById
+        ? await workflowRepo.findAllById(id)
+        : (await workflowRepo.findAll()).filter((w) => w.id === id),
     isStoredFile: (path) =>
       resolve(dirname(path)) === resolve(workflowsDir) &&
       /^workflow-.*\.yaml$/.test(basename(path)),
@@ -603,6 +612,36 @@ async function* repairBrokenWorkflow(
       kind: "error",
       error: validationFailed(
         `Cannot name the repaired workflow '${repaired.name}': another workflow already has that name.`,
+      ),
+    };
+    return;
+  }
+  // The id must not belong to a workflow in another file (a broken copy of
+  // one keeps its id): two workflows would share it, and the save, which
+  // moves a workflow's file when its name changes, could remove the other.
+  let sharing: Workflow[];
+  try {
+    sharing = await deps.findAllById(repaired.id);
+  } catch (error) {
+    yield {
+      kind: "error",
+      error: validationFailed(
+        `Cannot repair the workflow at ${
+          basename(file.path)
+        }: could not check that its id ${repaired.id} is free: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ),
+    };
+    return;
+  }
+  if (sharing.length > 0) {
+    yield {
+      kind: "error",
+      error: validationFailed(
+        `Cannot repair the workflow at ${basename(file.path)}: workflow '${
+          sharing[0].name
+        }' already has its id ${repaired.id}. Give the repaired workflow a new id.`,
       ),
     };
     return;

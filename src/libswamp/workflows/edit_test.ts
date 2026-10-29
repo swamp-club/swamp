@@ -65,6 +65,7 @@ function makeDeps(
     saveRepaired: () => Promise.resolve(),
     writePathFor: () => "/fake/path/workflow.yaml",
     isStoredFile: () => false,
+    findAllById: () => Promise.resolve([]),
     updateFromStdin: () =>
       Promise.resolve(
         {
@@ -1255,4 +1256,40 @@ Deno.test("workflowEdit: an editor repair of a legacy id-named file may take its
   );
 
   assertEquals(repaired.length, 1);
+});
+
+Deno.test("workflowEdit: an editor repair may not take the id of a workflow in another file", async () => {
+  const path = "/repo/workflows/workflow-foo.yaml";
+  const { deps, repaired } = makeEditorSaveDeps({
+    ...brokenAt(path),
+    // A copy of `bar` renamed and then broken: it carries bar's id.
+    findAllById: (id) =>
+      Promise.resolve(
+        id === EDITED_ID
+          ? [
+            Workflow.fromData({
+              ...(parseYaml(EDITED_YAML) as Parameters<
+                typeof Workflow.fromData
+              >[0]),
+              name: "bar",
+            }),
+          ]
+          : [],
+      ),
+  });
+
+  const events = await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: "my-workflow",
+      stdinContent: EDITED_YAML,
+      source: "editor",
+    }),
+  );
+
+  const last = events[events.length - 1] as Extract<
+    WorkflowEditEvent,
+    { kind: "error" }
+  >;
+  assertStringIncludes(last.error.message, "workflow 'bar' already has its id");
+  assertEquals(repaired, []);
 });

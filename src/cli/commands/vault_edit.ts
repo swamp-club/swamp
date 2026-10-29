@@ -209,7 +209,9 @@ value for them other than the server's defaults, and stores those defaults.`,
       vaultNameOrId,
       vaultType,
     });
-    if ("error" in file) throw new UserError(file.error.message);
+    if ("error" in file) {
+      throw new UserError(file.error.message, file.error.code);
+    }
     const name = file.config.name;
     if (!file.broken) {
       await startConfigEdit(repoContext, "vault", name, true);

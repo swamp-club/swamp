@@ -156,6 +156,44 @@ export class YamlVaultConfigRepository {
   }
 
   /**
+   * The vault files that do not parse as a vault config but still declare
+   * `name` in their YAML, as paths. A name check that skips unparseable files
+   * uses it so a rename cannot take a name such a file holds, which would
+   * leave two vaults with that name once the file is fixed (swamp-club#4107).
+   * A file whose YAML does not parse at all declares nothing.
+   */
+  async findUnparseableDeclaring(name: string): Promise<string[]> {
+    const found: string[] = [];
+    try {
+      for (const path of await this.yamlFilesSorted(this.getVaultDir())) {
+        const content = await Deno.readTextFile(path);
+        try {
+          this.parseVaultConfig(content, path);
+          continue;
+        } catch (error) {
+          if (!(error instanceof VaultConfigParseError)) throw error;
+        }
+        let raw: unknown;
+        try {
+          raw = parseYaml(content);
+        } catch {
+          continue;
+        }
+        if (
+          typeof raw === "object" && raw !== null &&
+          (raw as { name?: unknown }).name === name
+        ) {
+          found.push(path);
+        }
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return [];
+      throw error;
+    }
+    return found;
+  }
+
+  /**
    * Finds all vault configs of a specific type.
    */
   async findAllByType(vaultType: string): Promise<VaultConfig[]> {

@@ -187,6 +187,11 @@ export interface VaultEditLookupDeps {
 export interface VaultEditDeps extends VaultEditLookupDeps {
   getVaultPath: (config: VaultEditConfigInfo) => string;
   fileExists: (path: string) => Promise<boolean>;
+  /**
+   * Paths of vault files that do not parse but declare `name`: name checks
+   * skip unparseable files, so these are checked apart.
+   */
+  findUnparseableDeclaring: (name: string) => Promise<string[]>;
   readConfigData: (
     config: VaultEditConfigInfo,
   ) => Promise<VaultConfigData | null>;
@@ -220,6 +225,7 @@ export function createVaultEditDeps(
       repo.findByName(name, skipUnparseable),
     findById: (type, id) => repo.findById(type, id),
     findAll: () => repo.findAll(),
+    findUnparseableDeclaring: (name) => repo.findUnparseableDeclaring(name),
     getVaultPath: (config) => repo.getPath(config.type, config.id),
     fileExists: async (path) => {
       try {
@@ -402,6 +408,10 @@ async function* updateVaultFromStdin(
     const clash = await deps.findByName(updated.name, true);
     if (clash && clash.id !== existing.id) {
       yield { kind: "error", error: alreadyExists("Vault", updated.name) };
+      return;
+    }
+    if ((await deps.findUnparseableDeclaring(updated.name)).length > 0) {
+      yield { kind: "error", error: brokenHolderError(updated.name) };
       return;
     }
   }
@@ -609,6 +619,14 @@ async function* repairVaultFromStdin(
     yield { kind: "error", error: alreadyExists("Vault", repaired.name) };
     return;
   }
+  // The file being repaired may itself declare the name; any other broken
+  // file that does holds it.
+  const brokenHolders = (await deps.findUnparseableDeclaring(repaired.name))
+    .filter((path) => resolve(path) !== resolve(filePath));
+  if (brokenHolders.length > 0) {
+    yield { kind: "error", error: brokenHolderError(repaired.name) };
+    return;
+  }
 
   const schema = await deps.getConfigSchema(repaired.type);
   if (schema) {
@@ -710,6 +728,17 @@ async function* repairVaultFromStdin(
       secretsMoved: false,
     },
   };
+}
+
+/**
+ * A name held by a vault file that does not parse. No path is named: serve
+ * replaces any message with a path in it by a generic error.
+ */
+function brokenHolderError(name: string): SwampError {
+  return validationFailed(
+    `Cannot use the vault name '${name}': a vault file that does not parse ` +
+      `declares it. Repair or remove that vault first.`,
+  );
 }
 
 function errorMessage(error: unknown): string {

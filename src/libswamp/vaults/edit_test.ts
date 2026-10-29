@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
 import { collect } from "../testing.ts";
@@ -46,6 +51,7 @@ function makeDeps(overrides: Partial<VaultEditDeps> = {}): VaultEditDeps {
     findAll: () => Promise.resolve([]),
     getVaultPath: () => "/fake/path/vault.yaml",
     fileExists: () => Promise.resolve(true),
+    findUnparseableDeclaring: () => Promise.resolve([]),
     readConfigData: () => Promise.resolve(null),
     saveConfigData: () => Promise.resolve(),
     getConfigSchema: () => Promise.resolve(undefined),
@@ -1356,5 +1362,85 @@ Deno.test("vaultEdit: an untrusted repair without the repo dir writes nothing", 
       "the server's key source is not known",
     );
     assertEquals(await Deno.readTextFile(brokenPath), BROKEN_YAML);
+  });
+});
+
+// --- names declared by vault files that do not parse (swamp-club#4107) ---
+
+/** A schema-broken vault file that still declares `name` in its YAML. */
+async function writeBrokenDeclaring(
+  repo: YamlVaultConfigRepository,
+  id: string,
+  name: string,
+): Promise<string> {
+  const path = repo.getPath("local_encryption", id);
+  await Deno.writeTextFile(
+    path,
+    `id: ${id}\nname: ${name}\ntype: local_encryption\nconfig: [not a map]\n`,
+  );
+  return path;
+}
+
+Deno.test("YamlVaultConfigRepository.findUnparseableDeclaring: finds broken files that declare the name, and only those", async () => {
+  await withBrokenVaultRepo(async ({ repo, brokenPath }) => {
+    const declaring = await writeBrokenDeclaring(repo, "held-id", "held");
+
+    assertEquals(
+      (await repo.findUnparseableDeclaring("held")).map((p) => p === declaring),
+      [true],
+    );
+    // A valid vault's name and a file whose YAML does not parse at all
+    // declare nothing here.
+    assertEquals(await repo.findUnparseableDeclaring("my-vault"), []);
+    assert(brokenPath.length > 0);
+  });
+});
+
+Deno.test("vaultEdit: a rename onto a name only a broken vault file declares is refused", async () => {
+  await withBrokenVaultRepo(async ({ repo, deps }) => {
+    await writeBrokenDeclaring(repo, "held-id", "held");
+    const before = await repo.findById("local_encryption", "vault-1");
+
+    const events = await collect<VaultEditEvent>(
+      vaultEdit(createLibSwampContext(), deps, {
+        vaultNameOrId: "my-vault",
+        stdinContent:
+          "name: held\ntype: local_encryption\nconfig:\n  auto_generate: true\n",
+        trustKeySource: true,
+      }),
+    );
+
+    const error = errorOf(lastEvent(events));
+    assertStringIncludes(error.message, "a vault file that does not parse");
+    assertEquals(
+      error.message.includes(repo.getPath("local_encryption", "held-id")),
+      false,
+    );
+    assertEquals(
+      (await repo.findById("local_encryption", "vault-1"))?.name,
+      before?.name,
+    );
+  });
+});
+
+Deno.test("vaultEdit: a repair may keep the name its own broken file declares, but not another broken file's", async () => {
+  await withBrokenVaultRepo(async ({ repo, deps }) => {
+    const own = await writeBrokenDeclaring(repo, BROKEN_ID, "fixed-vault");
+    assert(own.length > 0);
+    await writeBrokenDeclaring(repo, "held-id", "held");
+
+    const kept = await runRepair(deps, REPAIRED_YAML, () => true);
+    assertEquals(completedData(lastEvent(kept)).name, "fixed-vault");
+
+    await writeBrokenDeclaring(repo, BROKEN_ID, "fixed-vault");
+    const refused = await runRepair(
+      deps,
+      "name: held\ntype: local_encryption\nconfig:\n  auto_generate: true\n",
+      () => true,
+    );
+    assertStringIncludes(
+      errorOf(lastEvent(refused)).message,
+      "a vault file that does not parse",
+    );
   });
 });
