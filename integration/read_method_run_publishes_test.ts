@@ -35,7 +35,8 @@ import {
 } from "@std/assert";
 import { Command } from "@cliffy/command";
 import { hostname } from "node:os";
-import { join } from "@std/path";
+import { walk } from "@std/fs";
+import { dirname, join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import { z } from "zod";
 import {
@@ -57,10 +58,7 @@ import {
   type LockOptions,
   LockTimeoutError,
 } from "../src/domain/datastore/distributed_lock.ts";
-import {
-  type DatastoreSyncOptions,
-  DataVersionConflictError,
-} from "../src/domain/datastore/datastore_sync_service.ts";
+import type { DatastoreSyncOptions } from "../src/domain/datastore/datastore_sync_service.ts";
 import { UserError } from "../src/domain/errors.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
@@ -93,6 +91,25 @@ let hideClearDirty = false;
 let failPulls = false;
 /** While set, a remote read of a matching path answers that it is missing. */
 let hideFromFetch: ((relPath: string) => boolean) | undefined;
+/**
+ * While set, a pull leaves the content files already in the cache as they
+ * were, as a lazy cache's metadata-only pull does, and `hydrateFile` returns
+ * at once for a file already present, a fair reading of its contract.
+ */
+let keepCachedContent = false;
+
+/** Every content file under `cacheDir`, with its bytes. */
+async function cachedContent(
+  cacheDir: string,
+): Promise<Map<string, Uint8Array>> {
+  const content = new Map<string, Uint8Array>();
+  for await (
+    const entry of walk(cacheDir, { includeDirs: false, match: [/raw$/] })
+  ) {
+    content.set(entry.path, await Deno.readFile(entry.path));
+  }
+  return content;
+}
 
 function registerProbe(): ModelType {
   const type = ModelType.create(`test/read-publish-${crypto.randomUUID()}`);
@@ -293,6 +310,35 @@ async function withClones(
                 ? Promise.resolve(null)
                 : target.fetchContent!(relPath, fetchOptions);
           }
+          if (property === "hydrateFile" && keepCachedContent) {
+            return async (
+              relPath: string,
+              fetchOptions?: DatastoreSyncOptions,
+            ) => {
+              const path = join(cacheDir, relPath);
+              try {
+                await Deno.stat(path);
+                return true;
+              } catch (error) {
+                if (!(error instanceof Deno.errors.NotFound)) throw error;
+              }
+              const bytes = await target.fetchContent!(relPath, fetchOptions);
+              if (bytes === null) return false;
+              await Deno.mkdir(dirname(path), { recursive: true });
+              await Deno.writeFile(path, bytes);
+              return true;
+            };
+          }
+          if (property === "pullChanged" && keepCachedContent) {
+            return async (pullOptions?: DatastoreSyncOptions) => {
+              const before = await cachedContent(cacheDir);
+              const pulled = await target.pullChanged(pullOptions);
+              for (const [path, bytes] of before) {
+                await Deno.writeFile(path, bytes);
+              }
+              return pulled;
+            };
+          }
           if (property === "pullChanged" && failPulls) {
             return () => Promise.reject(new Error("injected pull failure"));
           }
@@ -330,6 +376,7 @@ async function withClones(
     hideClearDirty = false;
     failPulls = false;
     hideFromFetch = undefined;
+    keepCachedContent = false;
     await flushDatastoreSync();
     modelRegistry.invalidateType(type);
     datastoreType.dispose();
@@ -464,7 +511,7 @@ Deno.test("model method run: a read method pulls first and numbers its version p
   });
 });
 
-Deno.test("model method run: a read method refuses to publish over a version another clone wrote during its run (swamp-club#3934)", async () => {
+Deno.test("model method run: a read method keeps a version another clone wrote during its run, and succeeds (swamp-club#3934)", async () => {
   await withClones(async (c) => {
     // A pulls (nothing yet), then B writes and publishes version 1 while A
     // runs, before A writes its own version 1 from its stale cache.
@@ -483,19 +530,15 @@ Deno.test("model method run: a read method refuses to publish over a version ano
     await runMethod(c.repoB, "write", "from-b");
     resume();
 
-    const error = await assertRejects(() => aRun, DataVersionConflictError);
-    assertEquals(error.code, "datastore_data_version_conflict");
-    assertStringIncludes(error.message, "now holds the datastore's copy");
-    // B's run also wrote version 1 of its summary reports.
-    assertEquals(
-      error.versions.map((v) => `${v.dataName}/${v.version}`).sort(),
-      [
-        "main/1",
-        "report-swamp-method-summary-json/1",
-        "report-swamp-method-summary/1",
-      ],
-    );
+    // The method's work is done, so the conflict does not fail the run.
+    await aRun;
     assertEquals(remoteValue(c, 1), "from-b", "B's version is kept");
+    // B's run also wrote version 1 of its summary reports, which A's run
+    // numbered the same: A publishes neither.
+    assertEquals(
+      remoteFile(c, "/report-swamp-method-summary/2/metadata.yaml"),
+      undefined,
+    );
     assertEquals(remoteLatest(c), "1");
     assertEquals(
       await localValue(c.repoA, c, 1),
@@ -569,10 +612,38 @@ Deno.test("model method run: a conflict on a sync service that cannot clear its 
     await runMethod(c.repoB, "write", "from-b");
     resume();
 
-    const error = await assertRejects(() => aRun, DataVersionConflictError);
-    assertStringIncludes(error.message, "now holds the datastore's copy");
+    await aRun;
     assertEquals(remoteValue(c, 1), "from-b", "B's version is kept");
     assertEquals(remoteLatest(c), "1", "B's latest marker is kept");
+    assertEquals(c.locks.held.size, 0, "the publish lock was released");
+  });
+});
+
+Deno.test("model method run: two clones' reads that write nothing but their reports both succeed when run at once (swamp-club#3934)", async () => {
+  await withClones(async (c) => {
+    // A pulls and blocks; B's read runs and publishes version 1 of its
+    // summary reports; A then numbers its own reports version 1 too.
+    let started!: () => void;
+    const aStarted = new Promise<void>((resolve) => started = resolve);
+    let resume!: () => void;
+    const bDone = new Promise<void>((resolve) => resume = resolve);
+    let first = true;
+    hooks = {
+      beforeWrite: async () => {
+        if (!first) return;
+        first = false;
+        started();
+        await bDone;
+      },
+    };
+    const aRun = runMethod(c.repoA, "peek", "a");
+    await aStarted;
+    await runMethod(c.repoB, "peek", "b");
+    resume();
+
+    await aRun;
+    assert(remoteFile(c, "/report-swamp-method-summary/1/metadata.yaml"));
+    assert(remoteFile(c, "/report-swamp-method-summary/1/raw"));
     assertEquals(c.locks.held.size, 0, "the publish lock was released");
   });
 });
@@ -1029,9 +1100,37 @@ Deno.test("model method run: on a lazy cache a conflicting read keeps the other 
     await runMethod(c.repoB, "write", "from-b");
     resume();
 
-    await assertRejects(() => aRun, DataVersionConflictError);
+    await aRun;
     assertEquals(remoteValue(c, 1), "from-b", "B's content is not deleted");
     assert(remoteFile(c, "/report-swamp-method-summary/1/raw"));
+    assertEquals(await localValue(c.repoA, c, 1), "from-b");
+  }, { lazy: true });
+});
+
+Deno.test("model method run: on a lazy cache a conflicting read replaces its content even when hydrateFile keeps a file already present (swamp-club#3934)", async () => {
+  keepCachedContent = true;
+  await withClones(async (c) => {
+    let started!: () => void;
+    const aStarted = new Promise<void>((resolve) => started = resolve);
+    let resume!: () => void;
+    const bDone = new Promise<void>((resolve) => resume = resolve);
+    hooks = {
+      beforeWrite: async () => {
+        started();
+        await bDone;
+      },
+    };
+    const aRun = runMethod(c.repoA, "observe", "from-a");
+    await aStarted;
+    await runMethod(c.repoB, "write", "from-b");
+    resume();
+
+    await aRun;
+    assertEquals(
+      remoteValue(c, 1),
+      "from-b",
+      "A's stale content is not pushed",
+    );
     assertEquals(await localValue(c.repoA, c, 1), "from-b");
   }, { lazy: true });
 });

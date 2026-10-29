@@ -8031,14 +8031,17 @@ refreshes its resource does. `methodRunLockMode`
   pushed, and the run's own such versions are recorded beside the deferred
   ones, so the next lock finds them replaced again and reads their content
   back before it pushes; a pull alone would not, since their metadata is
-  already current. The push then fails with
-  `DataVersionConflictError` (`datastore_data_version_conflict`), which says
-  this host now holds the datastore's copy. Because the cache holds what the
-  datastore holds for the behavior under its lock, a push that walks a
-  marked directory deletes and rolls back none of another clone's versions,
-  whether or not the sync service can clear its marks. The CLI exits
-  non-zero; serve, which has answered its client before it publishes, logs
-  it.
+  already current. The push then throws `DataVersionConflictError`
+  (`datastore_data_version_conflict`), which says this host now holds the
+  datastore's copy. Because the cache holds what the datastore holds for the
+  behavior under its lock, a push that walks a marked directory deletes and
+  rolls back none of another clone's versions, whether or not the sync
+  service can clear its marks. The conflict does not fail the run: the
+  method's work is done and its other versions were published, and every
+  run writes a version of each built-in method-summary report, so failing
+  would fail any read that overlaps another clone's run of the same
+  behavior. The CLI logs it at warn and exits with the method's own status;
+  serve, which has answered its client before it publishes, logs it.
 - Every push made under a behavior's lock with a repository context also
   publishes the versions earlier runs deferred for it, with the same
   data-id check, and removes their records once the datastore confirms
@@ -8046,9 +8049,9 @@ refreshes its resource does. `methodRunLockMode`
   wrote is dropped with a warning, and one the datastore does not confirm
   keeps its record for the next lock: neither fails the current run, whose
   own versions alone decide its outcome. A run's own version whose metadata
-  cannot be read fails the publish rather than being left out. A version no longer on
-  this host is dropped, and a record naming another behavior's versions too
-  waits for a lock that holds them all.
+  cannot be read fails the publish rather than being left out. A version no
+  longer on this host is dropped, and a record naming another behavior's
+  versions too waits for a lock that holds them all.
 - A run that wrote no data version takes no publish lock. When the CLI
   publish fails other than by a conflict or a busy lock (an unreachable
   remote), a run that succeeded fails with that error, or with

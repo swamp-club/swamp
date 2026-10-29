@@ -3414,10 +3414,12 @@ async function discardRefusedVersions(
 
 /**
  * Replaces the cache's copy of `absPath` with the datastore's (swamp-club#3934),
- * through `hydrateFile` or else `fetchContent`. When the datastore has none,
- * the local copy is removed: a push of the missing marked file then deletes
- * nothing. Throws when neither read is available or the read fails, so the
- * caller pushes nothing rather than this host's copy over the datastore's.
+ * through `fetchContent`, writing the bytes itself as `discardRefusedVersions`
+ * does, or else `hydrateFile`, whose contract does not promise to replace a
+ * file already present. When the datastore has none, the local copy is
+ * removed: a push of the missing marked file then deletes nothing. Throws
+ * when neither read is available or the read fails, so the caller pushes
+ * nothing rather than this host's copy over the datastore's.
  */
 async function rehydrateContent(
   absPath: string,
@@ -3432,12 +3434,12 @@ async function rehydrateContent(
     signal: AbortSignal.timeout(PUBLISH_CHECK_FETCH_TIMEOUT_MS),
   });
   let present: boolean;
-  if (syncService.hydrateFile) {
-    present = await syncService.hydrateFile(rel, options());
-  } else if (syncService.fetchContent) {
+  if (syncService.fetchContent) {
     const bytes = await syncService.fetchContent(rel, options());
     present = bytes !== null;
     if (bytes !== null) await atomicWriteFile(absPath, bytes);
+  } else if (syncService.hydrateFile) {
+    present = await syncService.hydrateFile(rel, options());
   } else {
     throw new Error(
       `Cannot read ${rel} back from the datastore, so the push is withheld`,

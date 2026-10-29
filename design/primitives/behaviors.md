@@ -749,8 +749,9 @@ behavior before it runs and takes the lock briefly afterwards to publish what
 it wrote, so a `get` that refreshes its resource reaches the datastore
 (swamp-club#3934). That publish never waits on a writer: while another run
 holds the lock it leaves its data for the next run that locks the behavior on
-the same host to publish. It fails with `DataVersionConflictError` when
-another clone wrote the same data version during the run. See "Lock
+the same host to publish. When another clone wrote the same data version
+during the run, the datastore keeps that clone's copy and the run logs a
+warning rather than failing (`DataVersionConflictError`). See "Lock
 Lifecycle" in `design/enablers/datastores.md`.
 
 ### Labels and appliesTo

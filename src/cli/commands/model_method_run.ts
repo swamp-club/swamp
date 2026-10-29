@@ -650,8 +650,8 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           };
           const locks = modelLocks;
           const publishTo = publishModel;
-          // Why a read or list run's publish failed, other than a refusal,
-          // which the root throws itself (swamp-club#3934).
+          // Why a read or list run's publish failed, other than a conflict,
+          // which is only logged (swamp-club#3934).
           let publishFailure: { error: unknown } | undefined;
           // Set once every input set ran and succeeded: only then does a
           // failed publish fail the command; otherwise it is logged.
@@ -701,9 +701,25 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                       }
                     }
                   } catch (error) {
-                    if (!(error instanceof DataVersionConflictError)) {
-                      publishFailure = { error };
+                    // Another clone wrote the same version number while this
+                    // run was unlocked: the method's work is done and the
+                    // rest of its data was published, so a read or list run
+                    // does not fail over it. Every run's summary reports
+                    // write a version, so failing would fail any read that
+                    // overlaps another clone's run (swamp-club#3934).
+                    if (error instanceof DataVersionConflictError) {
+                      ctx.logger.warn(
+                        "Another swamp process wrote {versions} of behavior {model} while this run was running: the datastore keeps that copy, and this host now holds it in place of this run's",
+                        {
+                          versions: error.versions.map((v) =>
+                            `${v.dataName} version ${v.version}`
+                          ).join(", "),
+                          model: `${publishTo.modelType}/${publishTo.modelId}`,
+                        },
+                      );
+                      return;
                     }
+                    publishFailure = { error };
                     throw error;
                   }
                 }
