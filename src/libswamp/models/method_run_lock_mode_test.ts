@@ -227,12 +227,12 @@ Deno.test("methodRunLockMode: a read run on a v2 extension datastore locks only 
   }
 });
 
-Deno.test("methodRunLockMode: a read run locks for the run when its publish cannot read the datastore", async () => {
+Deno.test("methodRunLockMode: a read run locks only to publish without fetchContent, and for the run without a sync service", async () => {
   registerTestModel({ status: { kind: "read" } });
   try {
     assertEquals(
       await lockMode("status", V2_REMOTE, syncService({ fetchContent: false })),
-      "run",
+      "publish",
     );
     assertEquals(await lockMode("status", V2_REMOTE, undefined), "run");
   } finally {

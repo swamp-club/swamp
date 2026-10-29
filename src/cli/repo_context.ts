@@ -3035,21 +3035,11 @@ export interface AcquireModelLocksOptions {
    */
   restoreWriteHooks?: AtomicWriteSync;
   /**
-   * False takes the locks without pulling the models. A read or list run on
-   * a v2 extension datastore runs unlocked and takes its locks only to
-   * publish (swamp-club#3934): a pull then would overwrite the versions it
-   * wrote wherever the datastore holds the same path.
+   * False takes the locks without pulling the models. The push then cannot
+   * tell a version another clone wrote under the same number from this
+   * host's own, so it publishes every version as this host holds it.
    */
   pull?: boolean;
-  /**
-   * Set when the work wrote its versions before these locks were taken (a
-   * read or list run's publish lock, swamp-club#3934). Before the first push,
-   * each written version the datastore already holds with another data id
-   * is another clone's: every version of that data name is discarded from
-   * this host, the rest are published, and the push then throws
-   * `DataVersionConflictError`.
-   */
-  refuseForeignVersions?: boolean;
   /**
    * Set to take the locks only if they are free (a read or list run's
    * publish, swamp-club#3934): no wait for the global lock, and at most
@@ -3181,9 +3171,6 @@ interface DiscardRestoreOptions {
   readonly lazy: boolean;
 }
 
-/** How far {@link discardRefusedVersions} brought the cache back. */
-type RestoreOutcome = "clean" | "marked" | "incomplete";
-
 /** A latest marker read from the datastore, and the version it names. */
 interface FetchedMarker {
   readonly rel: string;
@@ -3231,16 +3218,6 @@ interface FetchedMarker {
  * any failure keeps its marks. A sync service without `clearDirty` keeps
  * every mark, so the refusal warns once, naming the data names, that a
  * later push can delete or overwrite the other run's versions there.
- *
- * Returns how far the cache was brought back (swamp-club#3934):
- * `"incomplete"` when a removed file or marker the datastore holds was not
- * put back, or a name's restore otherwise failed; `"marked"` when it was,
- * but marks are left under a refused name; `"clean"` otherwise. A push
- * walks a marked directory, deleting the remote files the cache lacks and
- * uploading the ones that differ, so only a `"clean"` restore may be
- * followed by a push, unless the models were pulled under the same locks
- * just before: the cache then holds what the datastore holds, and a
- * `"marked"` restore pushes nothing of theirs.
  */
 async function discardRefusedVersions(
   refused: readonly WrittenVersion[],
@@ -3252,10 +3229,9 @@ async function discardRefusedVersions(
   cachePath: string,
   namespace: string | undefined,
   restore: DiscardRestoreOptions,
-): Promise<RestoreOutcome> {
+): Promise<void> {
   const logger = getSwampLogger(["datastore", "lock"]);
   const repo = repoContext.unifiedDataRepo;
-  let complete = true;
   const content = new Set<string>();
   // Each removed marker's cache path, and its data-name directory.
   const markers = new Map<string, string>();
@@ -3307,7 +3283,6 @@ async function discardRefusedVersions(
   } catch (error) {
     discarded = false;
     logger.debug`Discarding the refused data versions failed: ${error}`;
-    complete = false;
   }
   if (!syncService.clearDirty && marked.size > 0) {
     const kept = [...marked.keys()].map((nameDir) => names.get(nameDir))
@@ -3316,12 +3291,7 @@ async function discardRefusedVersions(
       .warn`This datastore's extension cannot clear the dirty marks the refused push left on ${kept}, so a later push from this checkout can delete or overwrite the versions the other run wrote there (swamp-club#4091). Updating the datastore extension fixes this once a release implements clearDirty.`;
   }
   const fetchContent = syncService.fetchContent;
-  const outcome = (unmarked: boolean): RestoreOutcome =>
-    !complete || failed.size > 0 ? "incomplete" : unmarked ? "clean" : "marked";
-  if (content.size === 0 && markers.size === 0) {
-    return outcome(marked.size === 0);
-  }
-  if (!fetchContent) return "incomplete";
+  if (!fetchContent || (content.size === 0 && markers.size === 0)) return;
   const signal = AbortSignal.timeout(DISCARD_RESTORE_TIMEOUT_MS);
   const hasMetadata = (nameDir: string, version: number) =>
     exists(join(nameDir, String(version), "metadata.yaml"));
@@ -3345,7 +3315,6 @@ async function discardRefusedVersions(
       failed.add(nameDir);
       logger
         .debug`Restoring from the datastore after a refused push failed reading ${rel}: ${error}`;
-      complete = false;
       continue;
     }
     if (bytes === null) {
@@ -3382,7 +3351,6 @@ async function discardRefusedVersions(
       logger.debug`Restoring ${
         pending.length - i
       } file(s) from the datastore after a refused push failed at ${rel}: ${error}`;
-      complete = false;
       break;
     }
   }
@@ -3425,89 +3393,23 @@ async function discardRefusedVersions(
       failed.add(marker.nameDir);
       logger
         .debug`Restoring ${marker.rel} after a refused push failed: ${error}`;
-      complete = false;
     }
   }
 
   const clearDirty = syncService.clearDirty;
-  if (!clearDirty || !discarded) return outcome(marked.size === 0);
+  if (!clearDirty || !discarded) return;
   const cleared: string[] = [];
   for (const [nameDir, rels] of marked) {
     if (failed.has(nameDir)) continue;
     for (const rel of rels) cleared.push(rel);
   }
-  if (cleared.length === 0) return outcome(true);
+  if (cleared.length === 0) return;
   try {
     await clearDirty.call(syncService, cleared);
   } catch (error) {
     logger
       .debug`Clearing the marks a refused push left failed: ${error}`;
-    return outcome(false);
   }
-  return outcome(true);
-}
-
-/**
- * The written versions the datastore already holds under another data id.
- * A run that wrote unlocked (a read or list run, swamp-club#3934) numbered
- * its versions from this host's cache, so another clone may have written
- * the same numbers since; a version holding this run's own data id was
- * uploaded by an earlier push. A version with no data id is compared by its
- * metadata bytes. Throws when the datastore cannot be read: a publish that
- * cannot be checked does not go ahead.
- */
-async function foreignVersions(
-  written: readonly WrittenVersion[],
-  repo: RepositoryContext["unifiedDataRepo"],
-  fetchContent: NonNullable<DatastoreSyncService["fetchContent"]>,
-  cachePath: string,
-  namespace: string | undefined,
-): Promise<WrittenVersion[]> {
-  const isForeign = async (w: WrittenVersion): Promise<boolean> => {
-    const metadataPath = join(
-      repo.getPath(
-        ModelType.create(w.modelType),
-        w.modelId,
-        w.dataName,
-        w.version,
-      ),
-      "metadata.yaml",
-    );
-    const rel = cacheRelativePath(cachePath, metadataPath);
-    if (rel === undefined) return false;
-    const remote = await fetchContent(rel, {
-      namespace,
-      signal: AbortSignal.timeout(PUBLISH_CHECK_FETCH_TIMEOUT_MS),
-    });
-    if (remote === null) return false;
-    if (w.dataId !== undefined) {
-      const parsed = parseYaml(new TextDecoder().decode(remote));
-      const remoteId = typeof parsed === "object" && parsed !== null
-        ? (parsed as { id?: unknown }).id
-        : undefined;
-      return remoteId !== w.dataId;
-    }
-    let local: Uint8Array | undefined;
-    try {
-      local = await Deno.readFile(metadataPath);
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) throw error;
-    }
-    return local === undefined || !bytesEqual(local, remote);
-  };
-  const foreign: WrittenVersion[] = [];
-  for (let i = 0; i < written.length; i += PUBLISH_CHECK_CONCURRENCY) {
-    const batch = written.slice(i, i + PUBLISH_CHECK_CONCURRENCY);
-    const results = await Promise.all(batch.map(isForeign));
-    batch.forEach((w, j) => {
-      if (results[j]) foreign.push(w);
-    });
-  }
-  return foreign;
-}
-
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  return a.length === b.length && a.every((byte, i) => byte === b[i]);
 }
 
 /**
@@ -3881,7 +3783,7 @@ export async function acquirePublishLocksOrDefer(
   options: Pick<AcquireModelLocksOptions, "wrapSync" | "repoContext">,
 ): Promise<ModelLockResult | undefined> {
   try {
-    return await acquireModelLocks(
+    const locks = await acquireModelLocks(
       config,
       [model],
       repoDir,
@@ -3890,13 +3792,13 @@ export async function acquirePublishLocksOrDefer(
       undefined,
       {
         ...options,
-        // A pull would overwrite what the run wrote wherever another clone
-        // wrote the same version.
-        pull: false,
-        refuseForeignVersions: true,
+        // The pull replaces each version another clone also wrote with its
+        // copy; the push reports those as a conflict and publishes the rest.
         failIfBusy: true,
       },
     );
+    if (locks.synced) catalogStore?.invalidate();
+    return locks;
   } catch (error) {
     if (
       !(error instanceof ModelLocksBusyError) ||
@@ -4328,6 +4230,11 @@ export async function acquireModelLocks(
   const lockedModels = new Set(
     unique.map((m) => JSON.stringify([m.modelType, m.modelId])),
   );
+  // Whether these locks pulled their models before the work's versions are
+  // checked: the pull overwrote, with the datastore's copy, every version
+  // another clone also wrote under the same number.
+  const pulledUnderLocks = customSyncService !== undefined &&
+    options?.pull !== false;
   const push = async (written?: readonly WrittenVersion[]) => {
     const publishContext = options?.repoContext;
     const isLocked = (w: WrittenVersion) =>
@@ -4361,7 +4268,8 @@ export async function acquireModelLocks(
     }
     const versionKey = (w: WrittenVersion) =>
       JSON.stringify([w.modelType, w.modelId, w.dataName, w.version]);
-    const seen = new Set(ours.map(versionKey));
+    const ownKeys = new Set(ours.map(versionKey));
+    const seen = new Set(ownKeys);
     const left: WrittenVersion[] = [];
     for (const w of deferred.flatMap((record) => record.versions)) {
       if (seen.has(versionKey(w))) continue;
@@ -4383,124 +4291,71 @@ export async function acquireModelLocks(
           .warn`Removing the data versions left to publish failed: ${error}`;
       }
     };
-    // A pending version whose data is gone from this host is dropped.
-    const present = await localDataIds(left, publishContext.unifiedDataRepo);
-    let leftToPublish = present.map((p) => p.written);
-    {
-      // A pull since the deferral (this run's own, under these locks or
-      // before an unlocked read) replaced a pending version another clone
-      // also wrote: its data id is no longer the one the read run wrote.
-      // Discard it so the push sends nothing of ours, such as a lazy
-      // cache's raw content, with the other clone's metadata.
-      const replaced = present
+    // A version whose data is gone from this host is dropped.
+    const present = await localDataIds(
+      [...ours, ...left],
+      publishContext.unifiedDataRepo,
+    );
+    // A version whose data id is no longer the one its run wrote was
+    // replaced by the pull under these locks: another clone wrote the same
+    // number first, and this host now holds that clone's copy. The cache
+    // holds what the datastore holds for these models, so the push that
+    // follows sends nothing of the other clone's back, and deletes none of
+    // it, whatever is marked (swamp-club#3934).
+    const replaced = pulledUnderLocks
+      ? present
         .filter((p) =>
           p.written.dataId !== undefined && p.localId !== p.written.dataId
         )
-        .map((p) => p.written);
-      if (replaced.length > 0) {
-        let outcome: RestoreOutcome;
-        try {
-          outcome = await discardRefusedVersions(
-            replaced,
-            publishContext,
-            syncService,
-            cachePath,
-            custom.namespace,
-            refusalRestore(custom),
-          );
-        } finally {
-          catalogStore?.invalidate();
+        .map((p) => p.written)
+      : [];
+    const replacedKeys = new Set(replaced.map(versionKey));
+    const toPublish = present
+      .map((p) => p.written)
+      .filter((w) => !replacedKeys.has(versionKey(w)));
+    let conflict: DataVersionConflictError | undefined;
+    if (replaced.length > 0) {
+      // A lazy pull fetched only the other clone's metadata, so the content
+      // beside it is still the one this host wrote. Remove it: the next read
+      // hydrates the other clone's, and a lazy cache's push deletes nothing
+      // that is missing here.
+      if (custom.hydrationStrategy === "lazy") {
+        for (const w of replaced) {
+          try {
+            await Deno.remove(
+              join(
+                publishContext.unifiedDataRepo.getPath(
+                  ModelType.create(w.modelType),
+                  w.modelId,
+                  w.dataName,
+                  w.version,
+                ),
+                "raw",
+              ),
+            );
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) throw error;
+          }
         }
-        // The pull that replaced it brought the name's cache up to date
-        // after the other clone wrote, so the marks a restore leaves add
-        // nothing to what the deferred write had marked already.
-        if (outcome === "incomplete") {
-          throw new DataVersionConflictError(replaced, {
-            restored: false,
-            deferred: true,
-          });
-        }
-        const names = replaced.map((w) =>
+      }
+      catalogStore?.invalidate();
+      const own = replaced.filter((w) => ownKeys.has(versionKey(w)));
+      const earlier = replaced.filter((w) => !ownKeys.has(versionKey(w)));
+      if (earlier.length > 0) {
+        const names = earlier.map((w) =>
           `${w.modelType}/${w.modelId} ${w.dataName} version ${w.version}`
         ).join(", ");
         logger
           .warn`An earlier read run's data was not published: another swamp process wrote ${names} first, and this host now holds that copy.`;
-        const gone = new Set(replaced.map(versionKey));
-        leftToPublish = leftToPublish.filter((w) => !gone.has(versionKey(w)));
       }
+      if (own.length > 0) conflict = new DataVersionConflictError(own);
     }
-    const toPublish = [...ours, ...leftToPublish];
     if (toPublish.length === 0) {
       await pushOnce();
       await settleDeferred();
+      if (conflict !== undefined) throw conflict;
       return;
     }
-    let conflict: DataVersionConflictError | undefined;
-    // Refuses, before the first push, every data name another clone wrote
-    // the same version of, and returns what is left to publish.
-    const refuseForeign = async (stage: readonly WrittenVersion[]) => {
-      if (!options?.refuseForeignVersions || !syncService.fetchContent) {
-        return stage;
-      }
-      const foreign = await foreignVersions(
-        stage,
-        publishContext.unifiedDataRepo,
-        syncService.fetchContent.bind(syncService),
-        cachePath,
-        custom.namespace,
-      );
-      if (foreign.length === 0) return stage;
-      const nameKey = (w: WrittenVersion) =>
-        JSON.stringify([w.modelType, w.modelId, w.dataName]);
-      const ownKeys = new Set(ours.map(versionKey));
-      const foreignOwn = foreign.filter((w) => ownKeys.has(versionKey(w)));
-      const foreignKeys = new Set(foreign.map(versionKey));
-      // Every version of a name this run's own data conflicts on is
-      // discarded; a deferred version that conflicts takes only itself.
-      const names = new Set(foreignOwn.map(nameKey));
-      const refused = stage.filter((w) =>
-        names.has(nameKey(w)) || foreignKeys.has(versionKey(w))
-      );
-      const refusedKeys = new Set(refused.map(versionKey));
-      let outcome: RestoreOutcome;
-      try {
-        outcome = await discardRefusedVersions(
-          refused,
-          publishContext,
-          syncService,
-          cachePath,
-          custom.namespace,
-          refusalRestore(custom),
-        );
-      } finally {
-        catalogStore?.invalidate();
-      }
-      const restored = outcome === "clean";
-      // A file the restore could not put back is still marked dirty, and
-      // this push would delete or roll back the other clone's copy: push
-      // nothing (swamp-club#3934).
-      if (!restored) {
-        conflict = foreignOwn.length > 0
-          ? new DataVersionConflictError(foreignOwn, { restored })
-          : new DataVersionConflictError(foreign, {
-            restored,
-            deferred: true,
-          });
-        throw conflict;
-      }
-      if (foreignOwn.length > 0) {
-        conflict = new DataVersionConflictError(foreignOwn, { restored });
-      }
-      const deferredOnly = foreign.filter((w) => !ownKeys.has(versionKey(w)));
-      if (deferredOnly.length > 0) {
-        const named = deferredOnly.map((w) =>
-          `${w.modelType}/${w.modelId} ${w.dataName} version ${w.version}`
-        ).join(", ");
-        logger
-          .warn`An earlier read run's data was not published: another swamp process wrote ${named} first, and this host now holds that copy.`;
-      }
-      return stage.filter((w) => !refusedKeys.has(versionKey(w)));
-    };
     const publish = async () => {
       let pending: readonly WrittenVersion[] = toPublish;
       for (let attempt = 1; attempt <= PUBLISH_ATTEMPTS; attempt++) {
@@ -4509,11 +4364,8 @@ export async function acquireModelLocks(
         // The last attempt runs alone, so no other sync can undo it.
         await pushOnce(
           async () => {
-            const publishable = attempt === 1
-              ? await refuseForeign(stage)
-              : stage;
             targets = await stageVersionsForPublish(
-              publishable,
+              stage,
               publishContext,
               cachePath,
             );
@@ -4534,12 +4386,12 @@ export async function acquireModelLocks(
       }
       throw new UnpublishedDataVersionError(pending, PUBLISH_ATTEMPTS);
     };
-    // The records go only once every version they name was published or
-    // settled: a push that failed keeps them for the next lock.
+    // The records go only once the push succeeded: a failed one keeps them
+    // for the next lock.
     try {
       await publish();
     } catch (error) {
-      if (conflict === undefined || error === conflict) throw error;
+      if (conflict === undefined) throw error;
       // The refusal is the error to act on; what else failed is logged.
       logger
         .warn`Publishing the versions left after a refusal failed: ${error}`;

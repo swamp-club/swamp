@@ -82,7 +82,7 @@ export async function methodRunLockMode(options: {
   ) {
     return "none";
   }
-  // A publish that cannot read the datastore cannot tell its own version
-  // from another clone's, so the run holds the lock throughout instead.
-  return options.syncService?.fetchContent ? "publish" : "run";
+  // Without a sync service the caller has nothing to publish through, so
+  // the run holds the lock as a mutating run does.
+  return options.syncService ? "publish" : "run";
 }

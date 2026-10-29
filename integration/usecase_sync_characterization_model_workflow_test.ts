@@ -568,14 +568,13 @@ const ROWS: AnyRow[] = [
     },
     // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
     // adopted a root unit, when a read run neither pulled nor pushed. Since
-    // swamp-club#3934 it pulls before it runs, and its publish lock reads its
-    // two report versions' metadata to refuse another clone's, pushes, and
+    // swamp-club#3934 it pulls before it runs, and its publish lock pulls
+    // again, so a version another clone wrote replaces its own, pushes, and
     // reads each version's metadata and latest marker back.
     syncOrder: {
       cli: [
         "pull",
-        "fetch",
-        "fetch",
+        "pull",
         "prepare",
         "commit",
         "release",
@@ -588,8 +587,8 @@ const ROWS: AnyRow[] = [
       serve: [
         "pull",
         "release",
-        "fetch",
-        "fetch",
+        "pull",
+        "release",
         "prepare",
         "commit",
         "release",
@@ -916,8 +915,7 @@ const EXPECTED: Record<string, PinnedRow> = {
         "markDirty data/<type>/<id>/report-swamp-method-summary",
         "markDirty data/<type>/<id>/report-swamp-method-summary-json",
         "markDirty data/<type>/<id>/report-swamp-method-summary-json",
-        "fetch[1]",
-        "fetch[1]",
+        "pull[0]",
         "markDirty data/<type>/<id>/report-swamp-method-summary/1",
         "markDirty data/<type>/<id>/report-swamp-method-summary/latest",
         "markDirty data/<type>/<id>/report-swamp-method-summary-json/1",
@@ -955,8 +953,7 @@ const EXPECTED: Record<string, PinnedRow> = {
         "markDirty data/<type>/<id>/report-swamp-method-summary",
         "markDirty data/<type>/<id>/report-swamp-method-summary-json",
         "markDirty data/<type>/<id>/report-swamp-method-summary-json",
-        "fetch[1]",
-        "fetch[1]",
+        "pull[0]",
         "markDirty data/<type>/<id>/report-swamp-method-summary/1",
         "markDirty data/<type>/<id>/report-swamp-method-summary/latest",
         "markDirty data/<type>/<id>/report-swamp-method-summary-json/1",

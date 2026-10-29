@@ -8018,43 +8018,31 @@ refreshes its resource does. `methodRunLockMode`
   push walks), logs that the next run to lock the behavior on this host
   publishes them, and succeeds. A nested run whose parent holds the lock
   defers the same way, and the parent's push publishes its data.
-- With the lock, the publish takes no pull: it would silently overwrite the
-  run's versions wherever the remote holds the same path. Before the first
-  push, each written version the remote already holds under another data id
-  was written by another clone during the run. Every version of that data
-  name is discarded from this host, which gets the remote's copy back, the
-  rest are published, and the push fails with `DataVersionConflictError`
-  (`datastore_data_version_conflict`). A version holding the run's own data id
-  was uploaded by an earlier push and is published as usual. Unless the
-  restore is `"clean"`, the push is skipped altogether: a push walks a marked
-  directory, so a file it could not put back, a failed directory sync, or a
-  mark left by a sync service without a working `clearDirty` would delete or
-  roll back the other clone's copy. The error then says so (`restored:
-  false`) and asks for `swamp datastore sync --pull` before anything else
-  pushes. The CLI exits non-zero; serve, which has answered its client
-  before it publishes, logs it.
+- With the lock, the publish pulls the behavior, as a mutating run's lock
+  does. The pull replaces with the datastore's copy every version another
+  clone wrote under the same number while the run was unlocked, so a
+  version whose local data id is no longer the one the run wrote was
+  another clone's: it is not pushed (on a lazy cache its leftover content is
+  removed too), and the rest are. The push then fails with
+  `DataVersionConflictError` (`datastore_data_version_conflict`), which says
+  this host now holds the datastore's copy. Because the cache holds what the
+  datastore holds for the behavior under its lock, a push that walks a
+  marked directory deletes and rolls back none of another clone's versions,
+  whether or not the sync service can clear its marks. The CLI exits
+  non-zero; serve, which has answered its client before it publishes, logs
+  it.
 - Every push made under a behavior's lock with a repository context also
-  publishes the versions earlier runs deferred for it, and removes their
-  records once the push succeeds; a failed push keeps them. A pull since the
-  deferral (a read's own pre-run pull, or a mutating run's pull under the
-  lock) replaced any version another clone also wrote with that clone's
-  copy, so a deferred version whose local data id is no longer the one the
-  run wrote is discarded and restored, with a warning, and never pushed.
-  That pull brought the name's cache up to date after the other clone
-  wrote, so only an `"incomplete"` restore stops the push. Under the read's
-  own publish lock the rest get the remote check above, but a deferred
-  version that conflicts is discarded alone, with a warning, and never takes
-  the current run's versions of that name with it. A version no longer on
+  publishes the versions earlier runs deferred for it, with the same
+  data-id check, and removes their records once the push succeeds; a failed
+  push keeps them. A deferred version another clone also wrote is dropped
+  with a warning and never fails the current run. A version no longer on
   this host is dropped, and a record naming another behavior's versions too
   waits for a lock that holds them all.
 - A run that wrote no data version takes no publish lock. When the CLI
-  publish fails other than by a refusal or a busy lock (an unreadable
+  publish fails other than by a conflict or a busy lock (an unreachable
   remote), a run that succeeded fails with that error, or with
   `datastore_publish_failed` for an untyped one; a run that failed keeps its
   own error and logs that its data was not published.
-- A sync service without `fetchContent` cannot tell its own version from
-  another clone's, so there the run holds the lock throughout, as a mutating
-  run does.
 
 Until it is published, a read run's data sits in the cache like any other
 unpublished write. Another run's push from this host uploads it without the
