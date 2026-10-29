@@ -18,7 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
+import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import fc from "fast-check";
 import { computeLatestFlags, DataQueryService } from "./data_query_service.ts";
 import type { DataRecord } from "./data_record.ts";
@@ -371,7 +372,7 @@ const RESOURCE_NAMES = ["a", "b", "c"] as const;
 
 const arbResourceOps = fc.array(
   fc.record({
-    kind: fc.constantFrom("save", "delete", "rename"),
+    kind: fc.constantFrom("save", "delete", "rename", "crash"),
     name: fc.constantFrom(...RESOURCE_NAMES),
   }),
   { maxLength: 12 },
@@ -384,7 +385,7 @@ function catalogRows(catalog: CatalogStore): string[] {
     .sort();
 }
 
-Deno.test("property: a catalog rebuilt from disk matches the write-through catalog across saves, deletion markers, re-creates and renames (swamp-club#3698)", async () => {
+Deno.test("property: a catalog rebuilt from disk matches the write-through catalog across saves, deletion markers, re-creates, renames and crashed saves (swamp-club#3698, swamp-club#4134)", async () => {
   const type = ModelType.create("test/model");
   await fc.assert(
     fc.asyncProperty(arbResourceOps, async (ops) => {
@@ -396,7 +397,9 @@ Deno.test("property: a catalog rebuilt from disk matches the write-through catal
         const repo = new FileSystemUnifiedDataRepository(dir, undefined, live);
         const modelId = crypto.randomUUID();
         // A renamed-away name is never written again: re-saving it brings
-        // back its pre-rename versions on a rebuild (swamp-club#3707).
+        // back its pre-rename versions on a rebuild (swamp-club#3707). Nor is
+        // a crashed name: a later save would leave the crashed version below
+        // the marker, where a rebuild still indexes it.
         const state = new Map<string, "active" | "deleted" | "retired">();
         const renamed: string[] = [];
         for (const [i, { kind, name }] of ops.entries()) {
@@ -431,6 +434,28 @@ Deno.test("property: a catalog rebuilt from disk matches the write-through catal
             state.set(name, "retired");
             state.set(target, "active");
             renamed.push(name);
+          } else if (kind === "crash" && current === "active") {
+            // A save that died after metadata.yaml, before raw and the
+            // marker: the next version holds only renumbered metadata
+            // (swamp-club#4134).
+            const latest = await repo.findByName(type, modelId, name);
+            const metadata = parseYaml(
+              Deno.readTextFileSync(
+                repo.getMetadataPath(type, modelId, name, latest!.version),
+              ),
+            ) as Record<string, unknown>;
+            const crashedPath = repo.getMetadataPath(
+              type,
+              modelId,
+              name,
+              latest!.version + 1,
+            );
+            Deno.mkdirSync(dirname(crashedPath), { recursive: true });
+            Deno.writeTextFileSync(
+              crashedPath,
+              stringifyYaml({ ...metadata, version: latest!.version + 1 }),
+            );
+            state.set(name, "retired");
           }
         }
 

@@ -718,6 +718,15 @@ and the marker is the latest row. Only rename markers are skipped; the rename
 forwards below project them. `swamp doctor datastores` counts the same records
 on disk, so a repaired catalog passes its completeness check.
 
+A full backfill indexes a name's versions up to the one its latest marker
+names. The marker is where a save publishes: it only moves forward, and delete,
+rename and GC remove the versions above it when they lower it. A version
+directory above the marker is a save that died before moving it (metadata.yaml
+written, raw not) or a write still in flight, which publishes its own row
+through write-through. Leaving those out keeps a rebuilt catalog in agreement
+with reads through the marker (swamp-club#4134). A repository without a marker
+falls back to its highest version, so every version is indexed there.
+
 Full backfill upserts instead of replacing. It commits through
 `bulkUpsert()`, which uses `INSERT OR REPLACE` with no preceding `DELETE`.
 Rows the walk finds are added or updated; rows it cannot see are left alone.

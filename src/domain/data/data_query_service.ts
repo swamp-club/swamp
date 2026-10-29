@@ -1927,6 +1927,13 @@ export class DataQueryService {
         );
         if (versions.length === 0) continue;
         for (const version of versions) {
+          // A version above the one the latest marker names was never
+          // published: the marker only moves forward, and delete, rename and
+          // GC remove the versions above it when they lower it. Such a
+          // directory is a save that died before moving the marker, or a
+          // write still in flight that publishes its own row, so a rebuilt
+          // catalog agrees with reads through the marker (swamp-club#4134).
+          if (version > latest.version) continue;
           try {
             const data = version === latest.version
               ? latest
@@ -2003,6 +2010,8 @@ export class DataQueryService {
         );
         if (versions.length === 0) continue;
         for (const version of versions) {
+          // Unpublished versions are left out; see backfillAsync.
+          if (version > latest.version) continue;
           try {
             const data = version === latest.version
               ? latest
