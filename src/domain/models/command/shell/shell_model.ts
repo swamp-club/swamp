@@ -227,8 +227,7 @@ export function placeShellDataSplices(
   if (placed.refused) {
     throw new UserError(
       `Refused to run the command: text from data sits inside ` +
-        `${placed.refused.where}, where ${placed.refused.why}, so it ` +
-        `cannot be passed as one literal word; ` +
+        `${placed.refused.where}, where ${placed.refused.why}; ` +
         `${placed.refused.fix}. ${DATA_IN_RUN_WORKAROUND} ` +
         `(${SHELL_DATA_PLACEMENT_REFUSED})`,
       SHELL_DATA_PLACEMENT_REFUSED,

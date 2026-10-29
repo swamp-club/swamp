@@ -83,21 +83,25 @@ export function shellDialectFor(platform: string): ShellDialect | undefined {
 export interface RefusedDataPlacement {
   /** The position as a user reads it. */
   readonly where: string;
-  /** Why data text cannot be passed safely there. */
+  /** Why data text cannot be passed safely there, read after "where". */
   readonly why: string;
   /** What to write instead. */
   readonly fix: string;
 }
 
+const NO_REFERENCE_EXPANDS =
+  "no environment variable reference expands, so it would be pasted into " +
+  "the command line";
+
 const QUOTED_HEREDOC_REFUSAL: RefusedDataPlacement = {
   where: "a here-document with a quoted delimiter",
-  why: "no environment variable reference expands there",
+  why: NO_REFERENCE_EXPANDS,
   fix: "use an unquoted here-document delimiter",
 };
 
 const POWERSHELL_SINGLE_REFUSAL: RefusedDataPlacement = {
   where: "PowerShell single quotes",
-  why: "no environment variable reference expands there",
+  why: NO_REFERENCE_EXPANDS,
   fix: "use double quotes",
 };
 
@@ -105,7 +109,8 @@ const POWERSHELL_SINGLE_REFUSAL: RefusedDataPlacement = {
 // included, so a quoted reference there still runs a command substitution.
 const ARITHMETIC_REFUSAL: RefusedDataPlacement = {
   where: "shell arithmetic, $(( ... )) or (( ... ))",
-  why: "the shell evaluates an expanded value there again, as code",
+  why: "the shell evaluates an expanded value again as code, so a reference " +
+    "does not keep it literal",
   fix:
     "pass the value through env and check it is a number before using it in arithmetic",
 };
