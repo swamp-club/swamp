@@ -67,6 +67,7 @@ import {
   RemoteMethod,
   WorkerMethod,
 } from "../domain/remote/protocol.ts";
+import { SERVE_NOT_LEADER_CODE } from "../domain/datastore_v3/serve_leader.ts";
 
 interface RecordedTransition {
   typeArg: string;
@@ -471,6 +472,16 @@ Deno.test("WorkerGateway: a worker that needs a pass is refused before the token
   assertEquals(h.transitions, []);
   assertEquals(h.gateway.workers().length, 0);
   assertEquals(h.idle.length, 0);
+});
+
+Deno.test("WorkerGateway: a follower in team mode refuses a worker before the token is redeemed, with a retried code (swamp-club#4096)", async () => {
+  const h = createHarness({ acceptsWorkers: () => false });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  const error = await assertRejects(() => enroll(workerChannel), RpcError);
+  assertEquals(error.code, SERVE_NOT_LEADER_CODE);
+  assertEquals(PERMANENT_ENROLLMENT_ERROR_CODES.has(error.code), false);
+  assertEquals(h.transitions, []);
+  assertEquals(h.gateway.workers().length, 0);
 });
 
 Deno.test("WorkerGateway: capability verbs are unavailable before enrollment", async () => {

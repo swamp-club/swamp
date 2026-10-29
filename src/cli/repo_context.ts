@@ -280,6 +280,7 @@ import {
   v3DatastoreConfigOf,
   type V3OwnerCheck,
   v3RepositoryFactoryConfig,
+  v3ServeControlPlaneAt,
 } from "../infrastructure/datastore_v3/v3_repo_context.ts";
 import { assertV3CheckoutJoinable } from "../infrastructure/datastore_v3/v3_checkout_join.ts";
 import {
@@ -294,6 +295,7 @@ import {
 } from "../infrastructure/persistence/swamp_sources_repository.ts";
 import { resolveSourceBaseDirs } from "../infrastructure/persistence/git_worktree.ts";
 import type { ExtensionWorkflowRepository } from "../infrastructure/persistence/extension_workflow_repository.ts";
+import { importCheckoutControlPlane } from "../infrastructure/persistence/checkout_control_plane_import.ts";
 
 /**
  * Resolves source workflow directories from `.swamp-sources.yaml`.
@@ -501,6 +503,12 @@ export interface RequireRepoOptions {
    * instead (swamp-club#3359).
    */
   retakeLostV3Lease?: boolean;
+  /**
+   * On a v3 datastore, follow rather than wait when another process holds
+   * the writer lease: serve's team mode (swamp-club#4096). The result's
+   * `v3Role` says which this process became.
+   */
+  followV3Lease?: boolean;
   /**
    * On a v3 datastore, how the writer lease's hold meets a claim on it
    * (swamp-club#4063): a direct writer's, refused once serve owns the
@@ -1708,6 +1716,7 @@ export function requireInitializedRepo(
       datastoreConfig,
       repoPath.value,
       syncService,
+      { v3 },
     );
 
     // If a remote sync pulled fresh data, invalidate the catalog so the
@@ -1766,6 +1775,11 @@ export async function requireInitializedRepoUnlocked(
      * sidecar flag in memory stay coherent. See `design/enablers/datastores.md`.
      */
     syncService?: DatastoreSyncService;
+    /**
+     * On a v3 datastore, whether this process holds the writer lease or,
+     * with `followV3Lease`, follows another that does.
+     */
+    v3Role?: "writer" | "follower";
   }
 > {
   const resolution = await resolveDatastoreForRepo(options.repoDir);
@@ -1777,9 +1791,11 @@ export async function requireInitializedRepoUnlocked(
   // hold before any model lock (swamp-club#3279). A bucket datastore's is
   // at its local root (swamp-club#3534).
   const v3 = engine === "v3" ? await v3LocationOf(resolution) : undefined;
+  let v3Role: "writer" | "follower" | undefined;
   if (v3 !== undefined) {
-    await holdV3Writer(v3, repoDir, {
+    v3Role = await holdV3Writer(v3, repoDir, {
       ...(options.retakeLostV3Lease === true ? { retakeLost: true } : {}),
+      ...(options.followV3Lease === true ? { follow: true } : {}),
       ...(options.v3OwnerCheck !== undefined
         ? { ownerCheck: options.v3OwnerCheck }
         : {}),
@@ -1929,6 +1945,7 @@ export async function requireInitializedRepoUnlocked(
     datastoreConfig,
     repoPath.value,
     syncService,
+    { v3 },
   );
 
   if (v3 !== undefined && managedActive) {
@@ -1950,6 +1967,7 @@ export async function requireInitializedRepoUnlocked(
     syncService,
     lockfilePath,
     vaultsDir,
+    ...(v3Role !== undefined ? { v3Role } : {}),
   };
 }
 
@@ -2253,9 +2271,43 @@ export function runRecordCurrencyOver(
 }
 
 /**
+ * The control-plane store a local command shares with `swamp serve` on the
+ * repository at `repoDir`, for what serve reads from it (token secrets,
+ * schedule pauses): a v3 datastore's own, where serve keeps its control
+ * plane since swamp-club#4096, otherwise the checkout's `.swamp/_control`.
+ * A checkout writing through serve (a serve upstream) has no direct reach
+ * to the datastore's, and keeps the checkout's, as does a directory that is
+ * no repository.
+ */
+export async function localServeControlPlane(
+  repoDir: string,
+): Promise<AtomicControlPlaneStore> {
+  // A directory that is no repository has no datastore: the checkout's
+  // store, as before.
+  if (!await new RepoService(VERSION).isInitialized(RepoPath.create(repoDir))) {
+    return new FileSystemControlPlaneStore(swampPath(repoDir));
+  }
+  const resolution = await resolveDatastoreForRepo(repoDir);
+  if (resolution.engine === "v3" && resolution.serveUpstream === undefined) {
+    const shared = v3ServeControlPlaneAt(await v3LocationOf(resolution));
+    // What this checkout's serve kept before team mode moves in first, as
+    // serve's boot does: a token command run before serve restarts must not
+    // make a new token key that strands the checkout's tokens.
+    await importCheckoutControlPlane(
+      new FileSystemControlPlaneStore(swampPath(resolution.repoDir)),
+      shared,
+    );
+    return shared;
+  }
+  return new FileSystemControlPlaneStore(swampPath(resolution.repoDir));
+}
+
+/**
  * The continuation claims a local command takes when it resumes a run
  * (swamp-club#3108), in the store `swamp serve` keeps its heartbeats in:
  *
+ * - A v3 datastore keeps them in its own control plane, as serve keeps its
+ *   heartbeats (swamp-club#4096).
  * - A filesystem datastore keeps them under the repository, as serve does
  *   when its datastore has no control-plane store of its own.
  * - A custom datastore keeps them in its extension's control-plane store.
@@ -2265,9 +2317,21 @@ export function resolveContinuationClaims(
   config: DatastoreConfig,
   repoDir: string,
   syncService?: DatastoreSyncService,
+  options?: {
+    /**
+     * The datastore's v3 location, when it is a v3 one: serve keeps its
+     * heartbeats in the datastore's own control plane (swamp-club#4096), so
+     * the claims go there too.
+     */
+    v3?: V3DatastoreConfig;
+  },
 ): ContinuationClaims | undefined {
-  // A v3 bucket datastore keeps them under the repository as a filesystem
-  // one does: serve's heartbeats are there too (swamp-club#3534).
+  if (options?.v3 !== undefined) {
+    return continuationClaimsOver(
+      v3ServeControlPlaneAt(options.v3),
+      localHolder(),
+    );
+  }
   if (!isCustomDatastoreConfig(config) || !isV2CustomDatastore(config)) {
     return continuationClaimsOver(
       new FileSystemControlPlaneStore(swampPath(repoDir)),

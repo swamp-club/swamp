@@ -70,7 +70,9 @@ export interface GrantsDirectoryPollerOptions {
    * Serve passes a wrapper that holds the sync gate and pushes the writes
    * to the datastore; without one the unit runs as is.
    */
-  commitReconcile?: (reconcile: () => Promise<void>) => Promise<void>;
+  commitReconcile?: (
+    reconcile: () => Promise<void>,
+  ) => Promise<void | "deferred">;
 }
 
 export class GrantsDirectoryPoller {
@@ -87,7 +89,7 @@ export class GrantsDirectoryPoller {
     | undefined;
   readonly #commitReconcile: (
     reconcile: () => Promise<void>,
-  ) => Promise<void>;
+  ) => Promise<void | "deferred">;
   #timer: ReturnType<typeof setInterval> | null = null;
   #contentHash: string = "";
   #pendingReconcile: Promise<void> = Promise.resolve();
@@ -117,6 +119,23 @@ export class GrantsDirectoryPoller {
     const intervalSec = this.#pollIntervalMs / 1000;
     logger
       .info`Grants directory poller started (interval: ${intervalSec}s)`;
+  }
+
+  /**
+   * Reconciles the grant sources as they are now, whatever the last poll
+   * saw: what serve's node runs when it takes the lead in team mode
+   * (swamp-club#4096), since a follower's polls applied nothing. Waits for a
+   * poll in flight first.
+   */
+  reconcileNow(): Promise<void> {
+    this.#pendingReconcile = this.#pendingReconcile.then(() => {
+      this.#contentHash = "";
+      return withPollCycleSpan(
+        "grants_directory",
+        () => this.#checkAndReconcile(),
+      );
+    });
+    return this.#pendingReconcile;
   }
 
   async stop(): Promise<void> {
@@ -248,7 +267,7 @@ export class GrantsDirectoryPoller {
         unavailable.has(filename) ||
         (externalDirUnavailable && isGrantsDirSourceName(filename));
 
-      await this.#commitReconcile(async () => {
+      const committed = await this.#commitReconcile(async () => {
         const reconcileResult = await reconcileAllFileGrants(
           validEntries,
           this.#fileGrantStore,
@@ -266,6 +285,9 @@ export class GrantsDirectoryPoller {
 
         await this.#policySnapshotLoader.load();
       });
+      // Deferred (a serve follower, which writes nothing): the change is not
+      // applied, so the next poll tries it again.
+      if (committed === "deferred") return;
       this.#contentHash = newHash;
     } catch (error) {
       logger.error`Grants directory poll failed: ${error}`;

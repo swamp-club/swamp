@@ -505,6 +505,7 @@ import {
   replayPendingRuns,
   sweepStaleRecords,
   sweepTokenConsistency,
+  teamModeRunLiveness,
 } from "../../serve/boot_reconciliation.ts";
 import {
   type AccessDataPoller,
@@ -519,6 +520,7 @@ import {
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   InstanceHeartbeatService,
 } from "../../serve/instance_heartbeat.ts";
+import { ServeLeadership } from "../../serve/serve_leadership.ts";
 import { FileSystemControlPlaneStore } from "../../infrastructure/persistence/fs_control_plane_store.ts";
 import { ControlPlaneSchedulePauseRepository } from "../../infrastructure/persistence/control_plane_schedule_pause_repository.ts";
 import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
@@ -557,14 +559,23 @@ import { validateEndEntityCert } from "../../infrastructure/runtime/tls_cert_val
 import {
   compactRetentionQuietly,
   confirmV3Replicated,
+  enableV3ServeTeamMode,
+  holdV3Writer,
   keepV3WriterMarkers,
+  refreshV3FollowerCopy,
   startV3ReplicationUpkeep,
   v3CommitMark,
   v3DatastoreConfigOf,
   v3DatastoreFor,
   V3MaintenanceTimer,
   v3ReplicatesAt,
+  v3ServeControlPlaneAt,
 } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
+import {
+  holdsCurrentV3WriterLease,
+  v3WriterFence,
+} from "../../infrastructure/datastore_v3/v3_writer_lock.ts";
+import { importCheckoutControlPlane } from "../../infrastructure/persistence/checkout_control_plane_import.ts";
 import { v3EvaluationTrust } from "../../infrastructure/datastore_v3/trusted_evaluations.ts";
 import { pushChangedToRemote } from "../../serve/handlers/shared.ts";
 import {
@@ -579,6 +590,15 @@ import { takeRetentionCandidate } from "../retention_candidate.ts";
 import {
   setV3SyncDeadline,
 } from "../../infrastructure/datastore_v3/litestream/v3_replication.ts";
+import { followerHttpRefusal } from "../../serve/follower_requests.ts";
+import {
+  serializeServeLeader,
+  SERVE_LEADER_KEY,
+} from "../../domain/datastore_v3/serve_leader.ts";
+import {
+  coLocatedTokenKeyWarning,
+  TOKEN_SECRETS_KEY_RECORD,
+} from "../../serve/token_key_exposure.ts";
 
 /**
  * How long the push of the runs boot or reconciliation settled may take
@@ -1524,6 +1544,18 @@ export const ROOT_CONTROL_PLANE_IMPORT_PREFIXES: readonly string[] = [
   "fire-records/",
   "claims/",
 ];
+
+/**
+ * Whether serve's bind host names nothing another host can reach: a
+ * wildcard or a loopback address, in any spelling (swamp-club#4096).
+ */
+export function isUnreachableBindHost(host: string): boolean {
+  const bare = host.replace(/^\[|\]$/g, "").toLowerCase();
+  return bare === "0.0.0.0" || bare === "::" || bare === "localhost" ||
+    bare === "::1" || /^127\./.test(bare) || /^::ffff:127\./.test(bare) ||
+    /^::ffff:7f[0-9a-f]{2}:/.test(bare) ||
+    /^(0+:){7}0*[01]$/.test(bare);
+}
 
 /** Shutdown drain deadline when `--shutdown-drain-timeout` is unset. */
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 30_000;
@@ -3184,11 +3216,15 @@ export const serveCommand = new Command()
       syncService,
       lockfilePath: managedLockfilePath,
       vaultsDir,
+      v3Role,
     } = await requireInitializedRepoUnlocked({
       repoDir,
       outputMode: ctx.outputMode,
       // Serve outlives any other writer: once it is done, serve writes again.
       retakeLostV3Lease: true,
+      // Team mode (swamp-club#4096): a node that finds another serve
+      // holding the lease follows it, and leads once that lease expires.
+      followV3Lease: true,
       // Serve writes a claimed datastore as its owner, when its address is
       // the owner's (swamp-club#4063).
       v3OwnerCheck: { as: "serve", address: ownerAddress },
@@ -3215,7 +3251,29 @@ export const serveCommand = new Command()
     const v3Maintenance = v3Location !== undefined
       ? new V3MaintenanceTimer(v3DatastoreFor(resolvedRepoDir, v3Location))
       : undefined;
-    v3Maintenance?.start();
+    // Only the leader writes, so only the leader maintains (swamp-club#4096).
+    const v3Follows = v3Role === "follower";
+    // Serve's role in team mode on a v3 datastore, set once the control
+    // plane it shares is known (swamp-club#4096).
+    let serveLeadership: ServeLeadership | undefined;
+    // The leader's timers a follower starts once it first leads
+    // (swamp-club#4096). A leader that loses the lead shuts down, which
+    // stops them.
+    const leaderStarts: Array<() => void> = [];
+    // Set once the leader's work first starts, at boot or on a promotion
+    // whenever it comes, so a start registered after it is never queued.
+    let leaderWorkStarted = !v3Follows;
+    const startWhenLeading = (start: () => void): void => {
+      if (leaderWorkStarted) start();
+      else leaderStarts.push(start);
+    };
+    // Until serve's leadership exists, a node that booted following keeps
+    // its gates closed from the first request it takes.
+    const isFollowing = (): boolean =>
+      serveLeadership !== undefined
+        ? serveLeadership.role === "follower"
+        : v3Follows;
+    if (!v3Follows) v3Maintenance?.start();
     // The chunks each caller uploaded through the datastore API, so a later
     // commit may name them (swamp-club#3915).
     const datastoreApiLedger = new UploadLedger();
@@ -3235,15 +3293,16 @@ export const serveCommand = new Command()
         ),
     });
     // Its Litestream sidecar, kept while serve holds the lease; nothing
-    // while the datastore does not replicate (swamp-club#3416).
-    const v3Replication =
-      v3Maintenance !== undefined && v3Location !== undefined
-        ? startV3ReplicationUpkeep(resolvedRepoDir, v3Location)
-        : undefined;
+    // while the datastore does not replicate (swamp-club#3416). A follower
+    // starts it once it leads (swamp-club#4096): the first hold sets up the
+    // sidecar the upkeep keeps.
+    let v3Replication = v3Location !== undefined && !v3Follows
+      ? startV3ReplicationUpkeep(resolvedRepoDir, v3Location)
+      : undefined;
     // A write request answers once its commits are replicated; nothing waits
     // while the datastore does not replicate (swamp-club#3489).
-    const confirmReplicated = v3Replication !== undefined &&
-        v3Location !== undefined && v3ReplicatesAt(v3Location.path)
+    const confirmReplicated = v3Location !== undefined &&
+        v3ReplicatesAt(v3Location.path)
       ? ((path: string) => () => confirmV3Replicated(path))(v3Location.path)
       : undefined;
     const replicationMark = confirmReplicated !== undefined &&
@@ -3297,6 +3356,7 @@ export const serveCommand = new Command()
     // Armed detached so the keeper's checks never join swamp.cli's trace.
     runDetached(() => gatePassKeeper?.start(GATE_PASS_KEEPER_INTERVAL_MS));
     const workerGateway = new WorkerGateway({
+      acceptsWorkers: () => !isFollowing(),
       repoDir: resolvedRepoDir,
       repoContext,
       capabilityService,
@@ -3466,15 +3526,16 @@ export const serveCommand = new Command()
     }
 
     // Probe deployment stack and resolve durability mode.
-    // A v3 datastore's serve keeps its control plane in the checkout, as a
-    // filesystem one does, whatever the datastore replicates to
-    // (swamp-club#3534).
+    // A v3 bucket datastore's serve keeps its control plane in the bucket
+    // (swamp-club#4096), so it is durable across instance replacement as a
+    // v2 one with a control plane is.
     const datastoreClass: DatastoreClassification =
-      isCustomDatastoreConfig(datastoreConfig) && v3Location === undefined
+      isCustomDatastoreConfig(datastoreConfig)
         ? {
           kind: "remote",
           type: datastoreConfig.type,
-          hasControlPlane: !!syncService?.capabilities?.().controlPlane,
+          hasControlPlane: v3Location !== undefined ||
+            !!syncService?.capabilities?.().controlPlane,
         }
         : { kind: "filesystem" };
 
@@ -3574,8 +3635,10 @@ export const serveCommand = new Command()
     }
 
     const caps = syncService?.capabilities?.();
+    // A v3 datastore's serve keeps its control plane in the datastore, so
+    // every serve node of it shares one (swamp-club#4096).
     const hasRemoteControlPlane = !!(caps?.controlPlane &&
-      syncService?.controlPlaneStore);
+      syncService?.controlPlaneStore) || v3Location !== undefined;
 
     if (!hasRemoteControlPlane) {
       if (heartbeatIntervalMs !== undefined) {
@@ -3817,7 +3880,20 @@ export const serveCommand = new Command()
     // evaluates controlPrefixPath() lazily — after binding, it resolves to
     // {namespace}/_control/ instead of the root _control/.
     let controlPlaneStore: ControlPlaneStore;
-    if (hasRemoteControlPlane && syncService?.controlPlaneStore) {
+    if (v3Location !== undefined) {
+      // Shared by every serve node of the datastore (swamp-club#4096). What
+      // the checkout kept before team mode moves in once, so an upgrade
+      // keeps server tokens and dashboard sessions.
+      const shared = v3ServeControlPlaneAt(v3Location);
+      await importCheckoutControlPlane(
+        new FileSystemControlPlaneStore(swampPath(resolvedRepoDir)),
+        shared,
+      );
+      controlPlaneStore = shared;
+      logger.info(
+        "Control-plane store: the v3 datastore, shared by its serve nodes",
+      );
+    } else if (hasRemoteControlPlane && syncService?.controlPlaneStore) {
       controlPlaneStore = syncService.controlPlaneStore();
       logger.info("Control-plane store: remote datastore");
     } else {
@@ -3893,6 +3969,15 @@ export const serveCommand = new Command()
       tokenSecretsProvider,
       hasRemoteControlPlane,
     });
+
+    // Team mode keeps the token secrets in the datastore: with the default
+    // co-located key, read access to it decrypts every one (swamp-club#4096).
+    if (v3Location !== undefined) {
+      const warning = coLocatedTokenKeyWarning(
+        await controlPlaneStore.get(TOKEN_SECRETS_KEY_RECORD).catch(() => null),
+      );
+      if (warning !== undefined) logger.warn(warning);
+    }
 
     await sweepTokenConsistency({
       repoContext,
@@ -4566,36 +4651,49 @@ export const serveCommand = new Command()
     // migration push above, a failed push here only warns: the local policy
     // is already right, and reconcile collapses any duplicate grants a peer
     // creates because it could not see these (swamp-club#2822).
-    const { materializeResult, fileReconcileResult } = await commitGrantWrites(
-      async () => ({
-        materializeResult: await materializeAdmins(
-          authConfig.mode,
-          authConfig.admins,
-          grantWrites.adminGrantStore,
-        ),
-        fileReconcileResult: await reconcileAllFileGrants(
-          validEntries,
-          grantWrites.fileGrantStore,
-        ),
-      }),
-    );
+    // Only the leader writes, so a follower applies no grant config: the
+    // node that leads applies its own, at boot or when it takes the lead
+    // (swamp-club#4096).
+    const applyGrantConfig = async (): Promise<void> => {
+      const { materializeResult, fileReconcileResult } =
+        await commitGrantWrites(
+          async () => ({
+            materializeResult: await materializeAdmins(
+              authConfig.mode,
+              authConfig.admins,
+              grantWrites.adminGrantStore,
+            ),
+            fileReconcileResult: await reconcileAllFileGrants(
+              validEntries,
+              grantWrites.fileGrantStore,
+            ),
+          }),
+        );
 
-    if (
-      materializeResult.created > 0 || materializeResult.updated > 0 ||
-      materializeResult.revoked > 0 || materializeResult.reactivated > 0
-    ) {
-      logger
-        .info`Admin grants materialized: ${materializeResult.created} created, ${materializeResult.updated} updated, ${materializeResult.revoked} revoked, ${materializeResult.reactivated} reactivated, ${materializeResult.unchanged} unchanged`;
-    }
+      if (
+        materializeResult.created > 0 || materializeResult.updated > 0 ||
+        materializeResult.revoked > 0 || materializeResult.reactivated > 0
+      ) {
+        logger
+          .info`Admin grants materialized: ${materializeResult.created} created, ${materializeResult.updated} updated, ${materializeResult.revoked} revoked, ${materializeResult.reactivated} reactivated, ${materializeResult.unchanged} unchanged`;
+      }
 
-    if (
-      fileReconcileResult.totalCreated > 0 ||
-      fileReconcileResult.totalUpdated > 0 ||
-      fileReconcileResult.totalRevoked > 0 ||
-      fileReconcileResult.totalReactivated > 0
-    ) {
-      logger
-        .info`File grants reconciled (${fileReconcileResult.filesProcessed} file(s)): ${fileReconcileResult.totalCreated} created, ${fileReconcileResult.totalUpdated} updated, ${fileReconcileResult.totalRevoked} revoked, ${fileReconcileResult.totalReactivated} reactivated, ${fileReconcileResult.totalUnchanged} unchanged`;
+      if (
+        fileReconcileResult.totalCreated > 0 ||
+        fileReconcileResult.totalUpdated > 0 ||
+        fileReconcileResult.totalRevoked > 0 ||
+        fileReconcileResult.totalReactivated > 0
+      ) {
+        logger
+          .info`File grants reconciled (${fileReconcileResult.filesProcessed} file(s)): ${fileReconcileResult.totalCreated} created, ${fileReconcileResult.totalUpdated} updated, ${fileReconcileResult.totalRevoked} revoked, ${fileReconcileResult.totalReactivated} reactivated, ${fileReconcileResult.totalUnchanged} unchanged`;
+      }
+    };
+    if (v3Follows) {
+      logger.info(
+        "Grant config is applied by the serve node that leads the datastore",
+      );
+    } else {
+      await applyGrantConfig();
     }
 
     const policySnapshotLoader = new PolicySnapshotLoader(
@@ -4644,8 +4742,11 @@ export const serveCommand = new Command()
         : "Tag policy: a write grant also permits changing tags",
     );
 
+    // Built on a v3 datastore whatever the reload mode: a node taking the
+    // lead reconciles the grant sources as they are then through it, not
+    // as they were at its boot (swamp-club#4096).
     let grantsDirectoryPoller: GrantsDirectoryPoller | null = null;
-    if (grantReloadMode === "auto") {
+    if (grantReloadMode === "auto" || v3Location !== undefined) {
       grantsDirectoryPoller = new GrantsDirectoryPoller({
         grantsDir,
         externalGrantsFile: externalGrantsFilePath,
@@ -4656,10 +4757,34 @@ export const serveCommand = new Command()
           Object.assign(resolvedUserNames, usernamesBySub),
         fileGrantStore: grantWrites.fileGrantStore,
         policySnapshotLoader,
-        commitReconcile: commitGrantWrites,
+        // A node without the lease writes nothing: the change is retried
+        // at its next poll, and applied once it leads (swamp-club#4096). By
+        // the lease, not the role, which still reads follower while a node
+        // takes the lead.
+        commitReconcile: async (reconcile) => {
+          if (
+            v3Location !== undefined &&
+            !holdsCurrentV3WriterLease(v3Location.path)
+          ) {
+            return "deferred";
+          }
+          await commitGrantWrites(reconcile);
+        },
       });
-      await grantsDirectoryPoller.start();
+      if (grantReloadMode === "auto") await grantsDirectoryPoller.start();
     }
+    // What a node applies when it takes the lead: its admins, and the grant
+    // sources as they are now.
+    const applyGrantConfigAtLead = async (): Promise<void> => {
+      await commitGrantWrites(async () => {
+        await materializeAdmins(
+          authConfig.mode,
+          authConfig.admins,
+          grantWrites.adminGrantStore,
+        );
+      });
+      await grantsDirectoryPoller?.reconcileNow();
+    };
 
     accessDataPoller?.start();
 
@@ -4689,6 +4814,34 @@ export const serveCommand = new Command()
     }
 
     const instanceId = crypto.randomUUID();
+    // This node's address in the leader record: a wildcard or loopback bind
+    // address names nothing another host can reach, so it is left out, and
+    // an IPv6 literal is bracketed, as a URL needs it (swamp-club#4096).
+    const leaderAddress = isUnreachableBindHost(host)
+      ? undefined
+      : `${tlsEnabled ? "https" : "http"}://${
+        host.includes(":") && !host.startsWith("[") ? `[${host}]` : host
+      }:${port}`;
+    // A node that took the lease at boot records itself as the leader before
+    // it listens or settles anything: a stalled former leader judges its
+    // peers by the record, and would otherwise count this node gone by the
+    // runs it takes (swamp-club#4096). ServeLeadership writes it again.
+    if (v3Location !== undefined && !v3Follows) {
+      const fence = v3WriterFence(v3Location.path);
+      if (fence !== undefined) {
+        await controlPlaneStore.put(
+          SERVE_LEADER_KEY,
+          serializeServeLeader({
+            instanceId,
+            fence,
+            ...(leaderAddress !== undefined ? { address: leaderAddress } : {}),
+            since: new Date().toISOString(),
+          }),
+        ).catch((error) => {
+          logger.warn`Recording this serve node as the leader failed: ${error}`;
+        });
+      }
+    }
     // A resume through this server takes its continuation claims as this
     // instance, in the store its heartbeat is written to, so a peer can
     // tell a claim of a live instance from one a dead instance left.
@@ -4994,103 +5147,119 @@ export const serveCommand = new Command()
     // through signalChange's fallback (swamp-club#3056). The reap's root
     // pushes what it interrupted, and what the marker names; the method-run
     // settle pushes nothing, as before.
-    let bootReaped = 0;
-    const reapResult = await runInRootUnitOfWork(
-      repoContext,
-      {
-        flush: pushSettledRuns
-          ? () =>
-            pushSettledAtBoot({
-              reaped: bootReaped,
-              marker: unpushedAtBoot,
-              markerPath: unpushedMarkerPath,
-              push: pushSettledRuns,
-            })
-          : undefined,
-        pushWhen: "completed",
-      },
-      async () => {
-        const result = await reapOrphanedWorkflowRuns(
-          runningRuns,
-          async (wid, r) => {
-            await repoContext.workflowRunRepo.save(wid, r);
-            runTracker.markSettled(r.id, "server_crash");
-          },
-          (runId) => {
-            const tracked = runTracker.findById(runId);
-            return tracked
-              ? { status: tracked.status, instanceId: tracked.instanceId }
-              : null;
-          },
-          isProcessGone,
-          instanceId,
-          hasRemoteControlPlane
-            ? async (id) => {
-              const data = await controlPlaneStore.get(`heartbeats/${id}`);
-              if (data === null) return false;
-              // An instance that stopped without pushing its interrupted
-              // runs leaves a stopped record (swamp-club#3958). A merely
-              // stale one is left to reconciliation, as before.
-              const record = InstanceHeartbeatService.parseRecord(data);
-              return record === null ||
-                !InstanceHeartbeatService.isStopped(record);
-            }
-            : undefined,
-        );
-        bootReaped = result.reaped;
-        return result;
-      },
-    );
-    if (reapResult.reaped > 0) {
-      logger.warn(
-        "Boot: {reaped} workflow run(s) interrupted by crash — recover with 'swamp workflow recover <workflow>'",
-        { reaped: reapResult.reaped },
-      );
-    }
-
-    // Method runs a dead owner left running on this host, such as the steps
-    // of a run the previous serve process was driving when it died. A row is
-    // judged on host and pid, not instance id: this serve's instance id is
-    // new, so the rows of the process it replaces carry another one.
-    // Best-effort: a row left unsettled is kept for `run doctor --fix`.
-    try {
-      const settledMethodRuns = await runInRootUnitOfWork(
+    // Only the leader writes, so a follower settles nothing at boot; a
+    // node settles what others left each time it takes the lead
+    // (swamp-club#4096).
+    const settleLeftRuns = async (
+      runningRuns: Awaited<
+        ReturnType<typeof repoContext.workflowRunRepo.findGlobalByStatus>
+      >,
+    ): Promise<void> => {
+      let bootReaped = 0;
+      const reapResult = await runInRootUnitOfWork(
         repoContext,
-        { flush: undefined },
-        () =>
-          settleDeadOwnerMethodRuns(
-            repoContext.outputRepo,
-            runTracker,
-            localOwnerLiveness(),
-          ),
-      );
-      if (settledMethodRuns.length > 0) {
-        logger.warn(
-          "Boot: cancelled {count} method run(s) whose owning process is gone",
-          { count: settledMethodRuns.length },
-        );
-      }
-    } catch (error) {
-      logger.warn(
-        "Boot: could not settle method runs whose owning process is gone: {error}",
-        { error: error instanceof Error ? error.message : String(error) },
-      );
-    }
-
-    logger.info("Boot: sweeping stale records");
-    const swept = await sweepStaleRecords({
-      repoContext,
-    });
-    if (swept.leases + swept.pendingDispatches + swept.workers > 0) {
-      logger.info(
-        "Boot reconciliation: swept {leases} lease(s), {pendingDispatches} pending dispatch(es), {workers} worker(s)",
         {
-          leases: swept.leases,
-          pendingDispatches: swept.pendingDispatches,
-          workers: swept.workers,
+          flush: pushSettledRuns
+            ? () =>
+              pushSettledAtBoot({
+                reaped: bootReaped,
+                marker: unpushedAtBoot,
+                markerPath: unpushedMarkerPath,
+                push: pushSettledRuns,
+              })
+            : undefined,
+          pushWhen: "completed",
+        },
+        async () => {
+          const result = await reapOrphanedWorkflowRuns(
+            runningRuns,
+            async (wid, r) => {
+              await repoContext.workflowRunRepo.save(wid, r);
+              runTracker.markSettled(r.id, "server_crash");
+            },
+            (runId) => {
+              const tracked = runTracker.findById(runId);
+              return tracked
+                ? { status: tracked.status, instanceId: tracked.instanceId }
+                : null;
+            },
+            isProcessGone,
+            instanceId,
+            // In team mode only the leader runs work: a run any other instance
+            // left running is dead, whatever its heartbeat says, since its
+            // commits are fenced (swamp-club#4096).
+            v3Location !== undefined
+              ? teamModeRunLiveness(instanceId, controlPlaneStore).isAlive
+              : hasRemoteControlPlane
+              ? async (id) => {
+                const data = await controlPlaneStore.get(`heartbeats/${id}`);
+                if (data === null) return false;
+                // An instance that stopped without pushing its interrupted
+                // runs leaves a stopped record (swamp-club#3958). A merely
+                // stale one is left to reconciliation, as before.
+                const record = InstanceHeartbeatService.parseRecord(data);
+                return record === null ||
+                  !InstanceHeartbeatService.isStopped(record);
+              }
+              : undefined,
+            { judgeForeignRows: v3Location !== undefined },
+          );
+          bootReaped = result.reaped;
+          return result;
         },
       );
-    }
+      if (reapResult.reaped > 0) {
+        logger.warn(
+          "Boot: {reaped} workflow run(s) interrupted by crash — recover with 'swamp workflow recover <workflow>'",
+          { reaped: reapResult.reaped },
+        );
+      }
+
+      // Method runs a dead owner left running on this host, such as the steps
+      // of a run the previous serve process was driving when it died. A row is
+      // judged on host and pid, not instance id: this serve's instance id is
+      // new, so the rows of the process it replaces carry another one.
+      // Best-effort: a row left unsettled is kept for `run doctor --fix`.
+      try {
+        const settledMethodRuns = await runInRootUnitOfWork(
+          repoContext,
+          { flush: undefined },
+          () =>
+            settleDeadOwnerMethodRuns(
+              repoContext.outputRepo,
+              runTracker,
+              localOwnerLiveness(),
+            ),
+        );
+        if (settledMethodRuns.length > 0) {
+          logger.warn(
+            "Boot: cancelled {count} method run(s) whose owning process is gone",
+            { count: settledMethodRuns.length },
+          );
+        }
+      } catch (error) {
+        logger.warn(
+          "Boot: could not settle method runs whose owning process is gone: {error}",
+          { error: error instanceof Error ? error.message : String(error) },
+        );
+      }
+
+      logger.info("Boot: sweeping stale records");
+      const swept = await sweepStaleRecords({
+        repoContext,
+      });
+      if (swept.leases + swept.pendingDispatches + swept.workers > 0) {
+        logger.info(
+          "Boot reconciliation: swept {leases} lease(s), {pendingDispatches} pending dispatch(es), {workers} worker(s)",
+          {
+            leases: swept.leases,
+            pendingDispatches: swept.pendingDispatches,
+            workers: swept.workers,
+          },
+        );
+      }
+    };
+    if (!v3Follows) await settleLeftRuns(runningRuns);
 
     const datastoreResolver = new DefaultDatastorePathResolver(
       resolvedRepoDir,
@@ -5148,6 +5317,17 @@ export const serveCommand = new Command()
         managedDefinitionsDir: repoMarker?.datastore?.managedConfig
           ? join(datastoreResolver.resolvePath("config"), "models")
           : undefined,
+        // A node that booted following refuses writes from the first request
+        // it takes, before its leadership names the leader (swamp-club#4096).
+        ...(v3Follows
+          ? {
+            followerGate: {
+              role: "follower" as const,
+              leader: () => undefined,
+              isStale: () => false,
+            },
+          }
+          : {}),
       };
     // Every pending signal a wait takes on this server is audited, whether
     // the step, a signaller or the sweep took it (swamp-club#3213).
@@ -5820,6 +6000,16 @@ export const serveCommand = new Command()
         ),
         cronFireDedup: controlPlaneStore?.putIfAbsent
           ? async (workflowId, fireTime) => {
+            // Only the leader runs a fire; a follower leaves its slot to it,
+            // as does a leader whose lease was just taken over and has not
+            // ticked since (swamp-club#4096).
+            if (
+              isFollowing() ||
+              (v3Location !== undefined &&
+                !holdsCurrentV3WriterLease(v3Location.path))
+            ) {
+              return false;
+            }
             const key = `fire-records/${workflowId}/${
               normalizeFireTime(fireTime)
             }`;
@@ -6017,6 +6207,9 @@ export const serveCommand = new Command()
         },
         getAccessToken: (token) => lookupOAuthAccessToken(vaultService, token),
         updateTokenCollectives: async (tokenName, collectives, groups) => {
+          // The leader's refresh writes it; a follower still updates its own
+          // connections (swamp-club#4096).
+          if (isFollowing()) return;
           const { createResourceWriter } = await import(
             "../../domain/models/data_writer.ts"
           );
@@ -6059,6 +6252,7 @@ export const serveCommand = new Command()
           );
         },
         revokeToken: async (tokenName) => {
+          if (isFollowing()) return;
           const { createResourceWriter } = await import(
             "../../domain/models/data_writer.ts"
           );
@@ -6191,6 +6385,7 @@ export const serveCommand = new Command()
     if (webhookEndpoints.length > 0) {
       const endpoints = webhookEndpoints;
       webhookService = new WebhookService({
+        acceptsRuns: () => !isFollowing(),
         repoDir: resolvedRepoDir,
         repoContext,
         datastoreConfig,
@@ -6874,6 +7069,14 @@ export const serveCommand = new Command()
                 message: "Content-Type must be application/json",
               }, { status: 415 });
             }
+            // A follower cancels nothing: refused once the caller is
+            // authenticated, with a retryable 503 (swamp-club#4096). Inside
+            // the cancel route only: any other POST is not this route's.
+            const cancelNotLeader = followerHttpRefusal(
+              "workflow.cancel",
+              connectionCtx.followerGate,
+            );
+            if (cancelNotLeader !== undefined) return cancelNotLeader;
           }
           if (cancelMatch) {
             const executionType = cancelMatch[1] as ExecutionType;
@@ -7546,6 +7749,10 @@ export const serveCommand = new Command()
       if (continuationSweepService) {
         await continuationSweepService.dispose();
       }
+      // No promotion during teardown: the lease is released below. Team
+      // mode stays on until the datastores close, so a follower still
+      // commits nothing.
+      await serveLeadership?.stop();
       if (heartbeatService) {
         await stopHeartbeatAtShutdown(heartbeatService, {
           store: controlPlaneStore,
@@ -7643,12 +7850,24 @@ export const serveCommand = new Command()
       }
     }
 
-    if (hasRemoteControlPlane) {
+    // On a v3 datastore only the leader runs work (swamp-club#4096): a peer
+    // that still records active runs is gone however fresh its heartbeat,
+    // since its commits are fenced. A peer with none, a follower, is left.
+    const isPeerGone = v3Location !== undefined
+      ? teamModeRunLiveness(
+        instanceId,
+        controlPlaneStore,
+        staleTtlMs,
+        () => v3WriterFence(v3Location.path),
+      ).isPeerGone
+      : undefined;
+    const reconcileRemoteAtLead = async (): Promise<void> => {
       const remoteReaped = await reconcileRemoteInterruptedRuns({
         controlPlaneStore,
         instanceId,
         runTracker,
         staleTtlMs,
+        ...(isPeerGone !== undefined && { isPeerGone }),
         workflowRunRepo: repoContext.workflowRunRepo,
         markDirty: repoContext.markDirty,
         outputRepo: repoContext.outputRepo,
@@ -7667,7 +7886,8 @@ export const serveCommand = new Command()
           run.methodName ?? run.workflowName ?? "unknown"
         })`;
       }
-    }
+    };
+    if (hasRemoteControlPlane && !v3Follows) await reconcileRemoteAtLead();
 
     // Interrupted workflow rows whose record is no longer running, such as a
     // row reaped while its owner went on to finish the run, would otherwise
@@ -7693,18 +7913,21 @@ export const serveCommand = new Command()
     const configuredCronWorkflows = new Set(
       allWorkflows.filter((w) => w.schedule).map((w) => w.name),
     );
-    const replayed = await replayPendingRuns({
-      runTracker,
-      webhookService: webhookService ?? undefined,
-      scheduledExecution: scheduledExecution ?? undefined,
-      controlPlaneStore,
-      configuredWebhookWorkflows,
-      configuredWebhookRoutes,
-      configuredCronWorkflows,
-    });
-    if (replayed > 0) {
-      logger.info`Replayed ${replayed} pending run(s) from previous process`;
-    }
+    const replayPendingAtLead = async (): Promise<void> => {
+      const replayed = await replayPendingRuns({
+        runTracker,
+        webhookService: webhookService ?? undefined,
+        scheduledExecution: scheduledExecution ?? undefined,
+        controlPlaneStore,
+        configuredWebhookWorkflows,
+        configuredWebhookRoutes,
+        configuredCronWorkflows,
+      });
+      if (replayed > 0) {
+        logger.info`Replayed ${replayed} pending run(s) from previous process`;
+      }
+    };
+    if (!v3Follows) await replayPendingAtLead();
 
     if (hasRemoteControlPlane) {
       const scheme = tlsEnabled ? "https" : "http";
@@ -7725,19 +7948,28 @@ export const serveCommand = new Command()
       let knownPeerIds: Set<string> | null = null;
       const runReconciliationTick = async () => {
         try {
-          const reaped = await reconcileRemoteInterruptedRuns({
-            controlPlaneStore,
-            instanceId,
-            runTracker,
-            staleTtlMs,
-            workflowRunRepo: repoContext.workflowRunRepo,
-            markDirty: repoContext.markDirty,
-            outputRepo: repoContext.outputRepo,
-            ...(refreshRunRecord !== undefined && { refreshRunRecord }),
-            ...(pushSettledRuns !== undefined &&
-              { pushReaped: pushSettledRuns }),
-            resolveWorkflowId,
-          });
+          // A follower settles nothing: only the leader commits
+          // (swamp-club#4096). Nor does a leader whose lease was taken over
+          // and has not ticked since: it would judge the new leader gone by
+          // its active runs, and those control-plane deletes are unfenced.
+          const reaped = isFollowing() ||
+              (v3Location !== undefined &&
+                !holdsCurrentV3WriterLease(v3Location.path))
+            ? 0
+            : await reconcileRemoteInterruptedRuns({
+              controlPlaneStore,
+              instanceId,
+              runTracker,
+              staleTtlMs,
+              ...(isPeerGone !== undefined && { isPeerGone }),
+              workflowRunRepo: repoContext.workflowRunRepo,
+              markDirty: repoContext.markDirty,
+              outputRepo: repoContext.outputRepo,
+              ...(refreshRunRecord !== undefined && { refreshRunRecord }),
+              ...(pushSettledRuns !== undefined &&
+                { pushReaped: pushSettledRuns }),
+              resolveWorkflowId,
+            });
           if (reaped > 0) {
             logger
               .info`Continuous reconciliation reaped ${reaped} run(s)`;
@@ -7808,6 +8040,87 @@ export const serveCommand = new Command()
       };
       scheduleReconciliation();
       logger.info("Continuous reconciliation timer started");
+    }
+
+    // Team mode on a v3 datastore (swamp-club#4096): the node holding the
+    // writer lease leads; the others follow, and take the lead once its
+    // lease expires. A node that takes the lead starts the leader's timers
+    // and settles what the nodes before it left.
+    if (v3Location !== undefined) {
+      const location = v3Location;
+      // The boot already did a leader's work for a node that took the
+      // lease at start.
+      let bootLead = !v3Follows;
+      const leaderStep = async (what: string, step: () => Promise<void>) => {
+        try {
+          await step();
+        } catch (error) {
+          logger.warn`Taking the lead: ${what} failed: ${error}`;
+        }
+      };
+      const leadership = new ServeLeadership({
+        instanceId,
+        ...(leaderAddress !== undefined ? { address: leaderAddress } : {}),
+        lease: {
+          holdsCurrent: () => holdsCurrentV3WriterLease(location.path),
+          fence: () => v3WriterFence(location.path),
+          take: () =>
+            holdV3Writer(location, resolvedRepoDir, {
+              retakeLost: true,
+              follow: true,
+              ownerCheck: { as: "serve", address: ownerAddress },
+            }),
+        },
+        store: controlPlaneStore,
+        refreshCopy: () => refreshV3FollowerCopy(resolvedRepoDir, location),
+        onLead: async () => {
+          if (bootLead) {
+            bootLead = false;
+            return;
+          }
+          v3Maintenance?.start();
+          v3Replication ??= startV3ReplicationUpkeep(
+            resolvedRepoDir,
+            location,
+          );
+          leaderWorkStarted = true;
+          for (const start of leaderStarts.splice(0)) start();
+          await leaderStep(
+            "settling the runs left running",
+            async () =>
+              await settleLeftRuns(
+                await repoContext.workflowRunRepo.findGlobalByStatus("running"),
+              ),
+          );
+          await leaderStep(
+            "reconciling other instances' runs",
+            reconcileRemoteAtLead,
+          );
+          await leaderStep("replaying pending runs", replayPendingAtLead);
+          await leaderStep(
+            "applying the grant config",
+            applyGrantConfigAtLead,
+          );
+        },
+        // A node that lost the lead stops, as a shutdown does: it takes no
+        // more work, its queued webhook runs stay pending for the leader to
+        // replay, its timers stop, and it exits 75 for its supervisor to
+        // start it again as a fresh follower. No state of its time as leader
+        // carries into following (swamp-club#4096).
+        // ServeLeadership runs it outside its tick, so the shutdown's
+        // stop() of the leadership does not wait on it.
+        onLostLead: async () => {
+          Deno.exitCode = 75;
+          await shutdown();
+        },
+      });
+      serveLeadership = leadership;
+      connectionCtx.followerGate = leadership;
+      enableV3ServeTeamMode(
+        location.path,
+        () => leadership.leader(),
+      );
+      await leadership.start(v3Follows ? "follower" : "writer");
     }
 
     if (controlPlaneStore?.putIfAbsent) {
@@ -8142,7 +8455,7 @@ export const serveCommand = new Command()
         );
       },
     });
-    retentionGcService.start();
+    startWhenLeading(() => retentionGcService!.start());
 
     // Server token GC — deletes revoked tokens, and expired ones past the
     // grace period, in every auth mode. In OAuth mode it starts after token
@@ -8190,7 +8503,7 @@ export const serveCommand = new Command()
             withServerTokenLock(datastoreConfig, name, fn),
         }),
       );
-      serverTokenGcService.start();
+      startWhenLeading(() => serverTokenGcService!.start());
     }
 
     // Continuation sweep: continues suspended runs that need no further
@@ -8235,6 +8548,17 @@ export const serveCommand = new Command()
         intervalMs: continuationSweepIntervalMs,
         bootPassOnly,
         sweep: async ({ boot, isStopping, signal }) => {
+          // A follower resumes nothing: the resumed steps would run, and
+          // their commits be refused (swamp-club#4096).
+          // By the lease, not the role: a node taking the lead runs its
+          // first pass while its role still reads follower (swamp-club#4096).
+          if (
+            v3Location !== undefined
+              ? !holdsCurrentV3WriterLease(v3Location.path)
+              : isFollowing()
+          ) {
+            return { examined: 0, launched: 0 };
+          }
           const result = await sweepContinuations(connectionCtx, {
             // A dead holder's claim is replaced only while the run records
             // are current: after boot they go stale on a synced datastore.
@@ -8246,7 +8570,7 @@ export const serveCommand = new Command()
           return result;
         },
       });
-      continuationSweepService.start();
+      startWhenLeading(() => continuationSweepService!.start());
     }
 
     isReady = true;

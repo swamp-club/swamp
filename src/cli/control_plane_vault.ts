@@ -26,8 +26,7 @@ import {
 } from "../domain/vaults/control_plane_vault_init.ts";
 import type { TokenSecretsKeyRef } from "../domain/vaults/token_secrets_key.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
-import { FileSystemControlPlaneStore } from "../infrastructure/persistence/fs_control_plane_store.ts";
-import { swampPath } from "../infrastructure/persistence/paths.ts";
+import { localServeControlPlane } from "./repo_context.ts";
 import {
   parseTokenSecretsKeyConfig,
   readServeConfigFile,
@@ -74,7 +73,8 @@ export async function initializeControlPlaneVaultForCli(
       throw controlPlaneVaultInitError(err, true);
     }
   } else {
-    store = new FileSystemControlPlaneStore(swampPath(repoDir));
+    // Serve's on a v3 datastore is the datastore's (swamp-club#4096).
+    store = await localServeControlPlane(repoDir);
   }
 
   // The key source comes only from the repo's serve.yaml, read quietly so

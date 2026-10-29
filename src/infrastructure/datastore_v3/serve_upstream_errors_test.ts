@@ -34,6 +34,10 @@ import {
   V3_WRITER_BUSY_CODE,
   WRITER_FENCED_CODE,
 } from "../../domain/datastore_v3/writer_lease.ts";
+import {
+  SERVE_NOT_LEADER_CODE,
+  ServeNotLeaderError,
+} from "../../domain/datastore_v3/serve_leader.ts";
 import { UserError } from "../../domain/errors.ts";
 import { isNetworkFailure } from "./network_failure.ts";
 import {
@@ -152,6 +156,32 @@ Deno.test("serveErrorFromReply: 409 writer fenced keeps the fenced code and serv
     error.message,
     "Another swamp process took over the writer lease",
   );
+});
+
+Deno.test("serveErrorFromReply: 503 serve_not_leader names the leader and never may land (swamp-club#4096)", () => {
+  const error = serveErrorFromReply(503, {
+    code: SERVE_NOT_LEADER_CODE,
+    message: "not the leader",
+    seq: 4,
+    leader: {
+      instanceId: "lead",
+      fence: 3,
+      address: "http://10.0.0.5:9090",
+      since: "2026-10-28T12:00:00.000Z",
+    },
+  }, SERVE_URL);
+  assertInstanceOf(error, ServeNotLeaderError);
+  assertEquals(error.code, SERVE_NOT_LEADER_CODE);
+  assertEquals(error.leader?.address, "http://10.0.0.5:9090");
+});
+
+Deno.test("serveErrorFromReply: 503 serve_not_leader without a readable leader names none", () => {
+  const error = serveErrorFromReply(503, {
+    code: SERVE_NOT_LEADER_CODE,
+    leader: { instanceId: 3 },
+  }, SERVE_URL);
+  assertInstanceOf(error, ServeNotLeaderError);
+  assertEquals(error.leader, undefined);
 });
 
 Deno.test("serveErrorFromReply: 503 with a seq may land, and keeps serve's code beside it", () => {

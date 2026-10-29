@@ -5753,8 +5753,10 @@ reads the lineage registry once and restores the current lineage (D2), with
 an info line before the restore and one with its time after. Before the
 restore, the join check refuses a clone whose `.swamp/` holds records, as
 on a filesystem v3 datastore (**Joining a v3 datastore**). Serve's own
-control plane (heartbeats, pending runs) stays in the checkout, so serve
-reports a `local` deployment mode on a v3 bucket datastore.
+control plane (heartbeats, active and pending runs, claims) lives in the
+datastore's namespaced control plane since swamp-club#4096, so serve on a
+v3 bucket datastore reports a durable deployment mode (see "Team mode:
+leader election and followers").
 
 **Known limits.**
 
@@ -5847,11 +5849,6 @@ reports a `local` deployment mode on a v3 bucket datastore.
   traffic on S3 still waits the closing sync's 60 s: Litestream retries inside
   the sync whatever its AWS SDK retry settings, and the storage probe still
   answers.
-- Serve's control plane (heartbeats, pending runs, continuation claims)
-  stays in its checkout, so a v3 bucket datastore's serve is not durable
-  across instance replacement and reports `local`. That is solo mode's
-  shape; moving it to the bucket's `ns/` store belongs with Phase 5's leader
-  and failover.
 - `--format 3` through `--server` is refused.
 
 **Retention and sweeps.** The end-of-command retention pass confirms the
@@ -7340,6 +7337,179 @@ than dropped as `head-moved`.
   part-way, a serve moved after a load and a claimed datastore;
   `integration/serve_datastore_base_test.ts` drives `GET base`'s filtering.
 - The error rules are each red-checked.
+
+### Team mode: leader election and followers (datastore rework Phase 5)
+
+Before swamp-club#4096 a v3 serve ran single-instance: a second serve node
+waited out the lock timeout and failed with `datastore_v3_writer_busy`, and
+serve kept its control plane in its checkout, where no other node could see
+it (swamp-club#3962). Now every serve node behind one address shares the
+datastore, and the writer lease elects the leader.
+
+**Roles.** The node that holds the datastore's writer lease leads: it writes,
+runs work and keeps the leader's timers. The others follow. Serve asks for
+its hold with `followV3Lease`: `holdV3Writer` (`follow: true`) tries the
+lease once, without the lock timeout, and a busy lease leaves the node
+following, its copy made current for reads (`followV3Datastore`). Nothing is
+recovered, marked or replicated by a follower.
+
+- `ServeLeadership` (`src/serve/serve_leadership.ts`) tracks the role. On
+  every tick (10 s) a follower tries the lease once and, when it is busy,
+  restores its copy from the published lineage when it is behind
+  (`refreshV3FollowerCopy`) and reads the leader record. A follower that
+  wins takes the writer's full hold path: restore the latest replicated
+  state, raise the fence, check the claim, recover the outbox and start a
+  lineage at its fence.
+- A leader whose lease another node took over (a higher fence) does not
+  follow: it stops (`onLostLead`). Its role changes first, so its gates
+  refuse, and serve shuts down as on SIGTERM: it takes no more work, its
+  queued webhook runs stay pending for the leader to replay, its timers
+  stop, and it exits 75 for its supervisor to start it again as a fresh
+  follower. No state of its time as leader (queues, timers, runs, its
+  instance id) carries into following. Team mode needs a supervisor that
+  restarts serve: the Docker image's restart policy, systemd, launchd or
+  Kubernetes.
+- The lease and its fence alone decide who commits. The leader record
+  (`leader/current` in the control plane: instance, fence, node address,
+  since) only names the leader to followers, so a stale record can name the
+  wrong node but never lets a follower write. The node address is the
+  listener's (`scheme://host:port`); a wildcard or loopback bind address
+  names nothing another host can reach, so the record leaves it out.
+  p5-feed's forwarding will need an advertised address.
+- A node takes the lead in order: it records itself, does the leader's work
+  (below), and only then changes its role, which opens its request gates, so
+  what it settles and sweeps on taking the lead is never work it has just
+  accepted. A node whose record cannot be written does not lead yet: the
+  next tick retries the record, not the lease. A node that took the lease at
+  boot writes its record before it listens or settles anything. A node that
+  boots following has its gates closed from the first request, before its
+  leadership exists.
+
+**What a follower refuses.** Writes are refused with `serve_not_leader`
+(`ServeNotLeaderError`, exit 75: nothing was taken, so a retry is safe), in
+one place per surface, so p5-feed can replace the refusal with forwarding:
+
+- WebSocket requests: `followerRefusal` (`src/serve/follower_requests.ts`)
+  before the handler runs, so no step's side effect happens first. Every
+  dispatched request is either in `FOLLOWER_REFUSED_REQUESTS` or
+  `FOLLOWER_READ_REQUESTS` (`integration/serve_follower_requests_rules_test.ts`);
+  an unknown request is refused. The error frame names the leader.
+- The datastore API: every write after authentication, as a 503 with
+  `Retry-After` and the leader. A chunk check (`has`) is a read. The CLI's
+  serve upstream maps it to `ServeNotLeaderError` and does not retry or
+  redirect.
+- Webhooks: a verified delivery gets a 503 with `Retry-After`, naming no
+  leader. Cron fires are left to the leader (the fire dedup answers
+  "claimed by another instance"), as they are by a leader whose lease was
+  taken over before its next tick.
+- Workers: enrollment is refused with `serve_not_leader` before the token
+  is redeemed. Workers retry any code outside
+  `PERMANENT_ENROLLMENT_ERROR_CODES`, so they reach the leader.
+- The HTTP signal and cancel routes: after authentication, as the
+  datastore API (`followerHttpRefusal`).
+- Commits: `refuseV3FollowerWrite` in the handle's `assertWriterCurrent`,
+  the choke point local units and forwarded commits share, is the backstop
+  for a node that holds no lease. A node whose lease was taken over is
+  refused as fenced (`datastore_v3_writer_fenced`, exit 1) instead: a commit
+  that reaches it ran its request's work first, so a blind retry is not
+  safe, and "nothing was changed" would not be true.
+
+A follower answers reads from its own copy only while it is fresh: one that
+went three ticks (30 s) without a refresh refuses reads with the same code,
+so a revoked grant stops allowing reads on a follower within that bound.
+
+**The leader's work.** Retention, server token GC, the continuation sweep,
+v3 maintenance and the Litestream sidecar upkeep start only on the leader; a
+follower starts them when it first leads. Grant config (`admins` and the
+grant files) is applied only by the node that leads: at boot, and when it
+takes the lead, where it re-reads its grant sources as they are then
+(`GrantsDirectoryPoller.reconcileNow`), never its boot snapshot, which
+would bring back a grant revoked since. A node without the lease defers its
+grants poller's reconcile (`"deferred"`), so the change is tried again at
+the next poll and applied once it leads. A follower's collective refresh
+writes nothing and still updates its own connections. A peer reconciliation
+judged gone has its claim released once it is settled, since in team mode a
+live peer keeps its instance id. When a node takes the lead
+it settles what the nodes before it left (`settleLeftRuns`, the remote
+reconciliation and the pending-run replay). The continuation sweep, the
+reconciliation tick, cron fires and the grants poller check the lease on
+each pass, so a leader whose lease was taken over does nothing in the time
+before it notices and stops.
+
+**The control plane.** Serve's control plane on a v3 datastore is
+`v3ServeControlPlaneAt`: the datastore-wide control plane's namespaced
+records (`ns/<namespace>/`, `ns/_/` solo), on a bucket and on a filesystem
+datastore alike, beside but never among the lease's `writer/` records.
+Heartbeats, active and pending runs, continuation and reconciliation claims,
+fire records, token secrets, dashboard sessions and the leader record live
+there, so `hasRemoteControlPlane` holds on every v3 serve and v2 HA's
+machinery runs unchanged. A local resume takes its continuation claim there
+too. The issue recommended records in `commits.db` instead; the `ns/` store
+was chosen because followers must write their own heartbeats, it needs no
+schema bump, and heartbeats do not go through Litestream. Settlements are
+commits under the leader's fence, so a zombie leader cannot land them, and
+the shared records need no fencing.
+
+On its first start after the upgrade a checkout moves what its serve kept
+in `.swamp/_control/` into the shared store, once
+(`importCheckoutControlPlane`): pending runs, fire records, schedule pauses,
+dashboard sessions, audit events kept in the control plane, and token
+secrets as a set: the checkout claims the key slot atomically and moves its
+values only when the store keeps its key. A local command that opens serve's
+store runs the same import first, so a token command run before serve
+restarts cannot make a key that strands the checkout's tokens. A
+second checkout whose serve minted tokens under its own key keeps them in
+its checkout, with a warning: they must be minted again. Local commands
+that write what serve reads (`access token mint`, `rotate`, `reveal`,
+`worker token create`, `workflow schedule pause` and `resume`) use the same
+store (`localServeControlPlane`). Records are created only where absent, so nodes upgrading
+together overwrite nothing. Token secrets now live in the bucket, as v2 HA's
+do: anyone who can read the bucket's control plane can read them unless
+serve.yaml names an external `token-secrets` key. Serve says so at every start on a v3
+datastore while the key is the co-located one (`coLocatedTokenKeyWarning`),
+and says nothing once a `token-secrets` block keeps it in a vault.
+
+**Judging other instances.** Only the leader runs work, so in team mode a
+run any other serve instance left `running` is dead whatever its heartbeat
+says: a demoted leader still heartbeats, but its commits are fenced.
+`teamModeRunLiveness` gives the boot reaper an `isAlive` that is true only
+for the leader itself, with `judgeForeignRows` so a tracker row another
+instance left (#3962's quick restart, a row reopened under the old instance
+id) is judged rather than trusted. Remote reconciliation counts a peer gone
+when its heartbeat is stale or it still records active runs; a follower
+records none, so its heartbeat is left alone. A peer the leader record names at a
+fence above this node's is never gone: it took the lead from this node,
+which has not noticed yet. Runs a CLI command started
+carry no serve instance id and keep their pid check.
+
+**Claims.** `datastore claim` names serve's address, and every node is
+started with that `--address`, so a takeover is no change of owner. A node
+with another `--address` is refused at start, follower or not, before it
+waits (`datastore_claimed`).
+
+**Known limits.**
+
+- A step a remote worker runs for a leader that then loses the lead may
+  finish on the worker; its result reaches the old leader, which cannot
+  commit it, and the new leader settles the run `interrupted`. Forwarding
+  results is p5-feed's.
+- A follower restores its whole copy when the published head moved
+  (about 4.5 s per GB). Litestream follow mode as a warm standby is a later
+  step.
+- Writes are refused, not forwarded, until p5-feed.
+- A serve that loses its lease exits 75, single-node too: one stalled past
+  its lease's TTL, so that another writer such as a CLI command took the
+  lease, stops rather than following. Run under a supervisor, it starts
+  again as a follower and leads once the lease is free. Before team mode it
+  kept running with every commit refused until its renewal took the lease
+  back.
+- A single serve that starts while another writer, such as a CLI command,
+  holds the lease no longer waits the lock timeout for it: it follows, and
+  refuses writes with `serve_not_leader` until a tick takes the lease (up
+  to 10 s after the other writer is done).
+- The reconciliation tick and cron fires also check the live lease, so a
+  leader whose lease was taken over and has not ticked since neither judges
+  the new leader gone nor claims a fire.
 
 ### Team mode: claiming a datastore (datastore rework Phase 5)
 

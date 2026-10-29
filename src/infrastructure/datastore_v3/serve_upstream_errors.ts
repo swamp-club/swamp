@@ -46,6 +46,11 @@ import {
   V3_SERVE_UNREACHABLE_CODE,
 } from "../../domain/datastore_v3/writer_lease.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
+import {
+  parseServeLeader,
+  SERVE_NOT_LEADER_CODE,
+  ServeNotLeaderError,
+} from "../../domain/datastore_v3/serve_leader.ts";
 
 export { V3_SERVE_UNREACHABLE_CODE };
 
@@ -503,6 +508,16 @@ export function serveErrorFromReply(
     if (point !== undefined) {
       return new ServeCommitsCompactedError(point, message, seq);
     }
+  }
+  // Refused before it was taken (swamp-club#4096), so nothing may land:
+  // checked before a 503's seq, which would say it might.
+  if (status === 503 && code === SERVE_NOT_LEADER_CODE) {
+    const leader = typeof fields.leader === "object" && fields.leader !== null
+      ? parseServeLeader(
+        new TextEncoder().encode(JSON.stringify(fields.leader)),
+      )
+      : undefined;
+    return new ServeNotLeaderError(leader);
   }
   if (status === 503 && seq !== undefined) {
     return new ServeCommitMayLandError(seq, code, message);
