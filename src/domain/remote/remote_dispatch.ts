@@ -132,6 +132,24 @@ export interface RemoteStepRequest {
    */
   legacyDelivery?: () => Promise<LegacyStepDelivery>;
   /**
+   * Places data text in a frame's global and method arguments for the
+   * shell of the chosen worker, by the platform it enrolled with
+   * (swamp-club#3868). Called for every dispatch attempt, since a
+   * re-dispatch can choose a worker of another platform; it throws to
+   * refuse. Required: a dispatcher that skipped it would run data as
+   * authored text. A step whose arguments hold no data passes the identity.
+   */
+  placeArguments: (
+    args: {
+      globalArgs: Record<string, unknown>;
+      methodArgs: Record<string, unknown>;
+    },
+    platform: string,
+  ) => {
+    globalArgs: Record<string, unknown>;
+    methodArgs: Record<string, unknown>;
+  };
+  /**
    * Called when a version 6 worker reports that the step's arguments
    * passed their schema, at most once however many workers report it
    * (swamp-club#3681).

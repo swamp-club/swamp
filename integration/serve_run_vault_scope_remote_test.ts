@@ -282,6 +282,12 @@ async function mintEnrollmentToken(
 
 function remoteStep(echo: string) {
   return {
+    placeArguments: (
+      args: {
+        globalArgs: Record<string, unknown>;
+        methodArgs: Record<string, unknown>;
+      },
+    ) => args,
     placement: { labels: { tier: "it" } },
     modelDef: modelRegistry.get(IT_TYPE)!,
     modelType: IT_TYPE,

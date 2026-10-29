@@ -145,6 +145,7 @@ function bagReferences(vaultKey: string, dataKey: string): SecretReference[] {
 
 function stepRequest(secretReferences: SecretReference[]): RemoteStepRequest {
   return {
+    placeArguments: (args) => args,
     placement: { labels: { tier: "baseline" } },
     modelDef: modelRegistry.get(LOAD_TYPE)!,
     modelType: LOAD_TYPE,

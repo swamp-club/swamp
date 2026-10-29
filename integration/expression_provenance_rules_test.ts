@@ -177,3 +177,38 @@ Deno.test("expression provenance rules: every runtime pass over a definition pas
     "Pass the executed copy's map (EvaluatedDefinition.sanitizedProvenance) so data the definition pass spliced is never resolved by the runtime pass.",
   );
 });
+
+/**
+ * Method deliveries over an evaluated definition. Each must pass the
+ * argument provenance the runtime pass returned, or a method that places
+ * data text (command/shell, swamp-club#3868) runs all of it as authored.
+ * `options` is optional only so unit tests can leave it out.
+ */
+const PINNED_DELIVERIES_WITHOUT_ARGUMENT_PROVENANCE: readonly string[] = [];
+
+Deno.test("expression provenance rules: every method delivery passes its argument provenance", async () => {
+  let sites = 0;
+  const without = new Set<string>();
+  for await (const file of productionSourceFiles(SRC_DIR)) {
+    const source = await Deno.readTextFile(file);
+    for (const match of source.matchAll(/\.executeWorkflow\(/g)) {
+      const args = callArguments(source, match.index! + match[0].length);
+      // A workflow-level executeWorkflow takes one or two arguments; a
+      // method delivery takes a definition, its model, a method and a
+      // context.
+      if (args.length < 4) continue;
+      sites++;
+      if (!/\bargumentProvenance\b/.test(args[4] ?? "")) {
+        without.add(repoRelative(file));
+      }
+    }
+  }
+  // Proves the pattern still matches the deliveries it guards.
+  assertGreater(sites, 2);
+  assertPinnedSet(
+    [...without].sort(),
+    PINNED_DELIVERIES_WITHOUT_ARGUMENT_PROVENANCE,
+    "Method deliveries without argument provenance",
+    "Pass the runtime pass's provenance (RuntimeResolutionResult.provenance) as options.argumentProvenance, so data spliced into the arguments is placed as data.",
+  );
+});

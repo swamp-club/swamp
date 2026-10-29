@@ -3043,3 +3043,66 @@ Deno.test("evaluateDefinition: replay checks only authored occurrences in the se
     );
   });
 });
+
+Deno.test("resolveRuntimeExpressionsInDefinition: an env splice is data where it lands, and earlier data ranges move with the text (swamp-club#3868)", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    await withMockedEnv({ SWAMP_TEST_3868: "a;b" }, async () => {
+      // `run` as the definition pass left it: `caller` was spliced from data
+      // after the runtime expression, at offsets the splice shifts.
+      const run = "echo ${{ env.SWAMP_TEST_3868 }} caller";
+      const callerAt = run.indexOf("caller");
+      const definition = Definition.create({
+        name: "runtime-provenance",
+        globalArguments: { run, plain: "${{ env.SWAMP_TEST_3868 }}" },
+      });
+      const incoming = ProvenanceMap.authored().withRanges(
+        "globalArguments.run",
+        [[callerAt, callerAt + "caller".length]],
+      );
+
+      const result = await service.resolveRuntimeExpressionsInDefinition(
+        definition,
+        undefined,
+        undefined,
+        collectAuthoredExpressions(definition.toData()),
+        { provenance: incoming },
+      );
+
+      const resolved = result.definition.globalArguments.run as string;
+      assertEquals(resolved, "echo a;b caller");
+      assertEquals(result.provenance.rangesAt("globalArguments.run"), [
+        [5, 8],
+        [9, 15],
+      ]);
+      assertEquals(
+        result.provenance.isWholeDataAt("globalArguments.plain"),
+        true,
+      );
+    });
+  });
+});
+
+Deno.test("resolveRuntimeExpressionsInDefinition: a definition with no runtime expression returns its provenance unchanged", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const definition = Definition.create({
+      name: "no-runtime",
+      globalArguments: { run: "echo caller" },
+    });
+    const incoming = ProvenanceMap.authored().withRanges(
+      "globalArguments.run",
+      [[5, 11]],
+    );
+    const result = await service.resolveRuntimeExpressionsInDefinition(
+      definition,
+      undefined,
+      undefined,
+      collectAuthoredExpressions(definition.toData()),
+      { provenance: incoming },
+    );
+    assertEquals(result.provenance, incoming);
+  });
+});

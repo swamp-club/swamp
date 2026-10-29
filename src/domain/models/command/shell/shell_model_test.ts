@@ -28,7 +28,9 @@ import { join } from "@std/path";
 import { createExtensionCelEnvironment } from "../../../../infrastructure/cel/cel_evaluator.ts";
 import { createDefinitionId } from "../../../definitions/definition.ts";
 import {
+  placeShellDataSplices,
   refuseShellSecretDestinations,
+  SHELL_DATA_PLACEMENT_REFUSED,
   SHELL_ENVIRONMENT_VALUE_REFUSED,
   SHELL_MODEL_TYPE,
   ShellDataAttributesSchema,
@@ -2076,3 +2078,88 @@ windowsOnlyTest(
     assertEquals(getResults(), []);
   },
 );
+
+/** The hook's input for `run` with `data` spliced at its end. */
+function dataSplice(
+  before: string,
+  data: string,
+  extra: Record<string, unknown> = {},
+  platform = "linux",
+) {
+  return {
+    arguments: { run: before + data, ...extra },
+    dataRangesOf: (key: string) =>
+      key === "run"
+        ? [[before.length, before.length + data.length] as const]
+        : [],
+    platform,
+  };
+}
+
+Deno.test("placeShellDataSplices: data in run goes through a generated env variable beside the authored env (swamp-club#3868)", () => {
+  assertEquals(
+    placeShellDataSplices(
+      dataSplice("echo ", "x; id", { env: { A: "1" } }),
+    ),
+    {
+      run: 'echo "${__SWAMP_IN_0}"',
+      env: { A: "1", __SWAMP_IN_0: "x; id" },
+    },
+  );
+});
+
+Deno.test("placeShellDataSplices: an env authored as a JSON string is coerced and kept", () => {
+  assertEquals(
+    placeShellDataSplices(
+      dataSplice("echo ", "x", { env: '{"A":"1"}' }),
+    ).env,
+    { A: "1", __SWAMP_IN_0: "x" },
+  );
+});
+
+Deno.test("placeShellDataSplices: nothing changes when run holds no data", () => {
+  assertEquals(
+    placeShellDataSplices({
+      arguments: { run: "echo hi" },
+      dataRangesOf: () => [],
+      platform: "linux",
+    }),
+    {},
+  );
+});
+
+Deno.test("placeShellDataSplices: refusals carry their code and point at the env workaround", () => {
+  const refusals = [
+    dataSplice("", "echo hi"),
+    dataSplice("cat <<'EOF'\n", "x\nEOF"),
+    dataSplice("Write-Output 'a ", "x'", {}, "windows"),
+    dataSplice("echo ", "x", {}, "plan9"),
+    dataSplice("echo ", "x", { env: "not json" }),
+  ];
+  for (const input of refusals) {
+    const error = assertThrows(
+      () => placeShellDataSplices(input),
+      UserError,
+      SHELL_DATA_PLACEMENT_REFUSED,
+    );
+    assertEquals(error.message.includes("x; id"), false);
+  }
+  const whole = assertThrows(
+    () => placeShellDataSplices(dataSplice("", "echo hi")),
+    UserError,
+  );
+  assertStringIncludes(whole.message, "env argument");
+});
+
+Deno.test("shellModel: placed data reaches this host's shell as literal text and runs nothing (swamp-club#3868)", async () => {
+  // `echo` on both shells: PowerShell's compatibility prefix defines it.
+  const data = "x; echo INJECTED";
+  const placed = placeShellDataSplices(
+    dataSplice("echo hello ", data, {}, Deno.build.os),
+  ) as ShellInputAttributes;
+  const { context, getResults } = createTestContext();
+  await shellModel.methods.execute.execute(placed, context);
+  const attrs = getResultAttributes(getResults(), "result");
+  assertEquals(attrs?.exitCode, 0);
+  assertEquals((attrs?.stdout as string).trim(), `hello ${data}`);
+});

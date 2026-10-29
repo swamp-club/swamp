@@ -178,6 +178,7 @@ function createFakeEvaluationService(): any {
       Promise.resolve({
         definition: def,
         secretBag: new VaultSecretBag(new SecretBagRegistry()),
+        provenance: ProvenanceMap.authored(),
       }),
     resolveRuntimeExpressionsInData: (data: unknown) => Promise.resolve(data),
     // The fake execution service delivers nothing, so nothing is loaded.
@@ -1694,6 +1695,7 @@ Deno.test("modelMethodRun: the runtime pass is scoped to the invoked method", as
         return Promise.resolve({
           definition: def,
           secretBag: new VaultSecretBag(new SecretBagRegistry()),
+          provenance: ProvenanceMap.authored(),
         });
       },
     }),
@@ -1756,6 +1758,7 @@ Deno.test("modelMethodRun: schema-declared inputs contribute authored expression
         return Promise.resolve({
           definition: def,
           secretBag: new VaultSecretBag(new SecretBagRegistry()),
+          provenance: ProvenanceMap.authored(),
         });
       },
     }),
@@ -1919,7 +1922,11 @@ Deno.test("modelMethodRun: --last-evaluated restores cached references into the 
   ) => {
     executed = def;
     executedBag = options.secretBag;
-    return Promise.resolve({ definition: def, secretBag: options.secretBag });
+    return Promise.resolve({
+      definition: def,
+      secretBag: options.secretBag,
+      provenance: ProvenanceMap.authored(),
+    });
   };
   const deps = {
     ...createTestDeps(
@@ -1998,7 +2005,11 @@ Deno.test("modelMethodRun: a typed --last-evaluated replay restores cached refer
     executed = def;
     executedBag = options.secretBag;
     vaultServicesAtRuntimePass = vaultServices;
-    return Promise.resolve({ definition: def, secretBag: options.secretBag });
+    return Promise.resolve({
+      definition: def,
+      secretBag: options.secretBag,
+      provenance: ProvenanceMap.authored(),
+    });
   };
   const deps = {
     ...createTestDeps(

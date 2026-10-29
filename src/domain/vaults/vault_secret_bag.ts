@@ -1022,7 +1022,7 @@ export class VaultSecretBag {
 }
 
 /** The POSIX reference a data-origin occurrence becomes in `context`. */
-function posixDataReference(
+export function posixDataReference(
   envName: string,
   context: ShellContext,
 ): string | undefined {
@@ -1047,7 +1047,10 @@ function posixVaultReference(envName: string, quote: QuoteContext): string {
 }
 
 /** The PowerShell reference an occurrence becomes in `quote`. */
-function powerShellReference(envName: string, quote: QuoteContext): string {
+export function powerShellReference(
+  envName: string,
+  quote: QuoteContext,
+): string {
   return quote === "double" ? `$env:${envName}` : `"$env:${envName}"`;
 }
 

@@ -1088,7 +1088,10 @@ Deno.test("typed local behavior: model.method inputs arrive at the trusted metho
               // The synthetic step's bag: a view of the run's registry.
               vaultSecrets: new VaultSecretBag(registry),
             }),
-            { secretLoader: f.evaluationService.secretLoader(f.redactor) },
+            {
+              argumentProvenance: ProvenanceMap.authored(),
+              secretLoader: f.evaluationService.secretLoader(f.redactor),
+            },
           );
           return null;
         },

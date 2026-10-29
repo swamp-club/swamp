@@ -66,6 +66,7 @@ import {
 import {
   isAtOrUnder,
   keyPath,
+  methodArgumentPath,
   ProvenanceMap,
 } from "../expressions/provenance_map.ts";
 import { attachBindingProvenance } from "../expressions/splice_origin.ts";
@@ -351,6 +352,7 @@ export class ModelInvocationService {
     let childDefinition: Definition;
     let secretBag: VaultSecretBag;
     let sensitiveValues: RunSensitiveValues;
+    let argumentProvenance: ProvenanceMap;
     try {
       const resolved = await this.#resolveExpressions(
         definition,
@@ -368,6 +370,7 @@ export class ModelInvocationService {
       childDefinition = resolved.definition;
       secretBag = resolved.secretBag;
       sensitiveValues = resolved.sensitiveValues;
+      argumentProvenance = resolved.argumentProvenance;
     } catch (error) {
       return {
         ok: false,
@@ -427,6 +430,7 @@ export class ModelInvocationService {
         {
           secretLoader: this.#deps.evaluationService.secretLoader(redactor),
           unreadReferences: sensitiveValues,
+          argumentProvenance,
         },
       );
 
@@ -463,6 +467,7 @@ export class ModelInvocationService {
     definition: Definition;
     secretBag: VaultSecretBag;
     sensitiveValues: RunSensitiveValues;
+    argumentProvenance: ProvenanceMap;
   }> {
     const evaluationService = this.#deps.evaluationService;
     const authoredExpressions = collectAuthoredExpressions(definition.toData());
@@ -549,9 +554,18 @@ export class ModelInvocationService {
     for (const [key, value] of Object.entries(templatedGlobalArgs)) {
       resolvedDefinition.setGlobalArgument(key, value);
     }
+    // A method argument the calling behavior's code routes in is that
+    // code's own text, as trusted as a process it could start itself, so it
+    // reads as authored where it replaces what the passes evaluated
+    // (swamp-club#3868).
+    let argumentProvenance = runtimeResult.provenance;
     for (const [key, value] of Object.entries(routedMethodArgs)) {
       evaluatedDefinition.setMethodArgument(methodName, key, value);
       resolvedDefinition.setMethodArgument(methodName, key, value);
+      argumentProvenance = argumentProvenance.graft(
+        methodArgumentPath(methodName, key),
+        ProvenanceMap.authored(),
+      );
     }
     // Checked after the caller's arguments are applied, so one that replaces
     // a failed expression wins, as an --input does on the CLI.
@@ -583,6 +597,7 @@ export class ModelInvocationService {
       definition: resolvedDefinition,
       secretBag: runtimeResult.secretBag,
       sensitiveValues,
+      argumentProvenance,
     };
   }
 

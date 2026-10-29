@@ -207,6 +207,12 @@ function remoteRequest(
 ) {
   const id = crypto.randomUUID();
   return {
+    placeArguments: (
+      args: {
+        globalArgs: Record<string, unknown>;
+        methodArgs: Record<string, unknown>;
+      },
+    ) => args,
     placement: { labels: { tier: "baseline" } },
     modelDef: modelRegistry.get(type)!,
     modelType: type,

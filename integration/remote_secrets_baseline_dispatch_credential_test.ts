@@ -75,6 +75,7 @@ defineModel({
 
 function stepRequest(signal?: AbortSignal): RemoteStepRequest {
   return {
+    placeArguments: (args) => args,
     placement: { labels: { tier: "baseline" } },
     modelDef: modelRegistry.get(CREDENTIAL_TYPE)!,
     modelType: CREDENTIAL_TYPE,

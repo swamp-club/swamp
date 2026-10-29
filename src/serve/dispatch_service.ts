@@ -728,14 +728,20 @@ export class DispatchService {
     workerName: string,
     request: RemoteStepRequest,
   ): Promise<DispatchFrame> {
-    const protocolVersion =
-      this.#gateway!.worker(workerName)?.protocolVersion ??
-        REMOTE_PROTOCOL_VERSION;
+    const worker = this.#gateway!.worker(workerName);
+    const protocolVersion = worker?.protocolVersion ?? REMOTE_PROTOCOL_VERSION;
+    // Data text in the arguments is placed for this worker's shell, on every
+    // attempt, since a re-dispatch can choose a worker of another platform
+    // (swamp-club#3868). A worker that left the pool has no platform to
+    // place for, so arguments holding data are refused.
+    const place = (args: Pick<DispatchFrame, "globalArgs" | "methodArgs">) =>
+      request.placeArguments(args, worker?.platform ?? "");
     if (shipsReferencesOnly(protocolVersion)) {
+      const placed = place(request);
       return {
         protocolVersion,
-        globalArgs: request.globalArgs,
-        methodArgs: request.methodArgs,
+        globalArgs: placed.globalArgs,
+        methodArgs: placed.methodArgs,
         secrets: request.referenceBag
           ? { referenceBag: request.referenceBag }
           : {},
@@ -743,15 +749,23 @@ export class DispatchService {
       };
     }
     const legacy = await request.legacyDelivery?.();
-    return {
-      protocolVersion,
+    // A version 5 frame's arguments hold values in place of sentinels; the
+    // placer refuses one whose data-bearing text no longer matches. The
+    // sentinel form a version 5 worker's shell reads is placed alike.
+    const placed = place({
       globalArgs: legacy?.globalArgs ?? request.globalArgs,
       methodArgs: legacy?.methodArgs ?? request.methodArgs,
+    });
+    const unresolvedMethodArgs = legacy?.unresolvedMethodArgs &&
+      place({ globalArgs: {}, methodArgs: legacy.unresolvedMethodArgs })
+        .methodArgs;
+    return {
+      protocolVersion,
+      globalArgs: placed.globalArgs,
+      methodArgs: placed.methodArgs,
       secrets: {
         ...(legacy?.secretValues ? { secretValues: legacy.secretValues } : {}),
-        ...(legacy?.unresolvedMethodArgs
-          ? { unresolvedMethodArgs: legacy.unresolvedMethodArgs }
-          : {}),
+        ...(unresolvedMethodArgs ? { unresolvedMethodArgs } : {}),
         ...(legacy?.secretBag ? { secretBag: legacy.secretBag } : {}),
       },
       // The values the frame ships cover the request's own literals.

@@ -34,6 +34,7 @@
  * observation the sink inventory names for direct-shell-argv).
  */
 
+import { ProvenanceMap } from "../src/domain/expressions/provenance_map.ts";
 import {
   assert,
   assertEquals,
@@ -360,7 +361,7 @@ async function runShell(
       shellModel,
       "execute",
       f.context(SHELL_MODEL_TYPE, definition, "execute"),
-      { secretLoader: f.loader },
+      { argumentProvenance: ProvenanceMap.authored(), secretLoader: f.loader },
     )
   );
   const content = await f.dataRepo.getContent(
@@ -390,7 +391,10 @@ function deliveryOn(f: Fixture) {
         modelDef,
         methodName,
         f.context(modelDef.type, definition, methodName),
-        { secretLoader: f.loader },
+        {
+          argumentProvenance: ProvenanceMap.authored(),
+          secretLoader: f.loader,
+        },
       )
     );
 }
@@ -557,7 +561,10 @@ Deno.test("typed secret destinations: every canary class reaches method argument
         model,
         "create",
         f.context(model.type, definition, "create"),
-        { secretLoader: f.loader },
+        {
+          argumentProvenance: ProvenanceMap.authored(),
+          secretLoader: f.loader,
+        },
       )
     );
     assertEquals(
@@ -692,7 +699,10 @@ Deno.test("typed secret destinations: a NUL in a loaded environment value fails 
                 shellModel,
                 "execute",
                 f.context(SHELL_MODEL_TYPE, definition, "execute"),
-                { secretLoader: f.loader },
+                {
+                  argumentProvenance: ProvenanceMap.authored(),
+                  secretLoader: f.loader,
+                },
               )
             ),
           Error,
@@ -753,7 +763,10 @@ Deno.test("typed secret destinations: a failed method leaves an output record wi
             model,
             "create",
             f.context(model.type, definition, "create"),
-            { secretLoader: f.loader },
+            {
+              argumentProvenance: ProvenanceMap.authored(),
+              secretLoader: f.loader,
+            },
           )
         ),
       Error,

@@ -236,6 +236,7 @@ Deno.test({
           { flush: undefined },
           () =>
             dispatchService.executeRemote({
+              placeArguments: (args) => args,
               placement: { labels: { tier: "it" } },
               modelDef: modelRegistry.get(IT_TYPE)!,
               modelType: IT_TYPE,

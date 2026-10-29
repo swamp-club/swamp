@@ -28,6 +28,7 @@
  * Section 9). Enrollment accepts versions 5 and 6 and refuses any other.
  */
 
+import { ProvenanceMap } from "../src/domain/expressions/provenance_map.ts";
 import {
   assert,
   assertEquals,
@@ -212,6 +213,7 @@ async function dispatchStepWithSecret(
       "run",
       context,
       {
+        argumentProvenance: ProvenanceMap.authored(),
         secretLoader: new SecretLoader(() => Promise.resolve(vaultService)),
       },
     );
