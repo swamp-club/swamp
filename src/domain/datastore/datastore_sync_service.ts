@@ -776,15 +776,21 @@ export class HydrateContractViolationError extends UserError {
 }
 
 /**
- * A data version a step or method run wrote while it held its model's lock.
- * The lock's push publishes each one and checks the remote holds it
- * (swamp-club#3146).
+ * A data version a step or method run wrote, under its model's lock or for
+ * the lock taken to publish it. The lock's push publishes each one and
+ * checks the remote holds it (swamp-club#3146).
  */
 export interface WrittenVersion {
   readonly modelType: string;
   readonly modelId: string;
   readonly dataName: string;
   readonly version: number;
+  /**
+   * The data id the run wrote the version with, unique to that write. A
+   * publish lock taken after an unlocked run tells its own version from
+   * another clone's of the same number by it (swamp-club#3934).
+   */
+  readonly dataId?: string;
 }
 
 /**
@@ -867,14 +873,66 @@ export class ModelLockLostError extends UserError {
 }
 
 /**
+ * Thrown by the publish of a read or list run on a v2 extension datastore
+ * when another clone wrote a data version with the same number while the
+ * run was unlocked (swamp-club#3934). The run numbered its versions from
+ * this host's cache; the pull under the publish lock replaced each such
+ * version with the other clone's copy, so this host now holds the
+ * datastore's copy, and the run's other versions were published.
+ *
+ * Extends `UserError` so the message renders clean at the CLI error boundary.
+ */
+export class DataVersionConflictError extends UserError {
+  readonly versions: readonly WrittenVersion[];
+  /**
+   * Why publishing the run's other versions failed as well, when it did:
+   * then they are not on the datastore either, and the conflict alone does
+   * not describe the publish.
+   */
+  readonly publishFailure: unknown;
+
+  constructor(
+    versions: readonly WrittenVersion[],
+    options: { publishFailure?: unknown } = {},
+  ) {
+    const names = versions.map((v) =>
+      `${v.modelType}/${v.modelId} ${v.dataName} version ${v.version}`
+    ).join(", ");
+    const failure = options.publishFailure === undefined
+      ? ""
+      : ` Publishing the run's other data failed too: ${
+        options.publishFailure instanceof Error
+          ? options.publishFailure.message
+          : String(options.publishFailure)
+      }`;
+    super(
+      `Another swamp process, most likely another clone of this ` +
+        `repository, wrote ${names} while this run was running, so this ` +
+        `run's data with the same version was not published: this host ` +
+        `now holds the datastore's copy. Run the method again to write and ` +
+        `publish it.${failure}`,
+      "datastore_data_version_conflict",
+    );
+    this.name = "DataVersionConflictError";
+    this.versions = versions;
+    this.publishFailure = options.publishFailure;
+  }
+}
+
+/**
  * True for a push error that leaves the run's data versions unpublished:
  * {@link UnpublishedDataVersionError}, which keeps them on this host only,
- * or {@link ModelLockLostError}, which discards them.
+ * or {@link ModelLockLostError} and {@link DataVersionConflictError}, which
+ * discard them.
  * A run that already failed keeps its own error and logs this one.
  */
 export function isUnpublishedDataError(
   error: unknown,
-): error is UnpublishedDataVersionError | ModelLockLostError {
+): error is
+  | UnpublishedDataVersionError
+  | ModelLockLostError
+  | DataVersionConflictError {
   return error instanceof UnpublishedDataVersionError ||
-    error instanceof ModelLockLostError;
+    error instanceof ModelLockLostError ||
+    error instanceof DataVersionConflictError;
 }

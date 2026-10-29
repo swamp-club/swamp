@@ -50,6 +50,7 @@ import {
   DefaultMethodExecutionService,
   deliverStepSecrets,
   recoveredDataHandles,
+  writtenVersionsOf,
 } from "./method_execution_service.ts";
 import { createDefinitionId, Definition } from "../definitions/definition.ts";
 import { ModelType } from "./model_type.ts";
@@ -4553,6 +4554,21 @@ Deno.test("recoveredDataHandles: returns [] when nothing usable is attached", ()
   );
   assertEquals(recoveredDataHandles("boom"), []);
   assertEquals(recoveredDataHandles(null), []);
+});
+
+Deno.test("writtenVersionsOf: keeps each version's data id and drops one whose data id is not a string (swamp-club#3934)", () => {
+  const version = { modelType: "t/x", modelId: "m-1", dataName: "state" };
+  const error = Object.assign(new Error("boom"), {
+    writtenVersions: [
+      { ...version, version: 1, dataId: "d-1" },
+      { ...version, version: 2 },
+      { ...version, version: 3, dataId: 3 },
+    ],
+  });
+  assertEquals(writtenVersionsOf(error), [
+    { ...version, version: 1, dataId: "d-1" },
+    { ...version, version: 2 },
+  ]);
 });
 
 Deno.test("recoveredDataHandles: drops entries that are not shaped like a data handle", () => {

@@ -35,6 +35,7 @@ import {
   type AnyRow,
   cacheDir,
   type Composition,
+  READ_RUN_PUBLISH_MARKS,
   row,
   type RowRepos,
   runCli,
@@ -55,6 +56,12 @@ async function workflowSeed(repos: RowRepos): Promise<void> {
 const ROWS: AnyRow[] = [
   row({
     name: "model method run",
+    // `noop` is a read method, whose publish lock re-stages its report
+    // versions outside the use case (swamp-club#3934).
+    outsideUseCase: {
+      cli: READ_RUN_PUBLISH_MARKS,
+      serve: READ_RUN_PUBLISH_MARKS,
+    },
     seed: async (repos) => {
       await saveModel(repos.serveRepo, "m1");
     },

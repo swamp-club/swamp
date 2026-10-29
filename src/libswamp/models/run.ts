@@ -55,7 +55,7 @@ import type { ReportResultView } from "./model_method_run_view.ts";
 import type { Definition } from "../../domain/definitions/definition.ts";
 import type { InputsSchema } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
-import type { ModelDefinition } from "../../domain/models/model.ts";
+import type { DataHandle, ModelDefinition } from "../../domain/models/model.ts";
 import {
   type MethodExecutionService,
   recoveredDataHandles,
@@ -254,6 +254,34 @@ export interface RunLog {
   redactor: SecretRedactor;
   cleanup: () => void;
   runId?: string;
+}
+
+/**
+ * The versions `handles` name that the caller's lock publishes: ephemeral
+ * data is never published. Report handles are included, since a report
+ * writes its data under the run's model (swamp-club#3934).
+ */
+function writtenVersionsOfHandles(
+  handles: readonly DataHandle[],
+  modelType: ModelType,
+  modelId: string,
+): WrittenVersion[] {
+  return handles
+    .filter((handle) => handle.metadata.lifetime !== "ephemeral")
+    .map((handle) => ({
+      modelType: modelType.normalized,
+      modelId,
+      dataName: handle.name,
+      version: handle.version,
+      dataId: handle.dataId,
+    }));
+}
+
+/** The data handles `results` wrote. */
+function reportDataHandles(
+  results: readonly ReportExecutionResult[],
+): DataHandle[] {
+  return results.flatMap((result) => result.dataHandles ?? []);
 }
 
 /**
@@ -1579,6 +1607,7 @@ export async function* modelMethodRun(
 
                 // Run method-summary report for failed executions so JSON consumers
                 // see structured error output (not just the raw error event).
+                let failedReportHandles: DataHandle[] = [];
                 if (
                   output.status === "failed" && !input.skipAllReports &&
                   reportRegistry.getAll().length > 0
@@ -1633,6 +1662,9 @@ export async function* modelMethodRun(
                     input.methodName,
                     [...BUILTIN_METHOD_REPORTS, ...(modelDef.reports ?? [])],
                   );
+                  failedReportHandles = reportDataHandles(
+                    failedSummary.results,
+                  );
 
                   for (const result of failedSummary.results) {
                     yield {
@@ -1660,16 +1692,11 @@ export async function* modelMethodRun(
                 }
 
                 deps.onWrittenVersions?.([
-                  ...recoveredDataHandles(error)
-                    .filter((handle) =>
-                      handle.metadata.lifetime !== "ephemeral"
-                    )
-                    .map((handle) => ({
-                      modelType: modelType.normalized,
-                      modelId: evaluatedDefinition.id,
-                      dataName: handle.name,
-                      version: handle.version,
-                    })),
+                  ...writtenVersionsOfHandles(
+                    [...recoveredDataHandles(error), ...failedReportHandles],
+                    modelType,
+                    evaluatedDefinition.id,
+                  ),
                   ...writtenVersionsOf(error),
                 ], "failed");
 
@@ -1710,16 +1737,11 @@ export async function* modelMethodRun(
               );
               const dataArtifacts: DataArtifactView[] = [];
               deps.onWrittenVersions?.(
-                (execResult.dataHandles ?? [])
-                  .filter((handle) =>
-                    handle.metadata.lifetime !== "ephemeral"
-                  )
-                  .map((handle) => ({
-                    modelType: modelType.normalized,
-                    modelId: evaluatedDefinition.id,
-                    dataName: handle.name,
-                    version: handle.version,
-                  })),
+                writtenVersionsOfHandles(
+                  execResult.dataHandles ?? [],
+                  modelType,
+                  evaluatedDefinition.id,
+                ),
                 "completed",
               );
               if (execResult.dataHandles && execResult.dataHandles.length > 0) {
@@ -1957,6 +1979,18 @@ export async function* modelMethodRun(
                   reportResults[result.name] = toReportResultView(result);
                 }
                 reportFailures += modelSummary.failures;
+                // The reports ran after the method's versions were reported.
+                deps.onWrittenVersions?.(
+                  writtenVersionsOfHandles(
+                    reportDataHandles([
+                      ...methodSummary.results,
+                      ...modelSummary.results,
+                    ]),
+                    modelType,
+                    evaluatedDefinition.id,
+                  ),
+                  "completed",
+                );
               }
 
               reportsSpan.end();

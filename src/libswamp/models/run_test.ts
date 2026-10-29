@@ -2232,7 +2232,17 @@ Deno.test("modelMethodRun: direct execution proceeds on a different definition t
   assertEquals(seen.every((id) => id === winner.id), true);
 });
 
-Deno.test("modelMethodRun: tells onWrittenVersions what a completed run wrote (swamp-club#3146)", async () => {
+/** What each `onWrittenVersions` call named, as `dataName/version`. */
+function writtenNames(
+  told: readonly [readonly WrittenVersion[], string][],
+): [string[], string][] {
+  return told.map(([versions, outcome]) => [
+    versions.map((v) => `${v.dataName}/${v.version}`),
+    outcome,
+  ]);
+}
+
+Deno.test("modelMethodRun: tells onWrittenVersions what a completed run wrote, its reports' data after them (swamp-club#3146, swamp-club#3934)", async () => {
   const definition = createTestDefinition("test-model", "run");
   const modelDef = createTestModelDef("run");
   const dataHandle = {
@@ -2271,15 +2281,29 @@ Deno.test("modelMethodRun: tells onWrittenVersions what a completed run wrote (s
     ),
   );
 
-  assertEquals(told, [[[{
+  assertEquals(told[0], [[{
     modelType: "test/model",
     modelId: definition.id,
     dataName: "state",
     version: 7,
-  }], "completed"]]);
+    dataId: dataHandle.dataId,
+  }], "completed"]);
+  // The reports run after the method's versions were told, and write under
+  // the run's model.
+  assertEquals(writtenNames(told), [
+    [["state/7"], "completed"],
+    [[
+      "report-swamp-method-summary/1",
+      "report-swamp-method-summary-json/1",
+    ], "completed"],
+  ]);
+  for (const version of told[1][0]) {
+    assertEquals(version.modelId, definition.id);
+    assertEquals(typeof version.dataId, "string");
+  }
 });
 
-Deno.test("modelMethodRun: tells onWrittenVersions what a failed run wrote, a worker's included (swamp-club#3146)", async () => {
+Deno.test("modelMethodRun: tells onWrittenVersions what a failed run wrote, its reports' and a worker's included (swamp-club#3146, swamp-club#3934)", async () => {
   const definition = createTestDefinition("test-model", "run");
   const modelDef = createTestModelDef("run");
   const fromWorker: WrittenVersion = {
@@ -2325,14 +2349,19 @@ Deno.test("modelMethodRun: tells onWrittenVersions what a failed run wrote, a wo
   );
 
   assertEquals(events[events.length - 1].kind, "error");
-  assertEquals(told, [[[
-    {
-      modelType: "test/model",
-      modelId: definition.id,
-      dataName: "partial-state",
-      version: 1,
-    },
-    fromWorker,
+  assertEquals(told[0][0][0], {
+    modelType: "test/model",
+    modelId: definition.id,
+    dataName: "partial-state",
+    version: 1,
+    dataId: error.dataHandles[0].dataId,
+  });
+  assertEquals(told[0][0].at(-1), fromWorker);
+  assertEquals(writtenNames(told), [[[
+    "partial-state/1",
+    "report-swamp-method-summary/1",
+    "report-swamp-method-summary-json/1",
+    "remote-state/3",
   ], "failed"]]);
 });
 

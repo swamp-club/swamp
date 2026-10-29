@@ -95,6 +95,7 @@ import { datastoreExtensionCandidates } from "../domain/datastore/datastore_exte
 import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
 import { ensureDir, exists, walk } from "@std/fs";
+import { parse as parseYaml } from "@std/yaml";
 import {
   flushDatastoreSyncNamed,
   registerDatastoreSync,
@@ -169,12 +170,14 @@ import {
 } from "../domain/datastore/slow_lock_advice.ts";
 import type { DatastoreProvider } from "../domain/datastore/datastore_provider.ts";
 import {
+  DataVersionConflictError,
   HydrateContractViolationError,
   type LostModelLock,
   ModelLockLostError,
   UnpublishedDataVersionError,
 } from "../domain/datastore/datastore_sync_service.ts";
 import type {
+  DatastoreSyncOptions,
   DatastoreSyncService,
   HydrateFileHook,
   MarkDirtyHook,
@@ -191,6 +194,12 @@ import {
   type AtomicWriteSync,
   syncWrittenDirectory,
 } from "../infrastructure/persistence/atomic_write.ts";
+import {
+  type PendingPublish,
+  readPendingPublishes,
+  recordPendingPublish,
+  removePendingPublishes,
+} from "../infrastructure/persistence/pending_publish_store.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { pushModelLockScope } from "../infrastructure/persistence/push_paths.ts";
 import {
@@ -3090,6 +3099,35 @@ export interface AcquireModelLocksOptions {
    * nothing: the defaults sync each file and directory to disk.
    */
   restoreWriteHooks?: AtomicWriteSync;
+  /**
+   * False takes the locks without pulling the models. The push then cannot
+   * tell a version another clone wrote under the same number from this
+   * host's own, so it publishes every version as this host holds it.
+   */
+  pull?: boolean;
+  /**
+   * Set to take the locks only if they are free (a read or list run's
+   * publish, swamp-club#3934): no wait for the global lock, and at most
+   * {@link READ_PUBLISH_LOCK_WAIT_MS} for each per-model lock. Throws
+   * {@link ModelLocksBusyError} when another run holds one.
+   */
+  failIfBusy?: boolean;
+}
+
+/**
+ * How long a read or list run's publish waits for its behavior's lock
+ * before leaving its data to the next run that takes it (swamp-club#3934):
+ * long enough for one retry, short enough that the run is never held up by
+ * a writer (swamp-club#1992).
+ */
+export const READ_PUBLISH_LOCK_WAIT_MS = 2_000;
+
+/** Thrown by {@link acquireModelLocks} with `failIfBusy` when a lock is held. */
+class ModelLocksBusyError extends Error {
+  constructor(lockKey: string) {
+    super(`${lockKey} is held by another run`);
+    this.name = "ModelLocksBusyError";
+  }
 }
 
 /** Pushes made to publish a step's written versions before giving up. */
@@ -3439,6 +3477,144 @@ async function discardRefusedVersions(
   }
 }
 
+/**
+ * Replaces the cache's copy of `absPath` with the datastore's (swamp-club#3934),
+ * through `fetchContent`, writing the bytes itself as `discardRefusedVersions`
+ * does, or else `hydrateFile`. That contract does not promise to replace a
+ * file already present, so the local copy is moved out of the cache first
+ * and put back when the read fails: never left missing, since a push deletes
+ * the remote copy of a marked file missing here. When the datastore has
+ * none, the local copy is removed: a push of the missing marked file then
+ * deletes nothing. Throws when neither read is available or the read fails,
+ * so the caller pushes nothing rather than this host's copy over the
+ * datastore's.
+ */
+async function rehydrateContent(
+  absPath: string,
+  syncService: DatastoreSyncService,
+  cachePath: string,
+  namespace: string | undefined,
+): Promise<void> {
+  const rel = cacheRelativePath(cachePath, absPath);
+  if (rel === undefined) return;
+  const options = () => ({
+    namespace,
+    signal: AbortSignal.timeout(PUBLISH_CHECK_FETCH_TIMEOUT_MS),
+  });
+  let present: boolean;
+  if (syncService.fetchContent) {
+    const bytes = await syncService.fetchContent(rel, options());
+    present = bytes !== null;
+    if (bytes !== null) await atomicWriteFile(absPath, bytes);
+  } else if (syncService.hydrateFile) {
+    present = await hydrateOverLocal(
+      absPath,
+      rel,
+      cachePath,
+      syncService.hydrateFile.bind(syncService),
+      options(),
+    );
+  } else {
+    throw new Error(
+      `Cannot read ${rel} back from the datastore, so the push is withheld`,
+    );
+  }
+  if (present) return;
+  try {
+    await Deno.remove(absPath);
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+}
+
+/**
+ * Reads `rel` through `hydrateFile` with this host's copy of it moved beside
+ * the cache, so the read cannot keep it; the copy is put back when the read
+ * fails or reports a file it did not write, and discarded otherwise.
+ */
+async function hydrateOverLocal(
+  absPath: string,
+  rel: string,
+  cachePath: string,
+  hydrateFile: NonNullable<DatastoreSyncService["hydrateFile"]>,
+  options: DatastoreSyncOptions,
+): Promise<boolean> {
+  const aside = `${cachePath}.rehydrate-${crypto.randomUUID()}`;
+  let moved = false;
+  try {
+    await Deno.rename(absPath, aside);
+    moved = true;
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  const restore = async () => {
+    if (moved) await Deno.rename(aside, absPath);
+  };
+  let present: boolean;
+  try {
+    present = await hydrateFile(rel, options);
+  } catch (error) {
+    await restore();
+    throw error;
+  }
+  if (present && !await exists(absPath)) {
+    await restore();
+    throw new Error(
+      `The datastore reported reading ${rel} back but wrote no file, so the push is withheld`,
+    );
+  }
+  if (moved) await Deno.remove(aside);
+  return present;
+}
+
+/**
+ * Each of `versions` this host still holds, with the data id its metadata
+ * names now (undefined when the metadata names none). A version whose
+ * metadata is gone is left out, as is one whose metadata cannot be read or
+ * parsed unless `strict`, which throws instead.
+ */
+async function localDataIds(
+  versions: readonly WrittenVersion[],
+  repo: RepositoryContext["unifiedDataRepo"],
+  options: { strict?: boolean } = {},
+): Promise<Array<{ written: WrittenVersion; localId: string | undefined }>> {
+  const present: Array<
+    { written: WrittenVersion; localId: string | undefined }
+  > = [];
+  for (const w of versions) {
+    let parsed: unknown;
+    try {
+      parsed = parseYaml(
+        await Deno.readTextFile(
+          join(
+            repo.getPath(
+              ModelType.create(w.modelType),
+              w.modelId,
+              w.dataName,
+              w.version,
+            ),
+            "metadata.yaml",
+          ),
+        ),
+      );
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) continue;
+      if (options.strict) throw error;
+      getSwampLogger(["datastore", "lock"])
+        .debug`Skipping deferred ${w.dataName} version ${w.version}: ${error}`;
+      continue;
+    }
+    const id = typeof parsed === "object" && parsed !== null
+      ? (parsed as { id?: unknown }).id
+      : undefined;
+    present.push({
+      written: w,
+      localId: typeof id === "string" ? id : undefined,
+    });
+  }
+  return present;
+}
+
 /** Remote reads a publish check runs at once. */
 const PUBLISH_CHECK_CONCURRENCY = 8;
 
@@ -3534,6 +3710,273 @@ async function tryForceReleaseStaleLock(
   }
 }
 
+/** Pulls one model's data, scoped to it when the extension can. */
+function pullModelData(
+  syncService: DatastoreSyncService,
+  config: DatastoreConfig,
+  caps: SyncCapabilities | undefined,
+  modelType: string,
+  modelId: string,
+) {
+  const ns = isCustomDatastoreConfig(config) ? config.namespace : undefined;
+  if (caps?.scopedSync) {
+    const context: SyncContext = { models: [{ modelType, modelId }] };
+    return syncService.pullChanged({
+      context,
+      ...(ns ? { namespace: ns } : {}),
+    });
+  }
+  if (ns) return syncService.pullChanged({ namespace: ns });
+  return syncService.pullChanged();
+}
+
+/**
+ * Waits while a structural command holds the datastore's global lock, as
+ * every run does before it touches a model's data: until the lock is
+ * released, or proceeds past a lock older than its TTL, and throws
+ * `LockTimeoutError` after twice the TTL.
+ */
+async function waitForGlobalLockRelease(
+  globalLock: DistributedLock,
+  config: DatastoreConfig,
+  write: LockProgressWriter,
+  /** What the caller does next, for the progress line. */
+  next: string,
+): Promise<void> {
+  const globalInfo = await globalLock.inspect();
+  if (globalInfo) {
+    write(
+      yellow(
+        `Global lock held by ${globalInfo.holder} — waiting for structural command to finish...`,
+      ),
+    );
+    // Poll until the global lock is released or expires (stale lock).
+    // Timeout after 2x TTL to prevent indefinite hangs if staleness
+    // detection fails (e.g. clock skew, S3 consistency issues).
+    const globalWaitStart = Date.now();
+    const globalMaxWaitMs = (globalInfo.ttlMs ?? 30_000) * 2;
+    await withRunPhase(
+      "waiting_for_lock",
+      { resource: ".datastore.lock" },
+      async () => {
+        while (true) {
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
+          const info = await globalLock.inspect();
+          if (!info) break;
+          // Check if the lock has exceeded its TTL (stale/crashed process)
+          const acquiredAt = new Date(info.acquiredAt).getTime();
+          if (Date.now() - acquiredAt > info.ttlMs) {
+            write(
+              dim(
+                `Global lock held by ${info.holder} appears stale (exceeded TTL of ${info.ttlMs}ms) — proceeding`,
+              ),
+            );
+            await tryForceReleaseStaleLock(globalLock, info);
+            break;
+          }
+          // Hard timeout to prevent indefinite hangs
+          const globalElapsed = Date.now() - globalWaitStart;
+          if (globalElapsed >= globalMaxWaitMs) {
+            const lockOpts = datastoreGlobalLockOptions(config);
+            const displayKey = lockOpts?.namespace
+              ? `${lockOpts.namespace}/.datastore.lock`
+              : ".datastore.lock";
+            throw new LockTimeoutError(
+              displayKey,
+              info,
+              globalElapsed,
+            );
+          }
+        }
+      },
+    );
+    write(
+      dim(`Global lock released, proceeding with ${next}`),
+    );
+  }
+}
+
+/**
+ * The global lock's holder, for a run that never waits on it, or undefined
+ * when it is free. A lock past its TTL is force-released, as
+ * {@link waitForGlobalLockRelease} does, so a crashed structural command
+ * does not hold such runs off until a waiting run clears it.
+ */
+async function liveGlobalLockHolder(
+  globalLock: DistributedLock,
+  write: LockProgressWriter,
+): Promise<LockInfo | undefined> {
+  const info = await globalLock.inspect();
+  if (!info) return undefined;
+  if (Date.now() - new Date(info.acquiredAt).getTime() > info.ttlMs) {
+    write(
+      dim(
+        `Global lock held by ${info.holder} appears stale (exceeded TTL of ${info.ttlMs}ms) — proceeding`,
+      ),
+    );
+    await tryForceReleaseStaleLock(globalLock, info);
+    return undefined;
+  }
+  return info;
+}
+
+/**
+ * Pulls the models' data without taking their locks. A read or list run on
+ * a v2 extension datastore pulls this way before it runs unlocked, so it
+ * reads current data and numbers its versions past every published one
+ * (swamp-club#3934). It never waits and never fails the run: while a
+ * structural command holds the global lock, or when the pull fails, the
+ * run uses this host's cache, as it did before it pulled, and its publish
+ * check still refuses any version another clone wrote. Returns whether the
+ * local cache may have changed, so the caller invalidates the catalog.
+ * Pulls nothing on another datastore.
+ */
+export async function pullModelsUnlocked(
+  config: DatastoreConfig,
+  models: Array<{ modelType: string; modelId: string }>,
+  repoDir: string,
+  syncService: DatastoreSyncService | undefined,
+  options?: {
+    /** As {@link AcquireModelLocksOptions.wrapSync}. */
+    wrapSync?: SyncCallWrapper;
+    progressWriter?: LockProgressWriter;
+  },
+): Promise<boolean> {
+  if (
+    !syncService || !isCustomDatastoreConfig(config) ||
+    !isV2CustomDatastore(config)
+  ) {
+    return false;
+  }
+  // As in acquireModelLocks (swamp-club#3189).
+  await ensureSupportedDatastoreFormat(repoDir, config);
+  const write = options?.progressWriter ?? defaultLockWriter;
+  const wrapSync: SyncCallWrapper = options?.wrapSync ?? ((fn) => fn());
+  const useCache = (error: unknown) => {
+    getSwampLogger(["datastore", "sync"])
+      .warn`Could not pull from the datastore, so this run uses this host's data: ${error}`;
+  };
+  // A read never waits on a structural command (swamp-club#1992): it runs
+  // on this host's cache instead.
+  let globalInfo: LockInfo | undefined;
+  let provider: DatastoreProvider;
+  try {
+    provider = await resolveCustomProvider(config);
+    globalInfo = await liveGlobalLockHolder(
+      provider.createLock(config.datastorePath, {
+        ...datastoreGlobalLockOptions(config),
+        maxWaitMs: resolveLockTimeoutMs(),
+      }),
+      write,
+    );
+  } catch (error) {
+    useCache(error);
+    return false;
+  }
+  if (globalInfo) {
+    write(
+      dim(
+        `Global lock held by ${globalInfo.holder} — running on this host's data without pulling`,
+      ),
+    );
+    return false;
+  }
+  let caps: SyncCapabilities | undefined;
+  try {
+    caps = syncService.capabilities?.();
+  } catch {
+    // Buggy extension — degrade to full sync
+  }
+  let synced = false;
+  for (const { modelType, modelId } of models) {
+    try {
+      // A run on this host holding the behavior's lock writes into this
+      // cache, and a pull would overwrite its unpublished files with the
+      // datastore's older copies; its push publishes them. Use this host's
+      // data, as while the global lock is held. A holder elsewhere does not
+      // write here, so the pull goes ahead.
+      const holder = await provider.createLock(config.datastorePath, {
+        lockKey: modelLockKey(config.namespace, modelType, modelId),
+        maxWaitMs: resolveLockTimeoutMs(),
+      }).inspect();
+      if (holder?.hostname === hostname()) {
+        write(
+          dim(
+            `Behavior ${modelType}/${modelId} is locked by ${holder.holder} — running on this host's data without pulling`,
+          ),
+        );
+        continue;
+      }
+      write(dim(`Syncing behavior ${modelType}/${modelId} from datastore...`));
+      const pulled = await wrapSync(
+        () => pullModelData(syncService, config, caps, modelType, modelId),
+        "pull",
+      );
+      // 0 means the local cache is unchanged; void means unknown.
+      if (pulled !== 0) synced = true;
+    } catch (error) {
+      useCache(error);
+      // A pull that failed part-way may have written some files.
+      return true;
+    }
+  }
+  return synced;
+}
+
+/**
+ * Takes the locks a read or list run publishes its data versions under
+ * (swamp-club#3934), or, when another run holds them, records `written` for
+ * the next run that takes them on this host to publish, and returns
+ * undefined: the run is never held up by a writer (swamp-club#1992). A
+ * nested run under a parent holding the lock defers to the parent's push.
+ */
+export async function acquirePublishLocksOrDefer(
+  config: DatastoreConfig,
+  model: { modelType: string; modelId: string },
+  written: readonly WrittenVersion[],
+  repoDir: string,
+  syncService: DatastoreSyncService | undefined,
+  catalogStore: CatalogStore | undefined,
+  options: Pick<AcquireModelLocksOptions, "wrapSync" | "repoContext">,
+): Promise<ModelLockResult | undefined> {
+  try {
+    const locks = await acquireModelLocks(
+      config,
+      [model],
+      repoDir,
+      syncService,
+      catalogStore,
+      undefined,
+      {
+        ...options,
+        // The pull replaces each version another clone also wrote with its
+        // copy; the push reports those as a conflict and publishes the rest.
+        failIfBusy: true,
+      },
+    );
+    if (locks.synced) catalogStore?.invalidate();
+    return locks;
+  } catch (error) {
+    if (
+      !(error instanceof ModelLocksBusyError) ||
+      !isCustomDatastoreConfig(config) || !config.cachePath
+    ) {
+      throw error;
+    }
+    getSwampLogger(["datastore", "lock"])
+      .debug`Deferring the publish of ${written.length} data version(s): ${error.message}`;
+    // Only the locked model's versions: a record naming another's would
+    // wait for a lock that holds both, which no method run takes.
+    await recordPendingPublish(
+      config.cachePath,
+      written.filter((w) =>
+        w.modelType === model.modelType && w.modelId === model.modelId
+      ),
+    );
+    return undefined;
+  }
+}
+
 export async function acquireModelLocks(
   config: DatastoreConfig,
   models: Array<{ modelType: string; modelId: string }>,
@@ -3595,55 +4038,17 @@ export async function acquireModelLocks(
       },
     )
     : await createDatastoreLock(config);
-  const globalInfo = await globalLock.inspect();
-  if (globalInfo) {
-    write(
-      yellow(
-        `Global lock held by ${globalInfo.holder} — waiting for structural command to finish...`,
-      ),
-    );
-    // Poll until the global lock is released or expires (stale lock).
-    // Timeout after 2x TTL to prevent indefinite hangs if staleness
-    // detection fails (e.g. clock skew, S3 consistency issues).
-    const globalWaitStart = Date.now();
-    const globalMaxWaitMs = (globalInfo.ttlMs ?? 30_000) * 2;
-    await withRunPhase(
-      "waiting_for_lock",
-      { resource: ".datastore.lock" },
-      async () => {
-        while (true) {
-          await new Promise((resolve) => setTimeout(resolve, 1_000));
-          const info = await globalLock.inspect();
-          if (!info) break;
-          // Check if the lock has exceeded its TTL (stale/crashed process)
-          const acquiredAt = new Date(info.acquiredAt).getTime();
-          if (Date.now() - acquiredAt > info.ttlMs) {
-            write(
-              dim(
-                `Global lock held by ${info.holder} appears stale (exceeded TTL of ${info.ttlMs}ms) — proceeding`,
-              ),
-            );
-            await tryForceReleaseStaleLock(globalLock, info);
-            break;
-          }
-          // Hard timeout to prevent indefinite hangs
-          const globalElapsed = Date.now() - globalWaitStart;
-          if (globalElapsed >= globalMaxWaitMs) {
-            const lockOpts = datastoreGlobalLockOptions(config);
-            const displayKey = lockOpts?.namespace
-              ? `${lockOpts.namespace}/.datastore.lock`
-              : ".datastore.lock";
-            throw new LockTimeoutError(
-              displayKey,
-              info,
-              globalElapsed,
-            );
-          }
-        }
-      },
-    );
-    write(
-      dim("Global lock released, proceeding with per-model locks"),
+  if (options?.failIfBusy) {
+    // Never waits; the re-check after each lock below throws busy too.
+    if (await liveGlobalLockHolder(globalLock, write)) {
+      throw new ModelLocksBusyError(".datastore.lock");
+    }
+  } else {
+    await waitForGlobalLockRelease(
+      globalLock,
+      config,
+      write,
+      "per-model locks",
     );
   }
 
@@ -3692,23 +4097,11 @@ export async function acquireModelLocks(
     }
   }
 
-  // Pulls one model's data, scoped to it when the extension can.
   const pullModel = (
     syncService: DatastoreSyncService,
     modelType: string,
     modelId: string,
-  ) => {
-    const ns = isCustomDatastoreConfig(config) ? config.namespace : undefined;
-    if (caps?.scopedSync) {
-      const context: SyncContext = { models: [{ modelType, modelId }] };
-      return syncService.pullChanged({
-        context,
-        ...(ns ? { namespace: ns } : {}),
-      });
-    }
-    if (ns) return syncService.pullChanged({ namespace: ns });
-    return syncService.pullChanged();
-  };
+  ) => pullModelData(syncService, config, caps, modelType, modelId);
 
   // All or nothing: a call that returns no lock result holds no locks.
   // Without this unwind a throw below leaves every lock taken so far held
@@ -3720,7 +4113,9 @@ export async function acquireModelLocks(
       const lock = customProvider && isCustomDatastoreConfig(config)
         ? customProvider.createLock(config.datastorePath, {
           lockKey: lockFileKey,
-          maxWaitMs: resolveLockTimeoutMs(),
+          maxWaitMs: options?.failIfBusy
+            ? READ_PUBLISH_LOCK_WAIT_MS
+            : resolveLockTimeoutMs(),
         })
         : await createModelLock(config, modelType, modelId);
       // Unique coordinator key so parallel steps on the same model get
@@ -3745,7 +4140,12 @@ export async function acquireModelLocks(
       // Re-check global lock after acquiring each per-model lock to close TOCTOU race.
       // If a structural command acquired the global lock between our initial check
       // and this per-model acquisition, release everything and wait.
-      const postAcquireGlobalInfo = await globalLock.inspect();
+      const postAcquireGlobalInfo = options?.failIfBusy
+        ? await liveGlobalLockHolder(globalLock, write)
+        : await globalLock.inspect();
+      if (postAcquireGlobalInfo && options?.failIfBusy) {
+        throw new ModelLocksBusyError(".datastore.lock");
+      }
       if (postAcquireGlobalInfo) {
         write(
           dim(
@@ -3814,7 +4214,7 @@ export async function acquireModelLocks(
       }
 
       // For custom sync-capable datastores: pull after acquiring per-model lock
-      if (customSyncService) {
+      if (customSyncService && options?.pull !== false) {
         try {
           write(
             dim(`Syncing behavior ${modelType}/${modelId} from datastore...`),
@@ -3840,12 +4240,25 @@ export async function acquireModelLocks(
     }
   } catch (error) {
     await release();
+    if (options?.failIfBusy && error instanceof LockTimeoutError) {
+      throw new ModelLocksBusyError(error.lockKey ?? "a behavior lock");
+    }
     throw error;
   }
 
   // Older nested swamps read only the holder; set once, never cleared, so
   // concurrent lock holders in this process cannot clear it under each other.
   processLockHolderMarker.markHoldingLocks();
+
+  // How a refusal restores the datastore's copy of what it discards.
+  const refusalRestore = (
+    custom: CustomDatastoreConfig,
+  ): DiscardRestoreOptions => ({
+    sync: isV2CustomDatastore(custom) && resolveDurableWrites(custom)
+      ? { ...options?.restoreWriteHooks }
+      : undefined,
+    lazy: custom.hydrationStrategy === "lazy",
+  });
 
   // A breakglass (`swamp datastore lock release --force`) lets another clone
   // take a model's lock while this run still works under it. Both clones
@@ -3894,12 +4307,7 @@ export async function acquireModelLocks(
             customSyncService,
             config.cachePath,
             config.namespace,
-            {
-              sync: isV2CustomDatastore(config) && resolveDurableWrites(config)
-                ? { ...options?.restoreWriteHooks }
-                : undefined,
-              lazy: config.hydrationStrategy === "lazy",
-            },
+            refusalRestore(config),
           );
         }
         for (const { modelType, modelId } of lost) {
@@ -3979,15 +4387,20 @@ export async function acquireModelLocks(
   const lockedModels = new Set(
     unique.map((m) => JSON.stringify([m.modelType, m.modelId])),
   );
+  // Whether these locks pulled their models before the work's versions are
+  // checked: the pull overwrote, with the datastore's copy, every version
+  // another clone also wrote under the same number.
+  const pulledUnderLocks = customSyncService !== undefined &&
+    options?.pull !== false;
   const push = async (written?: readonly WrittenVersion[]) => {
     const publishContext = options?.repoContext;
+    const isLocked = (w: WrittenVersion) =>
+      lockedModels.has(JSON.stringify([w.modelType, w.modelId]));
     // Only versions of models these locks hold: no other writer can own a
     // newer marker for them while the push runs.
-    const ours = (written ?? []).filter((w) =>
-      lockedModels.has(JSON.stringify([w.modelType, w.modelId]))
-    );
+    const ours = (written ?? []).filter(isLocked);
     if (
-      ours.length === 0 || publishContext === undefined ||
+      publishContext === undefined ||
       // A v3 context commits through its commit log, not this push.
       publishContext.commitLog !== undefined ||
       !customSyncService ||
@@ -3997,35 +4410,198 @@ export async function acquireModelLocks(
       return;
     }
     const syncService = customSyncService;
+    const custom = config;
     const cachePath = config.cachePath;
-    let pending: readonly WrittenVersion[] = ours;
-    for (let attempt = 1; attempt <= PUBLISH_ATTEMPTS; attempt++) {
-      let targets: PublishTarget[] = [];
-      const stage = pending;
-      // The last attempt runs alone, so no other sync can undo it.
-      await pushOnce(
-        async () => {
-          targets = await stageVersionsForPublish(
-            stage,
-            publishContext,
-            cachePath,
-          );
-        },
-        attempt === PUBLISH_ATTEMPTS ? "push-alone" : "push",
-        stage,
-      );
-      if (!syncService.fetchContent || targets.length === 0) return;
-      const behind = await unpublishedTargets(
-        targets,
-        syncService.fetchContent.bind(syncService),
-        config.namespace,
-      );
-      if (behind === undefined || behind.length === 0) return;
-      pending = behind.map((t) => t.written);
-      logger
-        .debug`Datastore lacks ${pending.length} written version(s) after push ${attempt}; publishing again`;
+    // What earlier read or list runs left for these locks to publish
+    // because another run held them (swamp-club#3934).
+    let deferred: PendingPublish[] = [];
+    try {
+      // A record naming another model's versions too is left for a lock
+      // that holds them all.
+      deferred = (await readPendingPublishes(cachePath, unique))
+        .filter((record) => record.versions.every(isLocked));
+    } catch (error) {
+      logger.warn`Reading the data versions left to publish failed: ${error}`;
     }
-    throw new UnpublishedDataVersionError(pending, PUBLISH_ATTEMPTS);
+    const versionKey = (w: WrittenVersion) =>
+      JSON.stringify([w.modelType, w.modelId, w.dataName, w.version]);
+    const ownKeys = new Set(ours.map(versionKey));
+    const seen = new Set(ownKeys);
+    const left: WrittenVersion[] = [];
+    for (const w of deferred.flatMap((record) => record.versions)) {
+      if (seen.has(versionKey(w))) continue;
+      seen.add(versionKey(w));
+      left.push(w);
+    }
+    if (ours.length === 0 && left.length === 0) {
+      await pushOnce();
+      return;
+    }
+    const settleDeferred = async () => {
+      try {
+        await removePendingPublishes(
+          cachePath,
+          deferred.map((record) => record.file),
+        );
+      } catch (error) {
+        logger
+          .warn`Removing the data versions left to publish failed: ${error}`;
+      }
+    };
+    // A version whose data is gone from this host is dropped.
+    const present = [
+      // The run's own metadata must read: one that cannot is not skipped.
+      ...await localDataIds(ours, publishContext.unifiedDataRepo, {
+        strict: true,
+      }),
+      ...await localDataIds(left, publishContext.unifiedDataRepo),
+    ];
+    // A version whose data id is no longer the one its run wrote was
+    // replaced by the pull under these locks: another clone wrote the same
+    // number first, and this host now holds that clone's copy. The cache
+    // holds what the datastore holds for these models, so the push that
+    // follows sends nothing of the other clone's back, and deletes none of
+    // it, whatever is marked (swamp-club#3934).
+    const replaced = pulledUnderLocks
+      ? present
+        .filter((p) =>
+          // Metadata naming no id cannot tell whose version it is.
+          p.written.dataId !== undefined && p.localId !== undefined &&
+          p.localId !== p.written.dataId
+        )
+        .map((p) => p.written)
+      : [];
+    const replacedKeys = new Set(replaced.map(versionKey));
+    const toPublish = present
+      .map((p) => p.written)
+      .filter((w) => !replacedKeys.has(versionKey(w)));
+    let conflict: DataVersionConflictError | undefined;
+    if (replaced.length > 0) {
+      // On a lazy cache a metadata-only pull would have left the content
+      // this host wrote beside the other clone's metadata. Read the
+      // datastore's content over it, never remove it: the run's write left
+      // it marked, and a push deletes the remote copy of a marked file that
+      // is missing here (swamp-club#3934). Equal to the remote, the push
+      // sends nothing for it.
+      const own = replaced.filter((w) => ownKeys.has(versionKey(w)));
+      const earlier = replaced.filter((w) => !ownKeys.has(versionKey(w)));
+      if (custom.hydrationStrategy === "lazy") {
+        try {
+          for (const w of replaced) {
+            await rehydrateContent(
+              join(
+                publishContext.unifiedDataRepo.getPath(
+                  ModelType.create(w.modelType),
+                  w.modelId,
+                  w.dataName,
+                  w.version,
+                ),
+                "raw",
+              ),
+              syncService,
+              cachePath,
+              custom.namespace,
+            );
+          }
+        } catch (error) {
+          // The content left beside the other clone's metadata is still
+          // marked, and nothing would read it back again: the next pull
+          // finds the metadata current. Record the run's own such versions
+          // (an earlier run's keep their records, since nothing is
+          // settled), so the next lock finds them replaced and reads their
+          // content back before it pushes.
+          try {
+            await recordPendingPublish(cachePath, own);
+          } catch (recordError) {
+            logger
+              .warn`Recording the versions whose content could not be read back failed: ${recordError}`;
+          }
+          throw error;
+        }
+      }
+      catalogStore?.invalidate();
+      if (earlier.length > 0) {
+        const names = earlier.map((w) =>
+          `${w.modelType}/${w.modelId} ${w.dataName} version ${w.version}`
+        ).join(", ");
+        logger
+          .warn`An earlier read run's data was not published: another swamp process wrote ${names} first, and this host now holds that copy.`;
+      }
+      if (own.length > 0) conflict = new DataVersionConflictError(own);
+    }
+    if (toPublish.length === 0) {
+      try {
+        await pushOnce();
+      } catch (error) {
+        if (conflict === undefined) throw error;
+        throw new DataVersionConflictError(conflict.versions, {
+          publishFailure: error,
+        });
+      }
+      await settleDeferred();
+      if (conflict !== undefined) throw conflict;
+      return;
+    }
+    const publish = async () => {
+      let pending: readonly WrittenVersion[] = toPublish;
+      for (let attempt = 1; attempt <= PUBLISH_ATTEMPTS; attempt++) {
+        let targets: PublishTarget[] = [];
+        const stage = pending;
+        // The last attempt runs alone, so no other sync can undo it.
+        await pushOnce(
+          async () => {
+            targets = await stageVersionsForPublish(
+              stage,
+              publishContext,
+              cachePath,
+            );
+          },
+          attempt === PUBLISH_ATTEMPTS ? "push-alone" : "push",
+          stage,
+        );
+        if (!syncService.fetchContent || targets.length === 0) return [];
+        const behind = await unpublishedTargets(
+          targets,
+          syncService.fetchContent.bind(syncService),
+          config.namespace,
+        );
+        if (behind === undefined || behind.length === 0) return [];
+        pending = behind.map((t) => t.written);
+        logger
+          .debug`Datastore lacks ${pending.length} written version(s) after push ${attempt}; publishing again`;
+      }
+      return pending;
+    };
+    // The records go only once every version they name is confirmed
+    // published: a failed push keeps them for the next lock. Only the run's
+    // own versions fail the run; an earlier read's are retried later.
+    let failure: unknown;
+    try {
+      const unconfirmed = await publish();
+      const ownLeft = unconfirmed.filter((w) => ownKeys.has(versionKey(w)));
+      const deferredLeft = unconfirmed.length - ownLeft.length;
+      if (deferredLeft > 0) {
+        logger
+          .warn`${deferredLeft} data version(s) an earlier read run left are not confirmed on the datastore yet; the next run that locks the behavior on this host publishes them again.`;
+      } else {
+        await settleDeferred();
+      }
+      if (ownLeft.length > 0) {
+        failure = new UnpublishedDataVersionError(ownLeft, PUBLISH_ATTEMPTS);
+      }
+    } catch (error) {
+      failure = error;
+    }
+    if (failure !== undefined) {
+      if (conflict === undefined) throw failure;
+      // The refusal carries the failure: the versions it left were not all
+      // published either, so a caller that tolerates the refusal still
+      // fails on the rest (swamp-club#3934).
+      throw new DataVersionConflictError(conflict.versions, {
+        publishFailure: failure,
+      });
+    }
+    if (conflict !== undefined) throw conflict;
   };
 
   const flush = async (written?: readonly WrittenVersion[]) => {

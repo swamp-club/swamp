@@ -19,6 +19,7 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import {
+  DataVersionConflictError,
   type MarkDirtyHook,
   ModelLockLostError,
 } from "../domain/datastore/datastore_sync_service.ts";
@@ -192,6 +193,26 @@ Deno.test("runCommandInRootUnit: an error the cleanup handler throws propagates"
 });
 
 const LOCK_LOST = new ModelLockLostError([{ modelType: "t", modelId: "m" }]);
+
+Deno.test("runCommandInRootUnit: a publish refused for another clone's data version fails a command that resolved, past the cleanup handler (swamp-club#3934)", async () => {
+  const conflict = new DataVersionConflictError([
+    { modelType: "t", modelId: "m", dataName: "main", version: 1 },
+  ]);
+  const { repoContext } = recorder();
+  const reported: unknown[] = [];
+  const error = await assertRejects(() =>
+    runCommandInRootUnit(
+      repoContext,
+      {
+        push: () => Promise.reject(conflict),
+        onCleanupError: (cleanupError) => reported.push(cleanupError),
+      },
+      () => Promise.resolve("done"),
+    )
+  );
+  assertEquals(error, conflict);
+  assertEquals(reported, []);
+});
 
 Deno.test("runCommandInRootUnit: a push refused for a lost model lock fails a command that resolved, past the cleanup handler (swamp-club#3373)", async () => {
   const { events, repoContext, release } = recorder();

@@ -7953,10 +7953,10 @@ content download waits until needed.
    definitions-evaluated) have no metadata/raw split and are downloaded fully.
 2. **Behavior runs / workflow runs**: `acquireModelLocks` does a scoped pull via
    `pullChanged({ context })`. It reads the partition file, sees `raw` missing
-   locally, and downloads it. That pull covers only the step's own behavior, and
-   only a method that takes a lock (a read-only method run takes none), so it
-   is not what makes another behavior's data readable; see "Expression reads"
-   below.
+   locally, and downloads it. A read or list run pulls the same way without the
+   lock (`pullModelsUnlocked`, see "Lock Lifecycle"). That pull covers only the
+   step's own behavior, so it is not what makes another behavior's data
+   readable; see "Expression reads" below.
 3. **`data get` and `data query` (read-only, no sync)**: every read of a
    content file goes through the repository's content-ensuring step (below),
    which downloads a missing `raw` through the `HydrateFileHook`. `data query`
@@ -8409,6 +8409,103 @@ different lock and the drain would silently do nothing. If it sees a stale
 global lock, `acquireModelLocks` calls `forceRelease(expectedNonce)` to clear
 it. Without that, the post-acquire TOCTOU re-check would find the same stale
 lock on every pass and recurse forever.
+
+A read or list run (`kind: "read"` or `"list"`, declared or inferred from the
+method name) takes no lock while it runs, so a read never waits behind a
+writer of the same behavior (swamp-club#1992). It still writes: an output
+record, its method-summary report, and often a resource, as a `get` that
+refreshes its resource does. `methodRunLockMode`
+(`src/libswamp/models/method_run_lock_mode.ts`) picks how the CLI's
+`behavior run` and both serve method-run handlers lock it (swamp-club#3934):
+
+- On a filesystem or v3 datastore it takes no lock: a filesystem datastore has
+  no push, and a v3 root commits through its commit log whatever the locks.
+  Nor does it on a v2 extension datastore whose provider builds no sync
+  service, which has nothing to pull or publish through.
+- On a v2 extension datastore the model lock is the only path that pulls before
+  a run and publishes what it wrote, and each clone numbers data versions from
+  its own cache. So the run pulls the behavior without the lock first
+  (`pullModelsUnlocked`), runs unlocked, and then tries to take the lock only to
+  publish (`acquirePublishLocksOrDefer`). The pull never waits and never fails
+  the run: while a structural command holds the global lock, while a run on this
+  host holds the behavior's lock (it writes into the same cache, and a pull
+  would overwrite its unpublished files with the datastore's older copies), or
+  when the pull fails (an unreachable remote), the run uses this host's cache,
+  and the publish check still refuses a version another clone wrote. A holder on
+  another host does not share the cache, so the pull goes ahead. A global lock
+  past its TTL is force-released, as a waiting run does, so a crashed structural
+  command does not hold reads off.
+- The publish never waits on a writer. `acquireModelLocks` with `failIfBusy`
+  gives up at once while the global lock is held, and after
+  `READ_PUBLISH_LOCK_WAIT_MS` (two seconds, one retry) while another run
+  holds the per-model lock. Then the run records the versions it wrote
+  beside the cache (`<cache>.pending-publish/`, one file per run, which no
+  push walks), logs that the next run to lock the behavior on this host
+  publishes them, and succeeds. A nested run whose parent holds the lock
+  defers the same way, and the parent's push publishes its data.
+- With the lock, the publish pulls the behavior, as a mutating run's lock does.
+  The pull replaces with the datastore's copy every version another clone wrote
+  under the same number while the run was unlocked, so a version whose local
+  data id is no longer the one the run wrote was another clone's: it is not
+  pushed, and the rest are. On a lazy cache its content is read back from the
+  datastore over this host's copy, never removed: the run's write left it
+  marked, and a push deletes the remote copy of a marked file missing here. If
+  it cannot be read back, nothing is pushed, and the run's own such versions are
+  recorded beside the deferred ones, so the next lock finds them replaced again
+  and reads their content back before it pushes; a pull alone would not, since
+  their metadata is already current. The push then throws
+  `DataVersionConflictError` (`datastore_data_version_conflict`), which says
+  this host now holds the datastore's copy. Because the cache holds what the
+  datastore holds for the behavior under its lock, a push that walks a marked
+  directory deletes and rolls back none of another clone's versions, whether or
+  not the sync service can clear its marks. The conflict does not fail the run:
+  the method's work is done and its other versions were published, unless
+  publishing them failed too, which the conflict then carries and which decides
+  the run as it would without the conflict. Every run writes a version of each
+  built-in method-summary report, so failing would fail any read that overlaps
+  another clone's run of the same behavior. The CLI logs it at warn and exits
+  with the method's own status; serve, which has answered its client before it
+  publishes, logs it at warn too.
+- The CLI logs the publish and its locks under the `datastore.lock` category,
+  not the run's own: without `--log` the run's category reaches only the run log
+  file, and the publish runs after the method has finished writing it. In JSON
+  mode, where no log reaches the console, a read or list run's result waits for
+  its publish and lists what it left on this host in `unpublishedVersions`
+  (`dataName`, `version`, and `reason`: `conflict`, `unauthorized`, or
+  `deferred` while another run holds the lock); the field is absent when nothing
+  was left.
+- A refusal of the credentials (HTTP 401 or 403, an access-denied code, read by
+  `isDatastoreAuthorizationError`), whether taking the publish lock, pulling
+  under it or pushing, does not fail a read or list run either: read-only
+  credentials never stopped a read before reads published. The CLI warns that
+  the data stays on this host only, and records nothing for a later lock, which
+  the same credentials would be refused again. Any other failure, such as an
+  unreachable datastore, still fails the run, and a mutating run whose
+  credentials are refused fails as before.
+- Every push made under a behavior's lock with a repository context also
+  publishes the versions earlier runs deferred for it, with the same
+  data-id check, and removes their records once the datastore confirms
+  them; a failed push keeps them. A deferred version another clone also
+  wrote is dropped with a warning, and one the datastore does not confirm
+  keeps its record for the next lock: neither fails the current run, whose
+  own versions alone decide its outcome. A run's own version whose metadata
+  cannot be read fails the publish rather than being left out. A version no
+  longer on this host is dropped, and a record naming another behavior's
+  versions too waits for a lock that holds them all.
+- A run that wrote no data version takes no publish lock. When the CLI publish
+  fails other than by a conflict, a refusal of the credentials or a busy lock
+  (an unreachable remote), a run that succeeded fails with that error, or with
+  `datastore_publish_failed` for an untyped one; a run that failed keeps its own
+  error and logs that its data was not published.
+
+Until it is published, a read run's data sits in the cache like any other
+unpublished write. Another run's push from this host uploads it without the
+check above: the S3 and GCS extensions push every marked path whatever the
+push's model scope, and a full walk uploads any cache file the remote lacks
+or holds differently, marked or not. A deferral lengthens that window, and
+defers exactly when another clone is writing the behavior. Closing it needs
+the extensions to make every remote write conditional on the copy this host
+last synced; that work is tracked separately.
 
 Workflow commands (`workflow run`, `workflow resume`) and serve-hosted workflow
 runs do not lock up front. A `StepLockHook` callback injected into the

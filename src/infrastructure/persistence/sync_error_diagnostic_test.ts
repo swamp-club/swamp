@@ -17,8 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
-import { summarizeSyncError } from "./sync_error_diagnostic.ts";
+import {
+  assert,
+  assertEquals,
+  assertFalse,
+  assertStringIncludes,
+} from "@std/assert";
+import {
+  isDatastoreAuthorizationError,
+  summarizeSyncError,
+} from "./sync_error_diagnostic.ts";
 
 Deno.test("summarizeSyncError: plain Error with message", () => {
   const err = new Error("boom");
@@ -215,4 +223,54 @@ Deno.test("summarizeSyncError: summary strips newlines so it stays single-line",
 Deno.test("summarizeSyncError: missing optional fields are absent from `fields`", () => {
   const { fields } = summarizeSyncError("pull", "@t/x", {});
   assertEquals(Object.keys(fields).sort(), ["label", "operation"]);
+});
+
+Deno.test("isDatastoreAuthorizationError: an S3-style refusal by status or code (swamp-club#3934)", () => {
+  assert(isDatastoreAuthorizationError({ httpStatusCode: 403 }));
+  assert(
+    isDatastoreAuthorizationError({ $metadata: { httpStatusCode: 401 } }),
+  );
+  assert(isDatastoreAuthorizationError({ Code: "AccessDenied" }));
+  assert(
+    isDatastoreAuthorizationError(
+      Object.assign(new Error("denied"), { name: "InvalidAccessKeyId" }),
+    ),
+  );
+  // A Google API error carries the status as a numeric code.
+  assert(isDatastoreAuthorizationError({ code: 403, message: "Forbidden" }));
+});
+
+Deno.test("isDatastoreAuthorizationError: a refusal wrapped by core, through its cause or its message (swamp-club#3934)", () => {
+  const s3 = Object.assign(new Error("S3 putObject failed HTTP 403"), {
+    httpStatusCode: 403,
+    code: "AccessDenied",
+  });
+  assert(
+    isDatastoreAuthorizationError(new Error("push failed", { cause: s3 })),
+  );
+  assert(
+    isDatastoreAuthorizationError(
+      new Error(
+        "Datastore sync failed: could not pull data for a/b: S3 getObject failed HTTP 403 AccessDenied",
+      ),
+    ),
+  );
+  assert(
+    isDatastoreAuthorizationError(
+      new Error("Datastore credentials rejected by AWS: verify your profile"),
+    ),
+  );
+});
+
+Deno.test("isDatastoreAuthorizationError: an unreachable datastore or another failure is not a refusal (swamp-club#3934)", () => {
+  assertFalse(
+    isDatastoreAuthorizationError(
+      new Error("error sending request: Connection refused (os error 111)"),
+    ),
+  );
+  assertFalse(isDatastoreAuthorizationError({ httpStatusCode: 500 }));
+  assertFalse(isDatastoreAuthorizationError({ code: "ECONNREFUSED" }));
+  assertFalse(isDatastoreAuthorizationError(new Error("HTTP 4030 bytes")));
+  assertFalse(isDatastoreAuthorizationError(undefined));
+  assertFalse(isDatastoreAuthorizationError("boom"));
 });

@@ -1043,6 +1043,18 @@ function sortPathMarkRuns(ops: string[]): void {
 }
 
 /**
+ * The marks a read run's publish lock makes outside the use case: its push
+ * stages each report version and its latest marker again before uploading
+ * (swamp-club#3146, swamp-club#3934).
+ */
+export const READ_RUN_PUBLISH_MARKS = [
+  "markDirty data/<type>/<id>/report-swamp-method-summary-json/1",
+  "markDirty data/<type>/<id>/report-swamp-method-summary-json/latest",
+  "markDirty data/<type>/<id>/report-swamp-method-summary/1",
+  "markDirty data/<type>/<id>/report-swamp-method-summary/latest",
+];
+
+/**
  * Registers one step per row and composition, comparing each observation
  * with its pinned entry. Every row must have a pinned entry, and a
  * composition is pinned `null` exactly when the row has no entry point

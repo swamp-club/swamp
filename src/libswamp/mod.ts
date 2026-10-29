@@ -263,6 +263,10 @@ export {
   unknownModelType,
 } from "./models/run.ts";
 export {
+  type MethodRunLockMode,
+  methodRunLockMode,
+} from "./models/method_run_lock_mode.ts";
+export {
   autoDefinitionLockKey,
   type DirectExecutionDeps,
   type DirectExecutionResult,
@@ -275,6 +279,7 @@ export {
   type ModelMethodRunView,
   type ModelReportView,
   type ReportResultView,
+  type UnpublishedVersionView,
 } from "./models/model_method_run_view.ts";
 
 // Report operations (top-level)
