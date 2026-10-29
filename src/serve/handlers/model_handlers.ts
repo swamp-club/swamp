@@ -193,6 +193,7 @@ import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import {
   authorizeReferenceAccess,
   authorizeResolved,
+  type CanonicalResources,
   canonicalResources,
   modelAccessResource,
   recordedRunModel,
@@ -1949,6 +1950,9 @@ export async function handleModelOutputSearch(
     // canonicalResources reads them (swamp-club#3779).
     const workflowRepo = ctx.repoContext.workflowRepo.memoizedView?.() ??
       ctx.repoContext.workflowRepo;
+    // One owner lookup per definition names the outputs and authorizes them
+    // (swamp-club#4141).
+    const canonical = canonicalResources(ctx, controller.signal);
 
     // The scans stop when the request is cancelled, so it gives up its
     // place among the shared scan permits (swamp-club#4070).
@@ -1957,6 +1961,7 @@ export async function handleModelOutputSearch(
       findAllOutputsGlobalSince: (cutoff) =>
         outputRepo.findAllGlobalSince(cutoff, controller.signal),
       findAllDefinitions: () => definitionRepo.findAllIncludingAutoGlobal(),
+      resolveModelNames: (keys) => resolveModelNames(canonical, keys),
       resolveModel: async (idOrName) => {
         const found = new Map<string, ModelOutputSearchModel>();
         const add = (definition: Definition, type: ModelType) => {
@@ -2034,6 +2039,7 @@ export async function handleModelOutputSearch(
             phase.tally.add("items", results.length);
             const readable = await filterOutputItems(
               results,
+              canonical,
               socket,
               principal,
               ctx,
@@ -2288,10 +2294,15 @@ export async function handleModelMethodHistorySearch(
     const outputRepo = ctx.repoContext.outputRepo;
     const definitionRepo = ctx.repoContext.definitionRepo;
 
+    // One owner lookup per definition names the outputs and authorizes them
+    // (swamp-club#4141).
+    const canonical = canonicalResources(ctx, controller.signal);
+
     // The scan stops when the request is cancelled (swamp-club#4070).
     const deps: ModelOutputSearchDeps = {
       findAllOutputsGlobal: () => outputRepo.findAllGlobal(controller.signal),
       findAllDefinitions: () => definitionRepo.findAllIncludingAutoGlobal(),
+      resolveModelNames: (keys) => resolveModelNames(canonical, keys),
     };
 
     // Exported as the output_search diagnostic area's phases
@@ -2328,6 +2339,7 @@ export async function handleModelMethodHistorySearch(
             phase.tally.add("items", results.length);
             const readable = await filterOutputItems(
               results,
+              canonical,
               socket,
               principal,
               ctx,
@@ -2962,17 +2974,34 @@ export async function redactWorkflowLinks(
 }
 
 /**
+ * The names of the definitions an output search asks for, in order, from the
+ * request's owner lookups, which authorizing its items then reuses. One at a
+ * time, as authorization looks them up, so the files open at once stay
+ * bounded.
+ */
+async function resolveModelNames(
+  canonical: CanonicalResources,
+  keys: ReadonlyArray<{ type: { normalized: string }; definitionId: string }>,
+): Promise<Array<string | undefined>> {
+  const names: Array<string | undefined> = [];
+  for (const { type, definitionId } of keys) {
+    names.push(await canonical.modelName(definitionId, type.normalized));
+  }
+  return names;
+}
+
+/**
  * Keeps the output or method-run items the caller may read: each is judged on
  * every model owning its definition id, with the method it ran, so a
  * methods-scoped or tag-conditioned grant applies to it (swamp-club#2675).
  */
 function filterOutputItems(
   items: ModelOutputSearchItem[],
+  canonical: CanonicalResources,
   socket: WebSocket,
   principal: Principal | null,
   ctx: ConnectionContext,
 ): Promise<ModelOutputSearchItem[]> {
-  const canonical = canonicalResources(ctx);
   return filterByResources(
     items,
     async (item) =>

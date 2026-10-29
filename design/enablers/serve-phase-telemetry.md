@@ -257,10 +257,18 @@ these phases.
 | Phase              | Parent                      | Attributes                                                                     |
 | ------------------ | --------------------------- | ------------------------------------------------------------------------------ |
 | `candidate_scan`   | `swamp.model.output.search` | Finding the outputs to consider; counters below                                |
-| `definition_names` | `swamp.model.output.search` | `definitions`: the one scan of every definition that names the outputs         |
+| `definition_names` | `swamp.model.output.search` | `definitions` named, `owner_lookups`, `owner_lookups_reused`, `files_read`     |
 | `workflow_names`   | `swamp.model.output.search` | `workflow_ids`: the workflows named in one lookup; absent when none is named   |
 | `authorization`    | `swamp.serve.request`       | `items` considered, `readable` kept, `owner_lookups`, `owner_lookups_reused`   |
 | `response`         | `swamp.serve.request`       | `results` sent: the limit, then workflow-link redaction, then the reply itself |
+
+`definition_names` names the outputs from the request's owner lookups
+(lab #4141): it looks up each definition owning an output that is not already
+named, once, and reads only those definitions' files (`files_read`), never a
+definition that owns none. `authorization` then judges each item on the same
+lookups, so its `owner_lookups` are all `owner_lookups_reused` and it reads no
+definition files. Without a definition index, the request's one scan of every
+definition answers both phases.
 
 `candidate_scan` counts `candidates`, and what the repository did to find them.
 A `since` search walks every type and method directory and skips a file whose

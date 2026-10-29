@@ -109,7 +109,7 @@ export interface ModelOutputSearchDeps {
    * Every definition with its type, primary definitions before
    * auto-definitions. Read at most once per search to name the outputs, so
    * history holding many deleted definitions costs one scan, not one per id
-   * (swamp-club#3959).
+   * (swamp-club#3959). Not read when {@link resolveModelNames} is given.
    */
   findAllDefinitions(): Promise<
     Array<{
@@ -117,6 +117,16 @@ export interface ModelOutputSearchDeps {
       type: { normalized: string };
     }>
   >;
+  /**
+   * The names of the given definitions, looked up together, in the order
+   * asked: for each, the first definition of that type and id, primary
+   * definitions before auto-definitions; undefined when none resolves. Given,
+   * it names the outputs instead of {@link findAllDefinitions}, so only the
+   * definitions owning outputs are read (swamp-club#4141).
+   */
+  resolveModelNames?(
+    keys: ReadonlyArray<{ type: { normalized: string }; definitionId: string }>,
+  ): Promise<ReadonlyArray<string | undefined>>;
   /**
    * The definitions a `model` filter (a name or an id) names. With
    * {@link findOutputsByDefinition} it reads only those models' outputs
@@ -244,42 +254,15 @@ export async function* modelOutputSearch(
         },
       );
 
-      // One scan of every definition, only once an output needs a name. The
-      // first definition per type and id wins, so a primary definition names
-      // its outputs over an auto-definition sharing its id.
-      let names: Promise<Map<string, string>> | undefined;
-      const modelNameOf = async (
-        type: { normalized: string },
-        definitionId: string,
-      ): Promise<string | undefined> => {
-        names ??= observeDiagnosticPhase(
-          "definition_names",
-          {},
-          (phase) =>
-            deps.findAllDefinitions().then((all) => {
-              phase.tally.add("definitions", all.length);
-              const index = new Map<string, string>();
-              for (const entry of all) {
-                const key = JSON.stringify([
-                  entry.type.normalized,
-                  entry.definition.id,
-                ]);
-                if (!index.has(key)) index.set(key, entry.definition.name);
-              }
-              return index;
-            }),
-        );
-        return (await names).get(
-          JSON.stringify([type.normalized, definitionId]),
-        );
-      };
+      const inWindow = candidates.filter(({ output }) => {
+        const startedMs = output.startedAt.getTime();
+        return !(since && startedMs < since.getTime()) &&
+          !(until && startedMs >= until.getTime());
+      });
+      const modelNameOf = await definitionNamer(deps, inWindow);
 
       const items: ModelOutputSearchItem[] = [];
-      for (const { output, type, modelName: knownName } of candidates) {
-        const startedMs = output.startedAt.getTime();
-        if (since && startedMs < since.getTime()) continue;
-        if (until && startedMs >= until.getTime()) continue;
-
+      for (const { output, type, modelName: knownName } of inWindow) {
         const modelName = knownName ??
           await modelNameOf(type, output.definitionId);
         if (
@@ -353,6 +336,79 @@ export async function* modelOutputSearch(
       };
     })(),
   );
+}
+
+/**
+ * Names the candidates' definitions. With {@link
+ * ModelOutputSearchDeps.resolveModelNames}, the definitions of the
+ * candidates not already named are looked up together, once each. Otherwise
+ * one scan of every definition, only once an output needs a name. Either way
+ * the first definition per type and id wins, so a primary definition names
+ * its outputs over an auto-definition sharing its id.
+ */
+async function definitionNamer(
+  deps: ModelOutputSearchDeps,
+  candidates: ReadonlyArray<{
+    output: ModelOutputSearchOutput;
+    type: { normalized: string };
+    modelName?: string;
+  }>,
+): Promise<
+  (
+    type: { normalized: string },
+    definitionId: string,
+  ) => Promise<string | undefined>
+> {
+  const keyOf = (type: { normalized: string }, definitionId: string) =>
+    JSON.stringify([type.normalized, definitionId]);
+
+  if (deps.resolveModelNames) {
+    const resolveModelNames = deps.resolveModelNames;
+    const wanted = new Map<
+      string,
+      { type: { normalized: string }; definitionId: string }
+    >();
+    for (const { output, type, modelName } of candidates) {
+      if (modelName !== undefined) continue;
+      const key = keyOf(type, output.definitionId);
+      if (!wanted.has(key)) {
+        wanted.set(key, { type, definitionId: output.definitionId });
+      }
+    }
+    const names = new Map<string, string>();
+    if (wanted.size > 0) {
+      await observeDiagnosticPhase("definition_names", {}, async (phase) => {
+        phase.tally.add("definitions", wanted.size);
+        const keys = [...wanted.keys()];
+        const resolved = await resolveModelNames([...wanted.values()]);
+        keys.forEach((key, i) => {
+          const name = resolved[i];
+          if (name !== undefined) names.set(key, name);
+        });
+      });
+    }
+    return (type, definitionId) =>
+      Promise.resolve(names.get(keyOf(type, definitionId)));
+  }
+
+  let names: Promise<Map<string, string>> | undefined;
+  return async (type, definitionId) => {
+    names ??= observeDiagnosticPhase(
+      "definition_names",
+      {},
+      (phase) =>
+        deps.findAllDefinitions().then((all) => {
+          phase.tally.add("definitions", all.length);
+          const index = new Map<string, string>();
+          for (const entry of all) {
+            const key = keyOf(entry.type, entry.definition.id);
+            if (!index.has(key)) index.set(key, entry.definition.name);
+          }
+          return index;
+        }),
+    );
+    return (await names).get(keyOf(type, definitionId));
+  };
 }
 
 /**

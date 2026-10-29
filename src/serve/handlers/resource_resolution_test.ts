@@ -1855,3 +1855,88 @@ Deno.test("CanonicalResources: outside a diagnostic phase, lookups export nothin
     });
   });
 });
+
+Deno.test("CanonicalResources.modelName: names after the first definition of the type declaring the id, with or without a definition index (swamp-club#4141)", async () => {
+  await withTempDir(async (dir) => {
+    const shared = Definition.create({ name: "primary", globalArguments: {} });
+    const repo = new YamlDefinitionRepository(dir);
+    await repo.save(SHELL, shared);
+    // An auto-definition of the same type and id, and a definition of another
+    // type that shares the id.
+    await saveAutoDefinition(
+      dir,
+      SHELL,
+      Definition.fromData({ ...shared.toData(), name: "auto" }),
+    );
+    await saveAutoDefinition(
+      dir,
+      GRANT_TYPE,
+      Definition.fromData({ ...shared.toData(), name: "grant-copy" }),
+    );
+
+    for (const ownerIndex of [new DefinitionIdIndex(repo), undefined]) {
+      const canonical = new CanonicalResources(
+        repo,
+        workflowRepo([]),
+        ownerIndex,
+      );
+      const label = ownerIndex ? "index" : "scan";
+      assertEquals(
+        await canonical.modelName(shared.id, "command/shell"),
+        "primary",
+        label,
+      );
+      assertEquals(
+        await canonical.modelName(shared.id, "swamp/grant"),
+        "grant-copy",
+        label,
+      );
+      assertEquals(
+        await canonical.modelName(shared.id, "@acme/db"),
+        undefined,
+        label,
+      );
+      assertEquals(
+        await canonical.modelName(crypto.randomUUID(), "command/shell"),
+        undefined,
+        label,
+      );
+    }
+  });
+});
+
+Deno.test("CanonicalResources.modelName: the owners of a named model are looked up once (swamp-club#4141)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const prod = Definition.create({ name: "prod-db", globalArguments: {} });
+    await repo.save(SHELL, prod);
+
+    await withObservedSpans(async (spans) => {
+      await withDiagnosticArea(
+        "step_outputs",
+        () =>
+          observeDiagnosticPhase("output_walk", {}, async () => {
+            const canonical = new CanonicalResources(
+              repo,
+              workflowRepo([]),
+              new DefinitionIdIndex(repo),
+            );
+            assertEquals(
+              await canonical.modelName(prod.id, "command/shell"),
+              "prod-db",
+            );
+            const owners = await canonical.modelOwners(
+              prod.id,
+              "command/shell",
+              "prod-db",
+              "model",
+            );
+            assertEquals(owners.map((o) => o.name), ["prod-db"]);
+          }),
+      );
+      const [walk] = diagnosticPhases(spans, "output_walk");
+      assertEquals(walk.attributes["swamp.diagnostic.owner_lookups"], 2);
+      assertEquals(walk.attributes["swamp.diagnostic.owner_lookups_reused"], 1);
+    });
+  });
+});

@@ -584,3 +584,123 @@ Deno.test("modelOutputSearch: exports its phases only inside the output_search a
     );
   });
 });
+
+Deno.test("modelOutputSearch: names outputs through resolveModelNames instead of scanning every definition (swamp-club#4141)", async () => {
+  const lookups: Array<Array<[string, string]>> = [];
+  const outputs = [
+    ...outputsOf(["def-a", "def-a", "def-b", "def-gone"]),
+    // A definition id shared across types is asked for once per type.
+    ...outputsOf(["def-a"], "aws/s3-bucket").map((o) => ({
+      ...o,
+      output: { ...o.output, id: "out-s3" },
+    })),
+  ];
+  const names: Record<string, string> = {
+    '["command/shell","def-a"]': "shell-a",
+    '["command/shell","def-b"]': "shell-b",
+    '["aws/s3-bucket","def-a"]': "bucket-a",
+  };
+  const deps = makeDeps({
+    findAllOutputsGlobal: () => Promise.resolve(outputs),
+    findAllDefinitions: () => {
+      throw new Error("must not scan definitions");
+    },
+    resolveModelNames: (keys) => {
+      lookups.push(keys.map((k) => [k.type.normalized, k.definitionId]));
+      return Promise.resolve(
+        keys.map((k) =>
+          names[JSON.stringify([k.type.normalized, k.definitionId])]
+        ),
+      );
+    },
+  });
+  const data = completedOf(
+    await collect(modelOutputSearch(createLibSwampContext(), deps, {})),
+  );
+  assertEquals(lookups, [[
+    ["command/shell", "def-a"],
+    ["command/shell", "def-b"],
+    ["command/shell", "def-gone"],
+    ["aws/s3-bucket", "def-a"],
+  ]]);
+  assertEquals(
+    Object.fromEntries(data.results.map((r) => [r.id, r.modelName])),
+    {
+      "out-0": "shell-a",
+      "out-1": "shell-a",
+      "out-2": "shell-b",
+      "out-3": undefined,
+      "out-s3": "bucket-a",
+    },
+  );
+});
+
+Deno.test("modelOutputSearch: resolveModelNames is asked only for outputs inside the window, and not at all when none needs a name", async () => {
+  const lookups: string[][] = [];
+  const deps = makeDeps({
+    findAllOutputsGlobal: () => Promise.resolve(outputsOf(["early", "late"])),
+    findAllDefinitions: () => {
+      throw new Error("must not scan definitions");
+    },
+    resolveModelNames: (keys) => {
+      lookups.push(keys.map((k) => k.definitionId));
+      return Promise.resolve(keys.map(() => "named"));
+    },
+  });
+  // outputsOf starts the outputs one second apart, from 10:00:00.
+  const data = completedOf(
+    await collect(
+      modelOutputSearch(createLibSwampContext(), deps, {
+        since: "2026-01-15T10:00:01Z",
+      }),
+    ),
+  );
+  assertEquals(lookups, [["late"]]);
+  assertEquals(data.results.map((r) => r.modelName), ["named"]);
+
+  lookups.length = 0;
+  const empty = completedOf(
+    await collect(
+      modelOutputSearch(createLibSwampContext(), deps, {
+        since: "2030-01-01T00:00:00Z",
+      }),
+    ),
+  );
+  assertEquals(empty.results, []);
+  assertEquals(lookups, []);
+});
+
+Deno.test("modelOutputSearch: the model filter matches a name resolveModelNames gives", async () => {
+  const deps = makeDeps({
+    findAllDefinitions: () => {
+      throw new Error("must not scan definitions");
+    },
+    resolveModelNames: (keys) =>
+      Promise.resolve(
+        keys.map((k) => k.definitionId === "def-2" ? "my-bucket" : undefined),
+      ),
+  });
+  const data = completedOf(
+    await collect(
+      modelOutputSearch(createLibSwampContext(), deps, { model: "my-bucket" }),
+    ),
+  );
+  assertEquals(data.results.map((r) => r.id), ["out-2"]);
+  assertEquals(data.results[0].modelName, "my-bucket");
+});
+
+Deno.test("modelOutputSearch: definition_names counts the definitions resolveModelNames is asked for", async () => {
+  await withObservedSpans(async (spans) => {
+    const deps = makeDeps({
+      findAllOutputsGlobal: () =>
+        Promise.resolve(outputsOf(["def-a", "def-a", "def-b"])),
+      resolveModelNames: (keys) => Promise.resolve(keys.map(() => "named")),
+    });
+    await withDiagnosticArea(
+      "output_search",
+      () => collect(modelOutputSearch(createLibSwampContext(), deps, {})),
+    );
+    const phase = findSpan(spans, "swamp.diagnostic.definition_names");
+    assertEquals(phase.attributes["swamp.diagnostic.definitions"], 2);
+  });
+});
