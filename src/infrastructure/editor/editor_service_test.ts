@@ -173,3 +173,21 @@ Deno.test("EditorService.prepareOpenFile: editors given by path follow their com
     UserError,
   );
 });
+
+Deno.test("EditorService.prepareOpenFile: the wait is confirmed only for editors known to stay open", async () => {
+  const cases: [string, boolean][] = [
+    ["vim", true],
+    ["/usr/bin/nvim", true],
+    ["code", true],
+    ["code --wait", true],
+    ["open -W -n", true],
+    ["/usr/local/bin/my-editor.sh", false],
+    ["emacsclient", false],
+  ];
+  for (const [editor, confirmed] of cases) {
+    const launch = await serviceWithEditor(editor).prepareOpenFile("/f.yaml", {
+      requireWait: true,
+    });
+    assertEquals(launch.waitConfirmed, confirmed, editor);
+  }
+});

@@ -27,9 +27,14 @@
  */
 
 import "../src/domain/models/models.ts";
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { walk } from "@std/fs";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { configEditConflictOf } from "../src/domain/datastore_v3/config_edit_conflict.ts";
 import { closeV3Datastores } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
@@ -254,18 +259,57 @@ for (const kind of ["workflow", "model", "vault"] as const) {
     },
   });
 
+  Deno.test(`editor edit: closing the editor on an unchanged ${kind} saves nothing`, async () => {
+    await withV3RowRepos({ managedConfig: true }, async (repos) => {
+      await create(repos.repoA, kind, "deploy");
+      let copy: string | undefined;
+      const restore = useEditorSessionDepsForTesting({
+        prepareEditor: (path) =>
+          Promise.resolve({
+            editor: "Fake",
+            waitsForExit: true,
+            waitConfirmed: true,
+            open: () => {
+              copy = path;
+              return Promise.resolve({ editor: "Fake", path, success: true });
+            },
+          }),
+      });
+      try {
+        const result = await cli(repos.repoA, [kind, "edit", "deploy"], {
+          stdin: null,
+        });
+        assertEquals(result.status, "unchanged");
+      } finally {
+        restore();
+      }
+      // The copy was removed, not left in TMPDIR.
+      await assertRejects(
+        () => Deno.stat(dirname(copy!)),
+        Deno.errors.NotFound,
+      );
+    });
+  });
+
   Deno.test({
     name:
-      `editor edit: closing the editor on an unchanged ${kind} saves nothing`,
+      `editor edit: an editor that exits with an error saves nothing to the ${kind}`,
     ignore,
     fn: async () => {
       await withV3RowRepos({ managedConfig: true }, async (repos) => {
         await create(repos.repoA, kind, "deploy");
-        const result = await cli(repos.repoA, [kind, "edit", "deploy"], {
-          stdin: null,
-          env: { EDITOR: "true" },
-        });
-        assertEquals(result.status, "unchanged");
+        const before = await loaded(repos.repoA, kind, "deploy");
+        // vim's :cq: the edit is abandoned, whatever the file holds.
+        const error = await cliRejecting(
+          repos.repoA,
+          [kind, "edit", "deploy"],
+          {
+            EDITOR: "false",
+          },
+        );
+        assert(error instanceof Error, `not an error: ${error}`);
+        assertStringIncludes(error.message, "exited with an error");
+        assertEquals(await loaded(repos.repoA, kind, "deploy"), before);
       });
     },
   });
@@ -286,12 +330,15 @@ for (const kind of ["workflow", "model", "vault"] as const) {
           editor.env,
         );
 
-        assert(error instanceof Error, `not an error: ${error}`);
         const kept = await editor.givenPath();
-        assertStringIncludes(error.message, `Your edit is kept at ${kept}`);
-        assertEquals(await Deno.readTextFile(kept), "name: [unclosed\n");
-        assertEquals(await loaded(repos.repoA, kind, "deploy"), before);
-        await Deno.remove(join(kept, ".."), { recursive: true });
+        try {
+          assert(error instanceof Error, `not an error: ${error}`);
+          assertStringIncludes(error.message, `Your edit is kept at ${kept}`);
+          assertEquals(await Deno.readTextFile(kept), "name: [unclosed\n");
+          assertEquals(await loaded(repos.repoA, kind, "deploy"), before);
+        } finally {
+          await Deno.remove(dirname(kept), { recursive: true }).catch(() => {});
+        }
       });
     },
   });
@@ -414,25 +461,30 @@ for (const kind of ["workflow", "model", "vault"] as const) {
         restore();
       }
 
-      assert(error instanceof Error, `not an error: ${error}`);
-      assertEquals(
-        configEditConflictOf(error)?.code,
-        "config_edit_conflict",
-        `not an edit conflict: ${error.message}`,
-      );
-      assertStringIncludes(error.message, `Your edit is kept at ${kept}`);
-      assertEquals(
-        await Deno.readTextFile(kept!),
-        stringifyYaml(withEdit(kind, base, "B")),
-      );
-      // A's edit stands, in both checkouts.
-      for (const repoDir of [repos.repoA, repos.repoB]) {
+      try {
+        assert(error instanceof Error, `not an error: ${error}`);
         assertEquals(
-          editedBy(kind, await loaded(repoDir, kind, "deploy")),
-          "A",
+          configEditConflictOf(error)?.code,
+          "config_edit_conflict",
+          `not an edit conflict: ${error.message}`,
         );
+        assertStringIncludes(error.message, `Your edit is kept at ${kept}`);
+        assertEquals(
+          await Deno.readTextFile(kept!),
+          stringifyYaml(withEdit(kind, base, "B")),
+        );
+        // A's edit stands, in both checkouts.
+        for (const repoDir of [repos.repoA, repos.repoB]) {
+          assertEquals(
+            editedBy(kind, await loaded(repoDir, kind, "deploy")),
+            "A",
+          );
+        }
+      } finally {
+        if (kept !== undefined) {
+          await Deno.remove(dirname(kept), { recursive: true }).catch(() => {});
+        }
       }
-      await Deno.remove(join(kept!, ".."), { recursive: true });
     });
   });
 }

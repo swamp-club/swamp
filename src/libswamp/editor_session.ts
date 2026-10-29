@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join } from "@std/path";
+import { markErrorPaths, UserError } from "../domain/errors.ts";
 import {
   type EditorLaunch,
   EditorService,
@@ -76,7 +77,16 @@ export interface EditorSessionInput {
 
 /** How an editor session ended. */
 export type EditorSessionResult =
-  | { status: "unchanged"; editor: string }
+  | {
+    status: "unchanged";
+    editor: string;
+    /**
+     * Set when the editor is not known to stay open until the file is
+     * closed: it may have returned before the person saved, so the copy is
+     * kept here rather than removed.
+     */
+    keptPath?: string;
+  }
   | {
     status: "edited";
     editor: string;
@@ -103,6 +113,8 @@ export async function editInEditor(
   const discard = async () => {
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   };
+  // Set once the copy holds an edit that must survive a thrown error.
+  let keep = false;
   try {
     await Deno.writeTextFile(tempPath, input.content, { mode: 0o600 });
     const launch = await deps.prepareEditor(tempPath);
@@ -111,15 +123,31 @@ export async function editInEditor(
       path: tempPath,
       waitsForExit: launch.waitsForExit,
     });
-    const { editor } = await launch.open();
+    const { editor, success } = await launch.open();
     const content = await Deno.readTextFile(tempPath);
-    if (content === input.content) {
+    const changed = content !== input.content;
+    if (success === false) {
+      // A non-zero exit (vim's :cq) abandons the edit, as git treats it.
+      keep = changed;
+      throw markErrorPaths(
+        new UserError(
+          `${editor} exited with an error, so nothing was saved.` +
+            (changed ? ` Your edit is kept at ${tempPath}.` : ""),
+          "editor_failed",
+        ),
+        [tempPath],
+      );
+    }
+    if (!changed) {
+      if (launch.waitConfirmed === false) {
+        return { status: "unchanged", editor, keptPath: tempPath };
+      }
       await discard();
       return { status: "unchanged", editor };
     }
     return { status: "edited", editor, content, tempPath, discard };
   } catch (error) {
-    await discard();
+    if (!keep) await discard();
     throw error;
   }
 }

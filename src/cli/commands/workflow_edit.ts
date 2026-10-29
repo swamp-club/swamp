@@ -30,7 +30,7 @@ import {
   createEditorSessionDeps,
   editInEditor,
 } from "../../libswamp/editor_session.ts";
-import { saveEditedCopy } from "../editor_edit.ts";
+import { saveEditedCopy, warnIfCopyKept } from "../editor_edit.ts";
 import {
   workflowSearch,
   type WorkflowSearchDeps,
@@ -224,6 +224,11 @@ export const workflowEditCommand = withRemoteOptions(
             id,
           },
         });
+        warnIfCopyKept(
+          edit,
+          `swamp workflow edit ${name ?? id} --allow-rename`,
+          cliCtx.logger,
+        );
         return;
       }
       await saveEditedCopy(
@@ -231,8 +236,15 @@ export const workflowEditCommand = withRemoteOptions(
         // A piped edit cannot replace a broken file, so a refused repair is
         // retried in the editor.
         file.kind === "workflow"
-          ? `swamp workflow edit ${name} --allow-rename`
-          : undefined,
+          ? {
+            retry: `swamp workflow edit ${name} --allow-rename`,
+            reload: `swamp workflow get ${name}`,
+          }
+          : {
+            manual: `Run 'swamp workflow edit ${
+              name ?? id
+            }' again and paste it into the editor.`,
+          },
         async () => {
           if (name !== null) {
             await startConfigEdit(repoContext, "workflow", name, false);

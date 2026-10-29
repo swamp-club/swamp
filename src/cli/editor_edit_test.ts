@@ -20,6 +20,9 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { saveEditedCopy } from "./editor_edit.ts";
 import { UserError } from "../domain/errors.ts";
+import { ConfigEditConflictError } from "../domain/datastore_v3/config_edit_conflict.ts";
+import { getLogger } from "@logtape/logtape";
+import { warnIfCopyKept } from "./editor_edit.ts";
 
 function editedCopy() {
   const calls: string[] = [];
@@ -41,7 +44,7 @@ function editedCopy() {
 Deno.test("saveEditedCopy: a saved edit discards the copy", async () => {
   const { calls, edit } = editedCopy();
 
-  await saveEditedCopy(edit, "swamp model edit web", () => {
+  await saveEditedCopy(edit, { retry: "swamp model edit web" }, () => {
     calls.push("save");
     return Promise.resolve();
   });
@@ -56,7 +59,7 @@ Deno.test("saveEditedCopy: a refused save keeps the copy and names it with the r
     () =>
       saveEditedCopy(
         edit,
-        "swamp model edit web --allow-rename",
+        { retry: "swamp model edit web --allow-rename" },
         () =>
           Promise.reject(new UserError("Invalid YAML", "validation_failed")),
       ),
@@ -81,10 +84,68 @@ Deno.test("saveEditedCopy: without a retry command the kept copy is still named"
 
   const error = await assertRejects(
     () =>
-      saveEditedCopy(edit, undefined, () => Promise.reject(new Error("no"))),
+      saveEditedCopy(
+        edit,
+        { manual: "Paste it into the editor." },
+        () => Promise.reject(new Error("no")),
+      ),
     Error,
   );
 
-  assertStringIncludes(error.message, "kept at /tmp/swamp-edit-x/web.yaml.");
+  assertStringIncludes(
+    error.message,
+    "kept at /tmp/swamp-edit-x/web.yaml. Paste it into the editor.",
+  );
   assertEquals(error.message.includes("retry"), false);
+});
+
+Deno.test("saveEditedCopy: after a stale-edit conflict the hint says to load the current version first", async () => {
+  const { edit } = editedCopy();
+
+  const error = await assertRejects(
+    () =>
+      saveEditedCopy(edit, {
+        retry: "swamp model edit web --allow-rename",
+        reload: "swamp model get web",
+      }, () =>
+        Promise.reject(
+          new ConfigEditConflictError([{
+            kind: "model",
+            name: "web",
+            key: "web.yaml",
+          }], undefined),
+        )),
+    ConfigEditConflictError,
+  );
+
+  assertStringIncludes(
+    error.message,
+    "Load the current version with 'swamp model get web', apply your change to the copy, then retry with: swamp model edit web --allow-rename < /tmp/swamp-edit-x/web.yaml",
+  );
+});
+
+Deno.test("warnIfCopyKept: warns with the kept copy only when one was kept", () => {
+  const warnings: unknown[] = [];
+  const logger = {
+    ...getLogger(["test"]),
+    warn: (...args: unknown[]) => warnings.push(args),
+  } as unknown as Parameters<typeof warnIfCopyKept>[2];
+
+  warnIfCopyKept(
+    { status: "unchanged", editor: "Fake" },
+    "swamp model edit web",
+    logger,
+  );
+  assertEquals(warnings, []);
+
+  warnIfCopyKept(
+    { status: "unchanged", editor: "Fake", keptPath: "/tmp/x/web.yaml" },
+    "swamp model edit web",
+    logger,
+  );
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(
+    JSON.stringify(warnings[0]),
+    "swamp model edit web < /tmp/x/web.yaml",
+  );
 });

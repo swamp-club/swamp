@@ -20,6 +20,7 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { dirname } from "@std/path";
 import { editInEditor, type EditorSessionDeps } from "./editor_session.ts";
+import { UserError } from "../domain/errors.ts";
 
 /** An editor that rewrites the file it is given with `edit`. */
 function fakeEditor(
@@ -114,4 +115,65 @@ Deno.test("editInEditor: an editor that cannot be launched leaves no temp dir", 
     "editor_cannot_wait",
   );
   assertEquals(await exists(dir!), false);
+});
+
+function editorExiting(
+  success: boolean,
+  edit: (text: string) => string,
+  waitConfirmed = true,
+): EditorSessionDeps {
+  return {
+    prepareEditor: (path) =>
+      Promise.resolve({
+        editor: "Fake",
+        waitsForExit: true,
+        waitConfirmed,
+        open: async () => {
+          await Deno.writeTextFile(path, edit(await Deno.readTextFile(path)));
+          return { editor: "Fake", path, success };
+        },
+      }),
+  };
+}
+
+Deno.test("editInEditor: a failed editor exit saves nothing and keeps an edited copy", async () => {
+  const error = await assertRejects(
+    () =>
+      editInEditor(editorExiting(false, (t) => t + "b: 2\n"), {
+        content: "a: 1\n",
+        fileName: "web",
+      }),
+    UserError,
+  );
+  assertEquals(error.code, "editor_failed");
+  const kept = error.message.match(/kept at (.*)\.$/)?.[1];
+  assertEquals(await Deno.readTextFile(kept!), "a: 1\nb: 2\n");
+  await Deno.remove(dirname(kept!), { recursive: true });
+});
+
+Deno.test("editInEditor: a failed editor exit with no change keeps nothing", async () => {
+  const error = await assertRejects(
+    () =>
+      editInEditor(editorExiting(false, (t) => t), {
+        content: "a: 1\n",
+        fileName: "web",
+      }),
+    UserError,
+  );
+  assertEquals(error.message.includes("kept at"), false);
+});
+
+Deno.test("editInEditor: an unconfirmed editor that returns unchanged keeps the copy", async () => {
+  const result = await editInEditor(editorExiting(true, (t) => t, false), {
+    content: "a: 1\n",
+    fileName: "web",
+  });
+
+  if (result.status !== "unchanged" || !result.keptPath) {
+    throw new Error(
+      `expected a kept unchanged copy: ${JSON.stringify(result)}`,
+    );
+  }
+  assertEquals(await Deno.readTextFile(result.keptPath), "a: 1\n");
+  await Deno.remove(dirname(result.keptPath), { recursive: true });
 });

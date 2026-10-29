@@ -39,7 +39,7 @@ import {
   createEditorSessionDeps,
   editInEditor,
 } from "../../libswamp/editor_session.ts";
-import { saveEditedCopy } from "../editor_edit.ts";
+import { saveEditedCopy, warnIfCopyKept } from "../editor_edit.ts";
 import {
   modelSearch,
   type ModelSearchDeps,
@@ -261,11 +261,19 @@ export function createModelEditCommand(syntax: CommandSyntax) {
               editType: "definition",
             },
           });
+          warnIfCopyKept(
+            edit,
+            `${syntax.invocation} ${name} --allow-rename`,
+            cliCtx.logger,
+          );
           return;
         }
         await saveEditedCopy(
           edit,
-          `${syntax.invocation} ${name} --allow-rename`,
+          {
+            retry: `${syntax.invocation} ${name} --allow-rename`,
+            reload: `swamp ${syntax.surface} get ${name}`,
+          },
           async () => {
             await startConfigEdit(repoContext, "model", name, false);
             await runEdit(edit.content, edit.editor);

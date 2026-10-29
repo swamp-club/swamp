@@ -30,7 +30,7 @@ import {
   createEditorSessionDeps,
   editInEditor,
 } from "../../libswamp/editor_session.ts";
-import { saveEditedCopy } from "../editor_edit.ts";
+import { saveEditedCopy, warnIfCopyKept } from "../editor_edit.ts";
 import {
   vaultSearch,
   type VaultSearchDeps,
@@ -231,12 +231,22 @@ value for them other than the server's defaults, and stores those defaults.`,
           type: file.config.type,
         },
       });
+      warnIfCopyKept(
+        edit,
+        `swamp vault edit ${name}${
+          file.broken ? ` --type ${file.config.type}` : ""
+        }`,
+        cliCtx.logger,
+      );
       return;
     }
     const typeFlag = file.broken ? ` --type ${file.config.type}` : "";
     await saveEditedCopy(
       edit,
-      `swamp vault edit ${name}${typeFlag}`,
+      {
+        retry: `swamp vault edit ${name}${typeFlag}`,
+        reload: `swamp vault get ${name}`,
+      },
       async () => {
         if (!file.broken) {
           await startConfigEdit(repoContext, "vault", name, false);

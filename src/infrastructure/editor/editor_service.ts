@@ -27,6 +27,11 @@ import { defaultCommandResolver } from "../process/resolve_command.ts";
 export interface EditorResult {
   editor: string;
   path: string;
+  /**
+   * Whether the editor exited successfully, when its exit was waited for.
+   * A non-zero exit (vim's `:cq`) means the person abandoned the edit.
+   */
+  success?: boolean;
 }
 
 /**
@@ -37,6 +42,13 @@ export interface EditorLaunch {
   waitsForExit: boolean;
   /** The command line the launch runs, the file path last. */
   args?: readonly string[];
+  /**
+   * Whether the editor is known to stay open until the file is closed: a
+   * terminal editor, or a GUI editor given its wait flag. An unknown
+   * editor is waited for, but may hand the file to another process and
+   * exit before the person has saved.
+   */
+  waitConfirmed?: boolean;
   open: () => Promise<EditorResult>;
 }
 
@@ -193,10 +205,22 @@ export class EditorService {
       (options.wait ?? this.isTerminalEditor(editor));
 
     const args = this.buildEditorArgs(editor, filePath, { wait: shouldWait });
+    const editorParts = editor.split(" ");
+    const waitFlag = WAIT_FLAGS[commandName(editorParts[0])];
+    const waitConfirmed = shouldWait &&
+      (this.isTerminalEditor(editor) ||
+        (waitFlag !== undefined &&
+          [waitFlag.flag, ...waitFlag.aliases].some((flag) =>
+            args.includes(flag)
+          )) ||
+        (commandName(editorParts[0]) === "open" && !isNonWaitingLauncher(
+          editorParts,
+        )));
     return {
       editor: this.getEditorDisplayName(editor),
       waitsForExit: shouldWait,
       args,
+      waitConfirmed,
       open: async () => {
         const command = new Deno.Command(args[0], {
           args: args.slice(1),
@@ -208,12 +232,15 @@ export class EditorService {
         if (shouldWait) {
           // Wait for the editor to close (terminal editors)
           const process = command.spawn();
-          await process.status;
-        } else {
-          // Spawn and return immediately (GUI editors)
-          command.spawn();
+          const status = await process.status;
+          return {
+            editor: this.getEditorDisplayName(editor),
+            path: filePath,
+            success: status.success,
+          };
         }
-
+        // Spawn and return immediately (GUI editors)
+        command.spawn();
         return {
           editor: this.getEditorDisplayName(editor),
           path: filePath,
@@ -226,8 +253,7 @@ export class EditorService {
    * Checks if an editor is a terminal-based editor that requires waiting.
    */
   private isTerminalEditor(editor: string): boolean {
-    const baseEditor = editor.split(" ")[0];
-    return TERMINAL_EDITORS.has(baseEditor);
+    return TERMINAL_EDITORS.has(commandName(editor.split(" ")[0]));
   }
 
   /**
