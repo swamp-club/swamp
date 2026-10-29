@@ -151,7 +151,7 @@ type InboxPageFetchEvent =
   | { kind: "error"; error: SwampError };
 
 /**
- * Fetches one page for the list and the picker alike. Returns the page, or
+ * Fetches one page for the list and the interactive inbox alike. Returns the page, or
  * undefined after yielding the error that ended the fetch. Refused input
  * never reaches the network. A client failure propagates as the UserError
  * the client threw, as it does from whoami.
@@ -268,7 +268,7 @@ export function toMessageView(m: InboxMessage): InboxMessageView {
 
 /**
  * Loads one page of whole messages, read and unread, newest first, for the
- * picker. `all` has no further effect: read messages are always included so
+ * interactive inbox. `all` has no further effect: read messages are always included so
  * they can be opened again. Marks nothing read.
  */
 export async function* inboxBrowse(

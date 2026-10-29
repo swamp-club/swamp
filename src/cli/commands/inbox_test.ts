@@ -108,6 +108,10 @@ async function runInboxWith(
 }
 
 const TERMINAL = { stdin: true, stdout: true };
+const NOT_BOTH_TERMINAL = [
+  { stdin: false, stdout: true },
+  { stdin: true, stdout: false },
+];
 
 Deno.test("inbox read: in a terminal it reads the next message and never opens the interactive inbox", async () => {
   assertEquals(await runInboxWith(["read"], TERMINAL), ["readInbox log next"]);
@@ -137,12 +141,7 @@ Deno.test("inbox: lists instead with --json or without a terminal on both ends",
     "stdoutIsTty",
     "listInbox json all=false",
   ]);
-  for (
-    const tty of [{ stdin: false, stdout: true }, {
-      stdin: true,
-      stdout: false,
-    }]
-  ) {
+  for (const tty of NOT_BOTH_TERMINAL) {
     assertEquals(
       (await runInboxWith([], tty)).at(-1),
       "listInbox log all=false",

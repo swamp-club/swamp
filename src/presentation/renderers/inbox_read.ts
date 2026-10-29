@@ -127,7 +127,7 @@ class JsonInboxReadRenderer implements Renderer<InboxReadNextEvent> {
   }
 }
 
-/** Renders `swamp inbox read` where no picker opens. */
+/** Renders `swamp inbox read`, which is never interactive. */
 export function createInboxReadRenderer(
   mode: OutputMode,
 ): Renderer<InboxReadNextEvent> {
