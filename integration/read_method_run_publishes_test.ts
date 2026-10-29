@@ -144,6 +144,8 @@ class LockTable {
   readonly held = new Set<string>();
   /** What `inspect` reports for the global lock, as a crashed holder left it. */
   staleGlobal: LockInfo | undefined;
+  /** While set, reading a lock fails, as with an unreachable bucket. */
+  failInspect = false;
   #waiters = new Map<string, Array<() => void>>();
 
   lockFor = (options?: LockOptions): DistributedLock => {
@@ -199,9 +201,11 @@ class LockTable {
         }
       },
       inspect: () =>
-        Promise.resolve(
-          key.endsWith(".datastore.lock") ? this.staleGlobal ?? null : null,
-        ),
+        this.failInspect
+          ? Promise.reject(new Error("injected lock read failure"))
+          : Promise.resolve(
+            key.endsWith(".datastore.lock") ? this.staleGlobal ?? null : null,
+          ),
       forceRelease: (nonce: string) => {
         if (
           !key.endsWith(".datastore.lock") || this.staleGlobal?.nonce !== nonce
@@ -717,6 +721,27 @@ Deno.test("model method run: a read whose pull fails runs on this host's data an
     await runMethod(c.repoA, "observe", "from-a");
     failPulls = false;
     assertEquals(remoteValue(c, 1), "from-a");
+  });
+});
+
+Deno.test("model method run: a read whose global-lock check fails still runs, on this host's data (swamp-club#3934)", async () => {
+  await withClones(async (c) => {
+    let executed = false;
+    hooks = {
+      afterWrite: () => {
+        executed = true;
+        return Promise.resolve();
+      },
+    };
+    c.locks.failInspect = true;
+    try {
+      // The publish cannot read the lock either, so the command fails after
+      // the method ran; the pull before it no longer stops it running.
+      await assertRejects(() => runMethod(c.repoA, "observe", "from-a"));
+    } finally {
+      c.locks.failInspect = false;
+    }
+    assert(executed, "the method ran");
   });
 });
 

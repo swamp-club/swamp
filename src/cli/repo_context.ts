@@ -3793,16 +3793,26 @@ export async function pullModelsUnlocked(
   await ensureSupportedDatastoreFormat(repoDir, config);
   const write = options?.progressWriter ?? defaultLockWriter;
   const wrapSync: SyncCallWrapper = options?.wrapSync ?? ((fn) => fn());
-  const provider = await resolveCustomProvider(config);
+  const useCache = (error: unknown) => {
+    getSwampLogger(["datastore", "sync"])
+      .warn`Could not pull from the datastore, so this run uses this host's data: ${error}`;
+  };
   // A read never waits on a structural command (swamp-club#1992): it runs
   // on this host's cache instead.
-  const globalInfo = await liveGlobalLockHolder(
-    provider.createLock(config.datastorePath, {
-      ...datastoreGlobalLockOptions(config),
-      maxWaitMs: resolveLockTimeoutMs(),
-    }),
-    write,
-  );
+  let globalInfo: LockInfo | undefined;
+  try {
+    const provider = await resolveCustomProvider(config);
+    globalInfo = await liveGlobalLockHolder(
+      provider.createLock(config.datastorePath, {
+        ...datastoreGlobalLockOptions(config),
+        maxWaitMs: resolveLockTimeoutMs(),
+      }),
+      write,
+    );
+  } catch (error) {
+    useCache(error);
+    return false;
+  }
   if (globalInfo) {
     write(
       dim(
@@ -3828,8 +3838,7 @@ export async function pullModelsUnlocked(
       // 0 means the local cache is unchanged; void means unknown.
       if (pulled !== 0) synced = true;
     } catch (error) {
-      getSwampLogger(["datastore", "sync"])
-        .warn`Could not pull ${modelType}/${modelId} from the datastore, so this run uses this host's data: ${error}`;
+      useCache(error);
       // A pull that failed part-way may have written some files.
       return true;
     }
@@ -4155,7 +4164,7 @@ export async function acquireModelLocks(
   } catch (error) {
     await release();
     if (options?.failIfBusy && error instanceof LockTimeoutError) {
-      throw new ModelLocksBusyError(error.lockKey);
+      throw new ModelLocksBusyError(error.lockKey ?? "a behavior lock");
     }
     throw error;
   }
