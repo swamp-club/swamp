@@ -59,7 +59,13 @@ class FakeLease implements LeadershipLease {
   /** What the next take finds: free (taken at this fence) or busy. */
   free: number | undefined;
   takes = 0;
+  /** The lease's current fence as a follower reads it; unset reads none. */
+  current: number | "unreadable" | undefined;
   holdsCurrent = () => this.hold !== undefined && !this.hold.lost;
+  currentFence = (): Promise<number | undefined> =>
+    this.current === "unreadable"
+      ? Promise.reject(new Error("lease unreadable"))
+      : Promise.resolve(this.current ?? this.hold?.fence);
   fence = () => this.hold?.fence;
   take = (): Promise<"writer" | "follower"> => {
     this.takes++;
@@ -430,9 +436,10 @@ Deno.test("ServeLeadership.markRefreshed: keeps a follower fresh between ticks, 
 });
 
 Deno.test("ServeLeadership: a leader record without the team's proof names the leader but not its address", async () => {
-  const { store, leadership } = setup({
+  const { lease, store, leadership } = setup({
     trust: (leader) => Promise.resolve(leader.proof === "good"),
   });
+  lease.current = 2;
   const record = {
     instanceId: "other",
     fence: 2,
@@ -495,8 +502,8 @@ Deno.test("ServeLeadership: a leader signs its record again once its proof chang
   }
 });
 
-Deno.test("ServeLeadership: a signed record of an older leader than one already trusted is a replay, and names no address", async () => {
-  const { store, leadership } = setup({
+Deno.test("ServeLeadership: a signed record from an older fence, written back after a takeover, gets nothing forwarded to its address", async () => {
+  const { lease, store, leadership } = setup({
     trust: () => Promise.resolve(true),
   });
   const record = (fence: number, address: string) =>
@@ -507,13 +514,47 @@ Deno.test("ServeLeadership: a signed record of an older leader than one already 
       since: new Date().toISOString(),
       proof: "signed",
     });
+  lease.current = 4;
   await store.put(SERVE_LEADER_KEY, record(4, "https://new.example"));
   await leadership.start("follower");
   try {
     assertEquals(leadership.leader()?.address, "https://new.example");
+    // An earlier leader's signed record, put back: the lease is at 4.
     await store.put(SERVE_LEADER_KEY, record(3, "https://old.example"));
     await leadership.tick();
     assertEquals(leadership.leader()?.instanceId, "leader-3");
+    assertEquals(leadership.leader()?.address, undefined);
+    // A takeover the record has not caught up with names no address either.
+    lease.current = 5;
+    await store.put(SERVE_LEADER_KEY, record(4, "https://new.example"));
+    await leadership.tick();
+    assertEquals(leadership.leader()?.address, undefined);
+    await store.put(SERVE_LEADER_KEY, record(5, "https://next.example"));
+    await leadership.tick();
+    assertEquals(leadership.leader()?.address, "https://next.example");
+  } finally {
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership: a lease fence that cannot be read forwards nothing", async () => {
+  const { lease, store, leadership } = setup({
+    trust: () => Promise.resolve(true),
+  });
+  lease.current = "unreadable";
+  await store.put(
+    SERVE_LEADER_KEY,
+    serializeServeLeader({
+      instanceId: "other",
+      fence: 2,
+      address: "https://somewhere.example",
+      since: new Date().toISOString(),
+      proof: "signed",
+    }),
+  );
+  await leadership.start("follower");
+  try {
+    assertEquals(leadership.leader()?.instanceId, "other");
     assertEquals(leadership.leader()?.address, undefined);
   } finally {
     await leadership.stop();

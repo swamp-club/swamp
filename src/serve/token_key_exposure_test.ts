@@ -48,3 +48,16 @@ Deno.test("coLocatedTokenKeyWarning: says nothing once the key is held in a vaul
 Deno.test("coLocatedTokenKeyWarning: says nothing before any key exists", () => {
   assertEquals(coLocatedTokenKeyWarning(null), undefined);
 });
+
+Deno.test("coLocatedTokenKeyWarning: in team mode also says the key lets a datastore writer redirect forwarded credentials (swamp-club#4120)", () => {
+  const key = new Uint8Array(TOKEN_SECRETS_KEY_BYTES).fill(7);
+  const team = coLocatedTokenKeyWarning(key, true);
+  assertStringIncludes(team!, "can decrypt every token secret");
+  assertStringIncludes(team!, "signs the leader record");
+  assertStringIncludes(team!, "forwarded caller's credentials");
+  assertStringIncludes(team!, "token-secrets block to serve.yaml");
+  assertEquals(
+    coLocatedTokenKeyWarning(key)!.includes("leader record"),
+    false,
+  );
+});

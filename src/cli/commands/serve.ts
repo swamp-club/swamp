@@ -576,6 +576,7 @@ import {
 import {
   holdsCurrentV3WriterLease,
   v3WriterFence,
+  v3WriterLeaseHolder,
 } from "../../infrastructure/datastore_v3/v3_writer_lock.ts";
 import { importCheckoutControlPlane } from "../../infrastructure/persistence/checkout_control_plane_import.ts";
 import { v3EvaluationTrust } from "../../infrastructure/datastore_v3/trusted_evaluations.ts";
@@ -4066,10 +4067,13 @@ export const serveCommand = new Command()
     });
 
     // Team mode keeps the token secrets in the datastore: with the default
-    // co-located key, read access to it decrypts every one (swamp-club#4096).
+    // co-located key, read access to it decrypts every one (swamp-club#4096),
+    // and read and write access signs a leader record followers forward
+    // callers' credentials to (swamp-club#4120). A warning, never a refusal.
     if (v3Location !== undefined) {
       const warning = coLocatedTokenKeyWarning(
         await controlPlaneStore.get(TOKEN_SECRETS_KEY_RECORD).catch(() => null),
+        advertiseAddress !== undefined || v3Follows,
       );
       if (warning !== undefined) logger.warn(warning);
     }
@@ -8297,6 +8301,8 @@ export const serveCommand = new Command()
         lease: {
           holdsCurrent: () => holdsCurrentV3WriterLease(location.path),
           fence: () => v3WriterFence(location.path),
+          currentFence: async () =>
+            (await v3WriterLeaseHolder(location.path))?.fence,
           take: () =>
             holdV3Writer(location, resolvedRepoDir, {
               retakeLost: true,

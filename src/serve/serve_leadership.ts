@@ -68,6 +68,12 @@ export interface LeadershipLease {
    * the copy made current, so the node can lead at once.
    */
   take(): Promise<"writer" | "follower">;
+  /**
+   * The lease's current (highest) fence, whoever holds it; undefined when
+   * it cannot be read. A follower forwards to a leader record's address
+   * only at this fence (swamp-club#4120).
+   */
+  currentFence?(): Promise<number | undefined>;
 }
 
 /**
@@ -136,8 +142,6 @@ export class ServeLeadership {
   #refreshedAt: number | undefined;
   #recordedFence: number | undefined;
   #recordedProof: string | undefined;
-  /** The highest fence of a leader record this node trusted. */
-  #trustedFence: number | undefined;
   #timer: ReturnType<typeof setInterval> | undefined;
   #ticking: Promise<void> | undefined;
   /**
@@ -383,22 +387,27 @@ export class ServeLeadership {
     try {
       const data = await this.#deps.store.get(SERVE_LEADER_KEY);
       let leader = data === null ? undefined : parseServeLeader(data);
-      // A signed record of a leader older than one this node already
-      // trusted is a replay: its address is not forwarded to either.
-      const replayed = leader !== undefined &&
-        this.#trustedFence !== undefined && leader.fence < this.#trustedFence;
-      if (
-        leader?.address !== undefined && this.#deps.trust !== undefined &&
-        (replayed || !(await this.#deps.trust(leader)))
-      ) {
-        logger
-          .warn`The serve leader record names ${leader.address} without the team's proof; nothing is forwarded to it`;
-        const { address: _address, ...unproven } = leader;
-        leader = unproven;
-      } else if (
-        leader?.address !== undefined && this.#deps.trust !== undefined
-      ) {
-        this.#trustedFence = Math.max(this.#trustedFence ?? 0, leader.fence);
+      // A record is forwarded to only at the lease's current fence: one
+      // signed by an earlier leader, written back after a takeover, names an
+      // address that leader may no longer own. Any other fence, or a record
+      // without the team's proof, names the leader but no address, and the
+      // follower refuses until the leader records itself at its fence.
+      if (leader?.address !== undefined && this.#deps.trust !== undefined) {
+        const current = await this.#deps.lease.currentFence?.()
+          .catch(() => undefined);
+        const atCurrentFence = this.#deps.lease.currentFence === undefined ||
+          current === leader.fence;
+        if (!atCurrentFence || !(await this.#deps.trust(leader))) {
+          if (atCurrentFence) {
+            logger
+              .warn`The serve leader record names ${leader.address} without the team's proof; nothing is forwarded to it`;
+          } else {
+            logger
+              .warn`The serve leader record names ${leader.address} at fence ${leader.fence}, not the lease's; nothing is forwarded to it until the leader records itself`;
+          }
+          const { address: _address, ...unproven } = leader;
+          leader = unproven;
+        }
       }
       // A record this node left from when it led names no leader now.
       this.#leader = leader?.instanceId === this.#deps.instanceId

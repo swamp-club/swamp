@@ -7616,7 +7616,17 @@ lineage restore would have brought them.
 **Followers follow the feed.** A follower subscribes to the leader with the
 team's peer key (`TeamPeerKey`, `src/serve/peer_auth.ts`): one random key
 per namespace in serve's encrypted control-plane vault, so a `token-secrets`
-key protects it as it protects token secrets. A peer socket may only read
+key protects it as it protects token secrets. With the default co-located
+key, anyone who can read and write the datastore can read the peer key and
+so sign a leader record of their own, which followers would forward
+callers' credentials to: a team-mode serve (one with `--advertise-address`,
+or one that finds another node leading) says so in its start-up warning
+about the co-located key, and recommends the `token-secrets` block. It is a
+warning, never a refusal, so a single node and existing deployments keep
+working. A leader record is also trusted only at the lease's current fence:
+a record an earlier leader signed, written back after a takeover, gets
+nothing forwarded to its address, and the follower refuses until the leader
+records itself at its fence. A peer socket may only read
 the feed and its head; it skips the per-caller grant filter but keeps the
 namespace one, cancels nothing but its own requests, and is refused
 everywhere else, HTTP included, where the key is an unknown token.
