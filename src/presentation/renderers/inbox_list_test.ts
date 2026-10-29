@@ -96,16 +96,56 @@ Deno.test("localDate: the local calendar date of a timestamp", () => {
   assertEquals(localDate(localNoon(2026, 12, 31)), "2026-12-31");
 });
 
-Deno.test("LogInboxListRenderer: marks unread rows, pads the kind and counts", () => {
+Deno.test("LogInboxListRenderer: marks unread rows, pads the kind and title, ends rows with the id and counts", () => {
   assertEquals(
     capture(makeView({ status: "all" }), "log").stdout,
     [
-      "●  2026-10-26  announcement  swamp 1.42 is out",
-      "●  2026-10-25  issue_update  Your issue #3990 shipped",
-      "   2026-10-24  points        You earned 50 points",
+      "●  2026-10-26  announcement  swamp 1.42 is out         01JBX5Q8ZK0000000000000104",
+      "●  2026-10-25  issue_update  Your issue #3990 shipped  01JBX5Q8ZK00000000000000ZX",
+      "   2026-10-24  points        You earned 50 points      01JBX5Q8ZK00000000000000ZP",
       "",
       "2 unread of 3 shown.",
+      "To read one:  swamp inbox read <id>",
     ].join("\n"),
+  );
+});
+
+Deno.test("LogInboxListRenderer: the To read one line comes before To see older", () => {
+  const cursor = "01JBX5Q8ZK00000000000000ZP";
+
+  assertEquals(
+    capture(makeView({ nextCursor: cursor }), "log").stdout.split("\n")
+      .slice(-3),
+    [
+      "2 unread of 3 shown.",
+      "To read one:  swamp inbox read <id>",
+      `To see older:  swamp inbox --before ${cursor}`,
+    ],
+  );
+});
+
+Deno.test("LogInboxListRenderer: a long title does not push the other rows' ids out", () => {
+  const view = makeView();
+  view.messages[0] = { ...view.messages[0], title: "x".repeat(120) };
+
+  const rows = capture(view, "log").stdout.split("\n");
+
+  assertEquals(
+    rows[1],
+    `●  2026-10-25  issue_update  ${
+      "Your issue #3990 shipped".padEnd(48)
+    }  01JBX5Q8ZK00000000000000ZX`,
+  );
+  assertEquals(
+    rows[0].endsWith(`${"x".repeat(120)}  01JBX5Q8ZK0000000000000104`),
+    true,
+  );
+});
+
+Deno.test("LogInboxListRenderer: an empty list has no To read one line", () => {
+  assertEquals(
+    capture(makeView({ messages: [] }), "log").stdout.includes("To read one"),
+    false,
   );
 });
 

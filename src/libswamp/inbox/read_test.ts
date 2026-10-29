@@ -43,6 +43,8 @@ import {
 import { createLibSwampContext } from "../context.ts";
 import { collect } from "../testing.ts";
 import {
+  createInboxMarkSession,
+  inboxReadById,
   type InboxReadDeps,
   inboxReadNext,
   type InboxReadNextEvent,
@@ -732,4 +734,340 @@ Deno.test("markRead: a client UserError propagates unchanged", async () => {
   );
 
   assertStrictEquals(error, thrown);
+});
+
+const UNREAD_ID = "01JBX5Q8ZK00000000000000ZX";
+const READ_ID = "01JBX5Q8ZK00000000000000ZP";
+
+Deno.test("inboxReadById: an unread message is shown and marked", async () => {
+  const { deps, rec } = makeDeps();
+
+  const last = lastOf(
+    await collect<InboxReadNextEvent>(
+      inboxReadById(createLibSwampContext(), deps, UNREAD_ID),
+    ),
+  );
+
+  assert(last.kind === "completed");
+  assertEquals(last.view.message?.id, UNREAD_ID);
+  assertEquals(last.view.message?.readAt, new Date(NOW).toISOString());
+  assertEquals(last.view.marked, true);
+  assertEquals(rec.got, [UNREAD_ID]);
+  assertEquals(rec.marked, [[UNREAD_ID]]);
+  assertEquals(rec.saved.length, 1);
+});
+
+Deno.test("inboxReadById: a read message is shown as read and nothing is marked", async () => {
+  const { deps, rec } = makeDeps();
+
+  const last = lastOf(
+    await collect<InboxReadNextEvent>(
+      inboxReadById(createLibSwampContext(), deps, READ_ID),
+    ),
+  );
+
+  assert(last.kind === "completed");
+  assertEquals(last.view.message?.id, READ_ID);
+  assertEquals(last.view.message?.readAt, "2026-10-24T13:15:00.000Z");
+  // Read already, so the renderer has nothing unconfirmed to warn about.
+  assertEquals(last.view.marked, true);
+  assertEquals(rec.marked, []);
+  assertEquals(rec.summaries, 0);
+});
+
+Deno.test("inboxReadById: a lower-case id is fetched upper-case", async () => {
+  const { deps, rec } = makeDeps();
+
+  const last = lastOf(
+    await collect<InboxReadNextEvent>(
+      inboxReadById(createLibSwampContext(), deps, UNREAD_ID.toLowerCase()),
+    ),
+  );
+
+  assert(last.kind === "completed");
+  assertEquals(rec.got, [UNREAD_ID]);
+  assertEquals(rec.marked, [[UNREAD_ID]]);
+});
+
+Deno.test("inboxReadById: an id that is not a ULID is refused with no request", async () => {
+  let loaded = false;
+  const { deps, rec } = makeDeps({
+    loadCredentials: () => {
+      loaded = true;
+      return Promise.resolve(credentials);
+    },
+  });
+
+  const events = await collect<InboxReadNextEvent>(
+    inboxReadById(createLibSwampContext(), deps, "not-an-id"),
+  );
+
+  assertEquals(events.length, 1);
+  const [only] = events;
+  assert(only.kind === "error");
+  assertEquals(only.error.code, "validation_failed");
+  assertEquals(
+    only.error.message,
+    "Not a message id: not-an-id. Message ids are the 26-character ids swamp inbox prints.",
+  );
+  assertEquals(loaded, false);
+  assertEquals(rec.got, []);
+});
+
+Deno.test("inboxReadById: an unknown id propagates the client's not-found error", async () => {
+  const { deps, rec } = makeDeps();
+  const unknown = "01JBX5Q8ZK0000000000000999";
+
+  const error = await assertRejects(() =>
+    collect<InboxReadNextEvent>(
+      inboxReadById(createLibSwampContext(), deps, unknown),
+    )
+  );
+
+  assert(error instanceof UserError);
+  assertEquals(error.message, `Message ${unknown} not found.`);
+  assertEquals(rec.marked, []);
+});
+
+Deno.test("inboxReadById: moreUnread counts unread messages other than this one", async () => {
+  const cases: { page: InboxMessagePage; want: boolean }[] = [
+    // The page holds this message and one other.
+    { page: unreadPage, want: true },
+    // Only this message, and nothing after it.
+    {
+      page: {
+        messages: unreadPage.messages.filter((m) => m.id === UNREAD_ID),
+        nextCursor: null,
+        dropped: 0,
+      },
+      want: false,
+    },
+    // Only this message, with a later page.
+    {
+      page: {
+        messages: unreadPage.messages.filter((m) => m.id === UNREAD_ID),
+        nextCursor: UNREAD_ID,
+        dropped: 0,
+      },
+      want: true,
+    },
+    // Only this message, and an entry the client left out.
+    {
+      page: {
+        messages: unreadPage.messages.filter((m) => m.id === UNREAD_ID),
+        nextCursor: null,
+        dropped: 1,
+      },
+      want: true,
+    },
+  ];
+  for (const { page, want } of cases) {
+    const { deps, rec } = makeDeps({ page });
+
+    const last = lastOf(
+      await collect<InboxReadNextEvent>(
+        inboxReadById(createLibSwampContext(), deps, UNREAD_ID),
+      ),
+    );
+
+    assert(last.kind === "completed");
+    assertEquals(last.view.moreUnread, want);
+    assertEquals(last.view.dropped, page.dropped);
+    assertEquals(rec.listed, [{ status: "unread", limit: 2 }]);
+  }
+});
+
+Deno.test("inboxReadById: an id swamp-club does not confirm stays unread", async () => {
+  const { deps } = makeDeps({ markInboxRead: () => Promise.resolve([]) });
+
+  const last = lastOf(
+    await collect<InboxReadNextEvent>(
+      inboxReadById(createLibSwampContext(), deps, UNREAD_ID),
+    ),
+  );
+
+  assert(last.kind === "completed");
+  assertEquals(last.view.marked, false);
+  assertEquals(last.view.message?.readAt, null);
+});
+
+Deno.test("inboxReadById: the view has the same keys as inboxReadNext's", async () => {
+  const byId = lastOf(
+    await collect<InboxReadNextEvent>(
+      // The message inboxReadNext reads, so the optional fields match.
+      inboxReadById(
+        createLibSwampContext(),
+        makeDeps().deps,
+        "01JBX5Q8ZK0000000000000104",
+      ),
+    ),
+  );
+  const next = lastOf(
+    await collect<InboxReadNextEvent>(
+      inboxReadNext(createLibSwampContext(), makeDeps().deps),
+    ),
+  );
+
+  assert(byId.kind === "completed" && next.kind === "completed");
+  assertEquals(Object.keys(byId.view).sort(), Object.keys(next.view).sort());
+  assertEquals(
+    Object.keys(byId.view.message ?? {}).sort(),
+    Object.keys(next.view.message ?? {}).sort(),
+  );
+});
+
+Deno.test("inboxReadById: not signed in is notAuthenticated, with no call", async () => {
+  const { deps, rec } = makeDeps({ credentials: null });
+
+  const last = lastOf(
+    await collect<InboxReadNextEvent>(
+      inboxReadById(createLibSwampContext(), deps, UNREAD_ID),
+    ),
+  );
+
+  assert(last.kind === "error");
+  assertEquals(last.error.code, "not_authenticated");
+  assertEquals(rec.got, []);
+});
+
+Deno.test("createInboxMarkSession: sends each mark in order and refreshes the cache once at finish", async () => {
+  const { deps, rec } = makeDeps();
+  const session = createInboxMarkSession(createLibSwampContext(), deps);
+
+  const first = session.mark([UNREAD_ID]);
+  const second = session.mark(["01JBX5Q8ZK0000000000000104"]);
+
+  assertEquals(await first, { kind: "confirmed", ids: [UNREAD_ID] });
+  assertEquals(await second, {
+    kind: "confirmed",
+    ids: ["01JBX5Q8ZK0000000000000104"],
+  });
+  assertEquals(rec.marked, [[UNREAD_ID], ["01JBX5Q8ZK0000000000000104"]]);
+  assertEquals(rec.summaries, 0);
+
+  await session.finish();
+
+  assertEquals(rec.summaries, 1);
+  assertEquals(rec.saved.length, 1);
+});
+
+Deno.test("createInboxMarkSession: a later request waits for the one before it", async () => {
+  const order: string[] = [];
+  let release: (() => void) | undefined;
+  const { deps } = makeDeps({
+    markInboxRead: async (_url, _key, ids) => {
+      order.push(`start ${ids[0]}`);
+      if (ids[0] === "A") {
+        await new Promise<void>((resolve) => release = resolve);
+      }
+      order.push(`end ${ids[0]}`);
+      return [...ids];
+    },
+  });
+  const session = createInboxMarkSession(createLibSwampContext(), deps);
+
+  const first = session.mark(["A"]);
+  const second = session.mark(["B"]);
+  await waitForRelease(() => release);
+  release?.();
+  await Promise.all([first, second]);
+
+  assertEquals(order, ["start A", "end A", "start B", "end B"]);
+  await session.finish();
+});
+
+/** Waits until the stubbed request has parked its resolver. */
+async function waitForRelease(get: () => (() => void) | undefined) {
+  for (let i = 0; i < 100 && get() === undefined; i++) {
+    await Promise.resolve();
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+  }
+  assert(get() !== undefined);
+}
+
+Deno.test("createInboxMarkSession: a failed request is a result, and later marks still run", async () => {
+  let calls = 0;
+  const { deps, rec } = makeDeps({
+    markInboxRead: (_url, _key, ids) => {
+      calls++;
+      return calls === 1
+        ? Promise.reject(new UserError("Swamp Club is unavailable."))
+        : Promise.resolve([...ids]);
+    },
+  });
+  const session = createInboxMarkSession(createLibSwampContext(), deps);
+
+  assertEquals(await session.mark([UNREAD_ID]), {
+    kind: "failed",
+    reason: "Swamp Club is unavailable.",
+  });
+  assertEquals(await session.mark([UNREAD_ID]), {
+    kind: "confirmed",
+    ids: [UNREAD_ID],
+  });
+  await session.finish();
+  assertEquals(rec.summaries, 1);
+});
+
+Deno.test("createInboxMarkSession: nothing confirmed means no refresh", async () => {
+  const { deps, rec } = makeDeps({ markInboxRead: () => Promise.resolve([]) });
+  const session = createInboxMarkSession(createLibSwampContext(), deps);
+
+  assertEquals(await session.mark([UNREAD_ID]), { kind: "confirmed", ids: [] });
+  await session.finish();
+
+  assertEquals(rec.summaries, 0);
+});
+
+Deno.test("createInboxMarkSession: finish with no marks loads no credentials", async () => {
+  let loaded = false;
+  const { deps, rec } = makeDeps({
+    loadCredentials: () => {
+      loaded = true;
+      return Promise.resolve(credentials);
+    },
+  });
+
+  await createInboxMarkSession(createLibSwampContext(), deps).finish();
+
+  assertEquals(loaded, false);
+  assertEquals(rec.summaries, 0);
+});
+
+Deno.test("createInboxMarkSession: finish aborts a request still running at the bound", async () => {
+  let aborted = false;
+  const { deps, rec } = makeDeps({
+    markInboxRead: (_url, _key, _ids, signal) =>
+      new Promise<string[]>((_resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          aborted = true;
+          reject(new DOMException("aborted", "AbortError"));
+        });
+      }),
+  });
+  const session = createInboxMarkSession(createLibSwampContext(), deps, {
+    finishTimeoutMs: 0,
+  });
+
+  const pending = session.mark([UNREAD_ID]);
+  await session.finish();
+
+  assertEquals(aborted, true);
+  assertEquals(await pending, { kind: "failed", reason: "cancelled" });
+  assertEquals(rec.summaries, 0);
+});
+
+Deno.test("createInboxMarkSession: not signed in fails the mark with the sign-in hint", async () => {
+  const { deps, rec } = makeDeps({ credentials: null });
+  const session = createInboxMarkSession(createLibSwampContext(), deps);
+
+  const outcome = await session.mark([UNREAD_ID]);
+
+  assert(outcome.kind === "failed");
+  assertEquals(
+    outcome.reason,
+    "Not authenticated. Run 'swamp auth login' to sign in.",
+  );
+  assertEquals(rec.marked, []);
+  await session.finish();
 });

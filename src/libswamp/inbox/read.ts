@@ -27,16 +27,22 @@ import {
   type InboxState,
 } from "../../domain/inbox/inbox_state.ts";
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
-import type {
-  InboxMessage,
-  InboxSummaryResult,
+import {
+  type InboxMessage,
+  type InboxSummaryResult,
+  isInboxMessageId,
 } from "../../infrastructure/http/inbox_schemas.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
 import { InboxCacheFileRepository } from "../../infrastructure/inbox/inbox_cache_file_repository.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { processOwnsConfigDir } from "../../infrastructure/persistence/config_dir_ownership.ts";
 import type { LibSwampContext } from "../context.ts";
-import { cancelled, notAuthenticated, type SwampError } from "../errors.ts";
+import {
+  cancelled,
+  notAuthenticated,
+  type SwampError,
+  validationFailed,
+} from "../errors.ts";
 import {
   type InboxListDeps,
   type InboxMessageView,
@@ -131,7 +137,10 @@ export interface InboxReadNextView {
    * read; null when nothing was unread.
    */
   message: InboxMessageView | null;
-  /** Whether swamp-club confirmed the message as read. */
+  /**
+   * Whether the message is read now: swamp-club confirmed marking it, or it
+   * was already read.
+   */
   marked: boolean;
   /** Whether more unread messages are waiting after this one. */
   moreUnread: boolean;
@@ -323,8 +332,8 @@ export async function* markRead(
  * fetches it and marks it read. Reading the announced message first lets the
  * notice stop at once, even when newer messages that never raise it, such as
  * mentions, are waiting. The message is marked before it is shown, so a run
- * killed in between leaves it read but unseen; `swamp inbox --all` and the
- * picker still reach it.
+ * killed in between leaves it read but unseen; `swamp inbox --all` lists it,
+ * and `swamp inbox read <id>` shows it.
  */
 export async function* inboxReadNext(
   ctx: LibSwampContext,
@@ -400,4 +409,206 @@ export async function* inboxReadNext(
     }
     throw error;
   }
+}
+
+/** The refusal for an id that is not a message id. */
+function notAMessageId(id: string): SwampError {
+  return validationFailed(
+    `Not a message id: ${id}. Message ids are the 26-character ids swamp inbox prints.`,
+  );
+}
+
+/**
+ * Reads one message by its id: fetches it and, when it is unread, marks it
+ * read. A message already read is shown again and nothing is sent. An id
+ * that is not a ULID is refused before any request; an unknown one, or
+ * someone else's, propagates as the client's UserError.
+ */
+export async function* inboxReadById(
+  ctx: LibSwampContext,
+  deps: InboxReadDeps,
+  id: string,
+): AsyncIterable<InboxReadNextEvent> {
+  if (!isInboxMessageId(id)) {
+    yield { kind: "error", error: notAMessageId(id) };
+    return;
+  }
+  const session = yield* openSession(deps);
+  if (!session) return;
+  const messageId = id.toUpperCase();
+  try {
+    const message = await deps.getInboxMessage(
+      session.serverUrl,
+      session.apiKey,
+      messageId,
+      ctx.signal,
+    );
+    // Two, so one other than this message tells whether more are waiting.
+    const page = await deps.listMessages(
+      session.serverUrl,
+      session.apiKey,
+      { status: "unread", limit: 2 },
+      ctx.signal,
+    );
+    // A dropped entry is an unread message this CLI could not show.
+    const moreUnread = page.messages.some((m) =>
+      m.id.toUpperCase() !== messageId
+    ) ||
+      page.nextCursor !== null || page.dropped > 0;
+    if (message.readAt !== null) {
+      yield {
+        kind: "completed",
+        view: {
+          message: toMessageView(message),
+          marked: true,
+          moreUnread,
+          dropped: page.dropped,
+        },
+      };
+      return;
+    }
+    const confirmed = await markAndRefresh(ctx, deps, session, [messageId]);
+    const marked = confirmed.some((c) => c.toUpperCase() === messageId);
+    yield {
+      kind: "completed",
+      view: {
+        // The read endpoint returns ids only, so readAt is this CLI's clock.
+        message: {
+          ...toMessageView(message),
+          readAt: marked ? new Date(deps.now()).toISOString() : null,
+        },
+        marked,
+        moreUnread,
+        dropped: page.dropped,
+      },
+    };
+  } catch (error: unknown) {
+    if (isAbort(error)) {
+      yield { kind: "error", error: cancelled(error) };
+      return;
+    }
+    throw error;
+  }
+}
+
+/** What one mark request came to. */
+export type InboxMarkOutcome =
+  | { kind: "confirmed"; ids: string[] }
+  | { kind: "failed"; reason: string };
+
+/**
+ * Marks messages read while the inbox stays open. Requests reach Swamp Club
+ * one at a time, in the order they were made, and the cache is refreshed
+ * once, by `finish`.
+ */
+export interface InboxMarkSession {
+  /**
+   * Marks exactly these ids read. Resolves to the ids swamp-club confirmed,
+   * or why the request failed; never rejects.
+   */
+  mark(ids: readonly string[]): Promise<InboxMarkOutcome>;
+  /**
+   * Waits for the requests still in flight, for at most `finishTimeoutMs`,
+   * aborts any left, then refreshes the inbox cache once if anything was
+   * confirmed. Never rejects.
+   */
+  finish(): Promise<void>;
+}
+
+export interface InboxMarkSessionOptions {
+  /** How long `finish` waits for requests still in flight. */
+  finishTimeoutMs?: number;
+}
+
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+class InboxMarkSessionImpl implements InboxMarkSession {
+  private readonly controller = new AbortController();
+  private readonly requestCtx: LibSwampContext;
+  private session: Promise<Session | SwampError> | undefined;
+  private tail: Promise<unknown> = Promise.resolve();
+  private confirmedAny = false;
+
+  constructor(
+    private readonly ctx: LibSwampContext,
+    private readonly deps: InboxReadDeps,
+    private readonly finishTimeoutMs: number,
+  ) {
+    this.requestCtx = ctx.withSignal(this.controller.signal);
+  }
+
+  mark(ids: readonly string[]): Promise<InboxMarkOutcome> {
+    const run = this.tail.then(() => this.send([...ids]));
+    this.tail = run;
+    return run;
+  }
+
+  async finish(): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const bound = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, this.finishTimeoutMs);
+    });
+    await Promise.race([this.tail, bound]);
+    clearTimeout(timer);
+    // Whatever is still running is abandoned, and settles once aborted.
+    this.controller.abort();
+    await this.tail;
+    if (!this.confirmedAny || this.session === undefined) return;
+    const session = await this.session;
+    if ("apiKey" in session) {
+      await refreshInboxCache(this.ctx, this.deps, session);
+    }
+  }
+
+  private openOnce(): Promise<Session | SwampError> {
+    this.session ??= (async () => {
+      const credentials = await this.deps.loadCredentials();
+      // An empty key is the identity cache older versions left in
+      // auth.json after an env-key run: no credential, not a revoked one.
+      if (!credentials?.apiKey) return notAuthenticated();
+      return {
+        serverUrl: this.deps.serverUrlOverride ?? credentials.serverUrl,
+        apiKey: credentials.apiKey,
+      };
+    })();
+    return this.session;
+  }
+
+  private async send(ids: string[]): Promise<InboxMarkOutcome> {
+    if (ids.length === 0) return { kind: "confirmed", ids: [] };
+    try {
+      const session = await this.openOnce();
+      if (!("apiKey" in session)) {
+        return { kind: "failed", reason: session.message };
+      }
+      const confirmed = await this.deps.markInboxRead(
+        session.serverUrl,
+        session.apiKey,
+        ids,
+        this.requestCtx.signal,
+      );
+      if (confirmed.length > 0) this.confirmedAny = true;
+      return { kind: "confirmed", ids: confirmed };
+    } catch (error: unknown) {
+      return {
+        kind: "failed",
+        reason: isAbort(error) ? "cancelled" : reasonOf(error),
+      };
+    }
+  }
+}
+
+/** Starts a mark session; credentials load with the first request. */
+export function createInboxMarkSession(
+  ctx: LibSwampContext,
+  deps: InboxReadDeps,
+  options: InboxMarkSessionOptions = {},
+): InboxMarkSession {
+  return new InboxMarkSessionImpl(
+    ctx,
+    deps,
+    options.finishTimeoutMs ?? INBOX_REFRESH_TIMEOUT_MS,
+  );
 }
