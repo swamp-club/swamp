@@ -1910,6 +1910,72 @@ Deno.test("repairUnpushedFiles: tells a local edit from a stale copy, counting a
   });
 });
 
+Deno.test("repairUnpushedFiles: a copy a pull kept after a peer's delete is peerDeleted and never uploaded", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(
+      dir,
+      { "data/m/x": "v1", "data/m/keep": "k" },
+      { semantics: EXTENSION_2026_10_01_SEMANTICS },
+    );
+    const { remote, b, bCache } = machines;
+    await peerDeletes(machines, ["data/m/x"]);
+    await b.pullChanged();
+    assertEquals(await exists(bCache, "data/m/x"), true);
+
+    const summary = await b.repairUnpushedFiles!();
+
+    assertEquals(summary.samplePeerDeleted, ["data/m/x"]);
+    assertEquals(summary.peerDeleted, 1);
+    assertEquals(summary.unpushed, 0);
+    assertEquals(summary.uploaded, 0);
+    assertEquals(remote.files().has("data/m/x"), false);
+  });
+});
+
+Deno.test("repairUnpushedFiles: forgets a peer-deleted key once the remote holds it again or its copy is gone", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(
+      dir,
+      { "data/m/x": "v1", "data/m/y": "v1", "data/m/keep": "k" },
+      { semantics: EXTENSION_2026_10_01_SEMANTICS },
+    );
+    const { a, aCache, b, bCache } = machines;
+    await peerDeletes(machines, ["data/m/x", "data/m/y"]);
+    await b.pullChanged();
+    await write(aCache, "data/m/x", "v2");
+    await a.markDirty({ relPath: "data/m/x" });
+    await a.pushChanged();
+    await remove(bCache, "data/m/y");
+    await b.pullChanged();
+    // Written behind the sync service after the record was dropped.
+    await write(bCache, "data/m/y", "new");
+
+    const summary = await b.repairUnpushedFiles!({ dryRun: true });
+
+    assertEquals(summary.peerDeleted, 0);
+    assertEquals(summary.samplePaths, ["data/m/y"]);
+    assertEquals(await read(bCache, "data/m/x"), "v2");
+  });
+});
+
+Deno.test("repairUnpushedFiles: a delete this cache pushed is not recorded, so a file written there later is unpushed", async () => {
+  await withTempDir(async (dir) => {
+    const { b, bCache } = await syncedPair(dir, {
+      "data/m/x": "v1",
+      "data/m/keep": "k",
+    });
+    await remove(bCache, "data/m/x");
+    await b.markDirty({ relPath: "data/m/x" });
+    await b.pushChanged();
+    await write(bCache, "data/m/x", "new");
+
+    const summary = await b.repairUnpushedFiles!({ dryRun: true });
+
+    assertEquals(summary.peerDeleted, 0);
+    assertEquals(summary.samplePaths, ["data/m/x"]);
+  });
+});
+
 Deno.test("repairUnpushedFiles: a key a peer committed first is alreadyPresent and keeps the peer's bytes", async () => {
   await withTempDir(async (dir) => {
     const { remote, a, b, bCache } = await strandedCache(dir);

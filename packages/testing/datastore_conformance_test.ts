@@ -274,6 +274,7 @@ const ALL_ROUND_TRIP_CASES = [
   "repair-unpushed",
   "repair-unpushed-keeps-pending",
   "repair-unpushed-classifies",
+  "repair-unpushed-peer-deleted",
   "repair-unpushed-already-present",
 ];
 
@@ -354,6 +355,7 @@ Deno.test("assertSyncServiceRoundTripConformance: skips every repair-unpushed ca
       { name: "repair-unpushed", reason },
       { name: "repair-unpushed-keeps-pending", reason },
       { name: "repair-unpushed-classifies", reason },
+      { name: "repair-unpushed-peer-deleted", reason },
       { name: "repair-unpushed-already-present", reason },
     ],
   );
@@ -938,6 +940,32 @@ const BROKEN_IMPLEMENTATIONS: BrokenImplementation[] = [
           locallyModified: 0,
           sampleModified: [],
         }),
+      });
+    },
+  },
+  {
+    caseName: "repair-unpushed-peer-deleted",
+    bug: "repairUnpushedFiles uploads a copy a peer deleted",
+    breakFixture: (fixture) => {
+      const { service } = fixture.first;
+      return withFirst(fixture, {
+        ...service,
+        repairUnpushedFiles: async (options) => {
+          const summary = await service.repairUnpushedFiles!(options);
+          const resurrected = {
+            ...summary,
+            unpushed: summary.unpushed + summary.peerDeleted,
+            samplePaths: [...summary.samplePaths, ...summary.samplePeerDeleted],
+            peerDeleted: 0,
+            samplePeerDeleted: [],
+          };
+          if (options?.dryRun || summary.peerDeleted === 0) return resurrected;
+          for (const relPath of summary.samplePeerDeleted) {
+            await service.markDirty({ relPath });
+          }
+          await service.pushChanged();
+          return resurrected;
+        },
       });
     },
   },

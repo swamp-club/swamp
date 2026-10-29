@@ -521,8 +521,9 @@ export interface DatastoreSyncService {
    *    the filter the push walk applies (internal sidecar and index files,
    *    the catalog, `.namespace.json`, `_index/`, `_control/`, stray
    *    doubled-namespace paths), lies under `{namespace}/` (or, with no
-   *    namespace, anywhere outside a foreign namespace's directory), and is
-   *    absent from both the live remote index and the last-synced index.
+   *    namespace, anywhere outside a foreign namespace's directory), is
+   *    absent from both the live remote index and the last-synced index,
+   *    and is not recorded as peer-deleted (rule 10).
    * 2. **Local versions the remote lacks are reported, never uploaded.**
    *    `alreadyPresent` counts files absent from the last-synced index whose
    *    key the remote holds, as an index entry or an unindexed object, with
@@ -531,8 +532,9 @@ export interface DatastoreSyncService {
    *    sha256, whose size matches and whose mtime does not, when `exact`
    *    cannot settle them (rule 4). Both compare with the last-synced
    *    index, never the live remote, so a stale copy is not a local change;
-   *    `remoteMovedOn` counts last-synced keys the remote now holds with
-   *    other content, for information only. Each count is computed on its
+   *    `peerDeleted` counts files recorded as peer-deleted (rule 10), and
+   *    `remoteMovedOn` last-synced keys the remote now holds with other
+   *    content, for information only. Each count is computed on its
    *    own: a file can be in more than one.
    * 3. **`dryRun` mutates nothing.** It finds unindexed objects with one
    *    listing of the namespace prefix, never a request per key.
@@ -566,6 +568,21 @@ export interface DatastoreSyncService {
    * 9. **Failures.** With no last-synced index, reject rather than guess.
    *    Any other failure rejects, honoring `options.signal`; batches already
    *    committed stay committed.
+   * 10. **Peer deletions are recorded.** A pull drops a key a peer deleted
+   *    from the last-synced index, and may keep the local copy (a release
+   *    that never removed copies, an edited or marked copy). That copy is
+   *    then absent from both indexes, like a file written behind the sync
+   *    service, and uploading it would bring the peer's delete back. So an
+   *    implementation that provides this method MUST, whenever any
+   *    operation drops a key from the last-synced index while a regular
+   *    file stays at its path, record the key in a peer-deleted record
+   *    persisted in the cache (an internal file the push walk skips), and
+   *    forget a recorded key once the remote holds it again or its local
+   *    file is gone. Report a recorded file in `peerDeleted`, never in
+   *    `unpushed`, and never upload it. A delete this cache pushed leaves
+   *    no local file, so it is never recorded. A delete pulled before the
+   *    implementation kept the record left none, so such a copy still
+   *    reads as unpushed.
    *
    * Optional — core treats the method's presence as the capability, and
    * checks for it before calling.
@@ -646,6 +663,12 @@ export interface UnpushedFilesSummary {
   /** Local files that may differ from a last-synced entry with no sha256. */
   unknown: number;
   sampleUnknown: readonly string[];
+  /**
+   * Local files whose key a peer deleted after this cache synced it, which
+   * the cache kept and recorded as peer-deleted. Never uploaded.
+   */
+  peerDeleted: number;
+  samplePeerDeleted: readonly string[];
   /** Last-synced keys the remote now holds with other content. */
   remoteMovedOn: number;
   /** Files uploaded and indexed. Zero when `dryRun` is `true`. */

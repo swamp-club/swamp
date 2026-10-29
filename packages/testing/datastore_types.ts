@@ -150,6 +150,12 @@ export interface UnpushedFilesSummary {
   /** Local files that may differ from a last-synced entry with no sha256. */
   unknown: number;
   sampleUnknown: readonly string[];
+  /**
+   * Local files whose key a peer deleted after this cache synced it, which
+   * the cache kept and recorded as peer-deleted. Never uploaded.
+   */
+  peerDeleted: number;
+  samplePeerDeleted: readonly string[];
   /** Last-synced keys the remote now holds with other content. */
   remoteMovedOn: number;
   /** Files uploaded and indexed. Zero when `dryRun` is `true`. */

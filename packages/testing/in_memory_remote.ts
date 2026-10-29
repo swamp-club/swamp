@@ -127,7 +127,10 @@
  * that is absolute or has a `..` segment.
  *
  * `repairUnpushedFiles` compares the cache with the committed index, the
- * objects stored and what the cache last synced, bytes for bytes. A real run
+ * objects stored and what the cache last synced, bytes for bytes. Every pull
+ * and committed push records a key it drops from the last-synced index while
+ * the cache keeps a file at that path, and the repair reports such a file as
+ * `peerDeleted` instead of uploading it. A real run
  * stores and commits the unpushed files at once, touching neither the
  * sidecar nor the commit sequence it last saw.
  *
@@ -756,6 +759,15 @@ async function readLocal(
   }
 }
 
+async function isRegularFile(cacheDir: string, rel: string): Promise<boolean> {
+  try {
+    return (await Deno.lstat(join(cacheDir, ...rel.split("/")))).isFile;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
 async function statLocal(
   cacheDir: string,
   rel: string,
@@ -868,6 +880,10 @@ export function createInMemoryRemote(
   // for the extensions' on-disk `.datastore-index.json`, which is written
   // when they write it and, unlike the sidecar, `resetSidecar` keeps.
   const syncedIndexes = new Map<string, Map<string, Uint8Array>>();
+  // Keys a peer deleted after a cache synced them while the cache kept its
+  // copy, which `repairUnpushedFiles` must never upload. Like the synced
+  // index, `resetSidecar` keeps it.
+  const peerDeletedKeys = new Map<string, Set<string>>();
   const log: InMemoryRemoteOpRecord[] = [];
   const reads: InMemoryControlPlaneRead[] = [];
   const failures: PendingFailure[] = [];
@@ -1232,23 +1248,48 @@ export function createInMemoryRemote(
      * the index it read plus its changes, or, for a push of marked paths,
      * only its changes merged into the last record.
      */
-    function recordPushed(
+    async function recordPushed(
       scoped: boolean,
       index: ReadonlyMap<string, Uint8Array>,
       uploads: ReadonlyMap<string, Uint8Array>,
       deletes: readonly string[],
-    ): void {
+    ): Promise<void> {
       if (!scoped) {
         const next = new Map(index);
         for (const [rel, bytes] of uploads) next.set(rel, bytes);
         for (const rel of deletes) next.delete(rel);
+        await recordPeerDeleted(next);
         syncedIndexes.set(key, next);
         return;
       }
       const synced = syncedIndexes.get(key);
       if (!synced) return;
-      for (const [rel, bytes] of uploads) synced.set(rel, bytes);
+      for (const [rel, bytes] of uploads) {
+        synced.set(rel, bytes);
+        peerDeletedKeys.get(key)?.delete(rel);
+      }
       for (const rel of deletes) synced.delete(rel);
+    }
+
+    /**
+     * Records each key `next` drops from the last-synced index while a
+     * regular file stays at its path, and forgets the keys `next` holds
+     * again or whose file is gone. A delete this cache pushed leaves no
+     * file, so only a peer's delete is recorded.
+     */
+    async function recordPeerDeleted(
+      next: ReadonlyMap<string, Uint8Array>,
+    ): Promise<void> {
+      const recorded = peerDeletedKeys.get(key) ?? new Set<string>();
+      for (const rel of syncedIndexes.get(key)?.keys() ?? []) {
+        if (!next.has(rel) && !isInternalCacheFile(rel)) recorded.add(rel);
+      }
+      for (const rel of [...recorded]) {
+        if (next.has(rel) || !(await isRegularFile(cacheDir, rel))) {
+          recorded.delete(rel);
+        }
+      }
+      peerDeletedKeys.set(key, recorded);
     }
 
     async function pushChanged(
@@ -1298,7 +1339,7 @@ export function createInMemoryRemote(
         overflowed,
         marks,
       });
-      recordPushed(plan.scoped, snapshot, plan.uploads, plan.deletes);
+      await recordPushed(plan.scoped, snapshot, plan.uploads, plan.deletes);
       record({
         instance,
         op: "push",
@@ -1369,7 +1410,7 @@ export function createInMemoryRemote(
         index: index.keys(),
         marks: internal[PLAN_MARKS],
       });
-      recordPushed(scoped, index, manifest.uploads, manifest.deletes);
+      await recordPushed(scoped, index, manifest.uploads, manifest.deletes);
       record({
         instance,
         op: "commit",
@@ -1436,6 +1477,7 @@ export function createInMemoryRemote(
         if (!scoped || isInSubdirs(rel, subdirs)) state.pulledKeys.add(rel);
       }
       // A subdir-scoped pull saves the whole index too.
+      await recordPeerDeleted(committed);
       syncedIndexes.set(key, new Map(committed));
       if (!scoped) {
         if (semantics.pullClearsPendingPush) state.localDirty = false;
@@ -1574,9 +1616,11 @@ export function createInMemoryRemote(
       }
       const inScope = (rel: string) => !namespace || isUnder(rel, namespace);
 
+      const peerDeletedHere = peerDeletedKeys.get(key) ?? new Set<string>();
       const unpushed: Array<[string, Uint8Array]> = [];
       const alreadyPresent: string[] = [];
       const modified: string[] = [];
+      const peerDeleted: string[] = [];
       for (const rel of filesOf(await walkLocalEntries(cacheDir, ""))) {
         if (!inScope(rel)) continue;
         const bytes = await readLocal(cacheDir, rel);
@@ -1588,6 +1632,10 @@ export function createInMemoryRemote(
         }
         if (committed.has(rel)) {
           if (!sameBytes(bytes, committed.get(rel))) alreadyPresent.push(rel);
+          continue;
+        }
+        if (peerDeletedHere.has(rel)) {
+          peerDeleted.push(rel);
           continue;
         }
         // An unindexed object with these bytes is an upload of ours whose
@@ -1636,6 +1684,8 @@ export function createInMemoryRemote(
         sampleModified: sample(modified),
         unknown: 0,
         sampleUnknown: [],
+        peerDeleted: peerDeleted.length,
+        samplePeerDeleted: sample(peerDeleted),
         remoteMovedOn,
         uploaded: created.size,
         pendingChanges: loadSidecar()?.localDirty ?? false,

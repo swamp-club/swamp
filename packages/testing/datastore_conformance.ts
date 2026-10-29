@@ -1520,6 +1520,49 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
     },
   },
   {
+    name: "repair-unpushed-peer-deleted",
+    skip: skipWithoutRepairUnpushed,
+    run: async ({ first, second }) => {
+      const dir = `${ROOT}/repair-peer-deleted`;
+      const kept = `${dir}/kept/raw`;
+      const other = `${dir}/other/raw`;
+      // other keeps the remote non-empty, so a pull is free to remove an
+      // unchanged copy; kept is edited, so every pull keeps it.
+      for (const rel of [kept, other]) {
+        await markAndWrite(second, rel, sampleBytes(`v1-${rel}`));
+      }
+      assertChanged(await second.service.pushChanged(), "second pushChanged()");
+      assertChanged(await first.service.pullChanged(), "first pullChanged()");
+      await writeLocal(first.cacheDir, kept, sampleBytes("kept-edited"));
+      await markAndDelete(second, kept);
+      assertChanged(await second.service.pushChanged(), "second pushChanged()");
+      assertCount(await first.service.pullChanged(), "first pullChanged()");
+
+      const preview = await first.service.repairUnpushedFiles!({
+        dryRun: true,
+      });
+      assertEquals(
+        preview.samplePaths.includes(kept),
+        false,
+        "a copy a pull kept after a peer deleted its key is not unpushed (contract rule 10)",
+      );
+      if (await readLocalFile(first.cacheDir, kept)) {
+        assertEquals(
+          preview.samplePeerDeleted.includes(kept),
+          true,
+          "a copy a pull kept after a peer deleted its key is peerDeleted",
+        );
+      }
+      await first.service.repairUnpushedFiles!();
+      assertCount(await second.service.pullChanged(), "second pullChanged()");
+      await assertAbsent(
+        second,
+        kept,
+        "repairUnpushedFiles must not bring back a file a peer deleted before the last pull",
+      );
+    },
+  },
+  {
     name: "repair-unpushed-already-present",
     skip: skipWithoutRepairUnpushed,
     run: async ({ first, second }) => {
@@ -1607,7 +1650,7 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
  *   `clearDirty`.
  * - `repair-unpushed`: a file written into the cache without a mark, which
  *   no push sends, is reported by a `repairUnpushedFiles` dry run and
- *   uploaded by a real run. Skipped, like the three cases below, when
+ *   uploaded by a real run. Skipped, like the four cases below, when
  *   `first.service` has no `repairUnpushedFiles`.
  * - `repair-unpushed-keeps-pending`: a recorded delete is reported as
  *   pending, survives the repair, and is applied by the next push.
@@ -1615,6 +1658,8 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
  *   `locallyModified` (also when a peer changed the file too), a stale copy
  *   is not, files a peer changed count as `remoteMovedOn`, and a file a peer
  *   deleted is neither reported nor brought back.
+ * - `repair-unpushed-peer-deleted`: an edited copy a pull kept after a peer
+ *   deleted its key is `peerDeleted`, not unpushed, and is never uploaded.
  * - `repair-unpushed-already-present`: a local file whose key a peer pushed
  *   with other bytes is `alreadyPresent`, and the peer's bytes stay.
  *

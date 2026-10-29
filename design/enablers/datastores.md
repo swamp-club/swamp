@@ -1550,10 +1550,10 @@ files itself, shaped like `repairNamespaceContamination`.
 
 1. **Unpushed** means a regular file (`lstat`; a symlink is never followed)
    that passes exactly the push walk's filter, lies under `{namespace}/` (or
-   anywhere outside a foreign namespace's directory when there is none), and
-   is absent from both the live remote index and the last-synced index. A file
-   in the last-synced index but gone from the remote is a peer's deletion, not
-   unpushed.
+   anywhere outside a foreign namespace's directory when there is none), is
+   absent from both the live remote index and the last-synced index, and is not
+   recorded as peer-deleted (rule 10). A file in the last-synced index but gone
+   from the remote is a peer's deletion, not unpushed.
 2. **Local versions the remote lacks are reported, never uploaded.**
    `alreadyPresent` counts files absent from last-synced whose key the remote
    holds, as an entry or an unindexed object, with other bytes. Two counts
@@ -1563,6 +1563,7 @@ files itself, shaped like `repairNamespaceContamination`.
    - `unknown` counts entries with no sha256 whose size matches and mtime does
      not, when `exact` cannot settle them.
 
+   `peerDeleted` counts files recorded as peer-deleted (rule 10).
    `remoteMovedOn` counts last-synced keys the remote has since changed, for
    information only. Each count is computed on its own.
 3. **`dryRun` mutates nothing** and finds unindexed objects with one listing
@@ -1589,8 +1590,23 @@ files itself, shaped like `repairNamespaceContamination`.
    entries are merged into the on-disk last-synced index.
 9. **Failures.** Without a last-synced index, reject rather than guess.
    Batches already committed stay committed.
+10. **Peer deletions are recorded.** A pull drops a key a peer deleted from
+    the last-synced index but may keep the local copy: releases up to
+    2026.10.01 never removed copies, and current ones keep an edited or marked
+    copy, or every copy when the peer deleted the last file in scope. That
+    copy is then absent from both indexes, like a file written behind the sync
+    service, and uploading it would bring the peer's delete back to every
+    cache. So an extension that implements the method also records, whenever
+    any operation drops a key from the last-synced index while a regular file
+    stays at its path, that key in a peer-deleted record persisted in the
+    cache (an internal file the push walk skips). It forgets a key once the
+    remote holds it again or the local file is gone. A recorded file counts in
+    `peerDeleted`, never in `unpushed`, and is never uploaded. A delete this
+    cache pushed leaves no local file, so it is never recorded.
 
-Limits: a file pulled only by a models-scoped pull is recorded in last-synced
+Limits: a delete pulled before the extension kept the peer-deleted record left
+none, so a copy an earlier release kept still reads as unpushed. A file pulled
+only by a models-scoped pull is recorded in last-synced
 only once the extension merges scoped pulls into `.datastore-index.json`.
 Files the remote already holds with other bytes are reported, never recovered.
 If a peer's unconditional upload overwrites a key just created and the peer's

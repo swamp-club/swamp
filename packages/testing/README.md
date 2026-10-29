@@ -226,11 +226,13 @@ parent's or child's mark and the bulk flag; no released S3 or GCS extension has
 it yet, so pass `{ clearDirty: false }` to model one without it.
 `repairUnpushedFiles(options)` reports cache files the remote never received,
 and local versions it lacks, against what the cache last synced, and without
-`dryRun` uploads the unpushed ones, leaving dirty state alone. It compares
-bytes, so `exact` changes nothing and `unknown` is always 0. Pass
-`{ repairUnpushedFiles: false }` to `connect` for a service without it. On the
-remote, `monolithIndex: true` makes it reject as a v1 index does,
-`conditionalCreate: false` makes a real run reject as an endpoint without
+`dryRun` uploads the unpushed ones, leaving dirty state alone. Every pull and
+committed push records a key it drops from the last-synced index while the cache
+keeps a file there, and the repair reports that file as `peerDeleted` rather
+than uploading it. It compares bytes, so `exact` changes nothing and `unknown`
+is always 0. Pass `{ repairUnpushedFiles: false }` to `connect` for a service
+without it. On the remote, `monolithIndex: true` makes it reject as a v1 index
+does, `conditionalCreate: false` makes a real run reject as an endpoint without
 create-only writes does, and `storeObject(key, bytes)` leaves an object no index
 lists, as an upload whose commit never ran would.
 
@@ -537,6 +539,7 @@ once per case (twenty fixtures), pulls on both caches, then runs:
 | `repair-unpushed`                   | A file written into the cache without a mark is reported by a `repairUnpushedFiles` dry run and uploaded by a real run                               |
 | `repair-unpushed-keeps-pending`     | A recorded delete is reported as pending, survives `repairUnpushedFiles`, and is applied by the next push                                            |
 | `repair-unpushed-classifies`        | A local edit is `locallyModified`, a stale copy is not, a peer's change is `remoteMovedOn`, and a peer's delete is neither reported nor brought back |
+| `repair-unpushed-peer-deleted`      | An edited copy a pull kept after a peer deleted its key is `peerDeleted`, never unpushed, and is never uploaded                                      |
 | `repair-unpushed-already-present`   | A local file whose key a peer pushed with other bytes is `alreadyPresent`, and the peer's bytes stay                                                 |
 
 The suite marks before it writes or deletes, as swamp core does. Counts may
