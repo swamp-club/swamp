@@ -58,6 +58,7 @@ import {
   LockTimeoutError,
 } from "../src/domain/datastore/distributed_lock.ts";
 import {
+  type DatastoreSyncOptions,
   DataVersionConflictError,
 } from "../src/domain/datastore/datastore_sync_service.ts";
 import { UserError } from "../src/domain/errors.ts";
@@ -90,6 +91,8 @@ let hooks: Hooks = {};
 let hideClearDirty = false;
 /** While set, every clone's pull fails, as with an unreachable remote. */
 let failPulls = false;
+/** While set, a remote read of a matching path answers that it is missing. */
+let hideFromFetch: ((relPath: string) => boolean) | undefined;
 
 function registerProbe(): ModelType {
   const type = ModelType.create(`test/read-publish-${crypto.randomUUID()}`);
@@ -267,6 +270,12 @@ async function withClones(fn: (clones: Clones) => Promise<void>) {
       return new Proxy(service, {
         get(target, property) {
           if (property === "clearDirty" && hideClearDirty) return undefined;
+          if (property === "fetchContent") {
+            return (relPath: string, fetchOptions?: DatastoreSyncOptions) =>
+              hideFromFetch?.(relPath)
+                ? Promise.resolve(null)
+                : target.fetchContent!(relPath, fetchOptions);
+          }
           if (property === "pullChanged" && failPulls) {
             return () => Promise.reject(new Error("injected pull failure"));
           }
@@ -303,6 +312,7 @@ async function withClones(fn: (clones: Clones) => Promise<void>) {
     hooks = {};
     hideClearDirty = false;
     failPulls = false;
+    hideFromFetch = undefined;
     await flushDatastoreSync();
     modelRegistry.invalidateType(type);
     datastoreType.dispose();
@@ -899,3 +909,88 @@ for (const elsewhere of [false, true]) {
     },
   );
 }
+
+Deno.test("acquireModelLocks: a locked push that cannot confirm an earlier read's deferred version does not fail, and keeps it for the next lock (swamp-club#3934)", async () => {
+  await withClones(async (c) => {
+    const model = { modelType: c.type.normalized, modelId: c.definition.id };
+    const holder = await requireInitializedRepoUnlocked({
+      repoDir: c.repoB,
+      outputMode: "json",
+    });
+    const writerLock = await acquireModelLocks(
+      holder.datastoreConfig,
+      [model],
+      c.repoB,
+      holder.syncService,
+      holder.repoContext.catalogStore,
+      undefined,
+      { repoContext: holder.repoContext },
+    );
+    try {
+      await runMethod(c.repoA, "observe", "from-a");
+    } finally {
+      await writerLock.flush();
+      await flushDatastoreSync();
+      holder.repoContext.catalogStore.close();
+    }
+    // A workflow step's lock on this host publishes the deferred versions,
+    // and the datastore keeps answering that one of them is missing.
+    const a = await requireInitializedRepoUnlocked({
+      repoDir: c.repoA,
+      outputMode: "json",
+    });
+    hideFromFetch = (relPath) =>
+      relPath.includes("/report-swamp-method-summary/1/");
+    try {
+      const locks = await acquireModelLocks(
+        a.datastoreConfig,
+        [model],
+        c.repoA,
+        a.syncService,
+        a.repoContext.catalogStore,
+        undefined,
+        { repoContext: a.repoContext },
+      );
+      try {
+        // The step wrote nothing of its own, so nothing of its own fails.
+        await locks.pushWritten([]);
+      } finally {
+        await locks.release();
+      }
+    } finally {
+      hideFromFetch = undefined;
+      await flushDatastoreSync();
+      a.repoContext.catalogStore.close();
+    }
+    assertEquals(remoteValue(c, 1), "from-a", "the deferred main published");
+    assertEquals(await pendingRecords(c.repoA), 1, "kept for the next lock");
+  });
+});
+
+Deno.test("model method run: a read run whose own version's metadata cannot be read fails rather than leaving it unpublished (swamp-club#3934)", async () => {
+  await withClones(async (c) => {
+    hooks = {
+      afterWrite: async () => {
+        await Deno.writeTextFile(
+          join(
+            c.repoA,
+            ".test-cache",
+            "data",
+            ...c.type.normalized.split("/"),
+            c.definition.id,
+            "main",
+            "1",
+            "metadata.yaml",
+          ),
+          "id: [unclosed",
+        );
+      },
+    };
+    const error = await assertRejects(
+      () => runMethod(c.repoA, "observe", "from-a"),
+      UserError,
+    );
+    assertEquals(error.code, "datastore_publish_failed");
+    assertEquals(remoteValue(c, 1), undefined);
+  });
+});

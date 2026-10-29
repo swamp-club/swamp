@@ -3415,11 +3415,13 @@ async function discardRefusedVersions(
 /**
  * Each of `versions` this host still holds, with the data id its metadata
  * names now (undefined when the metadata names none). A version whose
- * metadata is gone or cannot be read is left out.
+ * metadata is gone is left out, as is one whose metadata cannot be read or
+ * parsed unless `strict`, which throws instead.
  */
 async function localDataIds(
   versions: readonly WrittenVersion[],
   repo: RepositoryContext["unifiedDataRepo"],
+  options: { strict?: boolean } = {},
 ): Promise<Array<{ written: WrittenVersion; localId: string | undefined }>> {
   const present: Array<
     { written: WrittenVersion; localId: string | undefined }
@@ -3441,10 +3443,10 @@ async function localDataIds(
         ),
       );
     } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        getSwampLogger(["datastore", "lock"])
-          .debug`Skipping deferred ${w.dataName} version ${w.version}: ${error}`;
-      }
+      if (error instanceof Deno.errors.NotFound) continue;
+      if (options.strict) throw error;
+      getSwampLogger(["datastore", "lock"])
+        .debug`Skipping deferred ${w.dataName} version ${w.version}: ${error}`;
       continue;
     }
     const id = typeof parsed === "object" && parsed !== null
@@ -4292,10 +4294,13 @@ export async function acquireModelLocks(
       }
     };
     // A version whose data is gone from this host is dropped.
-    const present = await localDataIds(
-      [...ours, ...left],
-      publishContext.unifiedDataRepo,
-    );
+    const present = [
+      // The run's own metadata must read: one that cannot is not skipped.
+      ...await localDataIds(ours, publishContext.unifiedDataRepo, {
+        strict: true,
+      }),
+      ...await localDataIds(left, publishContext.unifiedDataRepo),
+    ];
     // A version whose data id is no longer the one its run wrote was
     // replaced by the pull under these locks: another clone wrote the same
     // number first, and this host now holds that clone's copy. The cache
@@ -4373,31 +4378,45 @@ export async function acquireModelLocks(
           attempt === PUBLISH_ATTEMPTS ? "push-alone" : "push",
           stage,
         );
-        if (!syncService.fetchContent || targets.length === 0) return;
+        if (!syncService.fetchContent || targets.length === 0) return [];
         const behind = await unpublishedTargets(
           targets,
           syncService.fetchContent.bind(syncService),
           config.namespace,
         );
-        if (behind === undefined || behind.length === 0) return;
+        if (behind === undefined || behind.length === 0) return [];
         pending = behind.map((t) => t.written);
         logger
           .debug`Datastore lacks ${pending.length} written version(s) after push ${attempt}; publishing again`;
       }
-      throw new UnpublishedDataVersionError(pending, PUBLISH_ATTEMPTS);
+      return pending;
     };
-    // The records go only once the push succeeded: a failed one keeps them
-    // for the next lock.
+    // The records go only once every version they name is confirmed
+    // published: a failed push keeps them for the next lock. Only the run's
+    // own versions fail the run; an earlier read's are retried later.
+    let failure: unknown;
     try {
-      await publish();
+      const unconfirmed = await publish();
+      const ownLeft = unconfirmed.filter((w) => ownKeys.has(versionKey(w)));
+      const deferredLeft = unconfirmed.length - ownLeft.length;
+      if (deferredLeft > 0) {
+        logger
+          .warn`${deferredLeft} data version(s) an earlier read run left are not confirmed on the datastore yet; the next run that locks the behavior on this host publishes them again.`;
+      } else {
+        await settleDeferred();
+      }
+      if (ownLeft.length > 0) {
+        failure = new UnpublishedDataVersionError(ownLeft, PUBLISH_ATTEMPTS);
+      }
     } catch (error) {
-      if (conflict === undefined) throw error;
+      failure = error;
+    }
+    if (failure !== undefined) {
+      if (conflict === undefined) throw failure;
       // The refusal is the error to act on; what else failed is logged.
       logger
-        .warn`Publishing the versions left after a refusal failed: ${error}`;
-      throw conflict;
+        .warn`Publishing the versions left after a refusal failed: ${failure}`;
     }
-    await settleDeferred();
     if (conflict !== undefined) throw conflict;
   };
 

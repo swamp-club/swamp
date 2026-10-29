@@ -8033,9 +8033,12 @@ refreshes its resource does. `methodRunLockMode`
   it.
 - Every push made under a behavior's lock with a repository context also
   publishes the versions earlier runs deferred for it, with the same
-  data-id check, and removes their records once the push succeeds; a failed
-  push keeps them. A deferred version another clone also wrote is dropped
-  with a warning and never fails the current run. A version no longer on
+  data-id check, and removes their records once the datastore confirms
+  them; a failed push keeps them. A deferred version another clone also
+  wrote is dropped with a warning, and one the datastore does not confirm
+  keeps its record for the next lock: neither fails the current run, whose
+  own versions alone decide its outcome. A run's own version whose metadata
+  cannot be read fails the publish rather than being left out. A version no longer on
   this host is dropped, and a record naming another behavior's versions too
   waits for a lock that holds them all.
 - A run that wrote no data version takes no publish lock. When the CLI
