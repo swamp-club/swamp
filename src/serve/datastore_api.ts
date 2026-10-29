@@ -63,7 +63,6 @@ import {
   definitionRecordReadAccessOf,
   partitionReadAccessOf,
   partitionWriteAccessOf,
-  readAccessOf,
   type RequiredAccess,
 } from "../domain/datastore_v3/commit_authorization.ts";
 import { storageNamespaceOf } from "../domain/datastore_v3/chunk_store.ts";
@@ -85,10 +84,8 @@ import {
 import { ReadModelIncompleteError } from "../domain/datastore_v3/read_model.ts";
 import { RecordKey } from "../domain/datastore_v3/record_key.ts";
 import { isControlPlaneModelType } from "../domain/models/control_plane_types.ts";
-import { findDefinitionByIdGlobal } from "../domain/models/model_lookup.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import { createWorkflowRunId } from "../domain/workflows/workflow_id.ts";
-import { findWorkflowById } from "../domain/workflows/workflow_lookup.ts";
 import {
   ChunkIngestError,
   chunkReadResponse,
@@ -119,11 +116,15 @@ import {
   type AccessCaller,
   callerResourceDecider,
   type ConnectionContext,
-  isAdminOnlyModelType,
   isCallerAuthorized,
   isCallerAuthorizedForAll,
   replicationErrorForClient,
 } from "./handlers/shared.ts";
+import {
+  commitReadAccessOf,
+  memoized,
+  serveResolver,
+} from "./commit_read_filter.ts";
 import {
   checkIpBurst,
   checkPrincipalRate,
@@ -143,6 +144,7 @@ import {
   parseLockKey,
 } from "./datastore_locks.ts";
 import { ServeNotLeaderError } from "../domain/datastore_v3/serve_leader.ts";
+import { notLeaderResponse } from "./leader_link.ts";
 
 const logger = getSwampLogger(["serve", "datastore-api"]);
 
@@ -218,12 +220,12 @@ export async function handleDatastoreRequest(
 ): Promise<Response> {
   const authenticated = await authenticateCaller(req, sourceIp, deps);
   if (authenticated instanceof Response) return authenticated;
-  // A follower in team mode takes no write, and answers reads only while
-  // its copy is fresh (swamp-club#4096); after authentication, so only a
-  // caller learns which node leads. Forwarding a write to the leader is a
-  // later step (p5-feed).
-  const notLeader = followerDatastoreRefusal(req, route, deps.ctx);
-  if (notLeader !== undefined) return notLeader;
+  // A follower in team mode passes a write on to the leader with the
+  // caller's own credentials (swamp-club#4120), and answers reads only
+  // while its copy is fresh (swamp-club#4096); after authentication, so
+  // only a caller reaches the leader through it or learns which node leads.
+  const notLeader = followerDatastoreRefusal(req, route, sourceIp, deps.ctx);
+  if (notLeader !== undefined) return await notLeader;
   // Taken before the reply is answered: a reload while it is answered then
   // shows as a change on the next reply, which rebuilds the copy, never as
   // the access a copy filtered under the old grants was built with.
@@ -244,26 +246,26 @@ export async function handleDatastoreRequest(
 
 /**
  * The reply a serve follower gives a datastore API request it does not
- * answer (swamp-club#4096): every write, and a read once its copy is stale.
- * A chunk check (`has`) is a read. A retryable 503 that names the leader.
+ * answer itself: a write is the leader's reply to it, forwarded with the
+ * caller's own credentials (swamp-club#4120); a read once its copy is
+ * stale, or a write when no leader can be reached, is a retryable 503 that
+ * names the leader (swamp-club#4096). A chunk check (`has`) is a read.
  */
 function followerDatastoreRefusal(
   req: Request,
   route: DatastoreRoute,
+  sourceIp: string,
   ctx: ConnectionContext,
-): Response | undefined {
+): Promise<Response> | undefined {
   const gate = ctx.followerGate;
   if (gate === undefined || gate.role === "leader") return undefined;
   const reads = req.method === "GET" || route.kind === "has";
   if (reads && !gate.isStale()) return undefined;
-  const refusal = new ServeNotLeaderError(gate.leader(), reads);
-  return Response.json(
-    {
-      code: refusal.code,
-      message: refusal.message,
-      ...(refusal.leader !== undefined ? { leader: refusal.leader } : {}),
-    },
-    { status: 503, headers: { "Retry-After": "5" } },
+  if (!reads && ctx.leaderLink !== undefined) {
+    return ctx.leaderLink.forward(req, { clientIp: sourceIp });
+  }
+  return Promise.resolve(
+    notLeaderResponse(new ServeNotLeaderError(gate.leader(), reads)),
   );
 }
 
@@ -1321,23 +1323,9 @@ class DatastoreApi {
     partition: PartitionKey,
     ops: readonly Op[],
   ): Promise<boolean> {
-    const required: RequiredAccess[] = [];
-    let intents = 0;
-    for (const op of ops) {
-      if (op.kind === "put" || op.kind === "tombstone") intents++;
-      const access = await readAccessOf(op, this.#resolver);
-      if (access !== undefined) required.push(access);
-    }
-    // A commit with no intent-bearing op (serve's own lease commits) still
-    // names its partition: it is read as the partition is.
-    if (intents === 0) {
-      for (
-        const access of await partitionReadAccessOf(partition, this.#resolver)
-      ) {
-        required.push(access);
-      }
-    }
-    return this.#mayRead(required);
+    return this.#mayRead(
+      await commitReadAccessOf(partition, ops, this.#resolver),
+    );
   }
 
   /** Decides reads without auditing each one: they filter, not refuse. */
@@ -1520,99 +1508,6 @@ class CatchUpCoalescer {
     });
     return this.#next;
   }
-}
-
-/**
- * `resolver` with its aggregate lookups remembered for one request, so a
- * changes page costs one lookup per aggregate, not per op. Key owners and
- * restricted types are asked afresh.
- */
-function memoized(
-  resolver: AggregateResourceResolver,
-): AggregateResourceResolver {
-  const models = new Map<
-    string,
-    ReturnType<AggregateResourceResolver["model"]>
-  >();
-  const workflows = new Map<
-    string,
-    ReturnType<AggregateResourceResolver["workflow"]>
-  >();
-  const tags = new Map<
-    string,
-    ReturnType<AggregateResourceResolver["definitionTags"]>
-  >();
-  const remember = <T>(map: Map<string, T>, key: string, load: () => T): T => {
-    let value = map.get(key);
-    if (value === undefined) {
-      value = load();
-      map.set(key, value);
-    }
-    return value;
-  };
-  return {
-    model: (ref) =>
-      remember(models, `${ref.type}\u0000${ref.id}`, () => resolver.model(ref)),
-    workflow: (id) => remember(workflows, id, () => resolver.workflow(id)),
-    definitionTags: (kind, name, type) =>
-      remember(
-        tags,
-        `${kind}\u0000${name}\u0000${type?.normalized ?? ""}`,
-        () => resolver.definitionTags(kind, name, type),
-      ),
-    keyOwner: (key) => resolver.keyOwner(key),
-    isRestrictedType: (type) => resolver.isRestrictedType(type),
-  };
-}
-
-/** The resolver serve's datastore API authorises against. */
-function serveResolver(
-  ctx: ConnectionContext,
-  v3: V3Datastore,
-): AggregateResourceResolver {
-  const repos = ctx.repoContext;
-  return {
-    async model(ref) {
-      const lookup = await findDefinitionByIdGlobal(
-        repos.definitionRepo,
-        ref.id,
-      );
-      // A definition of another type is not this behavior: the intent's type
-      // is what the commit writes.
-      return lookup !== null && lookup.type.normalized === ref.type
-        ? lookup
-        : undefined;
-    },
-    async definitionTags(kind, name, type) {
-      switch (kind) {
-        case "model": {
-          if (type === undefined) return undefined;
-          const definition = await repos.definitionRepo.findByName(type, name);
-          return definition?.tags;
-        }
-        case "workflow":
-          return (await repos.workflowRepo.findByName(name))?.tags;
-        case "vault":
-          return undefined;
-      }
-    },
-    async workflow(workflowId) {
-      const workflow = await findWorkflowById(repos.workflowRepo, workflowId);
-      return workflow === null
-        ? undefined
-        : { name: workflow.name, tags: workflow.tags };
-    },
-    keyOwner(key) {
-      return v3.readModel.fileOwner(v3.namespace, key);
-    },
-    isRestrictedType(type: ModelType) {
-      return isAdminOnlyModelType(
-        undefined,
-        type.normalized,
-        ctx.authConfig.restrictedModelTypes,
-      );
-    },
-  };
 }
 
 interface CommitEnvelope {

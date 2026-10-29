@@ -510,14 +510,16 @@ export function serveErrorFromReply(
     }
   }
   // Refused before it was taken (swamp-club#4096), so nothing may land:
-  // checked before a 503's seq, which would say it might.
+  // checked before a 503's seq, which would say it might. A follower that
+  // forwarded the request and lost the leader after it reached it says
+  // `inFlight` (swamp-club#4120): the request may already have run.
   if (status === 503 && code === SERVE_NOT_LEADER_CODE) {
     const leader = typeof fields.leader === "object" && fields.leader !== null
       ? parseServeLeader(
         new TextEncoder().encode(JSON.stringify(fields.leader)),
       )
       : undefined;
-    return new ServeNotLeaderError(leader);
+    return new ServeNotLeaderError(leader, false, fields.inFlight === true);
   }
   if (status === 503 && seq !== undefined) {
     return new ServeCommitMayLandError(seq, code, message);

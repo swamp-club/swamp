@@ -114,6 +114,8 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { SyncGate } from "../sync_gate.ts";
 import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
 import type { FollowerGate } from "../follower_requests.ts";
+import type { LeaderLink } from "../leader_link.ts";
+import type { V3CommitFeedSource } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 
 const pushLogger = getSwampLogger(["serve", "sync"]);
 const streamLogger = getSwampLogger(["serve", "stream"]);
@@ -366,6 +368,23 @@ export interface ConnectionContext {
    * outside team mode.
    */
   followerGate?: FollowerGate;
+  /**
+   * A follower's route to the leader (swamp-club#4120): writes a follower
+   * takes are passed on through it with the caller's own credentials.
+   * Absent outside team mode, where a follower refuses them instead.
+   */
+  leaderLink?: LeaderLink;
+  /**
+   * Waits, for a bounded time, until this follower's copy holds what the
+   * leader had committed: a forwarded write's reply waits on it, so the
+   * caller reads its own write from this node next (swamp-club#4120).
+   */
+  feedBarrier?: () => Promise<void>;
+  /**
+   * Serve's v3 commit log, as the `commits.subscribe` feed reads it
+   * (swamp-club#4120). Absent when the datastore is not v3.
+   */
+  commitFeed?: V3CommitFeedSource;
   /**
    * Serializes `run.gc` and `data.gc` with serve's retention pass
    * (swamp-club#3473). Absent in contexts built without the retention timer.
@@ -2382,8 +2401,17 @@ const OUTCOME_EVENT_KINDS: ReadonlySet<string> = new Set([
 ]);
 
 function sendNow(socket: WebSocket, message: ServerMessage): void {
+  sendSerialized(socket, JSON.stringify(message));
+}
+
+/**
+ * Sends a frame already serialized, as {@link send} sends one it
+ * serializes: gzipped when the connection asked and the frame is large. A
+ * follower relays the leader's frames to its client this way
+ * (swamp-club#4120).
+ */
+export function sendSerialized(socket: WebSocket, json: string): void {
   if (socket.readyState !== WebSocket.OPEN) return;
-  const json = JSON.stringify(message);
   if (connectionCompression.get(socket) === "gzip") {
     const bytes = new TextEncoder().encode(json);
     if (bytes.byteLength >= COMPRESSION_THRESHOLD_BYTES) {

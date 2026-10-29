@@ -186,6 +186,10 @@ const CATEGORIES: Record<string, Category> = {
   "audit.report": "access",
   "audit.rotate-key": "access",
   "audit.subscribe": "access",
+  // The commit feed filters each commit as GET changes does
+  // (swamp-club#4120); its head names no resource.
+  "commits.subscribe": "collection",
+  "commits.head": "kind",
   "audit.unsubscribe": "access",
   "audit.verify": "access",
   "cluster.instances": "access",

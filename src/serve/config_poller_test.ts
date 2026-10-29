@@ -857,3 +857,29 @@ Deno.test("ConfigPoller: each poll cycle is the root of its own trace", async ()
     }
   });
 });
+
+Deno.test("ConfigPoller.pollNow: a check asked for while one runs runs again after it, with no interval", async () => {
+  let calls = 0;
+  const lockfile = createLockfile("hash-a");
+  const release = Promise.withResolvers<void>();
+  const poller = new ConfigPoller({
+    catalogInvalidate: () => {},
+    extensionReloader: async () => {
+      calls++;
+      if (calls === 1) await release.promise;
+      return { status: "ok", errors: [] };
+    },
+    lockfileHash: lockfile.lockfileHash,
+    baselineLockfileHash: "hash-a",
+    pollIntervalMs: 3_600_000,
+  });
+  lockfile.hash = "hash-b";
+  poller.pollNow();
+  await waitFor(() => calls === 1, "the first reload");
+  // A commit lands mid-reload: its check must not be dropped.
+  lockfile.hash = "hash-c";
+  poller.pollNow();
+  release.resolve();
+  await waitFor(() => calls === 2, "the reload for the change mid-check");
+  await poller.stop();
+});

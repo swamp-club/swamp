@@ -41,11 +41,21 @@ export const TOKEN_SECRETS_KEY_RECORD = "token-secrets/encryption-key";
  */
 export function coLocatedTokenKeyWarning(
   data: Uint8Array | null,
+  team = false,
 ): string | undefined {
   if (classifyTokenKeyRecord(data).kind !== "legacy") return undefined;
   return "Server token secrets and the key that encrypts them are stored " +
     "together in the datastore's control plane, so anyone who can read the " +
-    "datastore can decrypt every token secret. Keep the key in a vault " +
+    "datastore can decrypt every token secret. " +
+    // In team mode the same key protects the team's peer key, and with it
+    // the leader record's proof (swamp-club#4120).
+    (team
+      ? "In team mode the same key protects the team's peer key, which " +
+        "signs the leader record: anyone who can read and write the " +
+        "datastore can sign a leader record of their own, and followers " +
+        "then send every forwarded caller's credentials to its address. "
+      : "") +
+    "Keep the key in a vault " +
     "instead: add a token-secrets block to serve.yaml naming a vault and key " +
     "(see 'Token secrets key' in the swamp serve documentation).";
 }

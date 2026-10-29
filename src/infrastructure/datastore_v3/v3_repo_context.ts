@@ -159,6 +159,7 @@ import { v3ForeignContentFetcher } from "./v3_foreign_content.ts";
 import { isChunkQuarantine } from "../../domain/datastore/datastore_storage.ts";
 import { SERVE_SEQ_GAP_ATTEMPTS } from "./serve_commit_sink.ts";
 import { serveUpstreamAt } from "./serve_upstream_registry.ts";
+import { type ServeFeedWatch, watchServeFeed } from "./serve_feed_client.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
 
@@ -417,9 +418,9 @@ export function enableV3ServeTeamMode(
 
 /**
  * Refuses a write on a serve node that follows the datastore at
- * `datastorePath` in team mode, holding no lease (swamp-club#4096). The one
- * place a follower's write is refused: a later step forwards it to the
- * leader instead (p5-feed). A node whose lease was taken over is refused as
+ * `datastorePath` in team mode, holding no lease (swamp-club#4096): the
+ * backstop for a write no request gate forwarded to the leader
+ * (swamp-club#4120). A node whose lease was taken over is refused as
  * fenced by the writer's own check. Does nothing outside team mode.
  *
  * @throws ServeNotLeaderError
@@ -775,6 +776,28 @@ export async function holdV3Writer(
   }
   return role;
 }
+
+/**
+ * Watches serve's commit feed for every v3 datastore this process reads
+ * through serve (a serve-mode checkout), while a long-running command runs
+ * (swamp-club#4120): what other callers commit reaches the copy within about
+ * a second. Does nothing for a datastore not read through serve, so serve
+ * itself never watches. The watches stop when the datastores close
+ * ({@link closeV3Datastores}), before anything else closes.
+ */
+export function watchV3ServeFeeds(): void {
+  for (const handle of [...opened.values()]) {
+    const binding = serveUpstreamAt(handle.datastorePath);
+    if (binding === undefined) continue;
+    feedWatches.push(watchServeFeed({
+      target: binding.target,
+      catchUp: () => handle.catchUp(),
+    }));
+  }
+}
+
+/** {@link watchV3ServeFeeds}'s watches, stopped at close. */
+const feedWatches: ServeFeedWatch[] = [];
 
 /**
  * Brings every handle this process opened on the v3 datastore at
@@ -1855,6 +1878,7 @@ async function recoverDroppedWork(
 export async function closeV3Datastores(
   options: { readonly storageUnreachable?: boolean } = {},
 ): Promise<void> {
+  await Promise.all(feedWatches.splice(0).map((watch) => watch.stop()));
   let unreachable = options.storageUnreachable === true;
   const pending = releases.splice(0);
   markedCheckouts.clear();
@@ -2038,6 +2062,13 @@ async function syncAndPublishNow(
     datastore,
     Math.max(publishedMarks.get(datastore) ?? 0, mark.cursor),
   );
+  for (const listener of [...(publishListeners.get(datastore) ?? [])]) {
+    try {
+      listener();
+    } catch {
+      // A listener's failure is its own.
+    }
+  }
   // The lease check passed: the heads below this writer's are never read
   // again (swamp-club#3803).
   await pruneV3Heads(copy, use.lineageFence, writerFence);
@@ -2238,6 +2269,66 @@ async function syncForRequests(
  * previous lineage stays the current state, which holds the same commits.
  */
 const publishedMarks = new Map<string, number>();
+
+/** Called when a datastore's published mark moves, by datastore. */
+const publishListeners = new Map<string, Set<() => void>>();
+
+/**
+ * What serve's commit feed reads (swamp-club#4120): the datastore, how far
+ * the feed may go, and a signal when that moved.
+ */
+export interface V3CommitFeedSource {
+  readonly datastore: V3Datastore;
+  /**
+   * The last cursor the feed may send. A replicating datastore's writer
+   * sends only what it published: a commit not yet replicated could be lost
+   * to a failover, and a follower or checkout that applied it would then
+   * hold a commit the next leader never had. Otherwise everything the copy
+   * holds.
+   */
+  bound(): number;
+  /**
+   * Calls `listener` when the copy's rows or the published mark moved.
+   * Returns the call that removes it.
+   */
+  onMoved(listener: (replaced: boolean) => void): () => void;
+}
+
+/** The commit feed's view of the v3 datastore `config` names. */
+export function v3CommitFeedSource(
+  repoDir: string,
+  config: V3DatastoreConfig,
+): V3CommitFeedSource {
+  const datastore = v3DatastoreFor(repoDir, config);
+  const key = resolve(config.path);
+  return {
+    datastore,
+    bound() {
+      const head = datastore.commitStore.highWaterMark().cursor;
+      if (
+        !v3ReplicatesAt(config.path) ||
+        !holdsCurrentV3WriterLease(config.path)
+      ) {
+        return head;
+      }
+      return Math.min(head, publishedMarks.get(key) ?? 0);
+    },
+    onMoved(listener) {
+      const offHead = datastore.commitStore.onHeadMoved(listener);
+      let listeners = publishListeners.get(key);
+      if (listeners === undefined) {
+        listeners = new Set();
+        publishListeners.set(key, listeners);
+      }
+      const published = () => listener(false);
+      listeners.add(published);
+      return () => {
+        offHead();
+        publishListeners.get(key)?.delete(published);
+      };
+    },
+  };
+}
 
 /** How often serve checks that its Litestream sidecar still answers. */
 export const SERVE_REPLICATION_PROBE_INTERVAL_MS = 30_000;

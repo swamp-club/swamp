@@ -99,6 +99,8 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   oauthClientName: "SWAMP_OAUTH_CLIENT_NAME",
   grantsFile: "SWAMP_GRANTS_FILE",
   address: "SWAMP_SERVE_ADDRESS",
+  advertiseAddress: "SWAMP_SERVE_ADVERTISE_ADDRESS",
+  caCert: "SWAMP_CA_CERT",
   grantsDir: "SWAMP_GRANTS_DIR",
   wsIdleTimeout: "SWAMP_WS_IDLE_TIMEOUT",
   queueTimeout: "SWAMP_QUEUE_TIMEOUT",
@@ -174,6 +176,8 @@ export interface ServeConfigFile {
   tls?: {
     "cert-file"?: string;
     "key-file"?: string;
+    /** CA certificates this node trusts when it calls its team's leader. */
+    "ca-cert"?: string;
   };
   webhooks?: WebhookConfigEntry[];
   triggers?: Record<string, TriggerOverrideEntry>;
@@ -186,6 +190,8 @@ export interface ServeConfigFile {
   "grants-file"?: string;
   /** The address clients put in serverAddress (swamp-club#4063). */
   address?: string;
+  /** This node's own address, as its team's other nodes reach it. */
+  "advertise-address"?: string;
   "grants-dir"?: string;
   "grant-reload"?: string;
   "ws-idle-timeout"?: string;
@@ -316,6 +322,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "grants-dir",
   "grant-reload",
   "address",
+  "advertise-address",
   "ws-idle-timeout",
   "queue-timeout",
   "verify-on-enroll",
@@ -364,6 +371,7 @@ const KNOWN_AUTH_KEYS = new Set([
 const KNOWN_TLS_KEYS = new Set([
   "cert-file",
   "key-file",
+  "ca-cert",
 ]);
 
 // ── Config Loading ────────────────────────────────────────────────────
@@ -593,6 +601,7 @@ function validateConfigValues(
   const stringFields: [string, unknown][] = [
     ["grants-file", raw["grants-file"]],
     ["address", raw["address"]],
+    ["advertise-address", raw["advertise-address"]],
     ["grants-dir", raw["grants-dir"]],
     ["grant-reload", raw["grant-reload"]],
     ["ws-idle-timeout", raw["ws-idle-timeout"]],
@@ -683,6 +692,7 @@ function validateConfigValues(
     const tlsStringFields: [string, unknown][] = [
       ["tls.cert-file", tlsObj["cert-file"]],
       ["tls.key-file", tlsObj["key-file"]],
+      ["tls.ca-cert", tlsObj["ca-cert"]],
     ];
     for (const [name, value] of tlsStringFields) {
       if (value !== undefined && typeof value !== "string") {
@@ -1010,11 +1020,15 @@ export interface MergedServeOptions {
   schedule: boolean;
   certFile?: string;
   keyFile?: string;
+  /** CA certificates this node trusts when it calls its team's leader. */
+  caCert?: string;
   grantsFile?: string;
   grantsDir?: string;
   grantReload: string;
   /** The address clients put in serverAddress (swamp-club#4063). */
   address?: string;
+  /** This node's own address, as its team's other nodes reach it. */
+  advertiseAddress?: string;
   webhook?: string[];
   webhookConfigs?: WebhookConfigEntry[];
   authMode: string;
@@ -1095,6 +1109,9 @@ export function resolveServeTlsPaths(
     keyFile: merged.keyFile
       ? resolveServePath(repoDir, merged.keyFile)
       : merged.keyFile,
+    caCert: merged.caCert
+      ? resolveServePath(repoDir, merged.caCert)
+      : merged.caCert,
   };
 }
 
@@ -1231,6 +1248,13 @@ export function mergeServeOptions(
     undefined,
   );
 
+  const caCert = resolveString(
+    "ca-cert",
+    cliOptions.caCert as string | undefined,
+    config?.tls?.["ca-cert"],
+    undefined,
+  );
+
   const grantsFile = resolveString(
     "grants-file",
     cliOptions.grantsFile as string | undefined,
@@ -1242,6 +1266,13 @@ export function mergeServeOptions(
     "address",
     cliOptions.address as string | undefined,
     config?.address,
+    undefined,
+  );
+
+  const advertiseAddress = resolveString(
+    "advertise-address",
+    cliOptions.advertiseAddress as string | undefined,
+    config?.["advertise-address"],
     undefined,
   );
 
@@ -1570,6 +1601,8 @@ export function mergeServeOptions(
     grantsDir,
     grantReload,
     ...(address !== undefined ? { address } : {}),
+    ...(advertiseAddress !== undefined ? { advertiseAddress } : {}),
+    ...(caCert ? { caCert } : {}),
     webhook,
     webhookConfigs,
     authMode,

@@ -17,8 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import { UserError } from "../errors.ts";
 import {
+  normalizeAdvertiseAddress,
   parseServeLeader,
   serializeServeLeader,
   SERVE_NOT_LEADER_CODE,
@@ -73,4 +75,45 @@ Deno.test("ServeNotLeaderError: says the leader is not known when none is named"
     new ServeNotLeaderError(undefined, true).message,
     "its copy is behind",
   );
+});
+
+Deno.test("normalizeAdvertiseAddress: an http(s) origin, loopback included", () => {
+  assertEquals(
+    normalizeAdvertiseAddress("https://node-1.internal:9090/"),
+    "https://node-1.internal:9090",
+  );
+  assertEquals(
+    normalizeAdvertiseAddress("http://127.0.0.1:9091"),
+    "http://127.0.0.1:9091",
+  );
+  assertEquals(
+    normalizeAdvertiseAddress("http://[fd00::1]:9090"),
+    "http://[fd00::1]:9090",
+  );
+});
+
+Deno.test("normalizeAdvertiseAddress: refuses what names no node or carries more than an origin", () => {
+  for (
+    const address of [
+      "node-1:9090",
+      "ws://node-1:9090",
+      "https://user:pw@node-1:9090",
+      "https://node-1:9090/serve",
+      "https://node-1:9090?x=1",
+      "http://0.0.0.0:9090",
+      "http://[::]:9090",
+      "not a url",
+    ]
+  ) {
+    assertThrows(() => normalizeAdvertiseAddress(address), UserError);
+  }
+});
+
+Deno.test("ServeNotLeaderError: an in-flight refusal says the request may have run, not that nothing changed", () => {
+  const error = new ServeNotLeaderError(undefined, false, true);
+  assertEquals(error.code, SERVE_NOT_LEADER_CODE);
+  assertEquals(error.inFlight, true);
+  assertEquals(error.message.includes("Nothing was changed"), false);
+  assertEquals(error.message.includes("may already have run"), true);
+  assertEquals(new ServeNotLeaderError(undefined).inFlight, false);
 });

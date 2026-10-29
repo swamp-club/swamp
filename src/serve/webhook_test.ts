@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { LeaderLink } from "./leader_link.ts";
 import {
   currentVaultAccess,
   RunVaultAccess,
@@ -723,6 +724,7 @@ function registerExtension(
 function extensionService(
   scheme: ExtensionWebhookScheme,
   acceptsRuns?: () => boolean,
+  leaderLink?: LeaderLink,
 ): {
   service: WebhookService;
   pendingRuns: unknown[];
@@ -730,6 +732,7 @@ function extensionService(
   const pendingRuns: unknown[] = [];
   const service = new WebhookService({
     ...(acceptsRuns !== undefined ? { acceptsRuns } : {}),
+    ...(leaderLink !== undefined ? { leaderLink } : {}),
     repoDir: "/tmp/fake",
     syncGate: undefined,
     repoContext: {} as unknown as RepositoryContext,
@@ -820,6 +823,72 @@ Deno.test("handleRequest: a follower in team mode answers a verified delivery wi
   assertEquals(res?.headers.get("retry-after"), "5");
   assertEquals((await res!.json()).code, "serve_not_leader");
   assertEquals(pendingRuns.length, 0);
+  await service.stop();
+});
+
+/** A route to a leader that records what it is sent. */
+function recordingLink(
+  sent: { url: string; body: string; token: string | null }[],
+): LeaderLink {
+  return new LeaderLink({
+    leader: () => ({
+      instanceId: "leader-1",
+      fence: 2,
+      address: "http://10.0.0.2:9090",
+      since: "2026-10-29T12:00:00.000Z",
+    }),
+    createClient: () => undefined,
+    fetch: async (input, init) => {
+      sent.push({
+        url: String(input),
+        body: await new Response(init?.body).text(),
+        token: new Headers(init?.headers).get(TOKEN_HEADER),
+      });
+      return new Response(JSON.stringify({ queued: true }), { status: 202 });
+    },
+  });
+}
+
+Deno.test("handleRequest: a follower with a route to the leader passes the delivery on as it came, before verifying it or running a hook (swamp-club#4120)", async () => {
+  let transformed = 0;
+  const type = registerExtension({
+    transform: (body) => {
+      transformed++;
+      return body;
+    },
+  });
+  const sent: { url: string; body: string; token: string | null }[] = [];
+  const { service, pendingRuns } = extensionService(
+    type,
+    () => false,
+    recordingLink(sent),
+  );
+  // Unverified here: the leader verifies it, with its own endpoint config.
+  const res = await service.handleRequest(extensionRequest("not-checked-here"));
+  assertEquals(res?.status, 202);
+  assertEquals(await res!.json(), { queued: true });
+  assertEquals(sent, [{
+    url: "http://10.0.0.2:9090/hooks/ext",
+    body: '{"update_id":1}',
+    token: "not-checked-here",
+  }]);
+  assertEquals(transformed, 0);
+  assertEquals(pendingRuns.length, 0);
+  await service.stop();
+});
+
+Deno.test("handleRequest: a leader with a route configured still takes its own deliveries", async () => {
+  const type = registerExtension({});
+  const sent: { url: string; body: string; token: string | null }[] = [];
+  const { service, pendingRuns } = extensionService(
+    type,
+    () => true,
+    recordingLink(sent),
+  );
+  const res = await service.handleRequest(extensionRequest("s3cret"));
+  await res?.body?.cancel();
+  assertEquals(sent, []);
+  assertEquals(pendingRuns.length, 1);
   await service.stop();
 });
 

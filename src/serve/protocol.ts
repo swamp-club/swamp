@@ -237,6 +237,36 @@ export interface AuditExportResponse {
   done?: boolean;
 }
 
+/**
+ * `commits.subscribe`: the v3 commit feed from `cursor` on (swamp-club#4120),
+ * filtered as `GET changes` filters it.
+ */
+export interface CommitsSubscribePayload {
+  /** The feed position to read after, as `GET changes?cursor=` takes it. */
+  cursor: number;
+}
+
+/**
+ * One frame of a `commits.subscribe` stream: the commits the caller may
+ * read after the previous frame's `cursor`, up to this one's. `cursor` moves
+ * past commits the caller may not read; a frame with no changes still says
+ * the feed is live. `head` is the last cursor the feed may send now. The
+ * stream ends with an error frame: `commits_compacted` (load the base from
+ * `point` and subscribe again) or `commits_lagged` (subscribe again from the
+ * last cursor).
+ */
+export interface CommitsSubscribeFrame {
+  changes: { cursor: number; commit: Record<string, unknown> }[];
+  cursor: number;
+  head: number;
+  done: false;
+}
+
+/** `commits.head`: the last cursor the commit feed may send now. */
+export interface CommitsHeadResponse {
+  cursor: number;
+}
+
 export interface AuditSubscribePayload {
   categories?: string[];
   principals?: string[];
@@ -1024,6 +1054,8 @@ export type ServerRequest =
   | { type: "audit.verify"; id: string; payload: AuditVerifyPayload }
   | { type: "audit.subscribe"; id: string; payload?: AuditSubscribePayload }
   | { type: "audit.unsubscribe"; id: string }
+  | { type: "commits.subscribe"; id: string; payload: CommitsSubscribePayload }
+  | { type: "commits.head"; id: string }
   | { type: "audit.export"; id: string; payload: AuditExportPayload }
   | { type: "audit.rotate-key"; id: string }
   | { type: "audit.alerts"; id: string }
@@ -2220,6 +2252,8 @@ export type ServerMessage =
   | { type: "audit.query"; id: string; payload: AuditQueryResponse }
   | { type: "audit.verify"; id: string; payload: AuditVerifyResponse }
   | { type: "audit.subscribe"; id: string; payload: AuditSubscribeResponse }
+  | { type: "commits.subscribe"; id: string; payload: CommitsSubscribeFrame }
+  | { type: "commits.head"; id: string; payload: CommitsHeadResponse }
   | { type: "audit.unsubscribe"; id: string }
   | { type: "audit.event"; id: string; payload: AuditEventPayload }
   | { type: "audit.export"; id: string; payload: AuditExportResponse }

@@ -355,3 +355,19 @@ Deno.test("serveErrorFromReply: anything else is a generic error with its status
   assertEquals([bodiless.status, bodiless.code], [502, "http_502"]);
   assertEquals(bodiless.message, `Serve at ${SERVE_URL} answered HTTP 502`);
 });
+
+Deno.test("serveErrorFromReply: 503 serve_not_leader in flight says the request may have run (swamp-club#4120)", () => {
+  const error = serveErrorFromReply(503, {
+    code: SERVE_NOT_LEADER_CODE,
+    message: "may already have run",
+    inFlight: true,
+  }, SERVE_URL);
+  assertInstanceOf(error, ServeNotLeaderError);
+  assertEquals(error.inFlight, true);
+  assertEquals(error.message.includes("Nothing was changed"), false);
+  const plain = serveErrorFromReply(503, {
+    code: SERVE_NOT_LEADER_CODE,
+  }, SERVE_URL);
+  assertInstanceOf(plain, ServeNotLeaderError);
+  assertEquals(plain.inFlight, false);
+});

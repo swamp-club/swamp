@@ -18,16 +18,17 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 /**
  * Fitness rules for serve's follower in team mode (swamp-club#4096): every
- * request type serve dispatches is either refused on a follower or answered
- * from its copy, so a new request cannot be added without deciding which.
- * Writes are refused; the reads list holds no write.
+ * request type serve dispatches is either forwarded to the leader from a
+ * follower (swamp-club#4120) or answered from its copy, so a new request
+ * cannot be added without deciding which. Writes are forwarded; the reads
+ * list holds no write.
  */
 
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import {
+  FOLLOWER_FORWARDED_REQUESTS,
   FOLLOWER_READ_REQUESTS,
-  FOLLOWER_REFUSED_REQUESTS,
 } from "../src/serve/follower_requests.ts";
 import { CONFIRMED_WRITE_REQUESTS } from "../src/serve/write_confirmation.ts";
 
@@ -49,13 +50,14 @@ async function dispatchedRequests(): Promise<Set<string>> {
   );
 }
 
-Deno.test("follower requests: every dispatched request is refused or read, never both", async () => {
+Deno.test("follower requests: every dispatched request is forwarded or read, never both", async () => {
   const dispatched = await dispatchedRequests();
   assert(dispatched.size > 50, "the dispatch switch was not parsed");
   for (const type of dispatched) {
     assert(
-      FOLLOWER_REFUSED_REQUESTS.has(type) !== FOLLOWER_READ_REQUESTS.has(type),
-      `${type} must be in exactly one of FOLLOWER_REFUSED_REQUESTS and FOLLOWER_READ_REQUESTS`,
+      FOLLOWER_FORWARDED_REQUESTS.has(type) !==
+        FOLLOWER_READ_REQUESTS.has(type),
+      `${type} must be in exactly one of FOLLOWER_FORWARDED_REQUESTS and FOLLOWER_READ_REQUESTS`,
     );
   }
   assertEquals(
@@ -65,13 +67,13 @@ Deno.test("follower requests: every dispatched request is refused or read, never
   );
 });
 
-Deno.test("follower requests: every write that waits for replication is refused", () => {
+Deno.test("follower requests: every write that waits for replication is forwarded", () => {
   for (const type of CONFIRMED_WRITE_REQUESTS) {
-    assert(FOLLOWER_REFUSED_REQUESTS.has(type), type);
+    assert(FOLLOWER_FORWARDED_REQUESTS.has(type), type);
   }
 });
 
-Deno.test("follower requests: the HTTP cancel route refuses on a follower only inside its own route, after authentication", async () => {
+Deno.test("follower requests: the HTTP cancel route forwards on a follower only inside its own route, after authentication", async () => {
   const source = await Deno.readTextFile(
     join(ROOT, "src", "cli", "commands", "serve.ts"),
   );
@@ -81,16 +83,16 @@ Deno.test("follower requests: the HTTP cancel route refuses on a follower only i
   const indent = source.slice(source.lastIndexOf("\n", open) + 1, open);
   const close = source.indexOf(`\n${indent}}\n`, open);
   assert(close > open, "serve's cancel route block has no end");
-  const refusal = source.indexOf("followerHttpRefusal(\n", open);
+  const refusal = source.indexOf("followerHttpForward(\n", open);
   assert(
     refusal > open && refusal < close,
-    "the cancel route's follower refusal must sit inside the route's block: " +
+    "the cancel route's follower forward must sit inside the route's block: " +
       "outside it, every other POST (dashboard sign-in, unknown paths) is " +
-      "refused on a follower, before authentication",
+      "forwarded or refused on a follower, before authentication",
   );
   const authenticated = source.indexOf("authenticateServerToken(", open);
   assert(
     authenticated > open && authenticated < refusal,
-    "the cancel route's follower refusal must come after its authentication",
+    "the cancel route's follower forward must come after its authentication",
   );
 });
