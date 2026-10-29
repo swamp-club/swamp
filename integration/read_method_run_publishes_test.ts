@@ -1490,3 +1490,28 @@ Deno.test("model method run: a mutating run whose lock is refused for its creden
     assertEquals(remoteValue(c, 1), undefined);
   });
 });
+
+Deno.test("model method run: a read whose pull under the publish lock is refused for its credentials succeeds and keeps its data on this host (swamp-club#3934)", async () => {
+  await withClones(async (c) => {
+    hooks = {
+      // Core rewraps a failed pull by its message alone.
+      afterWrite: () => {
+        c.remote.failNext("pull", accessDenied());
+        return Promise.resolve();
+      },
+    };
+    const docs = await jsonResults(() =>
+      runMethod(c.repoA, "observe", "from-a")
+    );
+
+    const result = docs.find((d) => d.methodName === "observe");
+    assertEquals(result?.status, "succeeded");
+    assertStringIncludes(
+      unpublishedOf(result).join(","),
+      "main/1/unauthorized",
+    );
+    assertEquals(remoteValue(c, 1), undefined, "nothing was published");
+    assertEquals(await pendingRecords(c.repoA), 0);
+    assertEquals(c.locks.held.size, 0, "the publish lock was released");
+  });
+});

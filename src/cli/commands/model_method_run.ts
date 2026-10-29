@@ -780,15 +780,17 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                       }
                       return;
                     }
-                    // Credentials that cannot write, such as read-only ones,
-                    // never stopped a read before its data was published
-                    // (swamp-club#3934): the data stays on this host, and
-                    // nothing is recorded for a later lock, which the same
-                    // credentials would be refused again. Only a refusal
-                    // degrades; an unreachable datastore still fails.
+                    // Credentials the datastore refuses, such as read-only
+                    // ones, never stopped a read before its data was
+                    // published (swamp-club#3934), whether the refusal comes
+                    // taking the lock, pulling under it or pushing: the data
+                    // stays on this host, and nothing is recorded for a later
+                    // lock, which the same credentials would be refused
+                    // again. Only a refusal degrades; an unreachable
+                    // datastore still fails.
                     if (isDatastoreAuthorizationError(error)) {
                       publishLogger.warn(
-                        "The datastore refused this host's credentials, so this run's data was not published to it and stays on this host only; a read or list run publishes its data, so it needs credentials that can write: {error}",
+                        "The datastore refused this host's credentials, so this run's data was not published to it and stays on this host only; a read or list run publishes what it writes, so its credentials must be able to read and write the behavior's data on the datastore: {error}",
                         {
                           error: error instanceof Error
                             ? error.message

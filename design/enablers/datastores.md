@@ -8051,9 +8051,10 @@ refreshes its resource does. `methodRunLockMode`
   in `unpublishedVersions` (`dataName`, `version`, and `reason`: `conflict`
   or `unauthorized`); the field is absent when nothing was left.
 - A refusal of the credentials (HTTP 401 or 403, an access-denied code,
-  read by `isDatastoreAuthorizationError`), whether taking the publish lock
-  or pushing, does not fail a read or list run either: read-only
-  credentials never stopped a read before reads published. The CLI warns
+  read by `isDatastoreAuthorizationError`), whether taking the publish
+  lock, pulling under it or pushing, does not fail a read or list run
+  either: read-only credentials never stopped a read before reads
+  published. The CLI warns
   that the data stays on this host only, and records nothing for a later
   lock, which the same credentials would be refused again. Any other
   failure, such as an unreachable datastore, still fails the run, and a
