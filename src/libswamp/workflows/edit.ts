@@ -645,7 +645,26 @@ async function* repairBrokenWorkflow(
       ),
     };
     return;
+  } // The save removes the legacy id-named file when it writes elsewhere.
+  // When that file is not the one being repaired it is another copy of
+  // this workflow, broken (findAllById skips it) or not, and must not go.
+  const legacy = deps.getPath(repaired.id);
+  if (
+    legacy !== file.path && legacy !== target && await deps.fileExists(legacy)
+  ) {
+    yield {
+      kind: "error",
+      error: validationFailed(
+        `Cannot repair the workflow at ${
+          basename(file.path)
+        }: another workflow file (${
+          basename(legacy)
+        }) already has its id ${repaired.id}. Give the repaired workflow a new id, or remove that file first.`,
+      ),
+    };
+    return;
   }
+
   // The save removes a legacy id-named file, but no other: a repair that
   // writes elsewhere would leave the broken file behind as well.
   if (target !== file.path && file.path !== deps.getPath(repaired.id)) {

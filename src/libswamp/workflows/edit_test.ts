@@ -1150,6 +1150,7 @@ Deno.test("workflowEdit: an editor repair of a broken file stored under its name
   const { deps, repaired } = makeEditorSaveDeps({
     ...brokenAt(path),
     getPath: () => `/repo/workflows/workflow-${EDITED_ID}.yaml`,
+    fileExists: (p) => Promise.resolve(p === path),
   });
 
   const events = await collect<WorkflowEditEvent>(
@@ -1291,5 +1292,35 @@ Deno.test("workflowEdit: an editor repair may not take the id of a workflow in a
     { kind: "error" }
   >;
   assertStringIncludes(last.error.message, "workflow 'bar' already has its id");
+  assertEquals(repaired, []);
+});
+
+Deno.test("workflowEdit: an editor repair never removes a second broken file at the id's legacy path", async () => {
+  const path = "/repo/workflows/workflow-deploy.yaml";
+  const legacy = `/repo/workflows/workflow-${EDITED_ID}.yaml`;
+  const { deps, repaired } = makeEditorSaveDeps({
+    ...brokenAt(path),
+    // A stale legacy copy with the same id, also broken: findAllById skips
+    // it, but the save would remove it.
+    getPath: () => legacy,
+    fileExists: (p) => Promise.resolve(p === path || p === legacy),
+  });
+
+  const events = await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: "my-workflow",
+      stdinContent: EDITED_YAML,
+      source: "editor",
+    }),
+  );
+
+  const last = events[events.length - 1] as Extract<
+    WorkflowEditEvent,
+    { kind: "error" }
+  >;
+  assertStringIncludes(
+    last.error.message,
+    `another workflow file (workflow-${EDITED_ID}.yaml) already has its id`,
+  );
   assertEquals(repaired, []);
 });
