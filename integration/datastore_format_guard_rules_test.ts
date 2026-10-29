@@ -183,6 +183,9 @@ const GUARDED_PINNED = [
   // checked repository context.
   "src/infrastructure/datastore_v3/v3_repo_context.ts:refuseUnlessOwner",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:v3ClaimCommitLog",
+  // swamp-club#4096: a serve node that follows reads the claim through the
+  // handle it opened, inside holdV3Writer's hold path, after the same check.
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:followV3Datastore",
   "src/infrastructure/datastore_v3/interrupted_writer_recovery.ts:lockHeldByLiveProcess",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:v3DatastoreFor",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:v3RepositoryFactoryConfig",

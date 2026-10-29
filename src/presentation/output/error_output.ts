@@ -33,6 +33,7 @@ import {
 } from "../../domain/datastore_v3/config_edit_conflict.ts";
 import { takeAuthGateWarning } from "../renderers/auth_gate_warning.ts";
 import { V3_REPLICATION_UNCONFIRMED_CODE } from "../../domain/datastore_v3/litestream_replication.ts";
+import { SERVE_NOT_LEADER_CODE } from "../../domain/datastore_v3/serve_leader.ts";
 import {
   V3_SERVE_UNREACHABLE_CODE,
   V3_STORAGE_UNREACHABLE_CODE,
@@ -184,6 +185,9 @@ export function buildErrorJson(
  *   the write rather than send it to the storage. A commit sent again
  *   carries the same txnId, so serve answers a retry of one that landed as
  *   a duplicate.
+ * - `75` for `serve_not_leader` (swamp-club#4096): the serve node does not
+ *   lead the datastore in team mode, and refused the write before taking
+ *   it, so a retry, at the leader or once one is elected, is safe.
  * - `1` for all other errors, including a missing or revoked credential.
  */
 export function exitCodeForError(error: unknown): number {
@@ -211,6 +215,8 @@ export function exitCodeForError(error: unknown): number {
   // The serve the datastore is written through is unreachable: the write
   // was refused, not sent to the storage (swamp-club#3985).
   if (code === V3_SERVE_UNREACHABLE_CODE) return 75;
+  // A serve node that does not lead refused the write (swamp-club#4096).
+  if (code === SERVE_NOT_LEADER_CODE) return 75;
   return 1;
 }
 

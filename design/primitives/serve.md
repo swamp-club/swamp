@@ -184,11 +184,17 @@ On a v3 filesystem datastore a run survives a crash as well as a restart: it
 checkpoints as it saves its record, so the boot reaper settles it from
 its last checkpoint (swamp-club#3587).
 
+A v3 datastore's serve keeps its control plane in the datastore itself
+(swamp-club#4096): every serve node of the datastore shares it, the node
+holding the writer lease leads and the others follow. A v3 bucket datastore
+classifies as remote with a control plane. See "Team mode: leader election
+and followers" in `design/enablers/datastores.md`.
+
 "Remote control plane" means the datastore extension advertises
 `capabilities().controlPlane` and exposes `controlPlaneStore()`. Otherwise serve
 uses `FileSystemControlPlaneStore` under the repository's `.swamp/_control/`
 (`src/infrastructure/persistence/fs_control_plane_store.ts`), whatever the
-datastore. It keeps the same key layout and `putIfAbsent` (the record is written
+datastore, except a v3 one, whose serve uses the datastore's own. It keeps the same key layout and `putIfAbsent` (the record is written
 in full and hard-linked into place, so a reader never sees half of one) but is
 visible to one machine only. The two wait key families below are the exception:
 they always live with the datastore, never in this fallback.

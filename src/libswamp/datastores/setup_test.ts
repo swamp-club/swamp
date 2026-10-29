@@ -319,6 +319,8 @@ function createStubProvider(
     hasSyncService?: boolean;
     pullResult?: number | (() => Promise<number | void>);
     pushResult?: () => Promise<number | void>;
+    markDirtyResult?: () => Promise<void>;
+    onSyncCall?: (method: string, options?: DatastoreSyncOptions) => void;
   },
 ): DatastoreProvider {
   const healthy = overrides?.healthy ?? true;
@@ -345,7 +347,8 @@ function createStubProvider(
     ...(overrides?.hasSyncService !== false
       ? {
         createSyncService: () => ({
-          pullChanged: () => {
+          pullChanged: (options?: DatastoreSyncOptions) => {
+            overrides?.onSyncCall?.("pullChanged", options);
             if (typeof overrides?.pullResult === "function") {
               return overrides.pullResult();
             }
@@ -354,9 +357,18 @@ function createStubProvider(
             }
             return Promise.resolve();
           },
-          pushChanged: () =>
-            overrides?.pushResult ? overrides.pushResult() : Promise.resolve(),
-          markDirty: () => Promise.resolve(),
+          pushChanged: (options?: DatastoreSyncOptions) => {
+            overrides?.onSyncCall?.("pushChanged", options);
+            return overrides?.pushResult
+              ? overrides.pushResult()
+              : Promise.resolve();
+          },
+          markDirty: (options?: DatastoreSyncOptions) => {
+            overrides?.onSyncCall?.("markDirty", options);
+            return overrides?.markDirtyResult
+              ? overrides.markDirtyResult()
+              : Promise.resolve();
+          },
         }),
       }
       : {}),
@@ -373,6 +385,8 @@ function ensureTestExtensionType(
     hasSyncService?: boolean;
     pullResult?: number | (() => Promise<number | void>);
     pushResult?: () => Promise<number | void>;
+    markDirtyResult?: () => Promise<void>;
+    onSyncCall?: (method: string, options?: DatastoreSyncOptions) => void;
   },
 ): void {
   if (!datastoreTypeRegistry.has(type)) {
@@ -389,6 +403,8 @@ function ensureTestExtensionType(
           hasSyncService: opts?.hasSyncService,
           pullResult: opts?.pullResult,
           pushResult: opts?.pushResult,
+          markDirtyResult: opts?.markDirtyResult,
+          onSyncCall: opts?.onSyncCall,
         }),
     });
   }
@@ -767,6 +783,91 @@ Deno.test("datastoreSetupExtension: push failure blocks config update, preserves
     "string",
     "push failure must surface a retryHint",
   );
+});
+
+Deno.test("datastoreSetupExtension: migration marks the whole cache dirty before the push", async () => {
+  const type = `test-ext-mark-dirty-${crypto.randomUUID()}`;
+  const calls: { method: string; options?: DatastoreSyncOptions }[] = [];
+  ensureTestExtensionType(type, {
+    onSyncCall: (method, options) => calls.push({ method, options }),
+  });
+  const deps = makeDeps();
+
+  await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput({ type, namespace: "my-ns" }),
+    ),
+  );
+
+  // A clean sidecar takes the push fast path, so the copy must be marked
+  // first or none of it is uploaded (swamp-club#4100).
+  assertEquals(calls.map((c) => c.method), [
+    "markDirty",
+    "pushChanged",
+    "pullChanged",
+  ]);
+  assertEquals(calls[0].options?.relPath, undefined);
+});
+
+Deno.test("datastoreSetupExtension: skip-migration never marks the cache dirty", async () => {
+  const type = `test-ext-skip-no-mark-${crypto.randomUUID()}`;
+  const calls: string[] = [];
+  ensureTestExtensionType(type, {
+    onSyncCall: (method) => calls.push(method),
+  });
+  const deps = makeDeps();
+
+  await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput({ type, skipMigration: true }),
+    ),
+  );
+
+  assertEquals(calls, ["pullChanged"]);
+});
+
+Deno.test("datastoreSetupExtension: markDirty failure blocks the push, config update and cleanup", async () => {
+  const type = `test-ext-mark-fail-${crypto.randomUUID()}`;
+  const calls: string[] = [];
+  ensureTestExtensionType(type, {
+    markDirtyResult: () => Promise.reject(new Error("sidecar unwritable")),
+    onSyncCall: (method) => calls.push(method),
+  });
+  let configUpdated = false;
+  let cleanupCalled = false;
+  const deps = makeDeps({
+    updateRepoConfig: () => {
+      configUpdated = true;
+      return Promise.resolve();
+    },
+    cleanupSourceDirs: () => {
+      cleanupCalled = true;
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput({ type }),
+    ),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.errors.length, 1);
+  assertStringIncludes(completed.data.errors[0], "sidecar unwritable");
+  assertEquals(calls, ["markDirty"]);
+  assertEquals(configUpdated, false);
+  assertEquals(cleanupCalled, false);
 });
 
 Deno.test("datastoreSetupExtension: pull failure after successful push surfaces retryHint", async () => {

@@ -106,9 +106,14 @@ export {
   MAX_INBOX_LIST_LIMIT,
 } from "./inbox/list.ts";
 export {
+  createInboxMarkSession,
   createInboxReadDeps,
   type CreateInboxReadDepsOptions,
   INBOX_REFRESH_TIMEOUT_MS,
+  type InboxMarkOutcome,
+  type InboxMarkSession,
+  type InboxMarkSessionOptions,
+  inboxReadById,
   type InboxReadDeps,
   inboxReadNext,
   type InboxReadNextEvent,

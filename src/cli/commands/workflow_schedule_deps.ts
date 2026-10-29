@@ -25,13 +25,12 @@ import {
 import type { LibSwampContext } from "../../libswamp/context.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { UserError } from "../../domain/errors.ts";
-import { FileSystemControlPlaneStore } from "../../infrastructure/persistence/fs_control_plane_store.ts";
-import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { readServeConfigFile } from "../../serve/serve_config.ts";
 import type { OutputMode } from "../../presentation/output/output.ts";
 import type { Logger } from "@logtape/logtape";
 import {
   libSwampContextForRepo,
+  localServeControlPlane,
   requireInitializedRepoReadOnly,
   resolveDatastoreForRepo,
 } from "../repo_context.ts";
@@ -39,21 +38,22 @@ import {
 /**
  * The schedule operations' deps for a command run without `--server`
  * (swamp-club#3522). Pauses go to the control-plane store `swamp serve`
- * keeps for a filesystem datastore (`.swamp/_control`), where a serve on
- * this repository checks them at its next fire. The repository is opened
+ * keeps for a filesystem datastore (`.swamp/_control`), or on a v3 datastore
+ * in the datastore's own (swamp-club#4096), where a serve on this
+ * repository checks them at its next fire. The repository is opened
  * read-only: a running serve holds the writer lease, and a pause is most
  * needed while serve runs.
  *
- * A custom datastore's pauses live in its shared control-plane store, which
- * serve opens bound to its namespace; they are set through serve.
+ * A v2 custom datastore's pauses live in its shared control-plane store,
+ * which serve opens bound to its namespace; they are set through serve.
  */
 export async function localWorkflowScheduleDeps(
   repoDir: string,
   outputMode: OutputMode,
   logger: Logger,
 ): Promise<{ ctx: LibSwampContext; deps: WorkflowScheduleDeps }> {
-  const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
-  if (isCustomDatastoreConfig(datastoreConfig)) {
+  const { datastoreConfig, engine } = await resolveDatastoreForRepo(repoDir);
+  if (isCustomDatastoreConfig(datastoreConfig) && engine !== "v3") {
     throw new UserError(
       `Schedule pauses of a "${datastoreConfig.type}" datastore are kept in its shared control-plane store. ` +
         "Pause and resume through the server instead: add --server <url>, or set SWAMP_SERVE_URL.",
@@ -63,9 +63,8 @@ export async function localWorkflowScheduleDeps(
     await requireInitializedRepoReadOnly({ repoDir, outputMode });
   const deps = createWorkflowScheduleDeps({
     workflowRepo: repoContext.workflowRepo,
-    controlPlaneStore: new FileSystemControlPlaneStore(
-      swampPath(resolvedRepoDir),
-    ),
+    // Serve's on a v3 datastore is the datastore's (swamp-club#4096).
+    controlPlaneStore: await localServeControlPlane(resolvedRepoDir),
     overrideSchedules: async () =>
       overrideSchedulesOf(
         Object.entries(

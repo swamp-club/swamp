@@ -286,6 +286,19 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // commits on their intents, ingests their chunks and commits them through
   // serve's own v3 writer; serve keeps the API's upload ledger.
   "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/upload_ledger.ts",
+  // swamp-club#4096: serve's team mode. Serve leads while it holds the
+  // writer lease, which it reads through the lock; the leader record, the
+  // follower's refusal and its code are the serve_leader domain's.
+  "src/cli/commands/serve.ts -> src/domain/datastore_v3/serve_leader.ts",
+  "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/v3_writer_lock.ts",
+  "src/presentation/output/error_output.ts -> src/domain/datastore_v3/serve_leader.ts",
+  "src/serve/datastore_api.ts -> src/domain/datastore_v3/serve_leader.ts",
+  "src/serve/follower_requests.ts -> src/domain/datastore_v3/serve_leader.ts",
+  "src/serve/handlers/shared.ts -> src/domain/datastore_v3/serve_leader.ts",
+  "src/serve/boot_reconciliation.ts -> src/domain/datastore_v3/serve_leader.ts",
+  "src/serve/serve_leadership.ts -> src/domain/datastore_v3/serve_leader.ts",
+  "src/serve/webhook.ts -> src/domain/datastore_v3/serve_leader.ts",
+  "src/serve/worker_gateway.ts -> src/domain/datastore_v3/serve_leader.ts",
   "src/serve/datastore_api.ts -> src/domain/datastore_v3/blob_ref.ts",
   "src/serve/datastore_api.ts -> src/domain/datastore_v3/chunk_store.ts",
   "src/serve/datastore_api.ts -> src/domain/datastore_v3/commit.ts",
@@ -512,7 +525,7 @@ const PINNED_STORAGE_CALLS: readonly string[] = [
   // swamp-club#3534: setup checks a bucket holds no chunk, and the binding
   // gives a bucket v3 datastore its chunk storage.
   "src/infrastructure/datastore_v3/v3_bucket_setup.ts:131",
-  "src/infrastructure/datastore_v3/v3_datastore_binding.ts:351",
+  "src/infrastructure/datastore_v3/v3_datastore_binding.ts:361",
 ];
 
 Deno.test("datastore v3: no production code calls a provider's storage()", async () => {

@@ -1365,6 +1365,11 @@ export async function* datastoreSetupExtension(
           if (result.filesCopied > 0 || skippedConfigFiles > 0) {
             ctx.logger.debug`Pushing data to remote datastore...`;
             try {
+              // The copy wrote into the cache behind the sync service. A
+              // cache an earlier setup or pull left clean would otherwise
+              // take the push fast path and upload none of it
+              // (swamp-club#4100).
+              await syncService.markDirty();
               await runBoundedSync(
                 input.type,
                 "push",

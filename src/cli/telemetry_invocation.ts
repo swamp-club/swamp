@@ -60,6 +60,9 @@ export const SENT_ARGUMENTS: ReadonlySet<string> = new Set([
   "enabled",
   "extension",
   "grant_id",
+  // `inbox read [message_id]`: an inbox message id, readable only by its
+  // owner.
+  "message_id",
   "method_name",
   "model_id_or_name",
   "model_or_type",

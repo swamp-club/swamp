@@ -242,6 +242,7 @@ export {
   sanitizeErrorForClient,
 } from "./handlers/shared.ts";
 import { redactingFor } from "./handlers/nested_run_redaction.ts";
+import { followerRefusal } from "./follower_requests.ts";
 export type { ConnectionContext } from "./handlers/shared.ts";
 
 const MAX_ACTIVE_REQUESTS = 100;
@@ -1969,6 +1970,22 @@ export function handleMessage(
       activeRequests.delete(request.id);
       return;
     }
+  }
+
+  // A follower takes no write and runs nothing: refused before the handler
+  // runs, so no step's side effect happens first (swamp-club#4096).
+  const notLeader = followerRefusal(request.type, ctx.followerGate);
+  if (notLeader !== undefined) {
+    const leader = notLeader.leader;
+    sendError(
+      socket,
+      request.id,
+      notLeader.code,
+      notLeader.message,
+      leader !== undefined ? { leader } : undefined,
+    );
+    activeRequests.delete(request.id);
+    return;
   }
 
   function auditOpts(

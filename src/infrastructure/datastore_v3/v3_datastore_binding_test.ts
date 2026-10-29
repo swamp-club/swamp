@@ -52,6 +52,7 @@ import {
   v3BucketBindingAt,
   v3BucketNamespacedStore,
   v3ControlPlaneAt,
+  v3NamespacedStore,
   v3ReplicaFor,
   v3ReplicatesAt,
 } from "./v3_datastore_binding.ts";
@@ -280,6 +281,24 @@ Deno.test("v3BucketNamespacedStore: namespaced records live under ns/, never bes
     ]);
     assertEquals(await binding.controlPlane.list("writer/"), []);
     assertEquals(await binding.controlPlane.list("lineage/"), []);
+  });
+});
+
+Deno.test("v3NamespacedStore: a filesystem datastore keeps serve's records under ns/ in its own _control/, never beside the lease (swamp-club#4096)", async () => {
+  await withRepo(async (dir) => {
+    const datastorePath = join(dir, "ds");
+    const store = v3NamespacedStore(v3ControlPlaneAt(datastorePath), "team-a");
+    const solo = v3NamespacedStore(v3ControlPlaneAt(datastorePath), undefined);
+    await store.put("heartbeats/i1", new TextEncoder().encode("x"));
+    await solo.put("heartbeats/i2", new TextEncoder().encode("y"));
+    assertEquals(await store.list("heartbeats/"), ["heartbeats/i1"]);
+    assertEquals(await solo.list("heartbeats/"), ["heartbeats/i2"]);
+    const raw = v3ControlPlaneAt(datastorePath);
+    assertEquals(await raw.list("heartbeats/"), []);
+    assertEquals(
+      (await raw.list("ns/")).sort(),
+      ["ns/_/heartbeats/i2", "ns/team-a/heartbeats/i1"],
+    );
   });
 });
 

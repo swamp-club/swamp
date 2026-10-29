@@ -180,6 +180,14 @@ function sanitizeLine(
   return `${codePoints.slice(0, Math.max(0, maxLength - 1)).join("")}…`;
 }
 
+/**
+ * Whether a cleaned title shows nothing: empty, or only the zero-width
+ * joiners prose keeps, which print as nothing on their own.
+ */
+function isBlankTitle(title: string): boolean {
+  return title.replace(/[\u200c\u200d]/g, "").trim() === "";
+}
+
 /** Sanitized one-line text, refused when nothing is left. */
 function lineText(maxLength: number, invisible: RegExp = INVISIBLE_RE) {
   return z.string()
@@ -318,7 +326,11 @@ function parseAction(raw: unknown): InboxAction | undefined {
 const messageSchema = z.object({
   id: ulid,
   kind: lineText(MAX_INBOX_KIND_LENGTH),
-  title: lineText(MAX_INBOX_TITLE_LENGTH, PROSE_INVISIBLE_RE),
+  // Not refused when empty: the message then takes its kind as its title,
+  // as Swamp Club does, so a message the summary counts is still shown.
+  title: z.string().transform((s) =>
+    sanitizeLine(s, MAX_INBOX_TITLE_LENGTH, PROSE_INVISIBLE_RE)
+  ),
   body,
   createdAt: isoDatetime,
   link: z.unknown().optional(),
@@ -339,7 +351,7 @@ const messageSchema = z.object({
   return {
     id: m.id,
     kind: m.kind,
-    title: m.title,
+    title: isBlankTitle(m.title) ? m.kind : m.title,
     body: m.body,
     createdAt: m.createdAt,
     ...(link !== undefined ? { link } : {}),

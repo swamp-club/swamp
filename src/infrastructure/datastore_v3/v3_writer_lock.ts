@@ -455,6 +455,18 @@ export async function tryAcquireV3WriterLock(
   };
 }
 
+/**
+ * Whether this process holds the writer lease of the datastore at
+ * `datastorePath` and has not found it lost: serve's leader in team mode
+ * (swamp-club#4096). A hold another writer took over, which serve's renewal
+ * may take back, is not current.
+ */
+export function holdsCurrentV3WriterLease(datastorePath: string): boolean {
+  const entry = held.get(resolve(datastorePath));
+  return entry !== undefined && entry.refs > 0 && entry.hold !== undefined &&
+    entry.hold.lost === undefined;
+}
+
 /** Whether this process holds the writer lease of the datastore at `datastorePath`. */
 export function holdsV3WriterLock(datastorePath: string): boolean {
   const entry = held.get(resolve(datastorePath));

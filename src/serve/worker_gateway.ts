@@ -85,6 +85,7 @@ import {
 import { isUnreadableContentError } from "../domain/datastore/unreadable_content.ts";
 import { TransitionTail } from "./transition_tail.ts";
 import { parseUntrustedOrThrow } from "../domain/untrusted_parse.ts";
+import { SERVE_NOT_LEADER_CODE } from "../domain/datastore_v3/serve_leader.ts";
 
 const logger = getSwampLogger(["serve", "worker-gateway"]);
 
@@ -268,6 +269,13 @@ export class WorkerNotDispatchableError extends Error {
 }
 
 export interface WorkerGatewayOptions {
+  /**
+   * Whether this serve node takes workers: false on a follower in team mode
+   * (swamp-club#4096). A worker refused here retries, as for any coded
+   * rejection outside `PERMANENT_ENROLLMENT_ERROR_CODES`, and reaches
+   * the leader or this node once it leads. Absent, every node takes them.
+   */
+  acceptsWorkers?: () => boolean;
   repoDir: string;
   repoContext: RepositoryContext;
   /** Registers the capability verb handlers on an enrolled channel. */
@@ -801,6 +809,16 @@ export class WorkerGateway {
       });
     }
     const { name, secret } = split;
+
+    // Before the token is redeemed, so a refused worker spends no
+    // enrollment. The reply names no leader: the token is not checked yet.
+    if (this.#options.acceptsWorkers?.() === false) {
+      throw new RpcError({
+        code: SERVE_NOT_LEADER_CODE,
+        message:
+          "This serve node does not lead the datastore, so it takes no workers; the worker retries",
+      });
+    }
 
     // Only a worker that asks gets the pass, which carries the serve key
     // holder's proof payload. Read once, so the refusal below and the reply

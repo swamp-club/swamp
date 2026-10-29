@@ -199,13 +199,23 @@ export function v3BucketNamespacedStore(
   binding: V3BucketBinding,
   namespace: string | undefined,
 ): WritableDatastoreControlPlaneStore {
+  return v3NamespacedStore(binding.controlPlane, namespace);
+}
+
+/**
+ * The namespaced records of a v3 datastore whose datastore-wide control
+ * plane is `store`: under `ns/<namespace>/` (`ns/_/` solo), on a bucket and
+ * on a filesystem datastore alike. Serve's own control plane lives there in
+ * team mode (swamp-club#4096), so every serve node of the datastore sees it.
+ */
+export function v3NamespacedStore(
+  store: WritableDatastoreControlPlaneStore,
+  namespace: string | undefined,
+): WritableDatastoreControlPlaneStore {
   const segment = namespace === undefined || namespace === ""
     ? V3_BUCKET_SOLO_SEGMENT
     : namespace;
-  return prefixedStore(
-    binding.controlPlane,
-    `${V3_BUCKET_NAMESPACED_PREFIX}/${segment}/`,
-  );
+  return prefixedStore(store, `${V3_BUCKET_NAMESPACED_PREFIX}/${segment}/`);
 }
 
 function prefixedStore(

@@ -517,7 +517,9 @@ async function reconcileOnce(
     externalGrantsFile?: string;
     externalGrantsDir?: string;
     store: FileGrantStore;
-    commitReconcile?: (reconcile: () => Promise<void>) => Promise<void>;
+    commitReconcile?: (
+      reconcile: () => Promise<void>,
+    ) => Promise<void | "deferred">;
   },
   change: () => Promise<void>,
   until?: () => boolean,
@@ -1024,5 +1026,54 @@ Deno.test("GrantsDirectoryPoller: without a resolver a username file is held bac
       await poller.stop();
     }
     assertEquals(written, []);
+  });
+});
+
+Deno.test("GrantsDirectoryPoller: a deferred reconcile applies nothing and is tried again at the next poll (swamp-club#4096)", async () => {
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    await ensureDir(grantsDir);
+    const store = createMockFileGrantStore();
+    let leads = false;
+    let deferred = 0;
+    await reconcileOnce(
+      {
+        grantsDir,
+        store,
+        commitReconcile: async (reconcile) => {
+          if (!leads) {
+            deferred++;
+            // The node takes the lead after a few deferred polls.
+            if (deferred >= 3) leads = true;
+            return "deferred";
+          }
+          await reconcile();
+        },
+      },
+      () => Deno.writeTextFile(join(grantsDir, "team.yaml"), VALID_GRANT_YAML),
+      () => store.writeCalls > 0,
+    );
+    assertEquals(deferred >= 3, true, `deferred ${deferred} time(s)`);
+    assertEquals(store.writeCalls > 0, true);
+  });
+});
+
+Deno.test("GrantsDirectoryPoller: reconcileNow applies the sources as they are now, though no poll saw a change (swamp-club#4096)", async () => {
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    await ensureDir(grantsDir);
+    await Deno.writeTextFile(join(grantsDir, "team.yaml"), VALID_GRANT_YAML);
+    const store = createMockFileGrantStore();
+    const mock = createMockLoader();
+    // Never started: a node in manual reload mode that takes the lead.
+    const poller = new GrantsDirectoryPoller({
+      grantsDir,
+      fileGrantStore: store,
+      policySnapshotLoader: mock.loader,
+      pollIntervalMs: 3_600_000,
+    });
+    await poller.reconcileNow();
+    assertEquals(store.writeCalls > 0, true);
+    assertEquals(mock.loadCalls, 1);
   });
 });

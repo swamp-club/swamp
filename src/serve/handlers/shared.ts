@@ -43,6 +43,7 @@ import {
   V3_WRITER_BUSY_CODE,
   WRITER_FENCED_CODE,
 } from "../../domain/datastore_v3/writer_lease.ts";
+import { SERVE_NOT_LEADER_CODE } from "../../domain/datastore_v3/serve_leader.ts";
 import {
   COMMIT_PARTLY_COMMITTED_CODE,
   COMMIT_UNREACHABLE_CODE,
@@ -112,6 +113,7 @@ import type { AuditWal } from "../../domain/serve_audit/audit_wal.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { SyncGate } from "../sync_gate.ts";
 import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
+import type { FollowerGate } from "../follower_requests.ts";
 
 const pushLogger = getSwampLogger(["serve", "sync"]);
 const streamLogger = getSwampLogger(["serve", "stream"]);
@@ -358,6 +360,12 @@ export const DEFAULT_QUERY_LIMIT = 1000;
 export interface ConnectionContext {
   repoDir: string;
   repoContext: RepositoryContext;
+  /**
+   * Serve's role in team mode on a v3 datastore (swamp-club#4096): a
+   * follower refuses writes, and reads once its copy is too old. Absent
+   * outside team mode.
+   */
+  followerGate?: FollowerGate;
   /**
    * Serializes `run.gc` and `data.gc` with serve's retention pass
    * (swamp-club#3473). Absent in contexts built without the retention timer.
@@ -2569,9 +2577,10 @@ export function withCommittedUnknownSteps(
  * The error reply for a write whose commit or replication failed: the
  * CLI's codes for an unconfirmed sync, a fenced lease, a commit that could
  * not reach the storage, a writer cut off from the storage before it wrote
- * and a writer lease another process holds, `config_edit_conflict` with
- * who changed what for a managed-config edit another writer's change
- * refused (swamp-club#4097), otherwise `fallbackCode`.
+ * a writer lease another process holds and a serve node that does not lead
+ * (swamp-club#4096), `config_edit_conflict` with who changed what for a
+ * managed-config edit another writer's change refused (swamp-club#4097),
+ * otherwise `fallbackCode`.
  */
 export function replicationErrorForClient(
   error: unknown,
@@ -2593,7 +2602,8 @@ export function replicationErrorForClient(
       error.code === COMMIT_PARTLY_COMMITTED_CODE ||
       error.code === RUN_PARTLY_COMMITTED_CODE ||
       error.code === V3_STORAGE_UNREACHABLE_CODE ||
-      error.code === V3_WRITER_BUSY_CODE)
+      error.code === V3_WRITER_BUSY_CODE ||
+      error.code === SERVE_NOT_LEADER_CODE)
   ) {
     return { code: error.code, message };
   }

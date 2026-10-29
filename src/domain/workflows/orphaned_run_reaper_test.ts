@@ -381,6 +381,56 @@ Deno.test("reapOrphanedWorkflowRuns: skips foreign run when heartbeat lookup rep
   assertEquals(saved.length, 0);
 });
 
+Deno.test("reapOrphanedWorkflowRuns: in team mode, a running row an earlier instance left is judged by that instance (swamp-club#3962)", async () => {
+  // A quick restart of the same checkout: the row was reopened as running
+  // under the old instance id, which the record carries too.
+  const run = makeRun({ pid: 42, instanceId: "old-instance" });
+  const trackerOld = () => ({ status: "running", instanceId: "old-instance" });
+  const onlyLeaderAlive = (id: string) => Promise.resolve(id === "new-leader");
+  const result = await reapOrphanedWorkflowRuns(
+    [{ run, workflowId: WORKFLOW_ID }],
+    () => Promise.resolve(),
+    trackerOld,
+    unexpectedPidCheck,
+    "new-leader",
+    onlyLeaderAlive,
+    { judgeForeignRows: true },
+  );
+  assertEquals(result.reaped, 1);
+  assertEquals(run.status, "interrupted");
+});
+
+Deno.test("reapOrphanedWorkflowRuns: outside team mode, that row is trusted as before", async () => {
+  const run = makeRun({ pid: 42, instanceId: "old-instance" });
+  const trackerOld = () => ({ status: "running", instanceId: "old-instance" });
+  const result = await reapOrphanedWorkflowRuns(
+    [{ run, workflowId: WORKFLOW_ID }],
+    () => Promise.resolve(),
+    trackerOld,
+    unexpectedPidCheck,
+    "new-leader",
+    () => Promise.resolve(false),
+  );
+  assertEquals(result.skipped, 1);
+  assertEquals(run.status, "running");
+});
+
+Deno.test("reapOrphanedWorkflowRuns: in team mode, a run with no instance id keeps its pid check", async () => {
+  // A run a CLI command started carries no serve instance id.
+  const run = makeRun({ pid: 4242 });
+  const result = await reapOrphanedWorkflowRuns(
+    [{ run, workflowId: WORKFLOW_ID }],
+    () => Promise.resolve(),
+    noTracker,
+    (pid) => pid !== 4242,
+    "new-leader",
+    () => Promise.resolve(false),
+    { judgeForeignRows: true },
+  );
+  assertEquals(result.skipped, 1);
+  assertEquals(run.status, "running");
+});
+
 Deno.test("reapOrphanedWorkflowRuns: skips foreign run when no heartbeat lookup provided", async () => {
   const run = makeRun({ pid: 42, instanceId: "remote-1" });
   const saved: string[] = [];

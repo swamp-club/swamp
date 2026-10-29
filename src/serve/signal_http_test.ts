@@ -483,3 +483,37 @@ Deno.test("handleSignalHttpRequest: an Idempotency-Key header in another form is
     assertStringIncludes(await response.text(), "Idempotency-Key");
   }
 });
+
+Deno.test("handleSignalHttpRequest: a follower in team mode refuses an authenticated signal with a retryable 503, and nothing unauthenticated (swamp-club#4096)", async () => {
+  resetRateLimitState();
+  const leader = {
+    instanceId: "lead",
+    fence: 2,
+    since: "2026-10-28T12:00:00.000Z",
+  };
+  const follower = deps();
+  follower.ctx.followerGate = {
+    role: "follower",
+    leader: () => leader,
+    isStale: () => false,
+  };
+  const refused = await handleSignalHttpRequest(
+    request({ token: "good.secret" }),
+    { waitId: WAIT_ID },
+    "203.0.113.4",
+    follower,
+  );
+  assertEquals(refused.status, 503);
+  assertEquals(refused.headers.get("retry-after"), "5");
+  const body = await refused.json();
+  assertEquals(body.code, "serve_not_leader");
+  assertEquals(body.leader, leader);
+  const anonymous = await handleSignalHttpRequest(
+    request(),
+    { waitId: WAIT_ID },
+    "203.0.113.5",
+    follower,
+  );
+  assertEquals(anonymous.status, 401);
+  await anonymous.body?.cancel();
+});
