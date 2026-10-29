@@ -40,6 +40,7 @@ import {
   ServeNotLeaderError,
 } from "../domain/datastore_v3/serve_leader.ts";
 import { endOnAbort } from "./stream_abort.ts";
+import { TEAM_PEER_HEADER } from "./peer_auth.ts";
 
 const logger = getSwampLogger(["serve", "leader-link"]);
 
@@ -113,6 +114,12 @@ export interface LeaderLinkOptions {
   ) => Deno.HttpClient | undefined;
   /** Replaced in tests. */
   readonly fetch?: typeof fetch;
+  /**
+   * The team's peer token, sent in {@link TEAM_PEER_HEADER} with every
+   * forward so the leader keys it on the caller's address
+   * (swamp-club#4148); undefined while this node holds no usable key.
+   */
+  readonly peerToken?: () => string | undefined;
 }
 
 /** Options for one forwarded HTTP request. */
@@ -187,6 +194,8 @@ export class LeaderLink {
       options.clientIp,
       this.#options.trustProxy ?? false,
     );
+    const peer = this.#options.peerToken?.();
+    if (peer !== undefined) headers.set(TEAM_PEER_HEADER, peer);
     const hasBody = req.method !== "GET" && req.method !== "HEAD";
     const signal = AbortSignal.any([this.#closed.signal, req.signal]);
     const client = this.client(address);
@@ -247,8 +256,11 @@ export class LeaderLink {
     const url = leaderTarget(address, parsed.pathname, parsed.search);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     const client = this.client(address);
+    const peer = this.#options.peerToken?.();
     const socket = new WebSocket(url, {
-      headers,
+      headers: peer === undefined
+        ? headers
+        : { ...headers as Record<string, string>, [TEAM_PEER_HEADER]: peer },
       ...(client !== undefined ? { client } : {}),
     } as unknown as string[]);
     return { socket, leader };
@@ -315,6 +327,8 @@ export function forwardedHeaders(
 ): Headers {
   const headers = new Headers(incoming);
   for (const name of HOP_HEADERS) headers.delete(name);
+  // Only this node says it is a team peer, never a caller.
+  headers.delete(TEAM_PEER_HEADER);
   if (!trustProxy) headers.delete("x-forwarded-for");
   if (clientIp !== undefined && clientIp !== "") {
     const prior = headers.get("x-forwarded-for");

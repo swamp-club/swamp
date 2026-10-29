@@ -21,8 +21,12 @@ import { assert, assertEquals, assertRejects } from "@std/assert";
 import type { VaultProvider } from "../domain/vaults/vault_provider.ts";
 import {
   isPeerToken,
+  PEER_KEY_CACHE_MS,
   PEER_KEY_SECRET,
+  PEER_KEY_STALE_MS,
   PEER_TOKEN_PREFIX,
+  requestClientAddress,
+  TEAM_PEER_HEADER,
   TeamPeerKey,
 } from "./peer_auth.ts";
 
@@ -134,5 +138,66 @@ Deno.test("TeamPeerKey: a value that is not a key is refused, not overwritten", 
   assertEquals(
     await new TeamPeerKey(vault).token(),
     `${PEER_TOKEN_PREFIX}${"b".repeat(64)}`,
+  );
+});
+
+Deno.test("TeamPeerKey.verifyCached: checks a forwarding header against the key last read, without a vault read (swamp-club#4148)", async () => {
+  const vault = memoryVault();
+  const key = new TeamPeerKey(vault);
+  assert(!key.verifyCached(`${PEER_TOKEN_PREFIX}${"c".repeat(64)}`));
+  assertEquals(key.cachedToken(), undefined);
+  const token = await key.token();
+  vault.failReads = true;
+  assert(key.verifyCached(token));
+  assertEquals(key.cachedToken(), token);
+  assert(!key.verifyCached(`${PEER_TOKEN_PREFIX}${"c".repeat(64)}`));
+  assert(!key.verifyCached(token.slice(PEER_TOKEN_PREFIX.length)));
+});
+
+Deno.test("TeamPeerKey: a cached key outlives failing vault reads only for a bounded time (swamp-club#4148)", async () => {
+  let now = 0;
+  const vault = memoryVault();
+  const key = new TeamPeerKey(vault, () => now);
+  const token = await key.token();
+  vault.failReads = true;
+  now = PEER_KEY_CACHE_MS + PEER_KEY_STALE_MS - 1;
+  assert(await key.verify(token));
+  assert(key.verifyCached(token));
+  now = PEER_KEY_CACHE_MS + PEER_KEY_STALE_MS + 1;
+  assert(!await key.verify(token));
+  assert(!key.verifyCached(token));
+  assertEquals(key.cachedToken(), undefined);
+});
+
+Deno.test("requestClientAddress: the socket peer, the first entry behind a trusted proxy, the follower's entry for a verified team forward", () => {
+  const headers = (extra: Record<string, string> = {}) =>
+    new Headers({ "x-forwarded-for": "198.51.100.9, 10.0.0.5", ...extra });
+  const verify = (header: string) => header === "swamp-peer.good";
+  assertEquals(
+    requestClientAddress(headers(), "10.0.0.2", false, verify),
+    "10.0.0.2",
+  );
+  assertEquals(
+    requestClientAddress(headers(), "10.0.0.2", true, verify),
+    "198.51.100.9",
+  );
+  assertEquals(
+    requestClientAddress(
+      headers({ [TEAM_PEER_HEADER]: "swamp-peer.good" }),
+      "10.0.0.2",
+      false,
+      verify,
+    ),
+    "10.0.0.5",
+  );
+  // A forged header is ignored: the request is keyed on its socket peer.
+  assertEquals(
+    requestClientAddress(
+      headers({ [TEAM_PEER_HEADER]: "swamp-peer.forged" }),
+      "10.0.0.2",
+      false,
+      verify,
+    ),
+    "10.0.0.2",
   );
 });

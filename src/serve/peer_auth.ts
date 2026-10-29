@@ -131,7 +131,30 @@ export class TeamPeerKey {
     );
   }
 
-  /** The key, from the cache while it is recent; undefined when unread. */
+  /**
+   * Whether `header`, a follower's forwarding header, carries the team's
+   * key, checked against the key this node last read, without reading the
+   * vault (swamp-club#4148): the request path keys its limits on it. A node
+   * that holds no usable key trusts no header.
+   */
+  verifyCached(header: string): boolean {
+    const key = this.#usableCached();
+    if (key === undefined || !isPeerToken(header)) return false;
+    return timingSafeEqual(header.slice(PEER_TOKEN_PREFIX.length), key);
+  }
+
+  /** The peer token from the key this node last read, if still usable. */
+  cachedToken(): string | undefined {
+    const key = this.#usableCached();
+    return key === undefined ? undefined : `${PEER_TOKEN_PREFIX}${key}`;
+  }
+
+  /**
+   * The key, from the cache while it is recent; undefined when unread. A
+   * cached key outlives a failed read by at most {@link PEER_KEY_STALE_MS}
+   * (swamp-club#4148), so a key deleted while the vault is failing stops
+   * verifying.
+   */
   async #known(): Promise<string | undefined> {
     const cached = this.#cached;
     if (cached !== undefined && this.#now() - cached.at < PEER_KEY_CACHE_MS) {
@@ -140,8 +163,16 @@ export class TeamPeerKey {
     try {
       return await this.#read();
     } catch {
-      return cached?.key;
+      return this.#usableCached();
     }
+  }
+
+  #usableCached(): string | undefined {
+    const cached = this.#cached;
+    if (cached === undefined) return undefined;
+    return this.#now() - cached.at < PEER_KEY_CACHE_MS + PEER_KEY_STALE_MS
+      ? cached.key
+      : undefined;
   }
 
   /**
@@ -168,6 +199,16 @@ export class TeamPeerKey {
 
 /** How long a read peer key is used before it is read again. */
 export const PEER_KEY_CACHE_MS = 10_000;
+
+/** How long a cached key outlives its refresh window while reads fail. */
+export const PEER_KEY_STALE_MS = 60_000;
+
+/**
+ * The header a follower adds to everything it forwards to the leader, with
+ * the team's peer token (swamp-club#4148). A leader that verifies it keys
+ * the request's limits and audit on the caller address the follower set.
+ */
+export const TEAM_PEER_HEADER = "x-swamp-team-peer";
 
 const peerSockets = new WeakSet<WebSocket>();
 
@@ -199,4 +240,26 @@ async function hmacHex(key: string, text: string): Promise<string> {
     new Uint8Array(signature),
     (byte) => byte.toString(16).padStart(2, "0"),
   ).join("");
+}
+
+/**
+ * The address a request to serve is limited and audited by. Behind a
+ * trusted proxy (`--trust-proxy`), the first `X-Forwarded-For` entry. A
+ * request a team follower forwarded, whose {@link TEAM_PEER_HEADER} the
+ * peer key verifies, the last entry: the caller's address as the follower
+ * set it (swamp-club#4148). Otherwise the socket peer's.
+ */
+export function requestClientAddress(
+  headers: Headers,
+  socketPeer: string,
+  trustProxy: boolean,
+  verifyPeer: (header: string) => boolean,
+): string {
+  const forwarded = headers.get("x-forwarded-for");
+  if (trustProxy) return forwarded?.split(",")[0]?.trim() || socketPeer;
+  const peer = headers.get(TEAM_PEER_HEADER);
+  if (peer !== null && verifyPeer(peer)) {
+    return forwarded?.split(",").at(-1)?.trim() || socketPeer;
+  }
+  return socketPeer;
 }

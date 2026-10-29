@@ -608,9 +608,11 @@ import {
 import {
   isPeerToken,
   markPeerSocket,
+  requestClientAddress,
   TeamPeerKey,
 } from "../../serve/peer_auth.ts";
 import {
+  advertiseAddressInCleartext,
   normalizeAdvertiseAddress,
   serializeServeLeader,
   SERVE_LEADER_KEY,
@@ -3157,6 +3159,13 @@ export const serveCommand = new Command()
       ownerAddress,
       advertiseAddress,
     } = resolveServeStartupSettings(merged);
+    if (
+      advertiseAddress !== undefined &&
+      advertiseAddressInCleartext(advertiseAddress)
+    ) {
+      logger
+        .warn`The advertise address ${advertiseAddress} is plain http to a host that is not loopback: the team's peer key and the credentials followers forward to this node would cross the network unencrypted. Advertise an https address`;
+    }
     const heartbeatIntervalRaw = merged.heartbeatInterval;
     const staleTtlRaw = merged.staleTtl;
 
@@ -5395,6 +5404,7 @@ export const serveCommand = new Command()
     const leaderLink = v3Location === undefined ? undefined : new LeaderLink({
       leader: () => connectionCtx.followerGate?.leader(),
       trustProxy,
+      peerToken: () => teamPeerKey?.cachedToken(),
       ...(merged.caCert
         ? { caCerts: [await readServeCaCert(merged.caCert)] }
         : {}),
@@ -6805,12 +6815,15 @@ export const serveCommand = new Command()
         },
       },
       unscopedHttpHandler(traceHttpRequests(async (req, info) => {
+        // A request a team follower forwarded carries the team's peer token
+        // (swamp-club#4148): the follower is then a trusted proxy for it.
         const clientAddress = () =>
-          trustProxy
-            ? (req.headers.get("x-forwarded-for")
-              ?.split(",")[0]?.trim() ??
-              info.remoteAddr.hostname)
-            : info.remoteAddr.hostname;
+          requestClientAddress(
+            req.headers,
+            info.remoteAddr.hostname,
+            Boolean(trustProxy),
+            (header) => teamPeerKey?.verifyCached(header) === true,
+          );
 
         // WebSocket upgrade (check first — upgrade requests are also GETs)
         const upgrade = req.headers.get("upgrade") ?? "";
@@ -6836,32 +6849,40 @@ export const serveCommand = new Command()
           }
 
           if (authConfig.mode !== "none") {
-            const ipBurst = checkIpBurst(remoteAddr);
-            if (!ipBurst.allowed) {
-              logger.warn("WebSocket IP burst rate-limited from {ip}", {
-                ip: remoteAddr,
-              });
-              return new Response("Too Many Requests", {
-                status: 429,
-                headers: {
-                  "Retry-After": String(ipBurst.retryAfterSeconds),
-                },
-              });
-            }
-
             const extracted = extractWebSocketToken(req);
             // A team peer's feed socket (swamp-club#4120): the peer key, not a
             // token, so it is checked here and gets no principal. It may only
-            // read the commit feed.
+            // read the commit feed. Checked before the IP burst, so a
+            // follower's feed reconnects never spend it; a peer token that
+            // fails counts against it and the per-credential limit, as any
+            // failed token does (swamp-club#4148).
             if (extracted !== null && isPeerToken(extracted.token)) {
               if (
                 teamPeerKey === undefined ||
                 !(await teamPeerKey.verify(extracted.token))
               ) {
+                const failedBurst = checkIpBurst(remoteAddr);
+                const failedKey = rateLimitKey(extracted.token, remoteAddr);
+                const failedRate = checkRateLimit(failedKey);
                 logger.warn(
                   "WebSocket peer auth rejected from {ip}",
                   { ip: remoteAddr },
                 );
+                if (!failedBurst.allowed || !failedRate.allowed) {
+                  return new Response("Too Many Requests", {
+                    status: 429,
+                    headers: {
+                      "Retry-After": String(
+                        Math.max(
+                          failedBurst.allowed
+                            ? 0
+                            : failedBurst.retryAfterSeconds,
+                          failedRate.allowed ? 0 : failedRate.retryAfterSeconds,
+                        ),
+                      ),
+                    },
+                  });
+                }
                 return new Response("Unauthorized: invalid peer key", {
                   status: 401,
                 });
@@ -6877,6 +6898,19 @@ export const serveCommand = new Command()
               handleConnection(socket, connectionCtx, null);
               return response;
             }
+            const ipBurst = checkIpBurst(remoteAddr);
+            if (!ipBurst.allowed) {
+              logger.warn("WebSocket IP burst rate-limited from {ip}", {
+                ip: remoteAddr,
+              });
+              return new Response("Too Many Requests", {
+                status: 429,
+                headers: {
+                  "Retry-After": String(ipBurst.retryAfterSeconds),
+                },
+              });
+            }
+
             const dashboardSessionId = extracted === null
               ? extractDashboardSessionId(req)
               : null;

@@ -299,6 +299,9 @@ export class ServeLeadership {
       // stays in the copy (swamp-club#4120).
       await this.#readLeader();
       if (feed.current(this.#leader)) return;
+      // Stopped before the restore, so nothing the old socket delivers is
+      // queued to apply after it (swamp-club#4148).
+      await feed.stop();
     }
     await this.#deps.refreshCopy();
     this.#refreshedAt = this.#now();

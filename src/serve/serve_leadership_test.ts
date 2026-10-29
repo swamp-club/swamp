@@ -402,7 +402,8 @@ Deno.test("ServeLeadership: a follower whose commit feed is current restores not
   } finally {
     await leadership.stop();
   }
-  assertEquals(feed.stops, 1);
+  // Once before the restore, once at stop.
+  assertEquals(feed.stops, 2);
 });
 
 Deno.test("ServeLeadership: taking the lead stops following the feed", async () => {
@@ -556,6 +557,40 @@ Deno.test("ServeLeadership: a lease fence that cannot be read forwards nothing",
   try {
     assertEquals(leadership.leader()?.instanceId, "other");
     assertEquals(leadership.leader()?.address, undefined);
+  } finally {
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership: a feed that is not current is stopped before the restore runs (swamp-club#4148)", async () => {
+  const order: string[] = [];
+  const feed: FollowerCopyFeed = {
+    current: () => false,
+    follow: () => order.push("follow"),
+    stop: () => {
+      order.push("stop");
+      return Promise.resolve();
+    },
+  };
+  const lease = new FakeLease();
+  const leadership = new ServeLeadership({
+    instanceId: "me",
+    lease,
+    store: memoryStore(),
+    feed,
+    refreshCopy: () => {
+      order.push("refresh");
+      return Promise.resolve();
+    },
+    onLead: () => Promise.resolve(),
+    onLostLead: () => Promise.resolve(),
+    tickMs: 3_600_000,
+  });
+  await leadership.start("follower");
+  try {
+    order.length = 0;
+    await leadership.tick();
+    assertEquals(order, ["stop", "refresh", "follow"]);
   } finally {
     await leadership.stop();
   }

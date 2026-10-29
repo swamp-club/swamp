@@ -194,7 +194,7 @@ export class FollowerFeed implements FollowerCopyFeed {
     socket.onmessage = (event) => {
       if (generation !== this.#generation) return;
       if (typeof event.data !== "string") return;
-      this.#onFrame(event.data);
+      this.#onFrame(event.data, generation);
     };
     socket.onerror = () => {};
     socket.onclose = () => {
@@ -205,7 +205,7 @@ export class FollowerFeed implements FollowerCopyFeed {
     };
   }
 
-  #onFrame(data: string): void {
+  #onFrame(data: string, generation: number): void {
     let frame: {
       type?: unknown;
       id?: unknown;
@@ -240,16 +240,20 @@ export class FollowerFeed implements FollowerCopyFeed {
       return;
     }
     this.#chain = this.#chain.then(async () => {
-      if (this.#failed) return;
+      // A step the previous socket queued, from a leader this node no longer
+      // follows, applies nothing and marks nothing fresh (swamp-club#4148).
+      if (this.#failed || generation !== this.#generation) return;
       try {
         if (changes.length > 0) {
           await this.#options.apply(changes as FeedChange[]);
         }
+        if (generation !== this.#generation) return;
         this.#applied = Math.max(this.#applied, cursor);
         this.#lastFrameAt = this.#now();
         this.#options.onFresh();
         this.#wakeAppliedWaiters();
       } catch (error) {
+        if (generation !== this.#generation) return;
         logger
           .info`Applying the leader's commit feed failed; the copy is restored from the lineage instead: ${error}`;
         this.#fail();

@@ -25,6 +25,7 @@ import {
   LeaderLink,
   leaderTarget,
 } from "./leader_link.ts";
+import { TEAM_PEER_HEADER } from "./peer_auth.ts";
 
 const LEADER: ServeLeader = {
   instanceId: "instance-a",
@@ -213,4 +214,26 @@ Deno.test("LeaderLink.forward: a request target starting with // still goes to t
   );
   assertEquals(new URL(seen).origin, "https://node-a.internal:9090");
   assertEquals(new URL(seen).pathname, "//evil.example/data/x");
+});
+
+Deno.test("LeaderLink.forward: adds the team's forwarding header and drops one a caller sent (swamp-club#4148)", async () => {
+  const seen: (string | null)[] = [];
+  const forward = (peerToken: string | undefined) =>
+    new LeaderLink({
+      leader: () => LEADER,
+      createClient: () => undefined,
+      peerToken: () => peerToken,
+      fetch: (_input, init) => {
+        seen.push(new Headers(init?.headers).get(TEAM_PEER_HEADER));
+        return Promise.resolve(new Response(null, { status: 204 }));
+      },
+    }).forward(
+      new Request("http://lb.example/x", {
+        method: "POST",
+        headers: { [TEAM_PEER_HEADER]: "swamp-peer.forged" },
+      }),
+    );
+  await forward("swamp-peer.team");
+  await forward(undefined);
+  assertEquals(seen, ["swamp-peer.team", null]);
 });
