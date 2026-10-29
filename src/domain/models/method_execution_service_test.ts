@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { ProvenanceMap } from "../expressions/provenance_map.ts";
 import { join } from "@std/path";
 import {
   MAX_REMOTE_LOCK_IDS,
@@ -45,6 +46,7 @@ import {
 import { fromResourceHandle } from "../data/data_record_mapper.ts";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import {
+  dataSplicePlacer,
   DefaultMethodExecutionService,
   deliverStepSecrets,
   recoveredDataHandles,
@@ -2411,6 +2413,7 @@ Deno.test("executeWorkflow - a global argument holding an unreadable stored refe
   const error = await assertRejects(
     () =>
       service.executeWorkflow(definition, model, "run", context, {
+        argumentProvenance: ProvenanceMap.authored(),
         unreadReferences: unread,
       }),
     Error,
@@ -2435,6 +2438,7 @@ Deno.test("executeWorkflow - a method that never reads the unreadable global arg
   const { context } = createTestContext({ modelType: model.type });
 
   await service.executeWorkflow(definition, model, "run", context, {
+    argumentProvenance: ProvenanceMap.authored(),
     unreadReferences: unread,
   });
   assertEquals(calls, ["plain"]);
@@ -2455,6 +2459,7 @@ Deno.test("executeWorkflow - a method argument holding an unreadable stored refe
   const error = await assertRejects(
     () =>
       service.executeWorkflow(definition, model, "run", context, {
+        argumentProvenance: ProvenanceMap.authored(),
         unreadReferences: unread,
       }),
     Error,
@@ -3230,6 +3235,7 @@ Deno.test(
     });
 
     await service.executeWorkflow(definition, model, "check", context, {
+      argumentProvenance: ProvenanceMap.authored(),
       secretLoader: mockLoader({ "my-api-key": "sk-test-secret-12345" })
         .loader,
     });
@@ -4944,6 +4950,7 @@ async function captureRemoteRequest(
       vaultSecrets: secretBag,
     });
     await service.executeWorkflow(definition, model, "start", context, {
+      argumentProvenance: ProvenanceMap.authored(),
       secretLoader,
     });
   } finally {
@@ -5563,7 +5570,7 @@ Deno.test("executeWorkflow - loads a vault reference once per attempt, before pr
     model,
     "create",
     context,
-    { secretLoader: loader },
+    { argumentProvenance: ProvenanceMap.authored(), secretLoader: loader },
   );
 
   // One read for a reference carried by two arguments.
@@ -5595,7 +5602,7 @@ Deno.test("executeWorkflow - loads a vault reference once per attempt, before pr
     model,
     "create",
     context,
-    { secretLoader: loader },
+    { argumentProvenance: ProvenanceMap.authored(), secretLoader: loader },
   );
   assertEquals(reads, ["token", "token"]);
 });
@@ -5623,7 +5630,7 @@ Deno.test("executeWorkflow - a load failure fails the step before any check or m
         model,
         "create",
         context,
-        { secretLoader: loader },
+        { argumentProvenance: ProvenanceMap.authored(), secretLoader: loader },
       ),
     Error,
     "Failed to load secret 'missing' from vault 'v' (at globalArguments.token)",
@@ -5749,6 +5756,7 @@ Deno.test("executeWorkflow: a secret in a refusing method field is refused befor
   const error = await assertRejects(
     () =>
       service.executeWorkflow(definition, model, "create", context, {
+        argumentProvenance: ProvenanceMap.authored(),
         secretLoader: loader,
       }),
     SecretDestinationRefusedError,
@@ -5780,6 +5788,7 @@ Deno.test("executeWorkflow: a refusing field authored under globalArguments of a
   const error = await assertRejects(
     () =>
       service.executeWorkflow(definition, model, "create", context, {
+        argumentProvenance: ProvenanceMap.authored(),
         secretLoader: loader,
       }),
     SecretDestinationRefusedError,
@@ -5805,6 +5814,7 @@ Deno.test("executeWorkflow: the method hook receives the merged arguments before
     vaultSecrets: bag,
   });
   await service.executeWorkflow(definition, model, "create", context, {
+    argumentProvenance: ProvenanceMap.authored(),
     secretLoader: loader,
   });
   assertEquals(seen.hook.length, 1);
@@ -5828,6 +5838,7 @@ Deno.test("executeWorkflow: the method hook receives the merged arguments before
   });
   const remoteError = await assertRejects(() =>
     service.executeWorkflow(definition, remote.model, "create", remoteContext, {
+      argumentProvenance: ProvenanceMap.authored(),
       secretLoader: loader,
     })
   );
@@ -5856,7 +5867,10 @@ Deno.test("executeWorkflow: the method hook receives the merged arguments before
         refusing.model,
         "create",
         refusingContext,
-        { secretLoader: fresh.loader },
+        {
+          argumentProvenance: ProvenanceMap.authored(),
+          secretLoader: fresh.loader,
+        },
       ),
     SecretDestinationRefusedError,
     "the shell command",
@@ -5917,6 +5931,7 @@ Deno.test("executeWorkflow: a failed method's output record holds its error with
   await assertRejects(
     () =>
       service.executeWorkflow(definition, model, "create", context, {
+        argumentProvenance: ProvenanceMap.authored(),
         secretLoader: loader,
       }),
     Error,
@@ -5986,6 +6001,7 @@ Deno.test("executeWorkflow: the checks and the method receive the global argumen
       vaultSecrets: bag,
     });
     await service.executeWorkflow(definition, model, "create", context, {
+      argumentProvenance: ProvenanceMap.authored(),
       secretLoader: loader,
     });
     // The merge is built before the boundary writes values into the global
@@ -6055,6 +6071,7 @@ Deno.test("executeWorkflow: delivering one Definition instance twice keeps the c
         vaultSecrets: bag,
       });
       await service.executeWorkflow(definition, model, "create", context, {
+        argumentProvenance: ProvenanceMap.authored(),
         secretLoader: loader,
       });
       // The values go into a copy, so the object the caller holds keeps its
@@ -6099,6 +6116,7 @@ Deno.test("executeWorkflow: in a typed run an env authored as a JSON string with
   const error = await assertRejects(
     () =>
       service.executeWorkflow(definition, shellModel, "execute", context, {
+        argumentProvenance: ProvenanceMap.authored(),
         secretLoader: loader,
       }),
     SecretDestinationRefusedError,
@@ -6178,6 +6196,7 @@ Deno.test("executeWorkflow: the merge keeps a sentinel leaf authored inside a gl
       vaultSecrets: bag,
     });
     await service.executeWorkflow(definition, model, "create", context, {
+      argumentProvenance: ProvenanceMap.authored(),
       secretLoader: loader,
     });
     const merge = seen[0];
@@ -6377,7 +6396,10 @@ Deno.test("executeWorkflow: onArgumentsValidated runs once the arguments pass th
     recorder,
     "write",
     context,
-    { onArgumentsValidated: hook },
+    {
+      argumentProvenance: ProvenanceMap.authored(),
+      onArgumentsValidated: hook,
+    },
   );
   assertEquals(order, ["validated", "method"]);
 
@@ -6392,7 +6414,10 @@ Deno.test("executeWorkflow: onArgumentsValidated runs once the arguments pass th
         recorder,
         "write",
         context,
-        { onArgumentsValidated: hook },
+        {
+          argumentProvenance: ProvenanceMap.authored(),
+          onArgumentsValidated: hook,
+        },
       ),
     Error,
     "Method arguments validation failed",
@@ -6428,6 +6453,7 @@ Deno.test("executeWorkflow: the arguments are parsed once, so a schema transform
   });
 
   await service.executeWorkflow(definition, counting, "write", context, {
+    argumentProvenance: ProvenanceMap.authored(),
     onArgumentsValidated: () => Promise.resolve(),
   });
   assertEquals(transforms, 1);
@@ -6489,7 +6515,10 @@ Deno.test("executeWorkflow: a placed step calls onArgumentsValidated once its ar
       recorder,
       "write",
       context,
-      { onArgumentsValidated: hook },
+      {
+        argumentProvenance: ProvenanceMap.authored(),
+        onArgumentsValidated: hook,
+      },
     );
     assertEquals(order, ["validated", "dispatched"]);
 
@@ -6504,7 +6533,10 @@ Deno.test("executeWorkflow: a placed step calls onArgumentsValidated once its ar
           recorder,
           "write",
           context,
-          { onArgumentsValidated: hook },
+          {
+            argumentProvenance: ProvenanceMap.authored(),
+            onArgumentsValidated: hook,
+          },
         ),
       Error,
       "Method arguments validation failed",
@@ -7679,7 +7711,7 @@ Deno.test("executeWorkflow: a remotely placed step loads nothing before dispatch
         model,
         "start",
         context,
-        { secretLoader: loader },
+        { argumentProvenance: ProvenanceMap.authored(), secretLoader: loader },
       );
     }
   } finally {
@@ -7718,6 +7750,7 @@ Deno.test("executeWorkflow: a remote attempt calls onArgumentsValidated once, wh
       "start",
       context,
       {
+        argumentProvenance: ProvenanceMap.authored(),
         onArgumentsValidated: () => {
           calls++;
           return Promise.resolve();
@@ -7778,7 +7811,10 @@ Deno.test("executeWorkflow: a remotely placed step whose arguments hold no secre
           model,
           "write",
           context,
-          { onArgumentsValidated: hook },
+          {
+            argumentProvenance: ProvenanceMap.authored(),
+            onArgumentsValidated: hook,
+          },
         ),
       Error,
       "Method arguments validation failed",
@@ -7794,7 +7830,10 @@ Deno.test("executeWorkflow: a remotely placed step whose arguments hold no secre
           model,
           "write",
           context,
-          { onArgumentsValidated: hook },
+          {
+            argumentProvenance: ProvenanceMap.authored(),
+            onArgumentsValidated: hook,
+          },
         ),
       Error,
       "Global arguments validation failed",
@@ -7812,7 +7851,10 @@ Deno.test("executeWorkflow: a remotely placed step whose arguments hold no secre
       model,
       "write",
       context,
-      { onArgumentsValidated: hook },
+      {
+        argumentProvenance: ProvenanceMap.authored(),
+        onArgumentsValidated: hook,
+      },
     );
     assertEquals(scheduled, 1);
     assertEquals(validated, 1);
@@ -7891,6 +7933,7 @@ Deno.test("executeWorkflow: a remotely placed step holding a secret has its othe
       "write",
       context,
       {
+        argumentProvenance: ProvenanceMap.authored(),
         secretLoader: loader,
         onArgumentsValidated: () => {
           validated++;
@@ -7963,7 +8006,10 @@ Deno.test("executeWorkflow: a remotely placed step holding a secret fails before
           model,
           "run",
           context,
-          { unreadReferences: unread },
+          {
+            argumentProvenance: ProvenanceMap.authored(),
+            unreadReferences: unread,
+          },
         ),
       Error,
       "Could not read methodArguments.token",
@@ -8017,6 +8063,7 @@ Deno.test("executeWorkflow: a hook that fails on a version 6 worker's report, wh
       "start",
       { ...context, logger },
       {
+        argumentProvenance: ProvenanceMap.authored(),
         onArgumentsValidated: () =>
           Promise.reject(new Error("evaluation not saved")),
       },
@@ -8027,4 +8074,88 @@ Deno.test("executeWorkflow: a hook that fails on a version 6 worker's report, wh
   assertEquals(warnings, [
     "Could not record the arguments the worker validated: evaluation not saved",
   ]);
+});
+
+/** A shell definition whose `run` holds `data` at the end, under `where`. */
+function shellWithData(where: "global" | "method", data: string) {
+  const run = `echo ${data}`;
+  const definition = Definition.create({
+    name: "placed",
+    globalArguments: where === "global" ? { run } : {},
+    methods: {
+      execute: { arguments: where === "method" ? { run } : {} },
+    },
+  });
+  const path = where === "global"
+    ? "globalArguments.run"
+    : "methods.execute.arguments.run";
+  const provenance = ProvenanceMap.authored().withRanges(path, [[
+    5,
+    run.length,
+  ]]);
+  return { definition, provenance };
+}
+
+Deno.test("dataSplicePlacer: data in run is placed where it was authored, for the host's platform (swamp-club#3868)", () => {
+  for (const where of ["global", "method"] as const) {
+    const { definition, provenance } = shellWithData(where, "x; id");
+    const place = dataSplicePlacer(
+      definition,
+      shellModel.methods.execute,
+      "execute",
+      provenance,
+    );
+    const args = {
+      globalArgs: definition.globalArguments,
+      methodArgs: definition.getMethodArguments("execute"),
+    };
+    const posix = place(args, "linux");
+    const placed = where === "global" ? posix.globalArgs : posix.methodArgs;
+    assertEquals(placed.run, 'echo "${__SWAMP_IN_0}"', where);
+    // env goes beside run's merge winner: method arguments.
+    assertEquals(posix.methodArgs.env, { __SWAMP_IN_0: "x; id" }, where);
+    const windows = place(args, "windows");
+    assertEquals(
+      (where === "global" ? windows.globalArgs : windows.methodArgs).run,
+      'echo "$env:__SWAMP_IN_0"',
+      where,
+    );
+  }
+});
+
+Deno.test("dataSplicePlacer: arguments that hold no data are passed through as they are", () => {
+  const definition = Definition.create({
+    name: "authored",
+    methods: { execute: { arguments: { run: "echo hi" } } },
+  });
+  const place = dataSplicePlacer(
+    definition,
+    shellModel.methods.execute,
+    "execute",
+    ProvenanceMap.authored(),
+  );
+  const args = {
+    globalArgs: {},
+    methodArgs: definition.getMethodArguments("execute"),
+  };
+  assertEquals(place(args, "linux") === args, true);
+});
+
+Deno.test("dataSplicePlacer: data whose text changed after evaluation is refused, never run as authored", () => {
+  const { definition, provenance } = shellWithData("method", "x; id");
+  const place = dataSplicePlacer(
+    definition,
+    shellModel.methods.execute,
+    "execute",
+    provenance,
+  );
+  assertThrows(
+    () =>
+      place({
+        globalArgs: {},
+        methodArgs: { run: "echo resolved-differently; id" },
+      }, "linux"),
+    Error,
+    "shell_data_placement_refused",
+  );
 });

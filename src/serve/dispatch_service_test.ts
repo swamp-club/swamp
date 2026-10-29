@@ -203,6 +203,7 @@ function stepRequest(
   overrides?: Partial<RemoteStepRequest>,
 ): RemoteStepRequest {
   return {
+    placeArguments: (args) => args,
     placement: { labels: {}, platform: "linux" },
     modelDef: builtinModelDef,
     modelType: MODEL_TYPE,
@@ -2906,4 +2907,93 @@ Deno.test("DispatchService: the allowlist admits the references the request name
     ],
     hasDynamicRefs: false,
   });
+});
+
+Deno.test("DispatchService: arguments are placed for the chosen worker's platform on every attempt (swamp-club#3868)", async () => {
+  const h = createHarness({
+    workers: [
+      snapshot({ name: "w1", platform: "linux" }),
+      snapshot({ name: "w2", platform: "windows" }),
+    ],
+  });
+  let attempts = 0;
+  h.setBehavior((name) => {
+    attempts++;
+    if (attempts === 1) {
+      h.pool.delete(name);
+      h.service.notifyGraceExpired(snapshot({ name }));
+      return Promise.reject(new ChannelClosedError("control socket closed"));
+    }
+    return Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+  const platforms: string[] = [];
+  await h.service.executeRemote(stepRequest({
+    placement: { labels: {} },
+    placeArguments: (args, platform) => {
+      platforms.push(platform);
+      return {
+        ...args,
+        methodArgs: { ...args.methodArgs, placedFor: platform },
+      };
+    },
+  }));
+  assertEquals(h.dispatchCalls.map((c) => c.name), ["w1", "w2"]);
+  assertEquals(platforms, ["linux", "windows"]);
+  assertEquals(
+    h.dispatchCalls.map((c) => c.params.execution.methodArgs.placedFor),
+    ["linux", "windows"],
+  );
+});
+
+Deno.test("DispatchService: a refused placement fails the step before anything is dispatched (swamp-club#3868)", async () => {
+  const h = createHarness();
+  await assertRejects(
+    () =>
+      h.service.executeRemote(stepRequest({
+        placeArguments: () => {
+          throw new Error("refused to place");
+        },
+      })),
+    Error,
+    "refused to place",
+  );
+  assertEquals(h.dispatchCalls, []);
+  // The frame is built before a lease is taken, so nothing is left held.
+  assertEquals(h.transitions, []);
+  assertEquals(h.dispatches.forWorker("w1"), []);
+});
+
+Deno.test("DispatchService: a worker gone before its frame is built sends the step back to the scheduler (swamp-club#3868)", async () => {
+  const h = createHarness({
+    workers: [
+      snapshot({ name: "w1", platform: "linux" }),
+      snapshot({ name: "w2", platform: "linux" }),
+    ],
+  });
+  // The first lookup of the chosen worker misses, as when it leaves the
+  // pool between the choice and the frame.
+  const get = h.pool.get.bind(h.pool);
+  let missed: string | undefined;
+  h.pool.get = (name: string) => {
+    if (missed === undefined) {
+      missed = name;
+      return undefined;
+    }
+    return get(name);
+  };
+  const platforms: string[] = [];
+  await h.service.executeRemote(stepRequest({
+    placement: { labels: {} },
+    placeArguments: (args, platform) => {
+      platforms.push(platform);
+      return args;
+    },
+  }));
+  assertEquals(platforms, ["linux"]);
+  assertEquals(h.dispatchCalls.length, 1);
 });

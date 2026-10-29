@@ -53,6 +53,7 @@ import {
 } from "../vaults/run_vault_access.ts";
 import { ExpressionEvaluationService } from "../expressions/expression_evaluation_service.ts";
 import { literalOccurrence } from "../expressions/cel_grammar.ts";
+import { ProvenanceMap } from "../expressions/provenance_map.ts";
 import { DefaultMethodExecutionService } from "./method_execution_service.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { z } from "zod";
@@ -75,6 +76,7 @@ const passthroughEvaluator: Evaluator = {
     Promise.resolve({
       definition,
       secretBag: new VaultSecretBag(new SecretBagRegistry()),
+      provenance: ProvenanceMap.authored(),
     }),
   // Nothing is issued, so nothing is loaded.
   secretLoader: () =>
@@ -1449,7 +1451,11 @@ Deno.test("ModelInvocationService: a nested invocation runs on an independent re
         options,
       ) => {
         seen.push(options!.secretBag!.registry);
-        return Promise.resolve({ definition, secretBag: options!.secretBag! });
+        return Promise.resolve({
+          definition,
+          secretBag: options!.secretBag!,
+          provenance: ProvenanceMap.authored(),
+        });
       },
       secretLoader: () =>
         new SecretLoader(() => Promise.resolve(new VaultService())),
@@ -1524,7 +1530,11 @@ Deno.test("ModelInvocationService: a nested invocation's runtime pass is scoped 
       options,
     ) => {
       seenMethod = options?.methodName;
-      return Promise.resolve({ definition, secretBag: options!.secretBag! });
+      return Promise.resolve({
+        definition,
+        secretBag: options!.secretBag!,
+        provenance: ProvenanceMap.authored(),
+      });
     },
     secretLoader: () =>
       new SecretLoader(() => Promise.resolve(new VaultService())),
@@ -1595,7 +1605,12 @@ Deno.test("ModelInvocationService: a nested invocation hands its run's unread re
       _context,
       _authored,
       options,
-    ) => Promise.resolve({ definition, secretBag: options!.secretBag! }),
+    ) =>
+      Promise.resolve({
+        definition,
+        secretBag: options!.secretBag!,
+        provenance: ProvenanceMap.authored(),
+      }),
     secretLoader: () =>
       new SecretLoader(() => Promise.resolve(new VaultService())),
   };

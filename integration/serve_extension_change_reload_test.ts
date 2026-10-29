@@ -133,6 +133,7 @@ function dispatcher(bundles: BundleRegistry) {
   service.bindGateway(gateway);
   const run = (modelDef: ModelDefinition) =>
     service.executeRemote({
+      placeArguments: (args) => args,
       placement: { labels: {}, platform: "linux" },
       modelDef,
       modelType: modelDef.type,

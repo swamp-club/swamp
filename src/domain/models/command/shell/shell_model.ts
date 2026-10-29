@@ -21,6 +21,7 @@ import { z } from "zod";
 import { ModelType } from "../../model_type.ts";
 import {
   type DataHandle,
+  type DataSpliceArgs,
   defineModel,
   type MethodContext,
   type MethodResult,
@@ -40,6 +41,10 @@ import {
 import { processLockHolderMarker } from "../../../datastore/lock_holder_marker.ts";
 import { traceHeadersToEnv } from "../../execution_envelope.ts";
 import { selectShellStrategy } from "./shell_strategy.ts";
+import {
+  placeShellData,
+  shellDialectFor,
+} from "../../../vaults/shell_data_placement.ts";
 
 const shellStrategy = selectShellStrategy();
 
@@ -153,6 +158,82 @@ export function refuseShellSecretDestinations(
     "no environment variable reference expands there, so the value would " +
       `be pasted into the command line; ${refused.fix}`,
   );
+}
+
+/** The error code of data text placed where the shell cannot take it. */
+export const SHELL_DATA_PLACEMENT_REFUSED = "shell_data_placement_refused";
+
+/** How to pass data that is meant to be split or run, in every refusal. */
+const DATA_IN_RUN_WORKAROUND =
+  "To split a value into words or run it as code, pass it in the env " +
+  "argument and reference the variable in run (POSIX: an unquoted $NAME " +
+  "splits it, eval runs it; PowerShell: $env:NAME)";
+
+/**
+ * The shell's data placement (swamp-club#3868, design/enablers/expressions.md
+ * Shell Safety): text in `run` that came from data (a caller's or a webhook's
+ * input, a data read, a step output, an environment variable) reaches the
+ * shell as one literal word through a generated `__SWAMP_IN_<n>` variable in
+ * `env`, never as syntax. Authored text is unchanged. A data range where no
+ * reference expands, a `run` that is nothing but data, and a host whose
+ * shell swamp does not know are refused. An `env` authored as a JSON string
+ * is coerced as argument validation would, so the generated names join it.
+ */
+export function placeShellDataSplices(
+  { arguments: args, dataRangesOf, platform }: DataSpliceArgs,
+): Record<string, unknown> {
+  const run = args.run;
+  if (typeof run !== "string") return {};
+  const ranges = dataRangesOf("run");
+  if (ranges.length === 0) return {};
+  const dialect = shellDialectFor(platform);
+  if (dialect === undefined) {
+    throw new UserError(
+      `Refused to run the command: it holds text from data, and swamp does ` +
+        `not know the shell of platform '${platform}' to pass it safely ` +
+        `(${SHELL_DATA_PLACEMENT_REFUSED})`,
+      SHELL_DATA_PLACEMENT_REFUSED,
+    );
+  }
+  const env = isPlainObject(args.env)
+    ? args.env
+    : coerceMethodArgs({ env: args.env }, ShellInputAttributesSchema).env;
+  if (env !== undefined && !isPlainObject(env)) {
+    // Argument validation refuses this env too; refused here first so the
+    // generated names never replace it.
+    throw new UserError(
+      `Refused to run the command: env is not an object of variables, so ` +
+        `the text from data in run has nowhere to go ` +
+        `(${SHELL_DATA_PLACEMENT_REFUSED})`,
+      SHELL_DATA_PLACEMENT_REFUSED,
+    );
+  }
+  const authoredEnv = env ?? {};
+  const placed = placeShellData(
+    run,
+    ranges,
+    Object.keys(authoredEnv),
+    dialect,
+  );
+  if (Object.keys(placed.env).length === 0 && !placed.refused) return {};
+  if (placed.wholeCommandIsData) {
+    throw new UserError(
+      `Refused to run the command: run is entirely text from data, which ` +
+        `swamp passes as one literal word, so it could only name a program. ` +
+        `${DATA_IN_RUN_WORKAROUND} (${SHELL_DATA_PLACEMENT_REFUSED})`,
+      SHELL_DATA_PLACEMENT_REFUSED,
+    );
+  }
+  if (placed.refused) {
+    throw new UserError(
+      `Refused to run the command: text from data sits inside ` +
+        `${placed.refused.where}, where ${placed.refused.why}; ` +
+        `${placed.refused.fix}. ${DATA_IN_RUN_WORKAROUND} ` +
+        `(${SHELL_DATA_PLACEMENT_REFUSED})`,
+      SHELL_DATA_PLACEMENT_REFUSED,
+    );
+  }
+  return { run: placed.command, env: { ...authoredEnv, ...placed.env } };
 }
 
 /** The error code of a child environment value swamp cannot pass on. */
@@ -407,6 +488,7 @@ export const shellModel: ModelDefinition = defineModel({
       arguments: ShellInputAttributesSchema,
       execute: executeCommand,
       refuseSecretDestinations: refuseShellSecretDestinations,
+      placeDataSplices: placeShellDataSplices,
     },
   },
 });

@@ -728,30 +728,54 @@ export class DispatchService {
     workerName: string,
     request: RemoteStepRequest,
   ): Promise<DispatchFrame> {
-    const protocolVersion =
-      this.#gateway!.worker(workerName)?.protocolVersion ??
-        REMOTE_PROTOCOL_VERSION;
+    const worker = this.#gateway!.worker(workerName);
+    // A worker that left the pool after it was chosen has no platform to
+    // place for; the step goes back to the scheduler, as the gateway's own
+    // refusal to send to it would send it.
+    if (!worker) {
+      throw new WorkerNotDispatchableError(workerName, "not_in_pool");
+    }
+    const protocolVersion = worker.protocolVersion ?? REMOTE_PROTOCOL_VERSION;
+    // Data text in the arguments is placed for this worker's shell, on every
+    // attempt, since a re-dispatch can choose a worker of another platform
+    // (swamp-club#3868).
+    const place = (args: Pick<DispatchFrame, "globalArgs" | "methodArgs">) =>
+      request.placeArguments(args, worker.platform);
     if (shipsReferencesOnly(protocolVersion)) {
+      const placed = place(request);
       return {
         protocolVersion,
-        globalArgs: request.globalArgs,
-        methodArgs: request.methodArgs,
+        globalArgs: placed.globalArgs,
+        methodArgs: placed.methodArgs,
         secrets: request.referenceBag
           ? { referenceBag: request.referenceBag }
           : {},
         redactorSeeds: request.redactorSeeds,
       };
     }
+    // Placed on the sentinel form first, so a refusal comes before the
+    // version 5 frame reads any vault value.
+    place(request);
     const legacy = await request.legacyDelivery?.();
-    return {
-      protocolVersion,
+    // A version 5 frame's arguments hold values in place of sentinels; the
+    // placer refuses one whose data-bearing text no longer matches. The
+    // sentinel form a version 5 worker's shell reads is placed alike.
+    const placed = place({
       globalArgs: legacy?.globalArgs ?? request.globalArgs,
       methodArgs: legacy?.methodArgs ?? request.methodArgs,
+    });
+    // unresolvedMethodArgs already holds the global arguments merged under
+    // the method's, as the version 5 shell reads them, so it is placed whole.
+    const unresolvedMethodArgs = legacy?.unresolvedMethodArgs &&
+      place({ globalArgs: {}, methodArgs: legacy.unresolvedMethodArgs })
+        .methodArgs;
+    return {
+      protocolVersion,
+      globalArgs: placed.globalArgs,
+      methodArgs: placed.methodArgs,
       secrets: {
         ...(legacy?.secretValues ? { secretValues: legacy.secretValues } : {}),
-        ...(legacy?.unresolvedMethodArgs
-          ? { unresolvedMethodArgs: legacy.unresolvedMethodArgs }
-          : {}),
+        ...(unresolvedMethodArgs ? { unresolvedMethodArgs } : {}),
         ...(legacy?.secretBag ? { secretBag: legacy.secretBag } : {}),
       },
       // The values the frame ships cover the request's own literals.

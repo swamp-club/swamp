@@ -313,6 +313,12 @@ function remoteStepRequest(overrides?: {
   signal?: AbortSignal;
 }) {
   return {
+    placeArguments: (
+      args: {
+        globalArgs: Record<string, unknown>;
+        methodArgs: Record<string, unknown>;
+      },
+    ) => args,
     placement: overrides?.placement ?? { labels: { tier: "it" } },
     modelDef: modelRegistry.get(IT_TYPE)!,
     modelType: IT_TYPE,
@@ -782,6 +788,12 @@ function shellStepRequest(onEvent?: (event: RpcStreamEvent) => void) {
   };
   const args = { methodArgs: unresolved, globalArgs: {} };
   return {
+    placeArguments: (
+      args: {
+        globalArgs: Record<string, unknown>;
+        methodArgs: Record<string, unknown>;
+      },
+    ) => args,
     placement: { labels: { tier: "it" } },
     modelDef: modelRegistry.get(SHELL_TYPE)!,
     modelType: SHELL_TYPE,

@@ -1022,7 +1022,7 @@ export class VaultSecretBag {
 }
 
 /** The POSIX reference a data-origin occurrence becomes in `context`. */
-function posixDataReference(
+export function posixDataReference(
   envName: string,
   context: ShellContext,
 ): string | undefined {

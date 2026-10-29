@@ -32,6 +32,7 @@ import type {
 } from "./cel_runtime.ts";
 import { firstRejection } from "./expression_rejection_report.ts";
 import {
+  AUTHORED_ORIGIN,
   containsExpression,
   extractCelExpression,
   extractExpressions,
@@ -540,6 +541,13 @@ export interface RuntimeResolutionResult {
    * on raw text with the error each failed with. Absent when none did.
    */
   failedExpressions?: FailedExpressions;
+  /**
+   * Where data sits in `definition`'s data after the pass: the incoming
+   * provenance carried through, plus each runtime splice's origin, so an
+   * `env.X` value or a deferred data read is data where it landed
+   * (swamp-club#3868). Its offsets index `definition`, sentinels included.
+   */
+  provenance: ProvenanceMap;
 }
 
 /** How a runtime pass treats an expression that fails to evaluate. */
@@ -1475,7 +1483,7 @@ export class ExpressionEvaluationService {
     }
 
     if (runtimeExpressions.length === 0) {
-      return { definition, secretBag };
+      return { definition, secretBag, provenance };
     }
 
     // A runtime expression can also read a sensitive data value
@@ -1483,7 +1491,7 @@ export class ExpressionEvaluationService {
     // spliced into an argument, like the definition pass does.
     const sanitizer = sensitiveSpliceSanitizer(secretBag);
     const failedExpressions = new Map<string, Error>();
-    const resolvedDefinition = await this.resolveRuntimeInExpressions(
+    const resolved = await this.resolveRuntimeInExpressions(
       definitionData,
       runtimeExpressions,
       redactor,
@@ -1503,8 +1511,9 @@ export class ExpressionEvaluationService {
     );
 
     const result: RuntimeResolutionResult = {
-      definition: resolvedDefinition,
+      definition: resolved.definition,
       secretBag,
+      provenance: resolved.provenance,
     };
     if (failedExpressions.size > 0) {
       result.failedExpressions = failedExpressions;
@@ -1579,7 +1588,7 @@ export class ExpressionEvaluationService {
       ...expressionContext,
       env: buildEnvContext(),
     };
-    const resolved = await this.resolveRuntimeData(
+    const resolved = (await this.resolveRuntimeData(
       data,
       runtimeExpressions,
       celContext,
@@ -1587,7 +1596,7 @@ export class ExpressionEvaluationService {
       secretBag,
       undefined,
       provenance,
-    );
+    )).data;
 
     if (refusing) {
       refuse(resolved);
@@ -1662,7 +1671,7 @@ export class ExpressionEvaluationService {
     sanitizer?: SpliceSanitizer,
     provenance: ProvenanceMap = ProvenanceMap.authored(),
     pass?: RuntimePassOptions,
-  ): Promise<Definition> {
+  ): Promise<{ definition: Definition; provenance: ProvenanceMap }> {
     const celContext: ExpressionContext = {
       model: {},
       ...expressionContext,
@@ -1677,7 +1686,7 @@ export class ExpressionEvaluationService {
       },
       env: buildEnvContext(),
     };
-    const resolvedData = await this.resolveRuntimeData(
+    const resolved = await this.resolveRuntimeData(
       definitionData,
       runtimeExpressions,
       celContext,
@@ -1687,9 +1696,12 @@ export class ExpressionEvaluationService {
       provenance,
       pass,
     );
-    return DefinitionClass.fromData(
-      resolvedData as ReturnType<Definition["toData"]>,
-    );
+    return {
+      definition: DefinitionClass.fromData(
+        resolved.data as ReturnType<Definition["toData"]>,
+      ),
+      provenance: resolved.provenance,
+    };
   }
 
   /** Resolve registered references with parent bindings and fresh runtime services. */
@@ -1702,7 +1714,7 @@ export class ExpressionEvaluationService {
     sanitizer?: SpliceSanitizer,
     provenance: ProvenanceMap = ProvenanceMap.authored(),
     pass: RuntimePassOptions = {},
-  ): Promise<unknown> {
+  ): Promise<TrackedSplice> {
     sanitizer ??= sensitiveSpliceSanitizer(secretBag);
     const records = new Map(
       (context.deferredExpressions ?? []).map((
@@ -1847,9 +1859,18 @@ export class ExpressionEvaluationService {
     };
 
     const values = new Map<string, unknown>();
+    const origins = new Map<string, SpliceOrigin>();
     for (const expr of expressions) {
       try {
-        values.set(expr.raw, await resolve(expr, context));
+        const value = await resolve(expr, context);
+        values.set(expr.raw, value);
+        // A deferred reference left unresolved is the authored text itself.
+        if (value !== expr.raw) {
+          origins.set(
+            expr.raw,
+            spliceOrigin(expr.celExpression, context, value),
+          );
+        }
       } catch (error) {
         const { unevaluated } = pass;
         if (!unevaluated?.keep(error, expr)) throw error;
@@ -1865,16 +1886,16 @@ export class ExpressionEvaluationService {
     // context, which keeps raw values. An occurrence in data is never
     // substituted, even when an authored occurrence shares its raw text, and
     // neither is one in a subtree the pass skips.
-    if (provenance.isAuthored) {
-      return replaceExpressions(data, values, pass.skipPath, sanitizer);
-    }
+    // Each splice carries its origin, as the definition pass records it, so
+    // a runtime value from data (`env.X`, a deferred data read) is data
+    // where it lands.
     return replaceExpressionsTracked(
       data,
       values,
       provenance,
-      () => ({ map: ProvenanceMap.authored() }),
+      (raw) => origins.get(raw) ?? AUTHORED_ORIGIN,
       pass.skipPath,
       sanitizer,
-    ).data;
+    );
   }
 }

@@ -2932,6 +2932,13 @@ before input validation, so a payload field can satisfy a `required` input.
 A whole-value expression keeps the field's native type (object, number,
 boolean); one inside a larger string is interpolated.
 
+A valid signature proves who sent the request, not that its fields are safe:
+a pull request title or branch name is set by whoever opens the pull request.
+Every input a webhook supplies is data, so a `command/shell` step that splices
+it into `run` receives it as one literal word through an environment variable,
+never as shell syntax (see Shell Safety, Data in `run`, in
+[expressions](../enablers/expressions.md#data-in-run)).
+
 swamp's CEL has no `??` operator. Guard optional payload fields with the
 `has()` macro and a ternary instead:
 

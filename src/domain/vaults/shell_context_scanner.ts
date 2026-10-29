@@ -42,7 +42,7 @@ type Frame =
   | { kind: "top" }
   | { kind: "cmdsub"; parens: number }
   | { kind: "backtick" }
-  | { kind: "arith"; parens: number };
+  | { kind: "arith"; parens: number; inDouble: boolean };
 
 interface PendingHeredoc {
   delimiter: string;
@@ -62,6 +62,26 @@ export function classifyShellPositions(
   command: string,
   positions: readonly number[],
 ): ShellContext[] {
+  return scanShellPositions(command, positions).map((p) => p.context);
+}
+
+/** A position's shell context, and whether it is inside arithmetic. */
+export interface ShellPosition {
+  readonly context: ShellContext;
+  /**
+   * True inside `$(( ... ))` or `(( ... ))`, quoted or not, where bash
+   * evaluates an expanded value again as an arithmetic expression (array
+   * subscripts in it run command substitutions), so a reference there does
+   * not keep the value literal.
+   */
+  readonly arithmetic: boolean;
+}
+
+/** {@link classifyShellPositions}, with each position's arithmetic flag. */
+export function scanShellPositions(
+  command: string,
+  positions: readonly number[],
+): ShellPosition[] {
   const wanted = new Map<number, number[]>();
   positions.forEach((position, index) => {
     const list = wanted.get(position) ?? [];
@@ -70,6 +90,7 @@ export function classifyShellPositions(
   });
   const sorted = [...wanted.keys()].sort((a, b) => a - b);
   const result: ShellContext[] = new Array(positions.length).fill("unquoted");
+  const arithmetic: boolean[] = new Array(positions.length).fill(false);
   // Assigns a context to every requested position in [from, to), finding the
   // first by binary search so a long script costs one lookup per range.
   const record = (from: number, to: number, context: ShellContext) => {
@@ -81,7 +102,10 @@ export function classifyShellPositions(
       else high = mid;
     }
     for (let k = low; k < sorted.length && sorted[k] < to; k++) {
-      for (const index of wanted.get(sorted[k])!) result[index] = context;
+      for (const index of wanted.get(sorted[k])!) {
+        result[index] = context;
+        arithmetic[index] = frames.some((f) => f.kind === "arith");
+      }
     }
   };
 
@@ -146,7 +170,11 @@ export function classifyShellPositions(
     }
 
     if (ch === "\\") {
-      const context = quote === "double" ? "double" : "unquoted";
+      const outer = frame();
+      const context =
+        quote === "double" || (outer.kind === "arith" && outer.inDouble)
+          ? "double"
+          : "unquoted";
       record(i, i + 2, context);
       i += 2;
       wordStart = false;
@@ -158,6 +186,13 @@ export function classifyShellPositions(
       if (ch === '"') {
         quote = "none";
         i++;
+        continue;
+      }
+      if (ch === "$" && next === "(" && command[i + 2] === "(") {
+        record(i + 1, i + 3, "double");
+        quote = "none";
+        frames.push({ kind: "arith", parens: 0, inDouble: true });
+        i += 3;
         continue;
       }
       if (ch === "$" && next === "(" && command[i + 2] !== "(") {
@@ -183,11 +218,13 @@ export function classifyShellPositions(
     // Unquoted from here on.
     const current = frame();
     if (current.kind === "arith") {
-      record(i, i + 1, "unquoted");
+      record(i, i + 1, current.inDouble ? "double" : "unquoted");
       if (ch === "(") current.parens++;
       else if (ch === ")") {
         if (current.parens === 0 && next === ")") {
+          record(i + 1, i + 2, current.inDouble ? "double" : "unquoted");
           frames.pop();
+          if (current.inDouble) quote = "double";
           i += 2;
           continue;
         }
@@ -228,13 +265,13 @@ export function classifyShellPositions(
     // The arithmetic command `(( ... ))` at a command start, where `<<` is a
     // shift, not a here-document.
     if (ch === "(" && next === "(" && wordStart) {
-      frames.push({ kind: "arith", parens: 0 });
+      frames.push({ kind: "arith", parens: 0, inDouble: false });
       record(i, i + 2, "unquoted");
       i += 2;
       continue;
     }
     if (ch === "$" && next === "(" && command[i + 2] === "(") {
-      frames.push({ kind: "arith", parens: 0 });
+      frames.push({ kind: "arith", parens: 0, inDouble: false });
       record(i, i + 3, "unquoted");
       i += 3;
       continue;
@@ -291,7 +328,10 @@ export function classifyShellPositions(
     wordStart = /[\s;&|()]/.test(ch);
     i++;
   }
-  return result;
+  return result.map((context, index) => ({
+    context,
+    arithmetic: arithmetic[index],
+  }));
 }
 
 /** Parses `<<WORD` / `<<-WORD` at `start`, returning the heredoc and where it ends. */

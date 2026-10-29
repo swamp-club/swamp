@@ -1107,6 +1107,15 @@ Placement uses the existing quote-context scanner: `resolveForShell`,
 `resolveForPowerShell`, `classifyShellPositions` and `getQuoteContext` in
 `src/domain/vaults/`.
 
+Text in `run` that came from data but is not sensitive is placed the same way,
+before the secrets, through the shell's `placeDataSplices` hook
+(swamp-club#3868): each data range of `run`, from the argument provenance the
+runtime pass hands the method boundary, becomes a reference to a generated
+`__SWAMP_IN_N` variable with the data-origin references above, and a sentinel
+inside a data range is left for this placement. It is not a secret: its value
+is not registered with the redactor. See Shell Safety, Data in `run`, in
+[expressions](./expressions.md#data-in-run) (`shell_data_placement.ts`).
+
 ## 8. Persistence and resume
 
 ### 8.1 Persisted form

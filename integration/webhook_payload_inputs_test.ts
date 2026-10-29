@@ -586,14 +586,12 @@ Deno.test({
         route: "/hooks/linear",
       });
 
-      // The command the shell actually ran must still carry the raw
-      // expression text, byte for byte, proving it was neither evaluated nor
-      // stripped. The run's recorded inputs echo the raw text regardless, so
-      // read the shell model's result record instead: its command is the run
-      // argument after every evaluation pass, and it is written before the
-      // exit code is judged. Asserting on the step's printed output instead
-      // would depend on the shell: sh tries to expand the literal text and
-      // fails, and only bash repeats the offending word in its error.
+      // The shell must print the raw expression text, byte for byte,
+      // proving it was neither evaluated nor stripped. The run's recorded
+      // inputs echo the raw text regardless, so read the shell model's result
+      // record instead. The text is webhook data, so the command holds an
+      // environment reference and the shell prints the text as it came
+      // (swamp-club#3868).
       const { repoContext } = await requireInitializedRepoUnlocked({
         repoDir,
         outputMode: "log",
@@ -605,7 +603,11 @@ Deno.test({
       assertEquals(results.length, 1, "the shell step must record its result");
       assertEquals(
         results[0].attributes?.command,
-        `echo "VALUE=${injected}"`,
+        'echo "VALUE=${__SWAMP_IN_0}"',
+      );
+      assertEquals(
+        (results[0].attributes?.stdout as string).trim(),
+        `VALUE=${injected}`,
         "injected data.latest() text was evaluated or altered",
       );
     });

@@ -68,6 +68,12 @@ import {
 import { extractExpressions } from "../expressions/expression_parser.ts";
 import { containsSwampExpression } from "../expressions/swamp_namespaces.ts";
 import {
+  type DataRange,
+  keyPath,
+  methodArgumentPath,
+  ProvenanceMap,
+} from "../expressions/provenance_map.ts";
+import {
   containsEnvExpression,
   containsVaultExpression,
 } from "../expressions/expression_evaluation_service.ts";
@@ -303,6 +309,14 @@ export interface MethodExecutionService {
 /** How one execution delivers the step's vault secrets. */
 export interface MethodDeliveryOptions {
   /**
+   * Where data sits in `definition`'s data, after the runtime pass, so the
+   * method's {@link MethodDefinition.placeDataSplices} hook puts data text
+   * where its method cannot parse it as syntax (swamp-club#3868). Required:
+   * a caller that leaves it out would run data as authored text. A caller
+   * whose definition holds no data passes `ProvenanceMap.authored()`.
+   */
+  argumentProvenance: ProvenanceMap;
+  /**
    * Loads the vault references in the step's arguments at delivery. It is
    * the loader of the evaluator whose runtime pass issued them, and is not
    * part of the context a method or check receives. Without one, a vault
@@ -473,6 +487,106 @@ export function unresolvedArgumentsOf(
     merged[key] = value;
   }
   return { ...merged, ...definition.getMethodArguments(methodName) };
+}
+
+/** A step's global and method arguments, as a dispatch carries them. */
+export interface StepArguments {
+  globalArgs: Record<string, unknown>;
+  methodArgs: Record<string, unknown>;
+}
+
+/**
+ * Places data text in a step's arguments for the platform of the host that
+ * runs the method body, through the method's
+ * {@link MethodDefinition.placeDataSplices} hook (swamp-club#3868). Built
+ * from the definition `provenance` describes; the arguments it is given may
+ * be a later form of them (a remote frame, an upgraded definition). A
+ * string argument holding data whose text differs from the one the
+ * provenance was recorded on cannot be placed, so it is refused rather than
+ * run as authored text. Identity when the method has no hook or its
+ * arguments hold no data.
+ */
+export function dataSplicePlacer(
+  definition: Definition,
+  method: MethodDefinition,
+  methodName: string,
+  provenance: ProvenanceMap,
+): (args: StepArguments, platform: string) => StepArguments {
+  const hook = method.placeDataSplices;
+  const methodArgs = definition.getMethodArguments(methodName);
+  const pathOf = (key: string) =>
+    Object.hasOwn(methodArgs, key)
+      ? methodArgumentPath(methodName, key)
+      : keyPath("globalArguments", key);
+  const expected = unresolvedArgumentsOf(definition, methodName);
+  const holdsData = Object.keys(expected).some((key) =>
+    provenance.hasDataAtOrBelow(pathOf(key))
+  );
+  if (!hook || !holdsData) return (args) => args;
+  const rangesOf = (key: string): readonly DataRange[] => {
+    const value = expected[key];
+    if (typeof value !== "string") return [];
+    const path = pathOf(key);
+    return provenance.isWholeDataAt(path)
+      ? [[0, value.length]]
+      : provenance.rangesAt(path);
+  };
+  return (args, platform) => {
+    const { globalArgs, methodArgs: stepMethodArgs } = args;
+    const merged: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(globalArgs)) {
+      if (!containsSwampExpression(value)) merged[key] = value;
+    }
+    Object.assign(merged, stepMethodArgs);
+    const changes = hook({
+      arguments: merged,
+      dataRangesOf: (key) => {
+        const ranges = rangesOf(key);
+        if (ranges.length > 0 && merged[key] !== expected[key]) {
+          throw new UserError(
+            `Refused to run ${methodName}: argument ${key} holds text from ` +
+              `data, and its text changed after evaluation, so swamp cannot ` +
+              `tell which part is data. Pass the value in the env argument ` +
+              `and reference the variable instead of splicing it into ` +
+              `${key} (shell_data_placement_refused)`,
+            "shell_data_placement_refused",
+          );
+        }
+        return ranges;
+      },
+      platform,
+    });
+    if (Object.keys(changes).length === 0) return args;
+    const placedGlobals = { ...globalArgs };
+    const placedMethodArgs = { ...stepMethodArgs };
+    for (const [key, value] of Object.entries(changes)) {
+      // Written where it was authored; the method argument wins the merge.
+      // A global the merge left out (it still holds an expression) is never
+      // replaced: the method did not see it, so the change goes beside it.
+      if (
+        Object.hasOwn(stepMethodArgs, key) || !Object.hasOwn(merged, key)
+      ) {
+        placedMethodArgs[key] = value;
+      } else {
+        placedGlobals[key] = value;
+      }
+    }
+    return { globalArgs: placedGlobals, methodArgs: placedMethodArgs };
+  };
+}
+
+/** `definition` with `placed` as its global and `methodName`'s arguments. */
+function withStepArguments(
+  definition: Definition,
+  methodName: string,
+  placed: StepArguments,
+): Definition {
+  const copy = Definition.fromData(definition.toData());
+  for (const [key, value] of Object.entries(placed.globalArgs)) {
+    copy.setGlobalArgument(key, value);
+  }
+  copy.setMethodArguments(methodName, placed.methodArgs);
+  return copy;
 }
 
 /** What one delivery attempt carries into its checks and its method. */
@@ -1127,6 +1241,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     currentDefinition: Definition,
     methodName: string,
     delivery: RemoteDelivery,
+    placeData: (args: StepArguments, platform: string) => StepArguments,
   ): Promise<RemoteStepResult> {
     const dispatcher = getRemoteStepDispatcher();
     if (dispatcher === null) {
@@ -1205,6 +1320,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           : undefined,
         redactorSeeds: redactorSeeds.length > 0 ? redactorSeeds : undefined,
         legacyDelivery: delivery.legacyDelivery,
+        placeArguments: placeData,
         onArgumentsValidated: reportedOnly(delivery.validated, context),
         beginLockHandOff: lockHandOffFor(context),
         declaredWrites: context.declaredWrites,
@@ -1650,7 +1766,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     modelDef: ModelDefinition,
     methodName: string,
     context: MethodContext,
-    options: MethodDeliveryOptions = {},
+    options: MethodDeliveryOptions = {
+      argumentProvenance: ProvenanceMap.authored(),
+    },
   ): Promise<MethodResult> {
     return withSpan("swamp.model.method", {
       "model.name": definition.name,
@@ -1753,6 +1871,31 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // the shell policy belong to the host that runs the body.
       const isRemotePlacement = context.placement &&
         hasPlacement(context.placement);
+
+      // Data text in the arguments is placed for the shell of the host that
+      // runs the method body (swamp-club#3868): this host's for a local step,
+      // before the merge, the refusals and the checks read the arguments;
+      // the chosen worker's, on every dispatch attempt, for a remote one.
+      const placeData = dataSplicePlacer(
+        definition,
+        method,
+        methodName,
+        options.argumentProvenance,
+      );
+      if (!isRemotePlacement) {
+        const authoredArgs: StepArguments = {
+          globalArgs: currentDefinition.globalArguments,
+          methodArgs: currentDefinition.getMethodArguments(methodName),
+        };
+        const placed = placeData(authoredArgs, Deno.build.os);
+        if (placed !== authoredArgs) {
+          currentDefinition = withStepArguments(
+            currentDefinition,
+            methodName,
+            placed,
+          );
+        }
+      }
 
       // The merge as `unresolvedMethodArgs` carries it, built while the
       // global arguments still hold their sentinels: resolution below writes
@@ -2127,6 +2270,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             currentDefinition,
             methodName,
             remoteDelivery!,
+            placeData,
           );
           // Rebuild full handles from the durable records the data plane
           // persisted — downstream consumers (data-record mapping, workflow

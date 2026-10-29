@@ -13,6 +13,7 @@
   - ["Behavior type not found"](#model-type-not-found)
 - [Expression Debugging](#expression-debugging)
 - [Method Execution Issues](#method-execution-issues)
+  - [Shell step treats an input as one word, or refuses it](#shell-step-treats-an-input-as-one-word-or-refuses-it)
 - [Data and Output Issues](#data-and-output-issues)
 
 ## Common Errors
@@ -404,6 +405,35 @@ aws sts get-caller-identity
 # Check vault expressions resolve
 swamp vault read-secret <vault-name> <key> --json
 ```
+
+### Shell Step Treats an Input as One Word, or Refuses It
+
+**Symptom**: a `command/shell` value from an input, `data.*`, a step output or
+`env.*` arrives as a single argument (no word splitting, no globbing), the
+recorded `command` shows `"${__SWAMP_IN_0}"`, or the step fails with
+`shell_data_placement_refused`.
+
+**Cause**: data spliced into `run` is passed through a generated environment
+variable so it is never parsed as shell syntax. Authored text, including an
+input equal to its default, is unchanged. Refused: data inside a quoted
+here-document (`<<'EOF'`) or PowerShell single quotes, data inside shell
+arithmetic (`$(( ))`, `(( ))`, `for((`, `$[ ]`, array subscripts,
+`${s:offset}`), and a `run` that is nothing but data.
+
+**Solutions**:
+
+1. Use an unquoted here-document delimiter or double quotes.
+2. For arithmetic, pass the value in `env`, check it is a number, then use it:
+   `case $N in *[!0-9]*|'') exit 1;; esac; echo $((N + 1))`. Check the same way
+   before `[[ -eq ]]`, `let`, or putting a value in command position.
+3. To split a value into words or run it as code, pass it in `env` and choose
+   explicitly in `run`:
+
+   ```yaml
+   env:
+     FLAGS: "${{ inputs.flags }}"
+   run: deploy $FLAGS # unquoted: split into words; `eval "$SCRIPT"` runs code
+   ```
 
 ## Data and Output Issues
 

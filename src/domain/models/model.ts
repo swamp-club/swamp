@@ -28,6 +28,7 @@ import { isControlPlaneModelType } from "./control_plane_types.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import type { SecretOccurrences } from "../vaults/secret_occurrences.ts";
+import type { DataRange } from "../expressions/provenance_map.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
 import { assertModelSecretsMetadataValid } from "./secret_destinations.ts";
 import type { MethodExecutionEvent } from "./method_events.ts";
@@ -865,6 +866,38 @@ export interface MethodDefinition<
    * placements no environment reference can expand.
    */
   refuseSecretDestinations?(args: SecretDestinationArgs): void;
+
+  /**
+   * Rewrites arguments that hold data-origin text where the method would
+   * parse it as syntax, before the method runs (swamp-club#3868). The method
+   * boundary calls it for every run with the arguments as
+   * `unresolvedMethodArgs` carries them and where data sits in each, for the
+   * platform of the host that runs the method body: this host for a local
+   * step, the chosen worker for a remote one, once per dispatch attempt.
+   * Returns the arguments it changes, keyed by argument name; it throws a
+   * `UserError` to refuse. The built-in `command/shell` behavior uses it to
+   * put data spliced into `run` through the environment.
+   */
+  placeDataSplices?(args: DataSpliceArgs): Record<string, unknown>;
+}
+
+/**
+ * What a method's {@link MethodDefinition.placeDataSplices} hook receives.
+ */
+export interface DataSpliceArgs {
+  /**
+   * The method's arguments as `unresolvedMethodArgs` carries them, sentinels
+   * in place of secrets. Read before coercion and validation, so any shape
+   * is possible.
+   */
+  readonly arguments: Record<string, unknown>;
+  /**
+   * The data ranges of the string argument `key`, as offsets into
+   * `arguments[key]`; empty when it holds no data.
+   */
+  dataRangesOf(key: string): readonly DataRange[];
+  /** The OS of the host that runs the method body, as `Deno.build.os`. */
+  readonly platform: string;
 }
 
 /**

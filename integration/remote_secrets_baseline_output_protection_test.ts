@@ -227,6 +227,7 @@ function stepRequest(
 ): RemoteStepRequest {
   const definitionId = crypto.randomUUID();
   return {
+    placeArguments: (args) => args,
     placement: { labels: { tier: "baseline" } },
     modelDef: modelRegistry.get(OUTPUT_BASELINE_TYPE)!,
     modelType: OUTPUT_BASELINE_TYPE,

@@ -2704,6 +2704,7 @@ export class DefaultStepExecutor implements StepExecutor {
             runLogger,
             secretBag,
             secretLoader: expressionEvaluator.secretLoader(ctx.secretRedactor),
+            argumentProvenance: runtimeResult.provenance,
             resolvedPlacement,
           });
         const result = heldLockIds === undefined
@@ -2822,6 +2823,8 @@ export class DefaultStepExecutor implements StepExecutor {
       : never;
     /** Loads `secretBag`'s vault references at delivery. */
     secretLoader: SecretLoader;
+    /** Where data sits in `evaluatedDefinition`, after the runtime pass. */
+    argumentProvenance: ProvenanceMap;
     resolvedPlacement?: {
       target?: string;
       labels?: Record<string, string>;
@@ -2845,6 +2848,7 @@ export class DefaultStepExecutor implements StepExecutor {
       runLogger,
       secretBag,
       secretLoader,
+      argumentProvenance,
       resolvedPlacement,
     } = args;
 
@@ -3019,7 +3023,11 @@ export class DefaultStepExecutor implements StepExecutor {
             : undefined,
         },
       ),
-      { secretLoader, unreadReferences: ctx.sensitiveValues },
+      {
+        secretLoader,
+        unreadReferences: ctx.sensitiveValues,
+        argumentProvenance,
+      },
     );
   }
 

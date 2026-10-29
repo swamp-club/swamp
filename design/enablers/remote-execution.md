@@ -1688,6 +1688,16 @@ credentials and extensions onto workers:
   the version went to 5, so a worker on either side of that change is refused
   at enrollment rather than failing on its first secret-bearing dispatch.
 
+- **Data in a shell step's `run`** (swamp-club#3868) is placed by serve for the
+  shell of the worker each attempt is dispatched to, by the platform it
+  enrolled with: `DispatchService` calls the request's `placeArguments` while
+  it builds the frame, so a re-dispatch after a lost worker is placed again for
+  its replacement. The frame carries `run` with `__SWAMP_IN_N` references and
+  the text in `env`, so no protocol field was added and version 5 and 6 workers
+  run it as they run any arguments. A version 5 frame whose `run` holds both
+  data and a secret cannot be placed (its arguments carry the secret's value)
+  and is refused, as is a worker whose platform swamp does not know.
+
   **The protected load route (typed-secrets 5.1).** `POST /data/secrets`
   (`src/serve/dispatch_secret_loads.ts`) answers a list of vault references with
   their values, so a version 6 runner loads its step's bag itself and the

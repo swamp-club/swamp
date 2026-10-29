@@ -1556,6 +1556,100 @@ As a result:
 - Non-shell contexts (extension behaviors, API calls) get the exact raw secret
   values, with no escaping artifacts.
 
+#### Data in `run`
+
+The same guarantee covers every value that came from data, not only secrets
+(swamp-club#3868). Data is anything swamp did not read from the definition or
+workflow source: an input a workflow's caller or a webhook supplied (a pull
+request title mapped through `trigger.inputs` is set by whoever opens the pull
+request), an `--input` value, a `data.*` read, a step output, a behavior's
+resources, and `env.*`. Swamp records where each such value landed in an
+argument (its provenance), and the shell behavior places each data range of
+`run` as a reference to a generated environment variable named
+`__SWAMP_IN_<n>`, with the context-aware references a secret read through data
+gets: `"${__SWAMP_IN_0}"` unquoted, `${__SWAMP_IN_0}` inside double quotes, a
+break-out `'"${__SWAMP_IN_0}"'` inside single quotes, and `"$env:__SWAMP_IN_0"`
+on PowerShell (`${env:__SWAMP_IN_0}` inside double quotes, so text written
+right after it is not read as part of the name). The text reaches the shell as
+one literal word.
+
+```yaml
+# Caller input: name = "x; touch /tmp/p"
+# POSIX shell receives: echo hello "${__SWAMP_IN_0}"
+# env __SWAMP_IN_0="x; touch /tmp/p"
+# Output: hello x; touch /tmp/p  (the shell never parses the text)
+methods:
+  execute:
+    arguments:
+      run: "echo hello ${{ inputs.name }}"
+```
+
+Authored text is unchanged: the definition's own text, `self.*`, and an input
+whose value equals its schema default or static trigger literal are spliced
+inline as before. Arguments a calling behavior's own code routes in through
+`runModel` (method and global arguments alike), and a method argument an
+operator sets whole with `--input` (`--input 'run=echo hi'` in direct
+execution), are that code's or that operator's own text for the argument and
+read as authored too. What an expression in such text reads at run time
+(`env.*`, a deferred `data.*` read) is still data, placed like any other. A
+value given with `--literal-inputs` (or `literalInputs` over serve) is data,
+whole, and an `--input` value for a definition input that is spliced into `run`
+is data.
+
+Placement is refused, with code `shell_data_placement_refused`, where no
+reference can expand or the text cannot be placed safely:
+
+- data in a here-document with a quoted delimiter (POSIX) or inside single
+  quotes (PowerShell);
+- data inside shell arithmetic, quoted or not: `$(( ... ))`, `(( ... ))`
+  (`for((`, `while((` included), `$[ ... ]`, an array subscript (`a[...]=`,
+  `${a[...]}`) or a substring offset (`${s:...}`). bash evaluates an expanded
+  value there again as an expression, and an array subscript in it
+  (`a[$(id)]`) runs a command substitution, so no reference keeps the value
+  literal. Swamp reads these spans from the text alone, so it may refuse one
+  that quoting makes harmless;
+- a `run` that is a single data value, which as one literal word could only
+  name a program (several values with only spaces between them are not
+  refused: see command position below);
+- a host whose shell swamp does not know, and a remote step dispatched to such
+  a worker;
+- an `env` argument that is not an object of variables;
+- a `--last-evaluated` replay of a cache saved before provenance was recorded
+  (`evaluated_cache_without_provenance`): run once without the flag.
+
+A value that is meant to be split into words or run as code is passed through
+the `env` argument and referenced in `run`, where the author decides:
+
+```yaml
+env:
+  FLAGS: "${{ inputs.flags }}"
+  SCRIPT: "${{ inputs.script }}"
+# Unquoted: split into words (and globbed; set -f to stop that), never parsed
+run: deploy $FLAGS
+# Deliberate: the author opts in to running the text as code
+# run: eval "$SCRIPT"
+# PowerShell: $env:FLAGS -split ' ', or Invoke-Expression $env:SCRIPT
+```
+
+Placement keeps the shell from parsing data as syntax. It cannot stop a
+command from treating its own argument as code or as the program to run, so the
+author still decides where data may go:
+
+- in command position (`${{ inputs.tool }} --version`) the value names the
+  program that runs;
+- bash evaluates the operands of `[[ ... -eq ... ]]` and the other arithmetic
+  comparisons, `let`, and a value assigned to a variable declared integer
+  (`declare -i`, `local -i`) as expressions, as it does in `$(( ))`;
+- `eval`, `sh -c`, `Invoke-Expression` and similar commands run what they are
+  given.
+
+Pass such a value through `env` and check it is what the step expects (a
+number, a name from a fixed list) before using it there.
+
+The recorded `command` attribute of a run shows the references, not the data.
+A remote step is placed for the shell of the worker that runs it, on every
+dispatch attempt (see [Remote execution](./remote-execution.md)).
+
 ## Environment Variables
 
 All process environment variables are available in CEL through the `env`

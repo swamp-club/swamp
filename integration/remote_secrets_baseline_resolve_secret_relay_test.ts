@@ -100,6 +100,7 @@ async function withRelay(fn: (relay: Relay) => Promise<void>): Promise<void> {
     });
 
     const step = o.dispatchService.executeRemote({
+      placeArguments: (args) => args,
       placement: { target: workerName },
       modelDef: modelRegistry.get(IT_TYPE)!,
       modelType: IT_TYPE,

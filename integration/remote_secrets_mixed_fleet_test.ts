@@ -27,6 +27,7 @@
  * route; the version 5 dispatch keeps today's plaintext frame.
  */
 
+import { ProvenanceMap } from "../src/domain/expressions/provenance_map.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { walk } from "@std/fs";
@@ -259,6 +260,7 @@ async function runStep(
       "run",
       context,
       {
+        argumentProvenance: ProvenanceMap.authored(),
         secretLoader: new SecretLoader(() => Promise.resolve(vault)),
         onArgumentsValidated: () => {
           validated++;

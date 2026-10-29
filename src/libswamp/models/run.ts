@@ -803,6 +803,12 @@ export async function* modelMethodRun(
               let executedProvenance = ProvenanceMap.authored();
               // Where data sits in the raw copy, as the evaluated cache stores it.
               let rawProvenance = ProvenanceMap.authored();
+              // Method arguments the operator set whole with --input. The
+              // value is the operator's own text for that argument, not data
+              // spliced into the definition's, so a method that places data
+              // text reads it as authored, as it reads the definition
+              // (swamp-club#3868).
+              const operatorArgumentKeys: string[] = [];
               const stepSecretBag = new VaultSecretBag(
                 sensitiveValues.sentinels,
               );
@@ -940,6 +946,25 @@ export async function* modelMethodRun(
                     error: evaluatedCacheHoldsSensitiveArguments(
                       definition.name,
                       plaintextArgs,
+                    ),
+                  };
+                  return;
+                }
+                // A cache written before provenance cannot say which text
+                // came from data, and a method that places data text
+                // (command/shell) would run all of it as authored
+                // (swamp-club#3868).
+                if (
+                  !(lastEval.provenance instanceof ProvenanceMap) &&
+                  method.placeDataSplices !== undefined
+                ) {
+                  exprSpan.end();
+                  setupSpan.end();
+                  yield {
+                    kind: "error",
+                    error: evaluatedCacheWithoutProvenance(
+                      definition.name,
+                      input.methodName,
                     ),
                   };
                   return;
@@ -1108,6 +1133,7 @@ export async function* modelMethodRun(
                   }
                 }
                 for (const [key, value] of Object.entries(overrideInputs)) {
+                  operatorArgumentKeys.push(key);
                   evaluatedDefinition.setMethodArgument(
                     input.methodName,
                     key,
@@ -1237,6 +1263,23 @@ export async function* modelMethodRun(
                   ),
                 ),
               });
+              // A whole argument the operator typed with --input is the
+              // operator's own command text, so a command/shell run given that
+              // way runs as written; the splices the runtime pass makes into
+              // it are still data, recorded on top. Under literalInputs the
+              // caller said the text is data, so it stays data. Every
+              // expression the operator typed is already authored, so this
+              // changes nothing the pass resolves.
+              const placementProvenance = input.literalInputs
+                ? executedProvenance
+                : operatorArgumentKeys.reduce(
+                  (map, key) =>
+                    map.graft(
+                      methodArgumentPath(input.methodName, key),
+                      ProvenanceMap.authored(),
+                    ),
+                  executedProvenance,
+                );
               // Scoped to the invoked method: another method's vault and env
               // expressions are left as authored, neither checked, loaded nor
               // failed on, as its failed definition-pass expressions are never
@@ -1250,7 +1293,7 @@ export async function* modelMethodRun(
                   {
                     secretBag: stepSecretBag,
                     rawGlobalArguments: evaluatedDefinition.globalArguments,
-                    provenance: executedProvenance,
+                    provenance: placementProvenance,
                     methodName: input.methodName,
                   },
                 );
@@ -1478,6 +1521,7 @@ export async function* modelMethodRun(
                             redactor,
                           ),
                           onArgumentsValidated: saveEvaluation,
+                          argumentProvenance: runtimeResult.provenance,
                           unreadReferences: sensitiveValues,
                         },
                       )),
@@ -2091,6 +2135,27 @@ export function evaluatedCacheHoldsSensitiveArguments(
       paths,
       "method",
     ),
+  };
+}
+
+/** The error code of a replay refused for want of provenance. */
+export const EVALUATED_CACHE_WITHOUT_PROVENANCE_CODE =
+  "evaluated_cache_without_provenance";
+
+/**
+ * The error for a `--last-evaluated` replay of a method that places data
+ * text, from a cache that records no provenance (swamp-club#3868).
+ */
+export function evaluatedCacheWithoutProvenance(
+  name: string,
+  methodName: string,
+): SwampError {
+  return {
+    code: EVALUATED_CACHE_WITHOUT_PROVENANCE_CODE,
+    message: `Cannot replay ${name} ${methodName} with --last-evaluated: its ` +
+      `evaluation was saved by an older swamp and does not record which ` +
+      `text came from data, so it cannot be run safely. Run it without ` +
+      `--last-evaluated once to save a new evaluation.`,
   };
 }
 

@@ -40,6 +40,8 @@ export async function dispatchFleetProbe(
       modelType: FLEET_PROBE_MODEL_TYPE,
       modelId: FLEET_PROBE_DEFINITION_ID,
       methodName: "verify",
+      // The probe's arguments are swamp's own and hold no data.
+      placeArguments: (args) => args,
       definitionName: "probe",
       definitionTags: {},
       definitionMeta: {
