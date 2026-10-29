@@ -22,7 +22,6 @@ import type { InboxMessageView } from "../../libswamp/inbox/list.ts";
 import type {
   InboxReadNextEvent,
   InboxReadNextView,
-  MarkReadEvent,
 } from "../../libswamp/inbox/read.ts";
 import { userErrorFromSwampError } from "../../libswamp/errors.ts";
 import type { EventHandlers } from "../../libswamp/stream.ts";
@@ -32,7 +31,7 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { droppedWarning, localDate } from "./inbox_list.ts";
 
-export const NOT_MARKED_WARNING =
+const NOT_MARKED_WARNING =
   "Swamp Club did not confirm this message as read, so it is still unread.";
 
 /** One message as plain text, for output that is not a terminal. */
@@ -138,40 +137,4 @@ export function createInboxReadRenderer(
     case "log":
       return new LogInboxReadRenderer();
   }
-}
-
-/**
- * Renders marking read from the picker. With `announce`, as after Ctrl-r and
- * Ctrl-a, it says how many were marked; after Enter the opened message in
- * the scrollback already says enough. With `openedId`, the unread message
- * Enter opened, it warns when Swamp Club did not confirm it as read, as
- * `swamp inbox read` does.
- */
-export function createMarkReadRenderer(
-  options: { announce: boolean; openedId?: string },
-): Renderer<MarkReadEvent> {
-  return {
-    handlers: () => ({
-      loading_credentials: () => {},
-      contacting_server: () => {},
-      completed: ({ marked }) => {
-        const { openedId } = options;
-        if (
-          openedId !== undefined &&
-          !marked.some((id) => id.toUpperCase() === openedId.toUpperCase())
-        ) {
-          console.error(yellow(NOT_MARKED_WARNING));
-        }
-        if (!options.announce) return;
-        writeOutput(
-          marked.length === 1
-            ? "Marked 1 message read."
-            : `Marked ${marked.length} messages read.`,
-        );
-      },
-      error: (e) => {
-        throw userErrorFromSwampError(e.error);
-      },
-    }),
-  };
 }

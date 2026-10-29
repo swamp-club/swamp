@@ -118,8 +118,6 @@ export {
   inboxReadNext,
   type InboxReadNextEvent,
   type InboxReadNextView,
-  markRead,
-  type MarkReadEvent,
 } from "./inbox/read.ts";
 export {
   createInboxNoticeDeps,

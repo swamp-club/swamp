@@ -21,18 +21,10 @@ import { assertEquals, assertThrows } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
 import { UserError } from "../../domain/errors.ts";
 import type { InboxMessageView } from "../../libswamp/inbox/list.ts";
-import type {
-  InboxReadNextView,
-  MarkReadEvent,
-} from "../../libswamp/inbox/read.ts";
+import type { InboxReadNextView } from "../../libswamp/inbox/read.ts";
 import { notAuthenticated } from "../../libswamp/errors.ts";
-import type { EventHandlers } from "../../libswamp/stream.ts";
 import type { OutputMode } from "../output/output.ts";
-import {
-  createInboxReadRenderer,
-  createMarkReadRenderer,
-  NOT_MARKED_WARNING,
-} from "./inbox_read.ts";
+import { createInboxReadRenderer } from "./inbox_read.ts";
 
 /** An ISO timestamp at local noon, so its local date holds in every zone. */
 function localNoon(year: number, month: number, day: number): string {
@@ -207,36 +199,4 @@ Deno.test("createInboxReadRenderer: an error event throws a UserError", () => {
       UserError,
     );
   }
-});
-
-function markRead(
-  marked: string[],
-  announce: boolean,
-  openedId?: string,
-): { stdout: string; stderr: string } {
-  const handlers: EventHandlers<MarkReadEvent> = createMarkReadRenderer({
-    announce,
-    ...(openedId !== undefined ? { openedId } : {}),
-  }).handlers();
-  return captureOutput(() => handlers.completed({ kind: "completed", marked }));
-}
-
-Deno.test("createMarkReadRenderer: counts what was marked, only when announcing", () => {
-  assertEquals(markRead(["A"], true).stdout, "Marked 1 message read.");
-  assertEquals(markRead(["A", "B"], true).stdout, "Marked 2 messages read.");
-  assertEquals(markRead([], true).stdout, "Marked 0 messages read.");
-  assertEquals(markRead(["A"], false).stdout, "");
-});
-
-Deno.test("createMarkReadRenderer: warns when the message Enter opened was not confirmed", () => {
-  const id = "01JBX5Q8ZK00000000000000ZX";
-  assertEquals(markRead([], false, id), {
-    stdout: "",
-    stderr: NOT_MARKED_WARNING,
-  });
-  // Confirmed, in either case: no warning.
-  assertEquals(markRead([id], false, id).stderr, "");
-  assertEquals(markRead([id.toLowerCase()], false, id).stderr, "");
-  // Nothing opened unread (an already read message): nothing to confirm.
-  assertEquals(markRead([], false).stderr, "");
 });
