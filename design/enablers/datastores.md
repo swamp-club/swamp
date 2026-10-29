@@ -8041,7 +8041,8 @@ refreshes its resource does. `methodRunLockMode`
   run writes a version of each built-in method-summary report, so failing
   would fail any read that overlaps another clone's run of the same
   behavior. The CLI logs it at warn and exits with the method's own status;
-  serve, which has answered its client before it publishes, logs it.
+  serve, which has answered its client before it publishes, logs it at warn
+  too.
 - Every push made under a behavior's lock with a repository context also
   publishes the versions earlier runs deferred for it, with the same
   data-id check, and removes their records once the datastore confirms

@@ -206,6 +206,7 @@ import {
 import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import { containedLogFileReader } from "./log_file_containment.ts";
 import {
+  DataVersionConflictError,
   isUnpublishedDataError,
   type WrittenVersion,
 } from "../../domain/datastore/datastore_sync_service.ts";
@@ -311,7 +312,21 @@ async function publishUnlockedRun(
   try {
     await publishLocks.pushWritten(written);
   } catch (error) {
-    pushFailure = { error };
+    if (error instanceof DataVersionConflictError) {
+      // The run's work is done and the rest of its data was published, as
+      // the CLI warns for a read or list run (swamp-club#3934).
+      logger.warn(
+        "Another swamp process wrote {versions} of behavior {model} while this run was running: the datastore keeps that copy, and this host now holds it in place of this run's",
+        {
+          versions: error.versions.map((v) =>
+            `${v.dataName} version ${v.version}`
+          ).join(", "),
+          model: `${model.modelType}/${model.modelId}`,
+        },
+      );
+    } else {
+      pushFailure = { error };
+    }
   }
   await releaseModelLocks(publishLocks, pushFailure);
 }
