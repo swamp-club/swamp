@@ -44,9 +44,13 @@ class LogVaultEditRenderer implements Renderer<VaultEditEvent> {
       },
       completed: (e) => {
         const data = e.data;
-        if (data.status === "opened") {
+        if (data.status === "unchanged") {
           logger
-            .info`Opening vault config in ${data.editor}: ${data.name} (${data.type}) at ${data.path}`;
+            .info`No changes to vault ${data.name} (${data.type}); nothing was saved`;
+          return;
+        } else if (data.editor) {
+          logger
+            .info`Saved vault config from ${data.editor}: ${data.name} (${data.type}) at ${data.path}`;
         } else {
           logger
             .info`Updated vault config from stdin: ${data.name} (${data.type}) at ${data.path}`;

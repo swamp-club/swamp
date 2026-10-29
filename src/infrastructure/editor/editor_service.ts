@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { basename } from "@std/path";
+import { UserError } from "../../domain/errors.ts";
 import { defaultCommandResolver } from "../process/resolve_command.ts";
 
 /**
@@ -25,6 +27,11 @@ import { defaultCommandResolver } from "../process/resolve_command.ts";
 export interface EditorResult {
   editor: string;
   path: string;
+  /**
+   * Whether the editor exited successfully, when its exit was waited for.
+   * A non-zero exit (vim's `:cq`) means the person abandoned the edit.
+   */
+  success?: boolean;
 }
 
 /**
@@ -33,6 +40,15 @@ export interface EditorResult {
 export interface EditorLaunch {
   editor: string;
   waitsForExit: boolean;
+  /** The command line the launch runs, the file path last. */
+  args?: readonly string[];
+  /**
+   * Whether the editor is known to stay open until the file is closed: a
+   * terminal editor, or a GUI editor given its wait flag. An unknown
+   * editor is waited for, but may hand the file to another process and
+   * exit before the person has saved.
+   */
+  waitConfirmed?: boolean;
   open: () => Promise<EditorResult>;
 }
 
@@ -47,6 +63,12 @@ export interface OpenFileOptions {
    * - GUI editors (code, zed, subl, etc.): don't wait
    */
   wait?: boolean;
+  /**
+   * Wait for every editor, and refuse one that cannot be made to: a launcher
+   * that hands the file to another program and exits at once. A caller that
+   * reads the file back after the editor closes sets this (swamp-club#4107).
+   */
+  requireWait?: boolean;
 }
 
 /**
@@ -69,7 +91,50 @@ const TERMINAL_EDITORS = new Set([
   "micro",
   "helix",
   "hx",
+  "kak",
+  "vis",
+  "mg",
 ]);
+
+/**
+ * GUI editors that return at once unless passed a flag, and that flag.
+ * Every other editor is waited for until its process exits.
+ */
+const WAIT_FLAGS: Record<string, { flag: string; aliases: string[] }> = {
+  code: { flag: "--wait", aliases: ["-w"] },
+  "code-insiders": { flag: "--wait", aliases: ["-w"] },
+  cursor: { flag: "--wait", aliases: ["-w"] },
+  windsurf: { flag: "--wait", aliases: ["-w"] },
+  zed: { flag: "--wait", aliases: ["-w"] },
+  subl: { flag: "--wait", aliases: ["-w"] },
+  sublime: { flag: "--wait", aliases: ["-w"] },
+  atom: { flag: "--wait", aliases: ["-w"] },
+  mate: { flag: "-w", aliases: ["--wait"] },
+  gvim: { flag: "-f", aliases: ["--nofork"] },
+  mvim: { flag: "-f", aliases: ["--nofork"] },
+};
+
+/**
+ * Launchers that hand the file to another program and exit at once, so
+ * waiting for them waits for nothing. macOS `open` waits only with `-W`.
+ */
+const NON_WAITING_LAUNCHERS = new Set(["xdg-open", "gio", "start", "explorer"]);
+
+/** An editor's command name, without the directory it was given with. */
+function commandName(command: string): string {
+  return basename(command).replace(/\.(exe|cmd|bat)$/i, "");
+}
+
+function isNonWaitingLauncher(editorParts: string[]): boolean {
+  const base = commandName(editorParts[0]);
+  if (base === "open") {
+    // -W, alone or among combined short flags (-Wa), makes open wait.
+    return !editorParts.some((part) =>
+      part === "--wait-apps" || /^-[A-Za-z]*W[A-Za-z]*$/.test(part)
+    );
+  }
+  return NON_WAITING_LAUNCHERS.has(base);
+}
 
 /**
  * Service for finding and launching the user's preferred editor.
@@ -131,13 +196,40 @@ export class EditorService {
   ): Promise<EditorLaunch> {
     const editor = await this.findEditor();
 
+    if (options.requireWait && isNonWaitingLauncher(editor.split(" "))) {
+      throw new UserError(
+        `The editor '${editor}' opens the file in another program and ` +
+          `returns at once, so swamp cannot tell when the edit is saved. ` +
+          `Set EDITOR to an editor that waits for the file to close ` +
+          `(for example 'code --wait' or 'vim'), or pipe the YAML on stdin.`,
+        "editor_cannot_wait",
+      );
+    }
+
     // Determine whether to wait: use explicit option, or auto-detect based on editor type
-    const shouldWait = options.wait ?? this.isTerminalEditor(editor);
+    const shouldWait = options.requireWait ||
+      (options.wait ?? this.isTerminalEditor(editor));
 
     const args = this.buildEditorArgs(editor, filePath, { wait: shouldWait });
+    const editorParts = editor.split(" ");
+    const waitFlag = WAIT_FLAGS[commandName(editorParts[0])];
+    const waitConfirmed = shouldWait &&
+      (this.isTerminalEditor(editor) ||
+        (waitFlag !== undefined &&
+          [waitFlag.flag, ...waitFlag.aliases].some((flag) =>
+            args.includes(flag)
+          )) ||
+        (commandName(editorParts[0]) === "open" && !isNonWaitingLauncher(
+          editorParts,
+        )) ||
+        // emacsclient waits for the buffer to be finished unless told not to.
+        (commandName(editorParts[0]) === "emacsclient" &&
+          !editorParts.some((part) => part === "-n" || part === "--no-wait")));
     return {
       editor: this.getEditorDisplayName(editor),
       waitsForExit: shouldWait,
+      args,
+      waitConfirmed,
       open: async () => {
         const command = new Deno.Command(args[0], {
           args: args.slice(1),
@@ -149,12 +241,15 @@ export class EditorService {
         if (shouldWait) {
           // Wait for the editor to close (terminal editors)
           const process = command.spawn();
-          await process.status;
-        } else {
-          // Spawn and return immediately (GUI editors)
-          command.spawn();
+          const status = await process.status;
+          return {
+            editor: this.getEditorDisplayName(editor),
+            path: filePath,
+            success: status.success,
+          };
         }
-
+        // Spawn and return immediately (GUI editors)
+        command.spawn();
         return {
           editor: this.getEditorDisplayName(editor),
           path: filePath,
@@ -167,8 +262,7 @@ export class EditorService {
    * Checks if an editor is a terminal-based editor that requires waiting.
    */
   private isTerminalEditor(editor: string): boolean {
-    const baseEditor = editor.split(" ")[0];
-    return TERMINAL_EDITORS.has(baseEditor);
+    return TERMINAL_EDITORS.has(commandName(editor.split(" ")[0]));
   }
 
   /**
@@ -193,16 +287,16 @@ export class EditorService {
     const editorParts = editor.split(" ");
     args.push(...editorParts);
 
-    // Add wait flag for supported editors
-    if (options.wait) {
-      const baseEditor = editorParts[0];
-      if (baseEditor === "code" || baseEditor === "code-insiders") {
-        args.push("--wait");
-      } else if (baseEditor === "zed") {
-        args.push("--wait");
-      } else if (baseEditor === "subl" || baseEditor === "sublime") {
-        args.push("--wait");
-      }
+    // Add the wait flag for GUI editors that have one, unless $EDITOR
+    // already carries it
+    const waitFlag = WAIT_FLAGS[commandName(editorParts[0])];
+    if (
+      options.wait && waitFlag &&
+      ![waitFlag.flag, ...waitFlag.aliases].some((flag) =>
+        editorParts.includes(flag)
+      )
+    ) {
+      args.push(waitFlag.flag);
     }
 
     args.push(filePath);

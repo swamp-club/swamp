@@ -457,6 +457,8 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/domain/extensions/extension_rubric_scorer.ts: scoreExtensionTarball":
       UNEVALUATED_TEMP,
     "src/domain/models/bundle.ts: bundleExtension": UNEVALUATED_TEMP,
+    "src/libswamp/editor_session.ts: editInEditor":
+      "A private copy of a stored definition for the editor (swamp-club#4107): the raw YAML as stored, expressions and vault references unevaluated, so no expression value reaches it.",
     "src/infrastructure/datastore_v3/litestream/litestream_binary_provider.ts: denoLitestreamFs":
       UNEVALUATED_TEMP,
     "src/infrastructure/inbox/inbox_cache_file_repository.ts: InboxCacheFileRepository":

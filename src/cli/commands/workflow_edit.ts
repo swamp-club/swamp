@@ -22,9 +22,15 @@ import { startConfigEdit } from "../../infrastructure/persistence/repo_unit_of_w
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createWorkflowEditDeps,
+  resolveWorkflowEditFile,
   workflowEdit,
   type WorkflowEditData,
 } from "../../libswamp/workflows/edit.ts";
+import {
+  createEditorSessionDeps,
+  editInEditor,
+} from "../../libswamp/editor_session.ts";
+import { saveEditedCopy, warnIfCopyKept } from "../editor_edit.ts";
 import {
   workflowSearch,
   type WorkflowSearchDeps,
@@ -164,6 +170,102 @@ export const workflowEditCommand = withRemoteOptions(
 
     const stdinContent = await readStdin();
     const deps = createWorkflowEditDeps(repoDir, repoContext.workflowRepo);
+    const renderer = createWorkflowEditRenderer(cliCtx.outputMode);
+    const editIdOrName = workflowIdOrName;
+    const runEdit = (content: string | null, editor?: string) =>
+      runAsUserConfigEdit(() =>
+        runManagedConfigMutation(
+          repoContext,
+          syncService,
+          datastoreConfig,
+          marker,
+          "workflow edit",
+          () =>
+            consumeStream(
+              workflowEdit(libCtx, deps, {
+                workflowIdOrName: editIdOrName,
+                stdinContent: content,
+                ...(editor !== undefined
+                  ? { source: "editor" as const, editor, allowRename: true }
+                  : { allowRename: options.allowRename === true }),
+              }),
+              renderer.handlers(),
+            ),
+        )
+      );
+
+    // A stored workflow is edited on a copy and saved like a piped edit, so
+    // the edit is committed (swamp-club#4107). Opening the editor loads the
+    // workflow (swamp-club#4097); a change another member lands while it is
+    // open refuses the save.
+    const file = stdinContent === null
+      ? await resolveWorkflowEditFile(libCtx, deps, { workflowIdOrName })
+      : null;
+    if (file && file.kind !== "file") {
+      const name = file.kind === "workflow" ? file.workflow.name : file.name;
+      // A broken file whose id could not be read is named as it was asked
+      // for.
+      const id = (file.kind === "workflow" ? file.workflow.id : file.id) ??
+        editIdOrName;
+      if (name !== null) {
+        await startConfigEdit(repoContext, "workflow", name, true);
+      }
+      const edit = await editInEditor(createEditorSessionDeps(), {
+        content: await Deno.readTextFile(file.path),
+        fileName: name ?? id,
+        onLaunching: (data) =>
+          renderer.handlers().launching({ kind: "launching", data }),
+      });
+      if (edit.status === "unchanged") {
+        renderer.handlers().completed({
+          kind: "completed",
+          data: {
+            path: file.path,
+            editor: edit.editor,
+            status: "unchanged",
+            name: name ?? id,
+            id,
+            ...(edit.keptPath ? { keptPath: edit.keptPath } : {}),
+          },
+        });
+        // A piped edit cannot replace a broken file.
+        warnIfCopyKept(
+          edit,
+          file.kind === "workflow"
+            ? { retry: `swamp workflow edit ${name} --allow-rename` }
+            : {
+              manual: `Run 'swamp workflow edit ${
+                name ?? id
+              }' again and paste the kept copy into the editor.`,
+            },
+          cliCtx.logger,
+        );
+        return;
+      }
+      await saveEditedCopy(
+        edit,
+        // A piped edit cannot replace a broken file, so a refused repair is
+        // retried in the editor.
+        file.kind === "workflow"
+          ? {
+            retry: `swamp workflow edit ${name} --allow-rename`,
+            reload: `swamp workflow get ${name}`,
+          }
+          : {
+            manual: `Run 'swamp workflow edit ${
+              name ?? id
+            }' again and paste the kept copy into the editor.`,
+          },
+        async () => {
+          if (name !== null) {
+            await startConfigEdit(repoContext, "workflow", name, false);
+          }
+          await runEdit(edit.content, edit.editor);
+        },
+      );
+      return;
+    }
+
     // A stale stdin edit, a rename's included, is refused before it
     // writes; opening the editor loads the workflow (swamp-club#4097).
     const target = await repoContext.workflowRepo.findByName(workflowIdOrName)
@@ -182,25 +284,7 @@ export const workflowEditCommand = withRemoteOptions(
       );
     }
 
-    const renderer = createWorkflowEditRenderer(cliCtx.outputMode);
-    await runAsUserConfigEdit(() =>
-      runManagedConfigMutation(
-        repoContext,
-        syncService,
-        datastoreConfig,
-        marker,
-        "workflow edit",
-        () =>
-          consumeStream(
-            workflowEdit(libCtx, deps, {
-              workflowIdOrName,
-              stdinContent,
-              allowRename: options.allowRename === true,
-            }),
-            renderer.handlers(),
-          ),
-      )
-    );
+    await runEdit(stdinContent);
 
     cliCtx.logger.debug("Workflow edit command completed");
   },

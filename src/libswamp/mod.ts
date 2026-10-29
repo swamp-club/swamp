@@ -1361,17 +1361,31 @@ export {
   type ModelEditData,
   type ModelEditDeps,
   type ModelEditEvent,
+  type ModelEditFile,
   type ModelEditInput,
   type ModelEditTarget,
+  resolveModelEditFile,
 } from "./models/edit.ts";
+
+// Editing a stored definition on a copy in the user's editor
+export {
+  createEditorSessionDeps,
+  editInEditor,
+  type EditorLaunchingData,
+  type EditorSessionDeps,
+  type EditorSessionInput,
+  type EditorSessionResult,
+} from "./editor_session.ts";
 
 // Workflow edit operations
 export {
   createWorkflowEditDeps,
+  resolveWorkflowEditFile,
   workflowEdit,
   type WorkflowEditData,
   type WorkflowEditDeps,
   type WorkflowEditEvent,
+  type WorkflowEditFile,
   type WorkflowEditInput,
   type WorkflowEditTarget,
 } from "./workflows/edit.ts";
@@ -1380,11 +1394,13 @@ export {
 export {
   createVaultEditDeps,
   findVaultByNameOrId,
+  resolveVaultEditFile,
   vaultEdit,
   type VaultEditConfigInfo,
   type VaultEditData,
   type VaultEditDeps,
   type VaultEditEvent,
+  type VaultEditFile,
   type VaultEditInput,
   type VaultEditLookupDeps,
 } from "./vaults/edit.ts";

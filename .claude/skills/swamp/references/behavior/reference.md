@@ -293,7 +293,9 @@ then edit directly with the Edit tool, then validate with
 
 **Alternative methods:**
 
-- Interactive: `swamp behavior edit my-shell` (opens in system editor)
+- Interactive: `swamp behavior edit my-shell` (opens a copy in the system editor
+  and saves it when the editor closes, like a stdin update; if the save is
+  refused, the error names the kept copy to retry from)
 - Stdin: `cat updated.yaml | swamp behavior edit my-shell --json`
 
 A stdin update whose `name` differs from the behavior being edited is refused.

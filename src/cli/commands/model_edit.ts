@@ -33,7 +33,13 @@ import {
   createModelEditDeps,
   modelEdit,
   type ModelEditData,
+  resolveModelEditFile,
 } from "../../libswamp/models/edit.ts";
+import {
+  createEditorSessionDeps,
+  editInEditor,
+} from "../../libswamp/editor_session.ts";
+import { saveEditedCopy, warnIfCopyKept } from "../editor_edit.ts";
 import {
   modelSearch,
   type ModelSearchDeps,
@@ -200,7 +206,84 @@ export function createModelEditCommand(syntax: CommandSyntax) {
       }
 
       const stdinContent = await readStdin();
+      const editIdOrName = modelIdOrName;
       const deps = createModelEditDeps(repoDir);
+      const renderer = createModelEditRenderer(cliCtx.outputMode);
+      const runEdit = (
+        content: string | null,
+        editor?: string,
+      ) =>
+        runAsUserConfigEdit(() =>
+          runManagedConfigMutation(
+            repoContext,
+            syncService,
+            datastoreConfig,
+            marker,
+            "model edit",
+            () =>
+              consumeStream(
+                modelEdit(libCtx, deps, {
+                  modelIdOrName: editIdOrName,
+                  stdinContent: content,
+                  ...(editor !== undefined
+                    ? { source: "editor" as const, editor, allowRename: true }
+                    : { allowRename: options.allowRename === true }),
+                }),
+                renderer.handlers(),
+              ),
+          )
+        );
+
+      // A stored definition is edited on a copy and saved like a piped
+      // edit, so the edit is committed (swamp-club#4107). Opening the editor
+      // loads the definition (swamp-club#4097); a change another member lands
+      // while it is open refuses the save.
+      const file = stdinContent === null
+        ? await resolveModelEditFile(libCtx, deps, { modelIdOrName })
+        : null;
+      if (file?.kind === "definition") {
+        const name = file.definition.name;
+        await startConfigEdit(repoContext, "model", name, true);
+        const edit = await editInEditor(createEditorSessionDeps(), {
+          content: await Deno.readTextFile(file.path),
+          fileName: name,
+          onLaunching: (data) =>
+            renderer.handlers().launching({ kind: "launching", data }),
+        });
+        if (edit.status === "unchanged") {
+          renderer.handlers().completed({
+            kind: "completed",
+            data: {
+              path: file.path,
+              editor: edit.editor,
+              status: "unchanged",
+              name,
+              type: file.type.normalized,
+              editType: "definition",
+              ...(edit.keptPath ? { keptPath: edit.keptPath } : {}),
+            },
+          });
+          warnIfCopyKept(
+            edit,
+            { retry: `${syntax.invocation} ${name} --allow-rename` },
+            cliCtx.logger,
+          );
+          return;
+        }
+        await saveEditedCopy(
+          edit,
+          {
+            retry: `${syntax.invocation} ${name} --allow-rename`,
+            reload: `swamp ${syntax.surface} get ${name}`,
+          },
+          async () => {
+            await startConfigEdit(repoContext, "model", name, false);
+            await runEdit(edit.content, edit.editor);
+          },
+        );
+        return;
+      }
+
       // A stale stdin edit, a rename's included, is refused before it
       // writes; opening the editor loads the definition (swamp-club#4097).
       const target = await findDefinitionByIdOrName(
@@ -216,25 +299,7 @@ export function createModelEditCommand(syntax: CommandSyntax) {
         );
       }
 
-      const renderer = createModelEditRenderer(cliCtx.outputMode);
-      await runAsUserConfigEdit(() =>
-        runManagedConfigMutation(
-          repoContext,
-          syncService,
-          datastoreConfig,
-          marker,
-          "model edit",
-          () =>
-            consumeStream(
-              modelEdit(libCtx, deps, {
-                modelIdOrName,
-                stdinContent,
-                allowRename: options.allowRename === true,
-              }),
-              renderer.handlers(),
-            ),
-        )
-      );
+      await runEdit(stdinContent);
 
       cliCtx.logger.debug("Model edit command completed");
     },

@@ -20,6 +20,7 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { withMockedCommand } from "@swamp-club/swamp-testing";
 import { EditorService } from "./editor_service.ts";
+import { UserError } from "../../domain/errors.ts";
 import { withMockedEnv } from "../persistence/path_test_helpers.ts";
 
 Deno.test("EditorService.findEditor returns $EDITOR when set", async () => {
@@ -90,4 +91,110 @@ Deno.test("EditorService.findEditor throws when no editor is available", async (
 Deno.test("EditorService module exports EditorService class", async () => {
   const module = await import("./editor_service.ts");
   assertEquals(typeof module.EditorService, "function");
+});
+
+function serviceWithEditor(editor: string): EditorService {
+  return new class extends EditorService {
+    override findEditor(): Promise<string> {
+      return Promise.resolve(editor);
+    }
+  }();
+}
+
+Deno.test("EditorService.prepareOpenFile: requireWait adds each GUI editor's wait flag once", async () => {
+  const cases: [string, string[]][] = [
+    ["code", ["code", "--wait", "/f.yaml"]],
+    ["code --wait", ["code", "--wait", "/f.yaml"]],
+    ["code -w", ["code", "-w", "/f.yaml"]],
+    ["cursor", ["cursor", "--wait", "/f.yaml"]],
+    ["zed", ["zed", "--wait", "/f.yaml"]],
+    ["subl", ["subl", "--wait", "/f.yaml"]],
+    ["mate", ["mate", "-w", "/f.yaml"]],
+    ["gvim", ["gvim", "-f", "/f.yaml"]],
+    ["vim", ["vim", "/f.yaml"]],
+  ];
+  for (const [editor, args] of cases) {
+    const launch = await serviceWithEditor(editor).prepareOpenFile("/f.yaml", {
+      requireWait: true,
+    });
+    assertEquals(launch.args, args, editor);
+    assertEquals(launch.waitsForExit, true, editor);
+  }
+});
+
+Deno.test("EditorService.prepareOpenFile: requireWait waits for an unknown editor's process", async () => {
+  const launch = await serviceWithEditor("/usr/local/bin/my-editor.sh")
+    .prepareOpenFile("/f.yaml", { requireWait: true });
+  assertEquals(launch.waitsForExit, true);
+  assertEquals(launch.args, ["/usr/local/bin/my-editor.sh", "/f.yaml"]);
+});
+
+Deno.test("EditorService.prepareOpenFile: requireWait refuses launchers that return at once", async () => {
+  for (const editor of ["open", "open -e", "xdg-open", "gio open", "start"]) {
+    const error = await assertRejects(
+      () =>
+        serviceWithEditor(editor).prepareOpenFile("/f.yaml", {
+          requireWait: true,
+        }),
+      UserError,
+    );
+    assertEquals(error.code, "editor_cannot_wait", editor);
+    assertStringIncludes(error.message, "pipe the YAML on stdin");
+  }
+  await serviceWithEditor("open -Wa TextEdit").prepareOpenFile("/f.yaml", {
+    requireWait: true,
+  });
+  const waiting = await serviceWithEditor("open -W -n").prepareOpenFile(
+    "/f.yaml",
+    { requireWait: true },
+  );
+  assertEquals(waiting.waitsForExit, true);
+});
+
+Deno.test("EditorService.prepareOpenFile: without requireWait, GUI editors and launchers are unchanged", async () => {
+  const gui = await serviceWithEditor("code").prepareOpenFile("/f.yaml");
+  assertEquals(gui.waitsForExit, false);
+  assertEquals(gui.args, ["code", "/f.yaml"]);
+  const launcher = await serviceWithEditor("xdg-open").prepareOpenFile(
+    "/f.yaml",
+    { wait: true },
+  );
+  assertEquals(launcher.args, ["xdg-open", "/f.yaml"]);
+});
+
+Deno.test("EditorService.prepareOpenFile: editors given by path follow their command's rules", async () => {
+  const code = await serviceWithEditor("/usr/local/bin/code").prepareOpenFile(
+    "/f.yaml",
+    { requireWait: true },
+  );
+  assertEquals(code.args, ["/usr/local/bin/code", "--wait", "/f.yaml"]);
+  await assertRejects(
+    () =>
+      serviceWithEditor("/usr/bin/xdg-open").prepareOpenFile("/f.yaml", {
+        requireWait: true,
+      }),
+    UserError,
+  );
+});
+
+Deno.test("EditorService.prepareOpenFile: the wait is confirmed only for editors known to stay open", async () => {
+  const cases: [string, boolean][] = [
+    ["vim", true],
+    ["/usr/bin/nvim", true],
+    ["code", true],
+    ["code --wait", true],
+    ["open -W -n", true],
+    ["open -Wa TextEdit", true],
+    ["kak", true],
+    ["/usr/local/bin/my-editor.sh", false],
+    ["emacsclient", true],
+    ["emacsclient -c", true],
+    ["emacsclient -n", false],
+  ];
+  for (const [editor, confirmed] of cases) {
+    const launch = await serviceWithEditor(editor).prepareOpenFile("/f.yaml", {
+      requireWait: true,
+    });
+    assertEquals(launch.waitConfirmed, confirmed, editor);
+  }
 });

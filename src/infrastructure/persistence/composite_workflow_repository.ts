@@ -133,6 +133,11 @@ export class CompositeWorkflowRepository implements WorkflowRepository {
   getPath(id: WorkflowId): string {
     return this.primary.getPath(id);
   }
+
+  getWritePath(workflow: Workflow): string {
+    return this.primary.getWritePath?.(workflow) ??
+      this.primary.getPath(workflow.id);
+  }
 }
 
 /** The workflows of `repo` that declare `id`, by its own listing when it has one. */
