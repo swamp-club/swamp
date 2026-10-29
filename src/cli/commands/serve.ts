@@ -7069,14 +7069,15 @@ export const serveCommand = new Command()
                 message: "Content-Type must be application/json",
               }, { status: 415 });
             }
+            // A follower cancels nothing: refused once the caller is
+            // authenticated, with a retryable 503 (swamp-club#4096). Inside
+            // the cancel route only: any other POST is not this route's.
+            const cancelNotLeader = followerHttpRefusal(
+              "workflow.cancel",
+              connectionCtx.followerGate,
+            );
+            if (cancelNotLeader !== undefined) return cancelNotLeader;
           }
-          // A follower cancels nothing: refused once the caller is
-          // authenticated, with a retryable 503 (swamp-club#4096).
-          const cancelNotLeader = followerHttpRefusal(
-            "workflow.cancel",
-            connectionCtx.followerGate,
-          );
-          if (cancelNotLeader !== undefined) return cancelNotLeader;
           if (cancelMatch) {
             const executionType = cancelMatch[1] as ExecutionType;
             const executionId = cancelMatch[2];

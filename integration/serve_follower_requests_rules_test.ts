@@ -70,3 +70,27 @@ Deno.test("follower requests: every write that waits for replication is refused"
     assert(FOLLOWER_REFUSED_REQUESTS.has(type), type);
   }
 });
+
+Deno.test("follower requests: the HTTP cancel route refuses on a follower only inside its own route, after authentication", async () => {
+  const source = await Deno.readTextFile(
+    join(ROOT, "src", "cli", "commands", "serve.ts"),
+  );
+  const open = source.indexOf("if (cancelMatch || isBulkCancel) {");
+  assert(open > 0, "serve's cancel route was not found");
+  // The route's block ends at the first brace back at its own indent.
+  const indent = source.slice(source.lastIndexOf("\n", open) + 1, open);
+  const close = source.indexOf(`\n${indent}}\n`, open);
+  assert(close > open, "serve's cancel route block has no end");
+  const refusal = source.indexOf("followerHttpRefusal(\n", open);
+  assert(
+    refusal > open && refusal < close,
+    "the cancel route's follower refusal must sit inside the route's block: " +
+      "outside it, every other POST (dashboard sign-in, unknown paths) is " +
+      "refused on a follower, before authentication",
+  );
+  const authenticated = source.indexOf("authenticateServerToken(", open);
+  assert(
+    authenticated > open && authenticated < refusal,
+    "the cancel route's follower refusal must come after its authentication",
+  );
+});
