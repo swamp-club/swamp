@@ -56,6 +56,15 @@ export async function reapOrphanedWorkflowRuns(
   isDeadFn: (pid: number) => boolean,
   localInstanceId?: string,
   heartbeatLookup?: (instanceId: string) => Promise<boolean>,
+  options: {
+    /**
+     * Judge a tracker row another serve instance left as a run of that
+     * instance, by `heartbeatLookup`, rather than trust it as the verdict:
+     * serve's team mode (swamp-club#4096), where only the leader runs work
+     * and a row of any other instance says nothing about the run.
+     */
+    readonly judgeForeignRows?: boolean;
+  } = {},
 ): Promise<ReapResult> {
   let reaped = 0;
   let skipped = 0;
@@ -71,7 +80,9 @@ export async function reapOrphanedWorkflowRuns(
     // the row decides, as before.
     const takenOver = heartbeatLookup !== undefined && tracked !== null &&
       tracked.instanceId !== undefined && run.instanceId !== undefined &&
-      tracked.instanceId !== run.instanceId;
+      (tracked.instanceId !== run.instanceId ||
+        (options.judgeForeignRows === true &&
+          tracked.instanceId !== localInstanceId));
     if (tracked && !takenOver) {
       if (tracked.status === "running") {
         logger.info(

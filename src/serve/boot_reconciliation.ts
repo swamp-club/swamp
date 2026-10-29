@@ -36,6 +36,7 @@ import type {
 } from "../domain/datastore/datastore_sync_service.ts";
 import {
   DEFAULT_STALE_TTL_MS,
+  type HeartbeatRecord,
   InstanceHeartbeatService,
 } from "./instance_heartbeat.ts";
 import {
@@ -69,6 +70,10 @@ import {
   type OwnerLiveness,
   warnUnsettledMethodRuns,
 } from "../domain/workflows/orphaned_run_reaper.ts";
+import {
+  parseServeLeader,
+  SERVE_LEADER_KEY,
+} from "../domain/datastore_v3/serve_leader.ts";
 
 const logger = getSwampLogger(["serve", "boot-reconciliation"]);
 
@@ -609,6 +614,13 @@ const INSTANCE_GONE_REASON =
 export interface ReconcileRemoteInterruptedRunsDeps {
   controlPlaneStore: ControlPlaneStore;
   instanceId: string;
+  /**
+   * Whether the peer a heartbeat names is gone, so its runs are settled.
+   * Defaults to its heartbeat being stale. Serve's leader in team mode also
+   * counts a peer that still records active runs as gone (swamp-club#4096):
+   * only the leader runs work, so a live peer's runs are fenced.
+   */
+  isPeerGone?: (record: HeartbeatRecord) => Promise<boolean>;
   runTracker:
     import("../infrastructure/persistence/run_tracker_store.ts").RunTrackerStore;
   staleTtlMs?: number;
@@ -660,6 +672,51 @@ export interface ReconcileRemoteInterruptedRunsDeps {
 }
 
 /**
+ * How serve's leader in team mode on a v3 datastore judges other instances
+ * (swamp-club#4096). Only the leader runs work, and every other instance's
+ * commits are fenced, so:
+ *
+ * - `isAlive`, for the boot reaper's heartbeat lookup: only this instance
+ *   is alive, so a workflow run any other instance left running is settled
+ *   whatever its heartbeat says;
+ * - `isPeerGone`, for {@link reconcileRemoteInterruptedRuns}: a peer whose
+ *   heartbeat is stale, or that still records active runs. A follower
+ *   records none, so its heartbeat is left alone. With `ownFence`, a peer
+ *   the leader record names at a higher fence is never gone: it took the
+ *   lead from this node, which has not noticed yet.
+ */
+export function teamModeRunLiveness(
+  instanceId: string,
+  store: ControlPlaneStore,
+  staleTtlMs?: number,
+  ownFence?: () => number | undefined,
+): {
+  readonly isAlive: (id: string) => Promise<boolean>;
+  readonly isPeerGone: (record: HeartbeatRecord) => Promise<boolean>;
+} {
+  return {
+    isAlive: (id) => Promise.resolve(id === instanceId),
+    isPeerGone: async (record) => {
+      // A leader record naming the peer at a fence above this node's: the
+      // peer took the lead from this node, which has not noticed yet. Its
+      // runs are its own, never this node's to settle.
+      if (ownFence !== undefined) {
+        const data = await store.get(SERVE_LEADER_KEY);
+        const leader = data === null ? undefined : parseServeLeader(data);
+        if (
+          leader?.instanceId === record.instanceId &&
+          leader.fence > (ownFence() ?? 0)
+        ) {
+          return false;
+        }
+      }
+      return InstanceHeartbeatService.isStale(record, staleTtlMs) ||
+        (await listActiveRunsForInstance(store, record.instanceId)).length > 0;
+    },
+  };
+}
+
+/**
  * Scan heartbeats from the control-plane store and interrupt runs
  * belonging to instances that have gone stale (crashed / lost network).
  *
@@ -689,7 +746,11 @@ export async function reconcileRemoteInterruptedRuns(
     const record = InstanceHeartbeatService.parseRecord(data);
     if (!record) continue;
     if (record.instanceId === deps.instanceId) continue;
-    if (InstanceHeartbeatService.isStale(record, deps.staleTtlMs)) {
+    if (
+      deps.isPeerGone !== undefined
+        ? await deps.isPeerGone(record)
+        : InstanceHeartbeatService.isStale(record, deps.staleTtlMs)
+    ) {
       staleInstances.push({ instanceId: record.instanceId, heartbeatKey: key });
     }
   }
@@ -998,6 +1059,22 @@ export async function reconcileRemoteInterruptedRuns(
         },
       );
     });
+    // In team mode a peer judged gone may be alive and keep its instance
+    // id, as a demoted leader does: its claim goes once it is settled, so a
+    // later pass can claim it again (swamp-club#4096). A dead instance's
+    // claim is left to expire, as before.
+    if (deps.isPeerGone !== undefined) {
+      const claimKey = `claims/reconcile-instance/${claimedInstanceIds[index]}`;
+      await deps.controlPlaneStore.delete(claimKey).catch((err: unknown) => {
+        logger.warn(
+          "Failed to release reconcile claim {key}: {error}",
+          {
+            key: claimKey,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        );
+      });
+    }
   }
 
   return reaped;

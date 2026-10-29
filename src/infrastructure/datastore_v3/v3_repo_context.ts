@@ -44,7 +44,9 @@ import {
   boundV3BucketLocation,
   v3BucketBindingAt,
   v3BucketNamespacedStore,
+  v3ControlPlaneAt,
   type V3DatastoreLocation,
+  v3NamespacedStore,
   v3ReplicatesAt,
 } from "./v3_datastore_binding.ts";
 import type { WritableDatastoreControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
@@ -65,6 +67,7 @@ import {
   acquireV3WriterLock,
   advanceV3WriterLease,
   assertV3WriterCurrent,
+  holdsCurrentV3WriterLease,
   holdsV3WriterLock,
   onV3HoldRetaken,
   onV3LeaseTaken,
@@ -104,6 +107,7 @@ import {
   V3LineageOutrankedError,
   v3ReplicaCheckOf,
 } from "./litestream/v3_copy.ts";
+import { BrokenLineageMoveGuard } from "../../domain/datastore_v3/broken_lineage_move.ts";
 import { isLineageBroken } from "../../domain/datastore_v3/replica_verification.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
 import {
@@ -119,6 +123,10 @@ import {
   type DatastoreOwner,
   normalizeOwnerAddress,
 } from "../../domain/datastore_v3/datastore_owner.ts";
+import {
+  type ServeLeader,
+  ServeNotLeaderError,
+} from "../../domain/datastore_v3/serve_leader.ts";
 import {
   isReservedNamespaceName,
   reservedV3NamespaceMessage,
@@ -193,6 +201,19 @@ export function v3BucketNamespacedStoreAt(
   return binding === undefined
     ? undefined
     : v3BucketNamespacedStore(binding, location.namespace);
+}
+
+/**
+ * Serve's control plane on the v3 datastore at `location` (swamp-club#4096):
+ * heartbeats, active and pending runs, claims and the leader record, under
+ * the datastore's namespaced records, so every serve node of the datastore
+ * shares it. A bucket datastore keeps them in its datastore-wide control
+ * plane, a filesystem one under its own `_control/`.
+ */
+export function v3ServeControlPlaneAt(
+  location: V3DatastoreConfig,
+): WritableDatastoreControlPlaneStore {
+  return v3NamespacedStore(v3ControlPlaneAt(location.path), location.namespace);
 }
 
 const opened = new Map<string, V3Datastore>();
@@ -370,6 +391,72 @@ const serveHolds = new Map<
 >();
 
 /**
+ * The datastores this process's serve writes in team mode
+ * (swamp-club#4096), by resolved path: while serve does not hold the
+ * current writer lease it follows, and each commit is refused with the
+ * leader this names.
+ */
+const serveTeams = new Map<string, () => ServeLeader | undefined>();
+
+/**
+ * Serve's team mode on the v3 datastore at `datastorePath`
+ * (swamp-club#4096): from now on, a commit while this process does not hold
+ * the current writer lease is refused with {@link ServeNotLeaderError},
+ * naming the leader `leader` returns. Returns the undo.
+ */
+export function enableV3ServeTeamMode(
+  datastorePath: string,
+  leader: () => ServeLeader | undefined,
+): () => void {
+  const key = resolve(datastorePath);
+  serveTeams.set(key, leader);
+  return () => {
+    if (serveTeams.get(key) === leader) serveTeams.delete(key);
+  };
+}
+
+/**
+ * Refuses a write on a serve node that follows the datastore at
+ * `datastorePath` in team mode, holding no lease (swamp-club#4096). The one
+ * place a follower's write is refused: a later step forwards it to the
+ * leader instead (p5-feed). A node whose lease was taken over is refused as
+ * fenced by the writer's own check. Does nothing outside team mode.
+ *
+ * @throws ServeNotLeaderError
+ */
+export function refuseV3FollowerWrite(datastorePath: string): void {
+  const leader = serveTeams.get(resolve(datastorePath));
+  // A process that held the lease, current or lost, is the writer's check:
+  // a lost one is refused as fenced, which says the request may already have
+  // done work, never "nothing was changed" (swamp-club#4096).
+  if (leader === undefined || holdsV3WriterLock(datastorePath)) return;
+  throw new ServeNotLeaderError(leader());
+}
+
+/**
+ * Brings a serve follower's copy of the v3 datastore `config` names up to
+ * the leader's commits (swamp-club#4096): restored from the published
+ * lineage when it is behind, and its read model caught up. Does nothing
+ * while this process leads, whose copy is its own.
+ */
+export async function refreshV3FollowerCopy(
+  repoDir: string,
+  config: V3DatastoreConfig,
+): Promise<void> {
+  if (holdsCurrentV3WriterLease(config.path)) return;
+  const key = handleKey(repoDir, config);
+  if (v3ReplicatesAt(config.path)) {
+    currentCopies.delete(key);
+    // A retake by a lost hold's renewal meanwhile makes the copy the
+    // writer's: the refresh then leaves it to the retake's own restore.
+    await ensureV3CopyCurrent(repoDir, config, "read", {
+      stillCurrent: () => !holdsCurrentV3WriterLease(config.path),
+    });
+  }
+  await opened.get(key)?.catchUp();
+}
+
+/**
  * Tells this process's next {@link closeV3Datastores} to keep the writer
  * markers (swamp-club#3299): serve calls it when its shutdown drain leaves
  * runs that may still be writing, so the next command recovers the checkout.
@@ -439,6 +526,7 @@ export function v3DatastoreFor(
       ...(config.exclude !== undefined ? { exclude: config.exclude } : {}),
       writerFence: () => v3WriterFence(config.path),
       assertWriterCurrent: () => {
+        refuseV3FollowerWrite(config.path);
         assertV3WriterCurrent(config.path);
         // While replicating, nothing commits onto a copy that is not current
         // (swamp-club#3482): after serve's retake, until its restore lands.
@@ -660,10 +748,18 @@ export async function holdV3Writer(
      * serve.
      */
     readonly ownerCheck?: V3OwnerCheck;
+    /**
+     * Follow when another process holds the lease, instead of waiting for
+     * it: serve's team mode (swamp-club#4096). The lease is tried once,
+     * without waiting; a busy one leaves this process reading its own copy,
+     * made current, and holding nothing.
+     */
+    readonly follow?: boolean;
   } = {},
-): Promise<void> {
+): Promise<"writer" | "follower"> {
+  let role: "writer" | "follower";
   try {
-    await takeV3WriterHold(config, repoDir, options);
+    role = await takeV3WriterHold(config, repoDir, options);
   } catch (error) {
     if (!(error instanceof UserError) && isNetworkFailure(error)) {
       throw new V3StorageUnreachableError(config.path, error);
@@ -674,9 +770,10 @@ export async function holdV3Writer(
   // orders this machine's processes; serve orders the writers. Its copy is
   // brought up to serve's log before it writes, and a serve it cannot reach
   // refuses the write (swamp-club#3985).
-  if (serveUpstreamAt(config.path) !== undefined) {
+  if (role === "writer" && serveUpstreamAt(config.path) !== undefined) {
     await v3DatastoreFor(repoDir, config).catchUpForWrite?.();
   }
+  return role;
 }
 
 /**
@@ -703,8 +800,9 @@ async function takeV3WriterHold(
   options: {
     readonly retakeLost?: boolean;
     readonly ownerCheck?: V3OwnerCheck;
+    readonly follow?: boolean;
   },
-): Promise<void> {
+): Promise<"writer" | "follower"> {
   // Before the lease and the recovery of an interrupted writer, which
   // would meet the same checkout (swamp-club#3691).
   await refuseUnsafeV3Checkout(repoDir, config);
@@ -725,10 +823,16 @@ async function takeV3WriterHold(
       ownerCheckOf(config, options.ownerCheck),
     )
     : undefined;
+  // A claim this serve may not write under is refused as before: it never
+  // follows (swamp-club#4096).
+  const follows = options.follow === true && claimHint === undefined &&
+    serveUpstreamAt(config.path) === undefined;
   let release: () => Promise<void>;
   try {
     release = await acquireV3WriterLock(config.path, {
-      maxWaitMs: claimHint === undefined ? resolveLockTimeoutMs() : 0,
+      maxWaitMs: claimHint === undefined && !follows
+        ? resolveLockTimeoutMs()
+        : 0,
       // Records the lease's fence in commits.db, so a writer that loses the
       // lease later can commit nothing (swamp-club#3359). While replicating,
       // the copy is opened only once it is current, and the first fence is
@@ -747,6 +851,10 @@ async function takeV3WriterHold(
       ...(options.retakeLost === true ? { retakeLost: true } : {}),
     });
   } catch (error) {
+    if (follows && error instanceof V3WriterBusyError) {
+      await followV3Datastore(config, repoDir, options.ownerCheck);
+      return "follower";
+    }
     if (claimHint !== undefined && error instanceof V3WriterBusyError) {
       // A replicated checkout read its last copy, which can predate a
       // release: say so, so a stale claim is not taken for a live one.
@@ -874,6 +982,34 @@ async function takeV3WriterHold(
     await removeOwnWriterCheckout(config.path);
     await release();
   });
+  return "writer";
+}
+
+/**
+ * Sets this process up to follow the v3 datastore `config` names, while
+ * another process holds its writer lease (swamp-club#4096): its copy made
+ * current for reads, and the claim checked as the lease's hold would, so a
+ * serve with another `--address` is refused here too. Nothing is recovered,
+ * marked or replicated: the writer does that.
+ *
+ * @throws DatastoreClaimedError when this serve may not write the datastore
+ */
+async function followV3Datastore(
+  config: V3DatastoreConfig,
+  repoDir: string,
+  ownerCheck: V3OwnerCheck | undefined,
+): Promise<void> {
+  await ensureV3CopyCurrent(repoDir, config, "read");
+  const refusal = claimRefusal(
+    v3DatastoreFor(repoDir, config).commitStore.owner(),
+    ownerCheckOf(config, ownerCheck),
+  );
+  if (refusal !== undefined) throw refusal;
+  // Holding no lease, this process must commit nothing from here on, before
+  // serve's leadership names the leader: a partition that never saw a fence
+  // would take an unfenced commit.
+  const key = resolve(config.path);
+  if (!serveTeams.has(key)) serveTeams.set(key, () => undefined);
 }
 
 /**
@@ -1724,6 +1860,7 @@ export async function closeV3Datastores(
   markedCheckouts.clear();
   commandStartMarks.clear();
   serveHolds.clear();
+  serveTeams.clear();
   const entries = [...opened.entries()];
   const handles = entries.map(([, handle]) => handle);
   opened.clear();
@@ -2150,8 +2287,9 @@ export function startV3ReplicationUpkeep(
   // A replacement asked for while one runs (swamp-club#3565): it runs again
   // once the running one settles, instead of being dropped.
   let again = false;
-  // The broken lineage serve last moved its lease away from.
-  let advancedFor: number | undefined;
+  // Moves away from broken lineages, at most one per outage
+  // (swamp-club#4096).
+  const lineageMoves = new BrokenLineageMoveGuard();
   const replace = (): void => {
     if (stopped) return;
     if (replacing !== undefined) {
@@ -2210,6 +2348,7 @@ export function startV3ReplicationUpkeep(
         // the closing teardown releases.
         replications.set(key, [...(replications.get(key) ?? []), next]);
         owedReplications.delete(key);
+        lineageMoves.replacementSucceeded();
       }
     })().catch((error) => {
       // A newer writer started a lineage: this copy is behind it, so
@@ -2220,9 +2359,10 @@ export function startV3ReplicationUpkeep(
       ) {
         currentCopies.delete(copyKey);
       }
-      // A broken lineage the move did not get away from is moved from
-      // again at the next probe (swamp-club#3935).
-      advancedFor = undefined;
+      // A broken lineage the move did not get away from is left at the
+      // next probe by retrying the replacement at the fence the move took,
+      // never by moving again (swamp-club#3935, swamp-club#4096).
+      lineageMoves.replacementFailed();
       logger
         .warn`Replacing the Litestream sidecar of the v3 datastore at ${datastorePath} failed; the next probe retries: ${error}`;
     }).finally(() => {
@@ -2264,16 +2404,21 @@ export function startV3ReplicationUpkeep(
       // copy. Once per lineage: from a copy that fails its own check the
       // lineage is kept, and moving again would only fence serve's commits.
       const check = await v3ReplicaCheckOf(copyOf(repoDir, config));
-      if (
-        check !== undefined &&
-        isLineageBroken(check.verdict, check.lineageFence) &&
-        advancedFor !== check.lineageFence
-      ) {
+      const broken = check !== undefined &&
+          isLineageBroken(check.verdict, check.lineageFence)
+        ? check.lineageFence
+        : undefined;
+      const move = broken === undefined ? "none" : lineageMoves.decide(broken);
+      if (move === "replace") {
+        replace();
+        return;
+      }
+      if (move === "advance") {
         logger
           .warn`The replication lineage of the v3 datastore at ${datastorePath} cannot be restored; moving serve's writer lease to a new fence to start a new lineage`;
         try {
           if (await advanceV3WriterLease(datastorePath) !== undefined) {
-            advancedFor = check.lineageFence;
+            lineageMoves.advanced(broken!);
           }
         } catch (error) {
           logger

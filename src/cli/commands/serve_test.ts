@@ -36,6 +36,7 @@ import {
   cancelExecution,
   cancelSuccessBody,
   collectServeExtraArgs,
+  isUnreachableBindHost,
   legacyHealthBody,
   MAX_CANCEL_BODY_BYTES,
   parseContinuationSweepInterval,
@@ -74,6 +75,31 @@ await initializeLogging({});
 Deno.test("serveCommand module loads", async () => {
   const { serveCommand } = await import("./serve.ts");
   assertEquals(serveCommand.getName(), "serve");
+});
+
+Deno.test("isUnreachableBindHost: wildcard and loopback hosts in any spelling, never a routable one (swamp-club#4096)", () => {
+  for (
+    const host of [
+      "0.0.0.0",
+      "::",
+      "[::]",
+      "localhost",
+      "LOCALHOST",
+      "127.0.0.1",
+      "127.0.0.2",
+      "::1",
+      "[::1]",
+      "::ffff:127.0.0.1",
+      "0:0:0:0:0:0:0:1",
+      "0:0:0:0:0:0:0:0",
+      "::ffff:7f00:1",
+    ]
+  ) {
+    assertEquals(isUnreachableBindHost(host), true, host);
+  }
+  for (const host of ["10.0.0.7", "serve.example", "fd00::1", "128.0.0.1"]) {
+    assertEquals(isUnreachableBindHost(host), false, host);
+  }
 });
 
 Deno.test("ROOT_CONTROL_PLANE_IMPORT_PREFIXES: never copies a datastore-wide record into a namespace", () => {

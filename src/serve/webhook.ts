@@ -481,6 +481,13 @@ export type WebhookEventHandler = (event: WebhookEvent) => void;
 // ── Webhook Execution Service ──────────────────────────────────────────
 
 export interface WebhookServiceDeps {
+  /**
+   * Whether this serve node takes runs: false on a follower in team mode
+   * (swamp-club#4096), which answers a verified delivery with a retryable
+   * 503 so the sender delivers it again, to the leader or once one leads.
+   * Absent, every node takes runs.
+   */
+  acceptsRuns?: () => boolean;
   repoDir: string;
   repoContext: RepositoryContext;
   datastoreConfig: DatastoreConfig;
@@ -539,6 +546,7 @@ export interface WebhookQueueStatus {
 }
 
 import type { WebhookAdmissionSnapshot } from "../domain/remote/run_progress.ts";
+import { SERVE_NOT_LEADER_CODE } from "../domain/datastore_v3/serve_leader.ts";
 
 interface QueuedWebhookRun {
   lastProgressAt: string;
@@ -912,6 +920,25 @@ export class WebhookService {
     // Checked again: a drain can start during the awaits above, and a run
     // queued after it would be acknowledged and then aborted unreplayed.
     if (this.draining) return this.shuttingDownResponse(endpoint, sourceIp);
+
+    // After verification, so only a verified sender learns this node does
+    // not lead; the reply names no leader (swamp-club#4096).
+    if (this.deps.acceptsRuns?.() === false) {
+      this.emit({
+        kind: "webhook_rejected",
+        route: endpoint.route,
+        workflowName: endpoint.workflowIdOrName,
+        reason: "Not the leader",
+        sourceIp,
+      });
+      return Response.json(
+        {
+          error: "This serve node does not lead the datastore; try again",
+          code: SERVE_NOT_LEADER_CODE,
+        },
+        { status: 503, headers: { "Retry-After": "5" } },
+      );
+    }
 
     // Queue the workflow run (with backpressure)
     if (this.runQueue.length >= MAX_QUEUE_DEPTH) {

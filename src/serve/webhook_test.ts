@@ -720,12 +720,16 @@ function registerExtension(
   return type;
 }
 
-function extensionService(scheme: ExtensionWebhookScheme): {
+function extensionService(
+  scheme: ExtensionWebhookScheme,
+  acceptsRuns?: () => boolean,
+): {
   service: WebhookService;
   pendingRuns: unknown[];
 } {
   const pendingRuns: unknown[] = [];
   const service = new WebhookService({
+    ...(acceptsRuns !== undefined ? { acceptsRuns } : {}),
     repoDir: "/tmp/fake",
     syncGate: undefined,
     repoContext: {} as unknown as RepositoryContext,
@@ -805,6 +809,26 @@ Deno.test("handleRequest: a drain starting during the hooks turns the delivery a
   assertEquals(res?.headers.get("retry-after"), "5");
   await res?.body?.cancel();
   assertEquals(pendingRuns.length, 0);
+  await service.stop();
+});
+
+Deno.test("handleRequest: a follower in team mode answers a verified delivery with a retryable 503 and queues nothing (swamp-club#4096)", async () => {
+  const type = registerExtension({});
+  const { service, pendingRuns } = extensionService(type, () => false);
+  const res = await service.handleRequest(extensionRequest("s3cret"));
+  assertEquals(res?.status, 503);
+  assertEquals(res?.headers.get("retry-after"), "5");
+  assertEquals((await res!.json()).code, "serve_not_leader");
+  assertEquals(pendingRuns.length, 0);
+  await service.stop();
+});
+
+Deno.test("handleRequest: a follower still refuses an unverified delivery as unverified", async () => {
+  const type = registerExtension({});
+  const { service } = extensionService(type, () => false);
+  const res = await service.handleRequest(extensionRequest("wrong"));
+  assertEquals(res?.status, 401);
+  await res?.body?.cancel();
   await service.stop();
 });
 

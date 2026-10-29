@@ -142,6 +142,7 @@ import {
   type LockTarget,
   parseLockKey,
 } from "./datastore_locks.ts";
+import { ServeNotLeaderError } from "../domain/datastore_v3/serve_leader.ts";
 
 const logger = getSwampLogger(["serve", "datastore-api"]);
 
@@ -217,6 +218,12 @@ export async function handleDatastoreRequest(
 ): Promise<Response> {
   const authenticated = await authenticateCaller(req, sourceIp, deps);
   if (authenticated instanceof Response) return authenticated;
+  // A follower in team mode takes no write, and answers reads only while
+  // its copy is fresh (swamp-club#4096); after authentication, so only a
+  // caller learns which node leads. Forwarding a write to the leader is a
+  // later step (p5-feed).
+  const notLeader = followerDatastoreRefusal(req, route, deps.ctx);
+  if (notLeader !== undefined) return notLeader;
   // Taken before the reply is answered: a reload while it is answered then
   // shows as a change on the next reply, which rebuilds the copy, never as
   // the access a copy filtered under the old grants was built with.
@@ -233,6 +240,31 @@ export async function handleDatastoreRequest(
   const logId = logIdOf(deps.v3);
   if (logId !== undefined) headers.push([SERVE_DATASTORE_LOG_HEADER, logId]);
   return withHeaders(response, headers);
+}
+
+/**
+ * The reply a serve follower gives a datastore API request it does not
+ * answer (swamp-club#4096): every write, and a read once its copy is stale.
+ * A chunk check (`has`) is a read. A retryable 503 that names the leader.
+ */
+function followerDatastoreRefusal(
+  req: Request,
+  route: DatastoreRoute,
+  ctx: ConnectionContext,
+): Response | undefined {
+  const gate = ctx.followerGate;
+  if (gate === undefined || gate.role === "leader") return undefined;
+  const reads = req.method === "GET" || route.kind === "has";
+  if (reads && !gate.isStale()) return undefined;
+  const refusal = new ServeNotLeaderError(gate.leader(), reads);
+  return Response.json(
+    {
+      code: refusal.code,
+      message: refusal.message,
+      ...(refusal.leader !== undefined ? { leader: refusal.leader } : {}),
+    },
+    { status: 503, headers: { "Retry-After": "5" } },
+  );
 }
 
 /** The read-access fingerprint of a caller with no authorization to apply. */

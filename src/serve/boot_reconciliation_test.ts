@@ -41,6 +41,7 @@ import {
   type ReplayPendingRunsDeps,
   sweepStaleRecords,
   sweepTokenConsistency,
+  teamModeRunLiveness,
   type TokenConsistencyDeps,
 } from "./boot_reconciliation.ts";
 import type {
@@ -1009,6 +1010,44 @@ Deno.test("reconcileRemoteInterruptedRuns: reaps runs from stale instances", asy
   assertEquals(h.completed[0].runId, "run-1");
   assertEquals(h.completed[0].status, "interrupted");
   assertEquals(h.completed[0].reason, "remote_instance_dead");
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: a peer the rule counts gone is reaped though its heartbeat is fresh (swamp-club#4096)", async () => {
+  // A demoted leader keeps heartbeating, but its commits are fenced.
+  const run1 = makeActiveRunData({
+    id: "run-1",
+    instanceId: "demoted",
+    status: "running",
+  });
+  const h = createReconcileHarness(
+    {
+      "demoted": makeHeartbeat("demoted", { stale: false }),
+      "follower": makeHeartbeat("follower", { stale: false }),
+    },
+    [run1],
+  );
+  const judged: string[] = [];
+  const reaped = await reconcileRemoteInterruptedRuns({
+    ...h.deps,
+    isPeerGone: (record) => {
+      judged.push(record.instanceId);
+      return Promise.resolve(record.instanceId === "demoted");
+    },
+  });
+  assertEquals(reaped, 1);
+  assertEquals(h.completed.map((c) => c.runId), ["run-1"]);
+  assertEquals(judged.sort(), ["demoted", "follower"]);
+  // The follower's heartbeat is left alone.
+  assertEquals(
+    h.controlPlaneStore.deleted.includes("heartbeats/follower"),
+    false,
+  );
+  // The demoted leader keeps its instance id: its claim is released, so a
+  // later pass may claim it again.
+  assertEquals(
+    h.controlPlaneStore.deleted.includes("claims/reconcile-instance/demoted"),
+    true,
+  );
 });
 
 Deno.test("reconcileRemoteInterruptedRuns: skips self instance", async () => {
@@ -2777,4 +2816,31 @@ Deno.test("cleanupExpiredClaims: removes a count of failed reconcile passes no p
   assertEquals(await store.list("claims/reconcile-attempts/"), [
     "claims/reconcile-attempts/recent",
   ]);
+});
+
+Deno.test("teamModeRunLiveness: a peer the leader record names above this node's fence is never gone, whatever it runs (swamp-club#4096)", async () => {
+  const store = createInMemoryControlPlaneStore({
+    "leader/current": {
+      instanceId: "new-leader",
+      fence: 9,
+      since: new Date().toISOString(),
+    },
+    "active-runs/new-leader/r1": { instanceId: "new-leader" },
+    "active-runs/demoted/r2": { instanceId: "demoted" },
+  });
+  const stale = teamModeRunLiveness("me", store, undefined, () => 7);
+  assertEquals(
+    await stale.isPeerGone(makeHeartbeat("new-leader", { stale: false })),
+    false,
+  );
+  assertEquals(
+    await stale.isPeerGone(makeHeartbeat("demoted", { stale: false })),
+    true,
+  );
+  // This node leads at the higher fence: the record is its own past.
+  const leading = teamModeRunLiveness("me", store, undefined, () => 10);
+  assertEquals(
+    await leading.isPeerGone(makeHeartbeat("new-leader", { stale: false })),
+    true,
+  );
 });

@@ -69,6 +69,7 @@ import {
 import { V3WriterBusyError } from "../../infrastructure/datastore_v3/v3_writer_lock.ts";
 import { ServeUnreachableError } from "../../infrastructure/datastore_v3/serve_upstream_errors.ts";
 import { ReadModelBusyError } from "../../domain/datastore_v3/read_model.ts";
+import { ServeNotLeaderError } from "../../domain/datastore_v3/serve_leader.ts";
 import {
   flushAuthGateWarning,
   renderAuthGateWarning,
@@ -692,6 +693,10 @@ Deno.test(
 // ============================================================================
 // exitCodeForError tests
 // ============================================================================
+
+Deno.test("exitCodeForError: returns 75 for a write a serve follower refused (swamp-club#4096)", () => {
+  assertEquals(exitCodeForError(new ServeNotLeaderError(undefined)), 75);
+});
 
 Deno.test("exitCodeForError: returns 75 for LockTimeoutError", () => {
   const err = new LockTimeoutError("/path/.lock", null, 60000);

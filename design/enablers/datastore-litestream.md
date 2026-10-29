@@ -1836,7 +1836,13 @@ lineage without losing anything.
   replaces its sidecar and restarts the lineage at the new fence. A commit in
   flight under the old fence is refused as fenced, as after any retake. Serve
   moves once per broken lineage: when its copy fails its own check the
-  lineage is kept, and moving again would only fence its commits. A move that
+  lineage is kept, and moving again would only fence its commits. Since
+  swamp-club#4096 a replacement that fails after a move does not re-arm it:
+  the fence the move took has never started a lineage, so the next probe
+  retries the replacement at that fence, and the lease moves at most once per
+  outage (`BrokenLineageMoveGuard`, `src/domain/datastore_v3/broken_lineage_move.ts`).
+  A lineage found broken again after a replacement succeeded is moved from
+  once more. A move that
   fails is logged: when the next fence was not taken it is tried again at the
   next probe; when it was taken but `commits.db` refused it, both fences are
   released and serve's lease renewal takes a fresh one, as after a lost lease,
@@ -2020,8 +2026,12 @@ macOS.
 - **Phase 5 (serve leader):**
   - a replica path per fence, not a generation;
   - the leader checks its fence before acknowledging outbox entries;
-  - failover is restore and then a full first snapshot to the new fence path;
-  - followers can run `restore -f` for a warm standby;
+  - failover is restore and then a full first snapshot to the new fence path
+    (swamp-club#4096: a follower that takes the lease goes through the
+    writer's hold, which restores, raises the fence and starts its lineage);
+  - followers can run `restore -f` for a warm standby (not yet: a follower
+    restores its copy when the published head moved, on each lease-watch
+    tick, swamp-club#4096);
   - the serve leader keeps one long-lived sidecar.
 - **Phase 7 (default flip):** if Windows solo is still on v2, the flip to v3 by
   default can't be universal. It has to leave Windows solo on v2.

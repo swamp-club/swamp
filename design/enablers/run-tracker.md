@@ -119,7 +119,12 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
    control plane. Without a control-plane-capable datastore serve records no
    heartbeats, so a record with no row from this host is left alone rather
    than read as orphaned, and a live run of another serve instance on the same
-   repo is never interrupted (swamp-club#3059). Local
+   repo is never interrupted (swamp-club#3059). In team mode on a v3
+   datastore the leader judges another serve instance's runs by whether it
+   leads, not by its heartbeat: only the leader runs work, so a run any
+   other instance left `running` is settled, and a tracker row another
+   instance left is judged rather than trusted (swamp-club#4096,
+   `teamModeRunLiveness`). Local
    `swamp run doctor` also counts a running row as stale as soon as its owner
    is a dead process on this host (`findDeadProcessRuns`), without waiting
    for the TTL, and with `--fix` reaps it through `reapDeadProcessRuns`.
