@@ -687,6 +687,13 @@ jobs:
   loses its worker without writing re-dispatches to another worker
 - Validation warns when `affinity: true` is set without any placement (a no-op
   since there are no remote steps to co-locate)
+- The pin does not replace a step's own placement: a later step whose `target`,
+  `labels` or `platform` the pinned worker does not meet fails with an
+  `AffinityPlacementMismatchError` and is not sent elsewhere (a step's `target`
+  stands in for its labels and platform, as in scheduling). Give every step in
+  the group placement one worker can meet, usually at the workflow or job level
+- Validation warns when placed steps in one affinity group declare different
+  placement, since which step dispatches first (and so picks the worker) varies
 - Requires `swamp serve` (same as all placement features)
 
 ## Write-Bearing Declaration

@@ -17,11 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { Job } from "./job.ts";
 import type { Workflow } from "./workflow.ts";
 import { workflowDeclaresInputs, WorkflowSchema } from "./workflow.ts";
 import { WorkflowSchemaError } from "./workflow_schema_error.ts";
 import type { WorkflowRepository } from "./repositories.ts";
 import { mergePlacementFields, resolvePlacement } from "./placement.ts";
+import { describePlacement } from "../remote/scheduler.ts";
 import { createWorkflowId } from "./workflow_id.ts";
 import { schemaExpressions } from "./signal_wait.ts";
 import {
@@ -640,7 +642,94 @@ export class DefaultWorkflowValidationService
       }
     }
 
+    // The runtime keys workflow affinity on the whole run, so job affinity
+    // only forms its own group when the workflow sets none.
+    const scopes = workflow.affinity
+      ? [{ where: "at workflow level", jobs: workflow.jobs }]
+      : workflow.jobs.filter((job) => job.affinity).map((job) => ({
+        where: `in job '${job.name}'`,
+        jobs: [job],
+      }));
+    for (const scope of scopes) {
+      const mixed = this.mixedAffinityPlacement(
+        workflow,
+        scope.jobs,
+        scope.jobs.length > 1,
+      );
+      if (mixed !== null) {
+        results.push(
+          WorkflowValidationResult.warning(
+            `affinity with mixed placement ${scope.where}`,
+            `Steps in this affinity group declare different placement: ` +
+              `${mixed}. The first step to dispatch picks the worker for ` +
+              `the whole group, and a later step whose placement that ` +
+              `worker does not meet fails — give every step in the group ` +
+              `placement one worker can meet, usually by setting it at the ` +
+              `workflow or job level`,
+          ),
+        );
+      }
+    }
+
     return results;
+  }
+
+  /**
+   * The placed steps of an affinity group grouped by their effective
+   * placement, or null when they all agree. A target stands in for labels
+   * and platform, as it does in scheduling. A group whose placement holds
+   * an expression is not compared, since its value is only known at run
+   * time.
+   */
+  private mixedAffinityPlacement(
+    workflow: Workflow,
+    jobs: readonly Job[],
+    qualifyStepNames: boolean,
+  ): string | null {
+    const groups = new Map<string, { description: string; names: string[] }>();
+    for (const job of jobs) {
+      const jobFields = mergePlacementFields(
+        workflow.placementFields,
+        job.placementFields,
+      );
+      for (const step of job.steps) {
+        const placement = resolvePlacement(
+          mergePlacementFields(jobFields, step.placementFields),
+        );
+        if (placement === undefined) continue;
+        const effective = placement.target !== undefined
+          ? { target: placement.target }
+          : {
+            labels: Object.fromEntries(
+              Object.entries(placement.labels ?? {}).sort(([a], [b]) =>
+                a.localeCompare(b)
+              ),
+            ),
+            platform: placement.platform,
+          };
+        const values = [
+          effective.target,
+          effective.platform,
+          ...Object.entries(effective.labels ?? {}).flat(),
+        ].filter((value) => value !== undefined);
+        if (values.some((value) => containsExpression(value))) return null;
+        const key = JSON.stringify([
+          effective.target,
+          effective.platform,
+          effective.labels,
+        ]);
+        const group = groups.get(key) ??
+          { description: describePlacement(effective), names: [] };
+        group.names.push(
+          qualifyStepNames ? `'${job.name}/${step.name}'` : `'${step.name}'`,
+        );
+        groups.set(key, group);
+      }
+    }
+    if (groups.size <= 1) return null;
+    return [...groups.values()].map(({ description, names }) =>
+      `${names.join(", ")} (${description})`
+    ).join("; ");
   }
 
   private validateWritesPlacement(

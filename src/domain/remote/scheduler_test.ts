@@ -24,6 +24,7 @@ import {
   hasPlacement,
   type SchedulableWorker,
   scheduleStep,
+  unmetPlacement,
 } from "./scheduler.ts";
 
 function worker(
@@ -315,5 +316,73 @@ Deno.test("scheduleStep: multi-capacity worker with available slots dispatches",
   assertEquals(
     decision.kind === "dispatch" ? decision.worker.name : "",
     "partial",
+  );
+});
+
+Deno.test("unmetPlacement: null when the worker meets every requirement", () => {
+  const w = worker({
+    name: "b",
+    labels: { pool: "worker", slot: "b" },
+    platform: "linux",
+    arch: "aarch64",
+  });
+  assertEquals(unmetPlacement({}, w), null);
+  assertEquals(unmetPlacement({ target: "b" }, w), null);
+  assertEquals(unmetPlacement({ target: "uuid-b" }, w), null);
+  assertEquals(unmetPlacement({ labels: { pool: "worker" } }, w), null);
+  assertEquals(
+    unmetPlacement({ labels: { pool: "worker", slot: "b" } }, w),
+    null,
+  );
+  assertEquals(unmetPlacement({ platform: "linux/aarch64" }, w), null);
+});
+
+Deno.test("unmetPlacement: names the target the worker is not", () => {
+  const w = worker({ name: "w1" });
+  assertEquals(unmetPlacement({ target: "w2" }, w), "target 'w2'");
+});
+
+Deno.test("unmetPlacement: a target stands in for labels and platform, as in eligibleWorkers", () => {
+  const w = worker({ name: "special", labels: {}, platform: "linux" });
+  const placement = {
+    target: "special",
+    labels: { pool: "build" },
+    platform: "windows",
+  };
+  assertEquals(unmetPlacement(placement, w), null);
+  assertEquals(eligibleWorkers(placement, [w]).map((x) => x.name), [
+    "special",
+  ]);
+});
+
+Deno.test("unmetPlacement: names the first label the worker lacks", () => {
+  const w = worker({ name: "b", labels: { pool: "worker", slot: "b" } });
+  assertEquals(
+    unmetPlacement({ labels: { pool: "worker", slot: "a" } }, w),
+    "label slot=a",
+  );
+  assertEquals(
+    unmetPlacement({ labels: { gpu: "true" } }, w),
+    "label gpu=true",
+  );
+});
+
+Deno.test("unmetPlacement: names a platform or arch the worker is not", () => {
+  const w = worker({ name: "b", platform: "linux", arch: "x86_64" });
+  assertEquals(
+    unmetPlacement({ platform: "windows" }, w),
+    "platform 'windows'",
+  );
+  assertEquals(
+    unmetPlacement({ platform: "linux/aarch64" }, w),
+    "platform 'linux/aarch64'",
+  );
+});
+
+Deno.test("unmetPlacement: ignores status, connection and affinity", () => {
+  const w = worker({ name: "b", status: "draining", connected: false });
+  assertEquals(
+    unmetPlacement({ target: "b", affinityKey: "run-1" }, w),
+    null,
   );
 });

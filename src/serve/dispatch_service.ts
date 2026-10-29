@@ -72,6 +72,7 @@ import {
   type ScheduleDecision,
   scheduleStep,
   type StepPlacement,
+  unmetPlacement,
 } from "../domain/remote/scheduler.ts";
 import type {
   RemoteStepRequest,
@@ -498,11 +499,22 @@ export class DispatchService {
       }
       // A bound pin whose worker has left or is draining can never be
       // honoured, so the step fails rather than queueing until its timeout.
+      // The pin narrows where the step may run but does not replace its own
+      // placement: a pinned worker that does not meet it fails the step,
+      // which is never sent elsewhere, since that would break co-location.
       const assertPinHeld = () => {
-        if (
-          affinityKey && pinnedWorker && this.#pinnedWorkerLost(pinnedWorker)
-        ) {
+        if (!affinityKey || !pinnedWorker) return;
+        const worker = this.#gateway!.worker(pinnedWorker);
+        if (worker === null || this.#pinnedWorkerLost(worker)) {
           throw new WorkerAffinityLostError(pinnedWorker, affinityKey);
+        }
+        const unmet = unmetPlacement(request.placement, worker);
+        if (unmet !== null) {
+          throw new AffinityPlacementMismatchError(
+            pinnedWorker,
+            affinityKey,
+            unmet,
+          );
         }
       };
       assertPinHeld();
@@ -1250,14 +1262,13 @@ export class DispatchService {
   }
 
   /**
-   * Whether an affinity group's pinned worker can no longer take its steps:
-   * gone from the pool, disconnected, or draining. Read from the gateway
-   * directly — the reservation overlay reports a full draining worker as busy.
+   * Whether an affinity group's pinned worker, still in the pool, can no
+   * longer take its steps: disconnected or draining. Pass the gateway's own
+   * snapshot — the reservation overlay reports a full draining worker as
+   * busy.
    */
-  #pinnedWorkerLost(workerName: string): boolean {
-    const worker = this.#gateway!.worker(workerName);
-    return worker === null || !worker.connected ||
-      worker.status === "draining";
+  #pinnedWorkerLost(worker: WorkerSnapshot): boolean {
+    return !worker.connected || worker.status === "draining";
   }
 
   /**
@@ -1495,6 +1506,25 @@ export class WorkerAffinityLostError extends Error {
     this.name = "WorkerAffinityLostError";
     this.workerName = workerName;
     this.affinityKey = affinityKey;
+  }
+}
+
+/** A step's affinity-pinned worker does not meet the step's own placement. */
+export class AffinityPlacementMismatchError extends Error {
+  readonly workerName: string;
+  readonly affinityKey: string;
+  readonly unmet: string;
+
+  constructor(workerName: string, affinityKey: string, unmet: string) {
+    super(
+      `Worker '${workerName}' pinned by affinity group '${affinityKey}' ` +
+        `does not meet this step's placement (${unmet}) — failing step ` +
+        `rather than running it on a worker it does not match`,
+    );
+    this.name = "AffinityPlacementMismatchError";
+    this.workerName = workerName;
+    this.affinityKey = affinityKey;
+    this.unmet = unmet;
   }
 }
 
