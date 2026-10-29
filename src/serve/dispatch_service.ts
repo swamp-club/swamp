@@ -453,11 +453,13 @@ export class DispatchService {
     const onAbort = () => endQueue("cancel");
     request.signal?.addEventListener("abort", onAbort, { once: true });
 
+    // Set while this step is the first of its affinity group.
+    let affinitySlot: Promise<string | undefined> | null = null;
     let affinityResolve: ((name: string | undefined) => void) | null = null;
     let affinityReject: ((err: Error) => void) | null = null;
     // The worker of the attempt in progress, cleared when the attempt ends
-    // and the step tries again: a failure that ends the step there names
-    // the worker a first affinity step binds its group to.
+    // and the step tries again: the step ending there, however it ends,
+    // names the worker a first affinity step binds its group to.
     let attemptWorker: string | undefined;
     let failure: unknown;
     try {
@@ -485,6 +487,7 @@ export class DispatchService {
             >();
             promise.catch(() => {});
             this.#affinityInflight.set(affinityKey, promise);
+            affinitySlot = promise;
             affinityResolve = resolve;
             affinityReject = reject;
           }
@@ -576,15 +579,6 @@ export class DispatchService {
           );
           lastDispatchId = result.dispatchId;
           endQueue("mark_dispatched", { dispatchId: result.dispatchId });
-          if (affinityKey && !this.#affinityPins.has(affinityKey)) {
-            this.#affinityPins.set(affinityKey, workerName);
-            if (affinityResolve) {
-              affinityResolve(workerName);
-              this.#affinityInflight.delete(affinityKey);
-              affinityResolve = null;
-              affinityReject = null;
-            }
-          }
           return result;
         } catch (error) {
           if (error instanceof WorkerLostError) {
@@ -696,17 +690,21 @@ export class DispatchService {
       }
       throw error;
     } finally {
-      // A first affinity step that failed settles the steps waiting on it
-      // (swamp-club#4113). Only a lost worker fails them, with an error of
-      // their own naming that worker. A step that failed on a worker still
-      // able to take the group binds them to it, and one that ended before
-      // an attempt of its own failed leaves the group unbound.
+      // The first step of an affinity group settles the steps waiting on it
+      // (swamp-club#4113). Its error naming a lost worker fails them with an
+      // error of their own naming that worker. Otherwise the group binds to
+      // the worker its last attempt ran on, whether the step succeeded or
+      // failed there, and a worker lost since then fails the next step as a
+      // lost pin. A step that ended before an attempt of its own leaves the
+      // group unbound for the next of them, as does a group released while
+      // the step ran, which is never bound again.
       const key = request.placement.affinityKey;
       if (affinityResolve && affinityReject && key) {
-        this.#affinityInflight.delete(key);
+        const held = this.#affinityInflight.get(key) === affinitySlot;
+        if (held) this.#affinityInflight.delete(key);
         if (failure instanceof WorkerAffinityLostError) {
           affinityReject(new WorkerAffinityLostError(failure.workerName, key));
-        } else if (attemptWorker && !this.#pinnedWorkerLost(attemptWorker)) {
+        } else if (attemptWorker && held) {
           this.#affinityPins.set(key, attemptWorker);
           affinityResolve(attemptWorker);
         } else {

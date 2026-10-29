@@ -1904,6 +1904,58 @@ Deno.test("executeRemote: a first affinity step that loses its worker after writ
   assertEquals(h.dispatchCalls.length, 1);
 });
 
+Deno.test("executeRemote: a waiting affinity step fails as a lost pin when the worker its first step failed on has left (swamp-club#4113)", async () => {
+  const h = affinityFailureHarness();
+  const affinityKey = `run-${crypto.randomUUID()}:job-j`;
+  const firstHeld = Promise.withResolvers<void>();
+  h.setBehavior(async (name) => {
+    await firstHeld.promise;
+    h.pool.set(name, { ...h.pool.get(name)!, connected: false });
+    return VALIDATION_FAILED;
+  });
+
+  const bad = h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey, target: "w1" },
+    stepName: "bad",
+  }));
+  const good = h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey },
+    stepName: "good",
+  }));
+  await waitFor(() => h.dispatchCalls.length === 1, "the first step sent");
+  firstHeld.resolve();
+
+  await assertRejects(() => bad, Error, "Method arguments validation failed");
+  const error = await assertRejects(() => good, WorkerAffinityLostError);
+  assertEquals(error.workerName, "w1");
+  assertEquals(h.dispatchCalls.length, 1);
+});
+
+Deno.test("executeRemote: an affinity group released while its first step runs is not bound again (swamp-club#4113)", async () => {
+  const h = affinityFailureHarness();
+  const affinityKey = `run-${crypto.randomUUID()}:job-j`;
+  const firstHeld = Promise.withResolvers<void>();
+  h.setBehavior(async () => {
+    if (h.dispatchCalls.length === 1) await firstHeld.promise;
+    return OK_RESULT;
+  });
+
+  const first = h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey, target: "w1" },
+    stepName: "first",
+  }));
+  await waitFor(() => h.dispatchCalls.length === 1, "the first step sent");
+  h.service.releaseAffinity(affinityKey);
+  firstHeld.resolve();
+  assertEquals((await first).workerName, "w1");
+
+  const later = await h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey },
+    stepName: "later",
+  }));
+  assertEquals(later.workerName, "w2");
+});
+
 Deno.test("executeRemote: an unbound first affinity step queues when the only worker is draining", async () => {
   const h = createHarness({
     workers: [snapshot({ name: "w1", status: "draining" })],
