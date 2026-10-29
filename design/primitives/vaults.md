@@ -388,19 +388,22 @@ have their own sections. The group also has:
   vault name fails with the names of the available vaults.
 - `swamp vault get <vault>` / `swamp vault describe <vault>`: show a vault's
   configuration
-- `swamp vault edit [vault]`: open the vault YAML in `$EDITOR` (interactive
-  search when no name is given), or update it from YAML piped on stdin. With
+- `swamp vault edit [vault]`: open a copy of the vault YAML in `$EDITOR`
+  (interactive search when no name is given) and save it when the editor
+  closes, through the same update as YAML piped on stdin (swamp-club#4107);
+  an unchanged copy saves nothing, and a refused save keeps the copy and
+  names it. With
   `--server`, stdin is required: the server never opens an editor, and it
   authorizes the vault by name, plus the new name on a rename
   - A rename of a `local_encryption` vault moves its secrets directory
     (secrets, auto-generated key, annotations, refresh hooks) to the new name
     under the stored `base_dir`; the edited `base_dir` is never used for the
-    move. A rename onto a name that already has stored secrets is refused
-    (stdin) or reverted (editor). Editor renames are seen only when the editor
-    waits for the file to close, so `vault edit` passes the wait flag to GUI
-    editors that have one
+    move. A rename onto a name that already has stored secrets, or that
+    another vault holds, is refused and nothing is saved; an editor edit's
+    copy is kept for a retry. Name checks skip vault files that do not parse
   - A vault whose YAML no longer parses is repaired by id with `--type`: the
-    editor opens the file as it is, and a stdin update replaces it (the id
+    editor opens a copy of the file as it is, and the edited copy or a stdin
+    update replaces it (the id
     comes from the file name, the type from its directory). Name lookups skip
     such files while a valid vault matches, and otherwise fail with a user
     error naming the file and this repair command. A repair moves no secrets,

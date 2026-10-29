@@ -42,10 +42,6 @@ import {
   isValidVaultName,
   VAULT_NAME_RULE,
 } from "../../domain/vaults/vault_name.ts";
-import {
-  type EditorLaunch,
-  EditorService,
-} from "../../infrastructure/editor/editor_service.ts";
 import type { LibSwampContext } from "../context.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
@@ -81,7 +77,11 @@ export interface VaultEditConfigInfo {
 export interface VaultEditData {
   path: string;
   editor?: string;
-  status: "opened" | "updated";
+  /**
+   * `updated` when the edit was saved, `unchanged` when the editor closed
+   * with nothing to save.
+   */
+  status: "updated" | "unchanged";
   name: string;
   type: string;
   /** The vault's previous name, when the edit renamed it. */
@@ -115,8 +115,20 @@ export interface VaultEditInput {
    * authorized.
    */
   byId?: boolean;
-  /** New vault YAML. When set, the vault is updated instead of opened. */
+  /**
+   * New vault YAML. A vault is edited in the editor through
+   * {@link resolveVaultEditFile} and a copy, then saved with this set, so the
+   * edit is committed (swamp-club#4107).
+   */
   stdinContent?: string | null;
+  /**
+   * Where `stdinContent` came from: the default `stdin`, or `editor` for a
+   * copy edited in the user's editor. An editor edit whose content is the
+   * stored vault saves nothing and completes as `unchanged`.
+   */
+  source?: "stdin" | "editor";
+  /** The editor that produced `stdinContent`, reported on completion. */
+  editor?: string;
   /**
    * Called before every stdin update is saved, with the stored and the edited
    * vault. Returning false leaves the file untouched. Serve uses it to
@@ -170,7 +182,6 @@ export interface VaultEditLookupDeps {
 export interface VaultEditDeps extends VaultEditLookupDeps {
   getVaultPath: (config: VaultEditConfigInfo) => string;
   fileExists: (path: string) => Promise<boolean>;
-  prepareEditor: (path: string) => Promise<EditorLaunch>;
   readConfigData: (
     config: VaultEditConfigInfo,
   ) => Promise<VaultConfigData | null>;
@@ -199,7 +210,6 @@ export function createVaultEditDeps(
   // The repository resolves the effective vaults dir, which is the datastore
   // config tier under managedConfig (swamp-club#2426).
   const repo = injectedRepo ?? new YamlVaultConfigRepository(repoDir);
-  const editorService = new EditorService();
   return {
     findByName: (name, skipUnparseable) =>
       repo.findByName(name, skipUnparseable),
@@ -215,10 +225,6 @@ export function createVaultEditDeps(
         throw error;
       }
     },
-    // Wait for GUI editors too, so a rename made in the editor is seen after
-    // it closes and the vault's secrets can move with it (swamp-club#2681).
-    prepareEditor: (path) =>
-      editorService.prepareOpenFile(path, { wait: true }),
     readConfigData: async (config) =>
       (await repo.findById(config.type, config.id))?.toData() ?? null,
     saveConfigData: (data) => repo.save(VaultConfig.fromData(data)),
@@ -287,8 +293,9 @@ export async function findVaultByNameOrId(
   return allVaults.find((v) => v.id === vaultNameOrId) ?? null;
 }
 
-function stdinError(detail: string): SwampError {
-  return validationFailed(`Invalid vault YAML from stdin: ${detail}`);
+function contentError(input: VaultEditInput, detail: string): SwampError {
+  const from = input.source === "editor" ? "the editor" : "stdin";
+  return validationFailed(`Invalid vault YAML from ${from}: ${detail}`);
 }
 
 /**
@@ -311,12 +318,18 @@ async function* updateVaultFromStdin(
   } catch (error) {
     yield {
       kind: "error",
-      error: stdinError(error instanceof Error ? error.message : String(error)),
+      error: contentError(
+        input,
+        error instanceof Error ? error.message : String(error),
+      ),
     };
     return;
   }
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    yield { kind: "error", error: stdinError("expected a YAML mapping") };
+    yield {
+      kind: "error",
+      error: contentError(input, "expected a YAML mapping"),
+    };
     return;
   }
 
@@ -335,10 +348,28 @@ async function* updateVaultFromStdin(
     createdAt: existing.createdAt,
   });
   if (!parsed.success) {
-    yield { kind: "error", error: stdinError(parsed.error.message) };
+    yield { kind: "error", error: contentError(input, parsed.error.message) };
     return;
   }
   const updated = parsed.data;
+
+  if (
+    input.source === "editor" &&
+    JSON.stringify(VaultConfig.fromData(updated).toData()) ===
+      JSON.stringify(VaultConfig.fromData(existing).toData())
+  ) {
+    yield {
+      kind: "completed",
+      data: {
+        path: filePath,
+        ...(input.editor ? { editor: input.editor } : {}),
+        status: "unchanged",
+        name: existing.name,
+        type: existing.type,
+      },
+    };
+    return;
+  }
 
   if (updated.type !== existing.type) {
     yield {
@@ -361,7 +392,9 @@ async function* updateVaultFromStdin(
       };
       return;
     }
-    const clash = await deps.findByName(updated.name);
+    // Files that do not parse cannot hold the name; reporting them would
+    // stop any rename while another vault is broken.
+    const clash = await deps.findByName(updated.name, true);
     if (clash && clash.id !== existing.id) {
       yield { kind: "error", error: alreadyExists("Vault", updated.name) };
       return;
@@ -464,6 +497,7 @@ async function* updateVaultFromStdin(
     kind: "completed",
     data: {
       path: filePath,
+      ...(input.editor ? { editor: input.editor } : {}),
       status: "updated",
       name: updated.name,
       type: updated.type,
@@ -517,11 +551,14 @@ async function* repairVaultFromStdin(
   try {
     raw = parseYaml(content);
   } catch (error) {
-    yield { kind: "error", error: stdinError(errorMessage(error)) };
+    yield { kind: "error", error: contentError(input, errorMessage(error)) };
     return;
   }
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    yield { kind: "error", error: stdinError("expected a YAML mapping") };
+    yield {
+      kind: "error",
+      error: contentError(input, "expected a YAML mapping"),
+    };
     return;
   }
 
@@ -537,7 +574,7 @@ async function* repairVaultFromStdin(
     createdAt,
   });
   if (!parsed.success) {
-    yield { kind: "error", error: stdinError(parsed.error.message) };
+    yield { kind: "error", error: contentError(input, parsed.error.message) };
     return;
   }
   let repaired = parsed.data;
@@ -660,6 +697,7 @@ async function* repairVaultFromStdin(
     kind: "completed",
     data: {
       path: filePath,
+      ...(input.editor ? { editor: input.editor } : {}),
       status: "updated",
       name: repaired.name,
       type: repaired.type,
@@ -673,77 +711,74 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** The stored vault file a vault edit acts on. */
+export interface VaultEditFile {
+  config: VaultEditConfigInfo;
+  path: string;
+  /**
+   * The requested vault's own file does not parse: it can be replaced when
+   * repair is authorized.
+   */
+  broken: boolean;
+}
+
 /**
- * Checks the vault after an editor session and, when it was renamed, moves
- * its secrets to the new name. A rename that is invalid or whose secrets
- * cannot move is reverted, keeping the user's other edits, so the config and
- * the stored secrets always agree. Returns the error to report, or the new
- * name when the vault was renamed.
+ * Resolves the stored vault file a vault edit acts on, or the error that
+ * stops the edit. A file that does not parse is accepted when the edit has
+ * no content yet (it opens in the editor) or may repair it.
  */
-async function reconcileEditorRename(
+export async function resolveVaultEditFile(
+  ctx: LibSwampContext,
   deps: VaultEditDeps,
-  stored: VaultConfigData,
-): Promise<
-  { error: SwampError } | { renamedTo: string; secretsMoved: boolean } | null
-> {
-  let edited: VaultConfigData | null;
+  input: Pick<
+    VaultEditInput,
+    "vaultNameOrId" | "vaultType" | "byId" | "stdinContent" | "authorizeRepair"
+  >,
+): Promise<VaultEditFile | { error: SwampError }> {
+  const { vaultNameOrId, vaultType } = input;
+
+  ctx.logger.debug`Looking up vault: ${vaultNameOrId}`;
+
+  const stdinContent = input.stdinContent ?? null;
+  let config: VaultEditConfigInfo | null;
+  let broken = false;
   try {
-    edited = await deps.readConfigData(stored);
+    config = input.byId && vaultType
+      ? await deps.findById(vaultType, vaultNameOrId)
+      : await findVaultByNameOrId(deps, vaultNameOrId, vaultType);
   } catch (error) {
+    if (
+      !isBrokenTarget(deps, error, vaultNameOrId, vaultType) ||
+      (stdinContent !== null && !input.authorizeRepair)
+    ) {
+      throw error;
+    }
+    broken = true;
+    config = { id: vaultNameOrId, name: vaultNameOrId, type: vaultType };
+  }
+
+  // If type was specified, verify it matches
+  if (config && vaultType && config.type !== vaultType) {
     return {
       error: validationFailed(
-        `Vault '${stored.name}' is not valid after editing: ${
-          errorMessage(error)
-        }. Its stored secrets were not moved.`,
+        `Vault '${vaultNameOrId}' found but has type '${config.type}', not '${vaultType}'`,
       ),
     };
   }
-  if (!edited || edited.name === stored.name) return null;
 
-  let reason: string | null = null;
-  if (!isValidVaultName(edited.name)) {
-    reason = `Invalid vault name: ${edited.name}. ${VAULT_NAME_RULE}`;
-  } else {
-    // The config is already saved, so a lookup failure (such as another
-    // vault file that does not parse) reverts the rename rather than
-    // escaping with the config and the secrets disagreeing.
-    try {
-      const clash = await deps.findByName(edited.name);
-      if (clash && clash.id !== stored.id) {
-        reason = `A vault named '${edited.name}' already exists.`;
-      }
-    } catch (error) {
-      reason = `Could not check that the name is free: ${errorMessage(error)}`;
-    }
-  }
-  if (!reason) {
-    try {
-      const undo = await deps.moveSecrets(stored, edited.name);
-      return { renamedTo: edited.name, secretsMoved: undo !== null };
-    } catch (error) {
-      reason = errorMessage(error);
-    }
+  if (!config) {
+    const typeHint = vaultType ? ` of type '${vaultType}'` : "";
+    return { error: notFound("Vault", `${vaultNameOrId}${typeHint}`) };
   }
 
-  try {
-    await deps.saveConfigData({ ...edited, name: stored.name });
-  } catch (error) {
-    return {
-      error: validationFailed(
-        `Cannot rename vault '${stored.name}' to '${edited.name}': ${reason} ` +
-          `Changing the name back to '${stored.name}' also failed: ` +
-          `${errorMessage(error)}. The config names the vault ` +
-          `'${edited.name}' but its secrets are still stored under ` +
-          `'${stored.name}'.`,
-      ),
-    };
+  ctx.logger
+    .debug`Found vault: id=${config.id}, name=${config.name}, type=${config.type}`;
+
+  const path = deps.getVaultPath(config);
+  if (!(await deps.fileExists(path))) {
+    return { error: notFound("Vault configuration file", path) };
   }
-  return {
-    error: validationFailed(
-      `Cannot rename vault '${stored.name}' to '${edited.name}': ${reason} ` +
-        `The name was changed back to '${stored.name}'; other edits were kept.`,
-    ),
-  };
+  return { config, path, broken };
 }
 
 /** Edits a vault configuration file via stdin update or editor. */
@@ -759,67 +794,13 @@ export async function* vaultEdit(
       (async function* () {
         yield { kind: "resolving" };
 
-        const { vaultNameOrId, vaultType } = input;
-
-        ctx.logger.debug`Looking up vault: ${vaultNameOrId}`;
-
         const stdinContent = input.stdinContent ?? null;
-        let config: VaultEditConfigInfo | null;
-        // Set when the requested vault's own file does not parse: it can
-        // still be opened to fix it, or replaced when repair is authorized.
-        let broken = false;
-        try {
-          config = input.byId && vaultType
-            ? await deps.findById(vaultType, vaultNameOrId)
-            : await findVaultByNameOrId(deps, vaultNameOrId, vaultType);
-        } catch (error) {
-          if (
-            !isBrokenTarget(deps, error, vaultNameOrId, vaultType) ||
-            (stdinContent !== null && !input.authorizeRepair)
-          ) {
-            throw error;
-          }
-          broken = true;
-          config = { id: vaultNameOrId, name: vaultNameOrId, type: vaultType };
-        }
-
-        // If type was specified, verify it matches
-        if (config && vaultType && config.type !== vaultType) {
-          yield {
-            kind: "error",
-            error: validationFailed(
-              `Vault '${vaultNameOrId}' found but has type '${config.type}', not '${vaultType}'`,
-            ),
-          };
+        const resolved = await resolveVaultEditFile(ctx, deps, input);
+        if ("error" in resolved) {
+          yield { kind: "error", error: resolved.error };
           return;
         }
-
-        if (!config) {
-          const typeHint = vaultType ? ` of type '${vaultType}'` : "";
-          yield {
-            kind: "error",
-            error: notFound("Vault", `${vaultNameOrId}${typeHint}`),
-          };
-          return;
-        }
-
-        ctx.logger
-          .debug`Found vault: id=${config.id}, name=${config.name}, type=${config.type}`;
-
-        const filePath = deps.getVaultPath(config);
-
-        // Check if file exists
-        const exists = await deps.fileExists(filePath);
-        if (!exists) {
-          yield {
-            kind: "error",
-            error: notFound(
-              "Vault configuration file",
-              filePath,
-            ),
-          };
-          return;
-        }
+        const { config, path: filePath, broken } = resolved;
 
         if (broken && stdinContent !== null && input.authorizeRepair) {
           ctx.logger.debug`Repairing vault from stdin: ${config.id}`;
@@ -846,44 +827,14 @@ export async function* vaultEdit(
           return;
         }
 
-        // A config that no longer parses can still be opened to fix it; there
-        // is then no stored name to compare a rename against.
-        const stored = broken
-          ? null
-          : await deps.readConfigData(config).catch(() => null);
-
-        ctx.logger.debug`Opening file: ${filePath}`;
-        const launch = await deps.prepareEditor(filePath);
+        // A vault is edited on a copy and saved as stdinContent; opened in
+        // place, the edit would never be saved through the repository, so
+        // it would never be committed (swamp-club#4107).
         yield {
-          kind: "launching",
-          data: {
-            editor: launch.editor,
-            path: filePath,
-            waitsForExit: launch.waitsForExit,
-          },
-        };
-        const result = await launch.open();
-
-        const rename = stored
-          ? await reconcileEditorRename(deps, stored)
-          : null;
-        if (rename && "error" in rename) {
-          yield { kind: "error", error: rename.error };
-          return;
-        }
-
-        yield {
-          kind: "completed",
-          data: {
-            path: filePath,
-            editor: result.editor,
-            status: "opened",
-            name: rename ? rename.renamedTo : config.name,
-            type: config.type,
-            ...(rename
-              ? { renamedFrom: config.name, secretsMoved: rename.secretsMoved }
-              : {}),
-          },
+          kind: "error",
+          error: validationFailed(
+            `Cannot open vault '${config.name}' in place: edit a copy and save it as the new content`,
+          ),
         };
       })(),
     ));

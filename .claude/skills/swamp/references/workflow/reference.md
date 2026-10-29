@@ -218,7 +218,9 @@ then edit directly with the Edit tool, then validate with
 
 **Alternative methods:**
 
-- Interactive: `swamp workflow edit my-workflow` (opens in system editor)
+- Interactive: `swamp workflow edit my-workflow` (opens a copy in the system
+  editor and saves it when the editor closes, like a stdin update; if the save
+  is refused, the error names the kept copy to retry from)
 - Stdin: `cat updated.yaml | swamp workflow edit my-workflow --json`
 
 A stdin update whose `name` differs from the workflow being edited is refused.

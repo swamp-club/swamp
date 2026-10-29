@@ -24,6 +24,7 @@ import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   createVaultEditDeps,
+  resolveVaultEditFile,
   vaultEdit,
   type VaultEditDeps,
   type VaultEditEvent,
@@ -38,15 +39,6 @@ import {
 import { VaultConfig } from "../../domain/vaults/vault_config.ts";
 import { LocalEncryptionVaultProvider } from "../../domain/vaults/local_encryption_vault_provider.ts";
 
-function prepareEditor(editor: string) {
-  return (path: string) =>
-    Promise.resolve({
-      editor,
-      waitsForExit: false,
-      open: () => Promise.resolve({ editor, path }),
-    });
-}
-
 function makeDeps(overrides: Partial<VaultEditDeps> = {}): VaultEditDeps {
   return {
     findByName: () => Promise.resolve(null),
@@ -54,7 +46,6 @@ function makeDeps(overrides: Partial<VaultEditDeps> = {}): VaultEditDeps {
     findAll: () => Promise.resolve([]),
     getVaultPath: () => "/fake/path/vault.yaml",
     fileExists: () => Promise.resolve(true),
-    prepareEditor: prepareEditor("VS Code"),
     readConfigData: () => Promise.resolve(null),
     saveConfigData: () => Promise.resolve(),
     getConfigSchema: () => Promise.resolve(undefined),
@@ -85,100 +76,53 @@ Deno.test("vaultEdit: yields error when vault not found", async () => {
   assertEquals(last.error.code, "not_found");
 });
 
-Deno.test("vaultEdit: opens editor when vault found by name", async () => {
+Deno.test("resolveVaultEditFile: resolves a vault found by name to its stored file", async () => {
   const deps = makeDeps({
     findByName: () => Promise.resolve(testVaultConfig),
     getVaultPath: () => "/repo/vaults/env/vault-1.yaml",
-    prepareEditor: prepareEditor("Neovim"),
+  });
+
+  const file = await resolveVaultEditFile(createLibSwampContext(), deps, {
+    vaultNameOrId: "my-vault",
+  });
+
+  assertEquals(file, {
+    config: testVaultConfig,
+    path: "/repo/vaults/env/vault-1.yaml",
+    broken: false,
+  });
+});
+
+Deno.test("vaultEdit: without content refuses to open a stored vault in place (swamp-club#4107)", async () => {
+  const deps = makeDeps({
+    findByName: () => Promise.resolve(testVaultConfig),
+    getVaultPath: () => "/repo/vaults/env/vault-1.yaml",
   });
 
   const events = await collect<VaultEditEvent>(
-    vaultEdit(createLibSwampContext(), deps, {
-      vaultNameOrId: "my-vault",
-    }),
+    vaultEdit(createLibSwampContext(), deps, { vaultNameOrId: "my-vault" }),
   );
 
-  assertEquals(events, [
-    { kind: "resolving" },
-    {
-      kind: "launching",
-      data: {
-        editor: "Neovim",
-        path: "/repo/vaults/env/vault-1.yaml",
-        waitsForExit: false,
-      },
-    },
-    {
-      kind: "completed",
-      data: {
-        path: "/repo/vaults/env/vault-1.yaml",
-        editor: "Neovim",
-        status: "opened",
-        name: "my-vault",
-        type: "env",
-      },
-    },
-  ]);
+  const error = errorOf(events[events.length - 1]);
+  assertEquals(error.code, "validation_failed");
+  assertStringIncludes(error.message, "edit a copy");
 });
 
-Deno.test("vaultEdit: announces editor launch before opening", async () => {
-  let opened = false;
-  const deps = makeDeps({
-    findByName: () => Promise.resolve(testVaultConfig),
-    getVaultPath: () => "/repo/vaults/env/vault-1.yaml",
-    prepareEditor: (path) =>
-      Promise.resolve({
-        editor: "VS Code",
-        waitsForExit: true,
-        open: () => {
-          opened = true;
-          return Promise.resolve({ editor: "VS Code", path });
-        },
-      }),
-  });
-
-  const iterator = vaultEdit(createLibSwampContext(), deps, {
-    vaultNameOrId: "my-vault",
-  })[Symbol.asyncIterator]();
-
-  await iterator.next();
-  const launch = await iterator.next();
-  assertEquals(launch.value, {
-    kind: "launching",
-    data: {
-      editor: "VS Code",
-      path: "/repo/vaults/env/vault-1.yaml",
-      waitsForExit: true,
-    },
-  });
-  assertEquals(opened, false);
-
-  await iterator.next();
-  assertEquals(opened, true);
-});
-
-Deno.test("vaultEdit: finds vault by ID when name lookup fails", async () => {
+Deno.test("resolveVaultEditFile: finds vault by ID when name lookup fails", async () => {
   const deps = makeDeps({
     findByName: () => Promise.resolve(null),
     findAll: () => Promise.resolve([testVaultConfig]),
     getVaultPath: () => "/repo/vaults/env/vault-1.yaml",
-    prepareEditor: prepareEditor("VS Code"),
   });
 
-  const events = await collect<VaultEditEvent>(
-    vaultEdit(createLibSwampContext(), deps, {
-      vaultNameOrId: "vault-1",
-    }),
-  );
+  const file = await resolveVaultEditFile(createLibSwampContext(), deps, {
+    vaultNameOrId: "vault-1",
+  });
 
-  const completed = events[2] as Extract<
-    VaultEditEvent,
-    { kind: "completed" }
-  >;
-  assertEquals(completed.data.name, "my-vault");
+  assertEquals("config" in file && file.config.name, "my-vault");
 });
 
-Deno.test("vaultEdit: finds vault by ID with type hint", async () => {
+Deno.test("resolveVaultEditFile: finds vault by ID with type hint", async () => {
   const deps = makeDeps({
     findByName: () => Promise.resolve(null),
     findById: (type, id) => {
@@ -188,21 +132,14 @@ Deno.test("vaultEdit: finds vault by ID with type hint", async () => {
       return Promise.resolve(null);
     },
     getVaultPath: () => "/repo/vaults/env/vault-1.yaml",
-    prepareEditor: prepareEditor("VS Code"),
   });
 
-  const events = await collect<VaultEditEvent>(
-    vaultEdit(createLibSwampContext(), deps, {
-      vaultNameOrId: "vault-1",
-      vaultType: "env",
-    }),
-  );
+  const file = await resolveVaultEditFile(createLibSwampContext(), deps, {
+    vaultNameOrId: "vault-1",
+    vaultType: "env",
+  });
 
-  const completed = events[2] as Extract<
-    VaultEditEvent,
-    { kind: "completed" }
-  >;
-  assertEquals(completed.data.name, "my-vault");
+  assertEquals("config" in file && file.config.name, "my-vault");
 });
 
 Deno.test("vaultEdit: yields error when vault type mismatch", async () => {
@@ -273,9 +210,6 @@ function makeStdinDeps(
     saveConfigData: (data) => {
       saved.push(data);
       return Promise.resolve();
-    },
-    prepareEditor: () => {
-      throw new Error("the editor must not be prepared in stdin mode");
     },
     ...overrides,
   });
@@ -461,7 +395,7 @@ Deno.test("vaultEdit: stdin update asks authorizeUpdate even without a rename", 
   assertEquals(saved, []);
 });
 
-Deno.test("vaultEdit: byId looks the vault up by id only", async () => {
+Deno.test("resolveVaultEditFile: byId looks the vault up by id only", async () => {
   const lookups: string[] = [];
   const deps = makeDeps({
     // A vault whose name matches the id must not be picked.
@@ -475,20 +409,14 @@ Deno.test("vaultEdit: byId looks the vault up by id only", async () => {
     },
   });
 
-  const events = await collect<VaultEditEvent>(
-    vaultEdit(createLibSwampContext(), deps, {
-      vaultNameOrId: "vault-1",
-      vaultType: "env",
-      byId: true,
-    }),
-  );
+  const file = await resolveVaultEditFile(createLibSwampContext(), deps, {
+    vaultNameOrId: "vault-1",
+    vaultType: "env",
+    byId: true,
+  });
 
   assertEquals(lookups, ["id:env/vault-1"]);
-  const completed = events[events.length - 1] as Extract<
-    VaultEditEvent,
-    { kind: "completed" }
-  >;
-  assertEquals(completed.data.name, "my-vault");
+  assertEquals("config" in file && file.config.name, "my-vault");
 });
 
 Deno.test("createVaultEditDeps: resolves and updates the vault under the managedConfig vaults dir (swamp-club#2426)", async () => {
@@ -651,194 +579,89 @@ Deno.test("vaultEdit: stdin rename reports both errors when moving the secrets b
   assertStringIncludes(error.message, "They are stored under 'renamed'");
 });
 
-/**
- * Deps for an editor session over `existingData`: the editor replaces the
- * stored config with `edit(stored)`, or makes it unreadable when `edit`
- * returns null.
- */
-function makeEditorDeps(
-  edit: (stored: VaultConfigData) => VaultConfigData | null,
-  overrides: Partial<VaultEditDeps> = {},
-): { deps: VaultEditDeps; saved: VaultConfigData[]; moves: string[] } {
-  let current: VaultConfigData | null = { ...existingData };
-  const saved: VaultConfigData[] = [];
-  const moves: string[] = [];
-  const deps = makeDeps({
-    findByName: (name) =>
-      Promise.resolve(name === "my-vault" ? testVaultConfig : null),
-    readConfigData: () =>
-      current
-        ? Promise.resolve({ ...current })
-        : Promise.reject(new Error("bad indentation")),
-    saveConfigData: (data) => {
-      saved.push(data);
-      current = data;
-      return Promise.resolve();
-    },
-    prepareEditor: (path) =>
-      Promise.resolve({
-        editor: "Neovim",
-        waitsForExit: true,
-        open: () => {
-          current = edit(current!);
-          return Promise.resolve({ editor: "Neovim", path });
-        },
-      }),
-    moveSecrets: (stored, toName) => {
-      moves.push(`${stored.name} -> ${toName}`);
-      return Promise.resolve(null);
-    },
-    ...overrides,
-  });
-  return { deps, saved, moves };
-}
+Deno.test("vaultEdit: an editor edit equal to the stored vault saves nothing (swamp-club#4107)", async () => {
+  const { deps, saved } = makeStdinDeps();
 
-async function runEditor(deps: VaultEditDeps): Promise<VaultEditEvent> {
-  const events = await collect<VaultEditEvent>(
-    vaultEdit(createLibSwampContext(), deps, { vaultNameOrId: "my-vault" }),
+  const last = await runStdin(
+    deps,
+    // Same data, different layout: the order and quoting an editor may leave.
+    "type: env\nname: 'my-vault'\nconfig:\n  prefix: APP_\n",
+    { source: "editor", editor: "Neovim" },
   );
-  return events[events.length - 1];
-}
 
-Deno.test("vaultEdit: editor rename moves the stored secrets to the new name (swamp-club#2681)", async () => {
-  const { deps, saved, moves } = makeEditorDeps((d) => ({
-    ...d,
-    name: "renamed",
-  }));
-
-  const last = await runEditor(deps);
-
-  assertEquals(moves, ["my-vault -> renamed"]);
   assertEquals(saved, []);
   assertEquals(last, {
     kind: "completed",
     data: {
       path: "/fake/path/vault.yaml",
       editor: "Neovim",
-      status: "opened",
-      name: "renamed",
+      status: "unchanged",
+      name: "my-vault",
       type: "env",
-      renamedFrom: "my-vault",
-      secretsMoved: false,
     },
   });
 });
 
-Deno.test("vaultEdit: editor session without a rename does not move secrets", async () => {
-  const { deps, moves } = makeEditorDeps((d) => ({
-    ...d,
-    config: { prefix: "NEW_" },
-  }));
+Deno.test("vaultEdit: an editor edit is saved like a stdin update and names the editor", async () => {
+  const { deps, saved } = makeStdinDeps();
 
-  const last = await runEditor(deps);
+  const last = await runStdin(
+    deps,
+    "name: my-vault\ntype: env\nconfig:\n  prefix: NEW_\n",
+    { source: "editor", editor: "Neovim" },
+  );
 
+  assertEquals(saved.map((d) => d.config), [{ prefix: "NEW_" }]);
   assertEquals(last.kind, "completed");
-  assertEquals(moves, []);
+  const data = (last as Extract<VaultEditEvent, { kind: "completed" }>).data;
+  assertEquals(data.status, "updated");
+  assertEquals(data.editor, "Neovim");
 });
 
-Deno.test("vaultEdit: editor rename whose secrets cannot move is reverted, keeping other edits", async () => {
-  const { deps, saved } = makeEditorDeps(
-    (d) => ({ ...d, name: "renamed", config: { prefix: "NEW_" } }),
-    {
-      moveSecrets: () =>
-        Promise.reject(
-          new Error("Secrets are already stored under vault name 'renamed'."),
-        ),
-    },
-  );
-
-  const error = errorOf(await runEditor(deps));
-
-  assertEquals(error.code, "validation_failed");
-  assertStringIncludes(error.message, "Secrets are already stored");
-  assertStringIncludes(
-    error.message,
-    "The name was changed back to 'my-vault'",
-  );
-  assertEquals(saved, [{
-    ...existingData,
-    name: "my-vault",
-    config: { prefix: "NEW_" },
-  }]);
-});
-
-Deno.test("vaultEdit: editor rename reports where things stand when changing the name back fails", async () => {
-  const { deps } = makeEditorDeps((d) => ({ ...d, name: "renamed" }), {
-    moveSecrets: () =>
-      Promise.reject(
-        new Error("Secrets are already stored under vault name 'renamed'."),
-      ),
-    saveConfigData: () => Promise.reject(new Error("read-only file system")),
+Deno.test("vaultEdit: an editor rename moves secrets and reports it, as a stdin rename does", async () => {
+  const { deps, saved } = makeStdinDeps({
+    moveSecrets: () => Promise.resolve(() => Promise.resolve()),
   });
 
-  const error = errorOf(await runEditor(deps));
+  const last = await runStdin(deps, "name: renamed\ntype: env\n", {
+    source: "editor",
+    editor: "Neovim",
+  });
 
-  assertEquals(error.code, "validation_failed");
-  assertStringIncludes(
-    error.message,
-    "Changing the name back to 'my-vault' also failed: read-only file system",
-  );
-  assertStringIncludes(
-    error.message,
-    "its secrets are still stored under 'my-vault'",
-  );
+  assertEquals(saved.map((d) => d.name), ["renamed"]);
+  const data = (last as Extract<VaultEditEvent, { kind: "completed" }>).data;
+  assertEquals(data.renamedFrom, "my-vault");
+  assertEquals(data.secretsMoved, true);
 });
 
-Deno.test("vaultEdit: editor rename that breaks the naming rule is reverted without moving secrets", async () => {
-  const { deps, saved, moves } = makeEditorDeps((d) => ({
-    ...d,
-    name: "Bad_Name",
-  }));
-
-  const error = errorOf(await runEditor(deps));
-
-  assertStringIncludes(error.message, "Invalid vault name: Bad_Name");
-  assertEquals(moves, []);
-  assertEquals(saved.map((d) => d.name), ["my-vault"]);
-});
-
-Deno.test("vaultEdit: editor rename onto another vault's name is reverted without moving secrets", async () => {
-  const { deps, saved, moves } = makeEditorDeps(
-    (d) => ({ ...d, name: "taken" }),
-    {
-      findByName: (name) => {
-        if (name === "my-vault") return Promise.resolve(testVaultConfig);
-        if (name === "taken") {
-          return Promise.resolve({ id: "vault-2", name: "taken", type: "env" });
-        }
-        return Promise.resolve(null);
-      },
+Deno.test("vaultEdit: an editor rename onto another vault's name is refused and saves nothing", async () => {
+  const { deps, saved } = makeStdinDeps({
+    findByName: (name) => {
+      if (name === "my-vault") return Promise.resolve(testVaultConfig);
+      if (name === "taken") {
+        return Promise.resolve({ id: "vault-2", name: "taken", type: "env" });
+      }
+      return Promise.resolve(null);
     },
+  });
+
+  const error = errorOf(
+    await runStdin(deps, "name: taken\ntype: env\n", { source: "editor" }),
   );
 
-  const error = errorOf(await runEditor(deps));
-
-  assertStringIncludes(error.message, "A vault named 'taken' already exists");
-  assertEquals(moves, []);
-  assertEquals(saved.map((d) => d.name), ["my-vault"]);
-});
-
-Deno.test("vaultEdit: editor session that leaves the config unparseable reports it and moves nothing", async () => {
-  const { deps, saved, moves } = makeEditorDeps(() => null);
-
-  const error = errorOf(await runEditor(deps));
-
-  assertEquals(error.code, "validation_failed");
-  assertStringIncludes(error.message, "is not valid after editing");
-  assertStringIncludes(error.message, "bad indentation");
-  assertEquals(moves, []);
+  assertStringIncludes(error.message, "Vault already exists: taken");
   assertEquals(saved, []);
 });
 
-Deno.test("vaultEdit: editor still opens a vault whose stored config does not parse", async () => {
-  const { deps, moves } = makeEditorDeps((d) => d, {
-    readConfigData: () => Promise.reject(new Error("bad indentation")),
-  });
+Deno.test("vaultEdit: invalid YAML from the editor says so", async () => {
+  const { deps, saved } = makeStdinDeps();
 
-  const last = await runEditor(deps);
+  const error = errorOf(
+    await runStdin(deps, "name: [unclosed\n", { source: "editor" }),
+  );
 
-  assertEquals(last.kind, "completed");
-  assertEquals(moves, []);
+  assertStringIncludes(error.message, "Invalid vault YAML from the editor");
+  assertEquals(saved, []);
 });
 
 Deno.test("createVaultEditDeps: stdin rename of a local_encryption vault keeps its secrets readable (swamp-club#2681)", async () => {
@@ -966,7 +789,6 @@ async function withBrokenVaultRepo(
     repoDir: string;
     repo: YamlVaultConfigRepository;
     brokenPath: string;
-    opened: string[];
     deps: VaultEditDeps;
   }) => Promise<void>,
 ): Promise<void> {
@@ -981,20 +803,8 @@ async function withBrokenVaultRepo(
     );
     const brokenPath = repo.getPath("local_encryption", BROKEN_ID);
     await Deno.writeTextFile(brokenPath, BROKEN_YAML);
-    const opened: string[] = [];
-    const deps: VaultEditDeps = {
-      ...createVaultEditDeps(repoDir, repo),
-      prepareEditor: (path) =>
-        Promise.resolve({
-          editor: "Neovim",
-          waitsForExit: true,
-          open: () => {
-            opened.push(path);
-            return Promise.resolve({ editor: "Neovim", path });
-          },
-        }),
-    };
-    await fn({ repoDir, repo, brokenPath, opened, deps });
+    const deps = createVaultEditDeps(repoDir, repo);
+    await fn({ repoDir, repo, brokenPath, deps });
   });
 }
 
@@ -1007,50 +817,52 @@ function completedData(event: VaultEditEvent) {
   return (event as Extract<VaultEditEvent, { kind: "completed" }>).data;
 }
 
-Deno.test("vaultEdit: editor opens a vault whose config does not parse, by id and type", async () => {
-  await withBrokenVaultRepo(async ({ brokenPath, opened, deps }) => {
-    const events = await collect<VaultEditEvent>(
-      vaultEdit(createLibSwampContext(), deps, {
+function resolve(deps: VaultEditDeps, input: {
+  vaultNameOrId: string;
+  vaultType?: string;
+}) {
+  return resolveVaultEditFile(createLibSwampContext(), deps, input);
+}
+
+function fileOf(resolved: Awaited<ReturnType<typeof resolve>>) {
+  if ("error" in resolved) throw new Error(resolved.error.message);
+  return resolved;
+}
+
+Deno.test("resolveVaultEditFile: resolves a vault whose config does not parse, by id and type", async () => {
+  await withBrokenVaultRepo(async ({ brokenPath, deps }) => {
+    const file = fileOf(
+      await resolve(deps, {
         vaultNameOrId: BROKEN_ID,
         vaultType: "local_encryption",
       }),
     );
 
-    const data = completedData(lastEvent(events));
-    assertEquals(data.status, "opened");
-    assertEquals(data.name, BROKEN_ID);
-    assertEquals(data.renamedFrom, undefined);
-    assertPathEquals(opened[0], brokenPath);
+    assertEquals(file.broken, true);
+    assertEquals(file.config.name, BROKEN_ID);
+    assertPathEquals(file.path, brokenPath);
   });
 });
 
-Deno.test("vaultEdit: without a type, a vault whose config does not parse reports the file", async () => {
-  await withBrokenVaultRepo(async ({ opened, deps }) => {
+Deno.test("resolveVaultEditFile: without a type, a vault whose config does not parse reports the file", async () => {
+  await withBrokenVaultRepo(async ({ deps }) => {
     const error = await assertRejects(
-      () =>
-        collect<VaultEditEvent>(
-          vaultEdit(createLibSwampContext(), deps, {
-            vaultNameOrId: BROKEN_ID,
-          }),
-        ),
+      () => resolve(deps, { vaultNameOrId: BROKEN_ID }),
       VaultConfigParseError,
     );
 
     assertEquals(error.vaultId, BROKEN_ID);
-    assertEquals(opened, []);
   });
 });
 
-Deno.test("vaultEdit: a name that matches no vault reports the broken file, not not-found", async () => {
+Deno.test("resolveVaultEditFile: a name that matches no vault reports the broken file, not not-found", async () => {
   await withBrokenVaultRepo(async ({ deps }) => {
     const error = await assertRejects(
       () =>
-        collect<VaultEditEvent>(
-          vaultEdit(createLibSwampContext(), deps, {
-            vaultNameOrId: "missing",
-            vaultType: "local_encryption",
-          }),
-        ),
+        resolve(deps, {
+          vaultNameOrId: "missing",
+          vaultType: "local_encryption",
+        }),
       VaultConfigParseError,
     );
 
@@ -1058,41 +870,39 @@ Deno.test("vaultEdit: a name that matches no vault reports the broken file, not 
   });
 });
 
-Deno.test("vaultEdit: with two broken vault files, the one requested opens", async () => {
-  await withBrokenVaultRepo(async ({ repo, opened, deps }) => {
+Deno.test("resolveVaultEditFile: with two broken vault files, the one requested resolves", async () => {
+  await withBrokenVaultRepo(async ({ repo, deps }) => {
     // Sorts before BROKEN_ID, so a name lookup reports it first.
     await Deno.writeTextFile(
       repo.getPath("local_encryption", "another-broken"),
       BROKEN_YAML,
     );
 
-    const events = await collect<VaultEditEvent>(
-      vaultEdit(createLibSwampContext(), deps, {
+    const file = fileOf(
+      await resolve(deps, {
         vaultNameOrId: BROKEN_ID,
         vaultType: "local_encryption",
       }),
     );
 
-    assertEquals(completedData(lastEvent(events)).name, BROKEN_ID);
-    assertPathEquals(opened[0], repo.getPath("local_encryption", BROKEN_ID));
+    assertEquals(file.config.name, BROKEN_ID);
+    assertPathEquals(file.path, repo.getPath("local_encryption", BROKEN_ID));
   });
 });
 
-Deno.test("vaultEdit: a valid vault beside a broken one resolves by name and by id", async () => {
-  await withBrokenVaultRepo(async ({ repo, opened, deps }) => {
+Deno.test("resolveVaultEditFile: a valid vault beside a broken one resolves by name and by id", async () => {
+  await withBrokenVaultRepo(async ({ repo, deps }) => {
     for (
       const input of [
         { vaultNameOrId: "my-vault" },
         { vaultNameOrId: "vault-1", vaultType: "local_encryption" },
       ]
     ) {
-      const events = await collect<VaultEditEvent>(
-        vaultEdit(createLibSwampContext(), deps, input),
-      );
-      assertEquals(completedData(lastEvent(events)).name, "my-vault");
+      const file = fileOf(await resolve(deps, input));
+      assertEquals(file.config.name, "my-vault");
+      assertEquals(file.broken, false);
+      assertPathEquals(file.path, repo.getPath("local_encryption", "vault-1"));
     }
-    assertEquals(opened.length, 2);
-    assertPathEquals(opened[0], repo.getPath("local_encryption", "vault-1"));
   });
 });
 
@@ -1103,26 +913,17 @@ Deno.test("vaultEdit: an editor rename beside a broken vault moves the secrets",
       base_dir: repoDir,
     }).put("API_KEY", "s3cret");
     const path = repo.getPath("local_encryption", "vault-1");
-    const renaming: VaultEditDeps = {
-      ...deps,
-      prepareEditor: () =>
-        Promise.resolve({
-          editor: "Neovim",
-          waitsForExit: true,
-          open: async () => {
-            const text = await Deno.readTextFile(path);
-            await Deno.writeTextFile(
-              path,
-              text.replace("name: my-vault", "name: renamed"),
-            );
-            return { editor: "Neovim", path };
-          },
-        }),
-    };
+    const edited = (await Deno.readTextFile(path)).replace(
+      "name: my-vault",
+      "name: renamed",
+    );
 
     const events = await collect<VaultEditEvent>(
-      vaultEdit(createLibSwampContext(), renaming, {
+      vaultEdit(createLibSwampContext(), deps, {
         vaultNameOrId: "my-vault",
+        stdinContent: edited,
+        source: "editor",
+        trustKeySource: true,
       }),
     );
 
@@ -1137,27 +938,30 @@ Deno.test("vaultEdit: an editor rename beside a broken vault moves the secrets",
   });
 });
 
-Deno.test("vaultEdit: an editor rename whose name check fails is reverted without moving secrets", async () => {
-  const { deps, saved, moves } = makeEditorDeps(
-    (d) => ({ ...d, name: "renamed", config: { prefix: "NEW_" } }),
-    {
-      findByName: (name) =>
-        name === "my-vault"
-          ? Promise.resolve(testVaultConfig)
-          : Promise.reject(new Error("permission denied")),
+Deno.test("vaultEdit: an editor rename whose name check fails saves nothing and moves no secrets", async () => {
+  const moves: string[] = [];
+  const { deps, saved } = makeStdinDeps({
+    findByName: (name) =>
+      name === "my-vault"
+        ? Promise.resolve(testVaultConfig)
+        : Promise.reject(new Error("permission denied")),
+    moveSecrets: (stored, toName) => {
+      moves.push(`${stored.name} -> ${toName}`);
+      return Promise.resolve(null);
     },
+  });
+
+  await assertRejects(
+    () =>
+      runStdin(deps, "name: renamed\ntype: env\nconfig:\n  prefix: NEW_\n", {
+        source: "editor",
+      }),
+    Error,
+    "permission denied",
   );
 
-  const error = errorOf(await runEditor(deps));
-
-  assertStringIncludes(
-    error.message,
-    "Could not check that the name is free: permission denied",
-  );
-  assertStringIncludes(error.message, "changed back to 'my-vault'");
   assertEquals(moves, []);
-  assertEquals(saved[saved.length - 1].name, "my-vault");
-  assertEquals(saved[saved.length - 1].config, { prefix: "NEW_" });
+  assertEquals(saved, []);
 });
 
 function runRepair(

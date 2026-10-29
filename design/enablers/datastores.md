@@ -3417,7 +3417,7 @@ a record the checkout held no file for record nothing, so a freshly joined
 checkout's edits start from the head. The first recorded base wins. A base holds
 across commands, a reset included, until the user loads the definition
 (`behavior`/`model`, `workflow` or `vault get`, or an editor-mode `edit`,
-which opens the checkout's current file: `markConfigLoaded`) or a user's
+which copies the checkout's current file into the editor: `markConfigLoaded`) or a user's
 edit in the checkout commits the record (a system rewrite leaves
 it), so retrying a refused edit unchanged is
 refused again, and a command in between that reads something else does not
@@ -3463,15 +3463,27 @@ re-apply the change and save again, or for the lockfile pull and retry.
 The refused edit's file is put back by the dropped-work recovery
 (swamp-club#3553).
 
+An editor-mode `edit` (swamp-club#4107) is a user's edit like a piped one.
+It loads the definition, opens the editor on a private temp copy, and once
+the editor closes saves the copy through the same path as stdin: the same
+validation, rename rules (a rename made in the editor is allowed) and
+`assertConfigEditCurrent` check, inside `runAsUserConfigEdit`. The editor
+runs before the command opens its unit of work, so no root is held while a
+person edits; a change another member commits meanwhile refuses the save.
+An unchanged copy saves nothing; a refused save keeps the copy and names it.
+Swamp waits for every editor (GUI editors get their wait flag) and refuses
+launchers such as `xdg-open` that return at once. Only files that are not
+stored records (an extension workflow's source, a legacy link) still open in
+place, and nothing is committed for them.
+
 Limits:
 
 - A tombstone of a move from a legacy key expects only `present`, so it
   cannot detect a stale edit of the file it replaces.
-- A local file out of step with the store (an editor-mode edit, a hand
-  edit, a write by a hook-less command) makes the next save's precondition
-  fail until the read model catches the file up. A rename of a name v3
-  never saw lands its first commit and refuses its second. Editor-mode
-  edits on v3 are written to the live file and never committed.
+- A local file out of step with the store (a hand edit, a write by a
+  hook-less command) makes the next save's precondition fail until the read
+  model catches the file up. A rename of a name v3 never saw lands its first
+  commit and refuses its second.
 - A base is set only by a catch-up. An edit prepared from a file older
   than the checkout's (copied out before an earlier `get`, say) starts from
   the version the checkout last showed, not from that file.
@@ -3518,8 +3530,8 @@ caller.
 
 **Writers with no hook.** These write the same files through repositories
 built without a hook: CLI `behavior create` and `behavior edit` and `workflow
-create`, `behavior evaluate` and `workflow evaluate`, editor-mode `behavior
-edit`, and serve's `migrateGrantDefinitions`. On v3 their typed changes stage
+create`, `behavior evaluate` and `workflow evaluate`, and serve's
+`migrateGrantDefinitions`. On v3 their typed changes stage
 into the commit-log unit around them (swamp-club#3279, "v3 opt-in"), and
 `runManagedConfigMutation` stages no bulk change there: it has no sync
 service.

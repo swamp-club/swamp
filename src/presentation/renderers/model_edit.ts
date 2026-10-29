@@ -56,6 +56,22 @@ class LogModelEditRenderer implements Renderer<ModelEditEvent> {
               path: data.path,
             },
           );
+        } else if (data.status === "unchanged") {
+          logger.info(
+            "No changes to {editType} {name} ({type}); nothing was saved",
+            { editType: data.editType, name: data.name, type: data.type },
+          );
+        } else if (data.editor) {
+          logger.info(
+            "Saved {editType} from {editor}: {name} ({type}) at {path}",
+            {
+              editType: data.editType,
+              editor: data.editor,
+              name: data.name,
+              type: data.type,
+              path: data.path,
+            },
+          );
         } else {
           logger.info(
             "Updated {editType} from stdin: {name} ({type}) at {path}",
