@@ -35,6 +35,7 @@
  */
 
 import { CommitsCompactedError } from "../../domain/datastore_v3/commit_store.ts";
+import { ServeNotLeaderError } from "../../domain/datastore_v3/serve_leader.ts";
 import type { Principal } from "../../domain/access/principal.ts";
 import { CommitReadFilter } from "../commit_read_filter.ts";
 import { isPeerSocket } from "../peer_auth.ts";
@@ -112,6 +113,20 @@ export async function handleCommitsSubscribe(
   try {
     let lastSent = 0;
     while (!signal.aborted && socket.readyState === WebSocket.OPEN) {
+      // A follower's copy too old to read from ends the stream, as a new
+      // subscribe or GET changes is refused (swamp-club#4148).
+      const gate = ctx.followerGate;
+      if (gate?.role === "follower" && gate.isStale()) {
+        const refusal = new ServeNotLeaderError(gate.leader(), true);
+        sendError(
+          socket,
+          requestId,
+          refusal.code,
+          refusal.message,
+          refusal.leader !== undefined ? { leader: refusal.leader } : undefined,
+        );
+        return;
+      }
       // Fail-secure audit refuses reads it cannot record, as GET changes
       // does, for a subscription already running too.
       if (auditUnavailable(ctx)) {

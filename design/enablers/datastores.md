@@ -7400,7 +7400,9 @@ recovered, marked or replicated by a follower.
   listener's (`scheme://host:port`); a wildcard or loopback bind address
   names nothing another host can reach, so the record leaves it out unless
   the node advertises one (`--advertise-address`, swamp-club#4120), which
-  the record names instead.
+  the record names instead. Serve warns at start-up when the advertised
+address is plain http to a host that is not loopback: the peer key and
+forwarded credentials would cross the network unencrypted.
 - A node takes the lead in order: it records itself, does the leader's work
   (below), and only then changes its role, which opens its request gates, so
   what it settles and sweeps on taking the lead is never work it has just
@@ -7568,8 +7570,19 @@ credentials to an address of their own. A record without it names the
 leader but no address, and the follower refuses as before. `LeaderLink`
 (`src/serve/leader_link.ts`) holds one HTTP client
 per leader address, replaced when the record names another node; HTTP/2
-carries every forwarded HTTP request over one connection. One place per
-surface replaces the refusal:
+carries every forwarded HTTP request over one connection. Every forward,
+HTTP or WebSocket, carries the team's peer token in `x-swamp-team-peer`
+(the follower drops one a caller sent); a leader that verifies it against
+its cached key treats the follower as a trusted proxy for that request and
+keys its IP burst, rate limits and audit on the last `X-Forwarded-For`
+entry, the caller's address as the follower set it
+(`requestClientAddress`, swamp-club#4148). Without it, every connection a
+follower forwards would spend the follower IP's 50-per-minute upgrade
+budget on the leader, and a busy follower would see 429s on its forwards
+and its own feed. A peer upgrade is checked before the IP burst, so a
+follower's feed reconnects never spend it; a peer token that fails counts
+against the burst and the per-credential limit. One place per surface
+replaces the refusal:
 
 - WebSocket requests: at upgrade the follower keeps the caller's credential
   (the bearer token, from whichever transport carried it, or the dashboard
@@ -7588,10 +7601,9 @@ surface replaces the refusal:
   authenticated the caller, the request goes to the leader unchanged, with
   `X-Forwarded-For` set to the caller's address (after the caller's own
   only when the follower runs with `--trust-proxy`, so a caller cannot name
-  the address it is limited by). The leader reads it only with
-  `--trust-proxy`: without it, the leader's per-address limits count every
-  caller behind a follower as that follower, so a team behind a load
-  balancer runs its nodes with `--trust-proxy`.
+  the address it is limited by). The leader reads the follower's entry
+  when the team forwarding header verifies, so `--trust-proxy` is needed
+  only for the load balancer in front of the nodes.
 - Webhooks: the follower passes the delivery on as it came, raw body and
   headers, right after its size-limited read and before it verifies the
   signature or runs any extension hook. The leader verifies it with its own
@@ -7619,7 +7631,9 @@ effect on the next one. A frame with no commits goes out at least every
 5 s, so a subscriber tells a quiet feed from a dead one. A cursor below the
 compaction point ends the stream with `commits_compacted` (load the base,
 as for the 410); a subscriber further behind than its socket can buffer is
-ended with a resumable `commits_lagged`. `commits.head` answers the last
+ended with a resumable `commits_lagged`. A subscription on a follower ends
+with `serve_not_leader` once the follower's copy goes stale, as a new one
+would be refused. `commits.head` answers the last
 cursor the feed may send. A replicating leader sends only what it
 published (`v3CommitFeedSource`'s bound): a commit not yet replicated could
 be lost to a failover, and a node that applied it would hold a commit the
@@ -7630,7 +7644,9 @@ lineage restore would have brought them.
 **Followers follow the feed.** A follower subscribes to the leader with the
 team's peer key (`TeamPeerKey`, `src/serve/peer_auth.ts`): one random key
 per namespace in serve's encrypted control-plane vault, so a `token-secrets`
-key protects it as it protects token secrets. With the default co-located
+key protects it as it protects token secrets. A node reads the key at most
+every 10 s, and uses the key it last read for at most 60 s more while vault
+reads fail, so a key deleted during an outage stops verifying. With the default co-located
 key, anyone who can read and write the datastore can read the peer key and
 so sign a leader record of their own, which followers would forward
 callers' credentials to: a team-mode serve (one with `--advertise-address`,
@@ -7650,7 +7666,11 @@ commit at the leader's own cursor (`SqliteCommitStore.appendFromLeader`, so
 a cursor a client read from either node names the same commit), then
 catches the read model up; on one that does not replicate every node opens
 the same `commits.db`, so it only catches the read model up. Every frame
-marks the copy fresh (`ServeLeadership.markRefreshed`). While the feed is
+marks the copy fresh (`ServeLeadership.markRefreshed`). Each apply step is
+tied to the socket that delivered it: one the previous socket queued
+applies nothing and marks nothing fresh once the follower follows another
+leader, and the tick stops the feed before it restores, so nothing of the
+old socket is queued behind the restore (swamp-club#4148). While the feed is
 current for the leader the record names, a tick restores nothing. A new
 leader (another instance or fence), a disconnect, a gap, a divergent commit
 (`FeedDivergedError`) or a compacted cursor stops it: the next tick

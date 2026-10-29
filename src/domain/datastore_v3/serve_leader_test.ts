@@ -20,6 +20,7 @@
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { UserError } from "../errors.ts";
 import {
+  advertiseAddressInCleartext,
   normalizeAdvertiseAddress,
   parseServeLeader,
   serializeServeLeader,
@@ -116,4 +117,21 @@ Deno.test("ServeNotLeaderError: an in-flight refusal says the request may have r
   assertEquals(error.message.includes("Nothing was changed"), false);
   assertEquals(error.message.includes("may already have run"), true);
   assertEquals(new ServeNotLeaderError(undefined).inFlight, false);
+});
+
+Deno.test("advertiseAddressInCleartext: plain http to a host that is not loopback", () => {
+  assertEquals(advertiseAddressInCleartext("http://10.0.0.5:9090"), true);
+  assertEquals(
+    advertiseAddressInCleartext("http://node-1.internal:9090"),
+    true,
+  );
+  assertEquals(
+    advertiseAddressInCleartext("https://node-1.internal:9090"),
+    false,
+  );
+  assertEquals(advertiseAddressInCleartext("http://127.0.0.1:9090"), false);
+  assertEquals(advertiseAddressInCleartext("http://localhost:9090"), false);
+  assertEquals(advertiseAddressInCleartext("http://[::1]:9090"), false);
+  // A host name that merely starts with 127 is not loopback.
+  assertEquals(advertiseAddressInCleartext("http://127.example.com"), true);
 });

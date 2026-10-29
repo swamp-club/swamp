@@ -54,7 +54,10 @@ import {
 import { replicaPathFor } from "../src/domain/datastore_v3/replication_lineage.ts";
 import { V3_REPLICATION_UNCONFIRMED_CODE } from "../src/domain/datastore_v3/litestream_replication.ts";
 import { WRITER_FENCED_CODE } from "../src/domain/datastore_v3/writer_lease.ts";
-import { SIDECAR_TESTS_IGNORED } from "./datastore_v3_litestream_helpers.ts";
+import {
+  killSidecarAtTeardown,
+  SIDECAR_TESTS_IGNORED,
+} from "./datastore_v3_litestream_helpers.ts";
 import { plantV3WriterLease } from "../src/infrastructure/datastore_v3/v3_writer_lock_test_helpers.ts";
 import type {
   MachineRequest,
@@ -242,10 +245,7 @@ async function withMachines(
       worker.terminate();
     }
     // Every supervisor any machine launched, with its Litestream.
-    for (const pid of pids) {
-      hostLitestreamProcesses.signal(pid, "SIGCONT");
-      hostLitestreamProcesses.signalGroup(pid, "SIGKILL");
-    }
+    for (const pid of pids) killSidecarAtTeardown(pid);
     await waitFor(
       () => [...pids].every((pid) => !hostLitestreamProcesses.isAlive(pid)),
       "every sidecar to stop",

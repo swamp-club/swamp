@@ -137,6 +137,19 @@ export function normalizeAdvertiseAddress(address: string): string {
   return parsed.origin;
 }
 
+/**
+ * Whether an advertised address would carry the team's peer key and
+ * forwarded callers' credentials across a network unencrypted: plain http
+ * to a host that is not loopback (swamp-club#4148).
+ */
+export function advertiseAddressInCleartext(address: string): boolean {
+  const url = new URL(address);
+  if (url.protocol !== "http:") return false;
+  const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return !(host === "localhost" || host === "::1" ||
+    /^127(\.\d{1,3}){3}$/.test(host));
+}
+
 const advertiseAddressMessage =
   "The advertise address must be this node's own http(s) origin, as the " +
   "team's other serve nodes reach it, e.g. https://node-1.internal:9090: no " +

@@ -290,6 +290,40 @@ Deno.test({
 
 Deno.test({
   name:
+    "commit feed: a running subscription on a follower ends once its copy is stale (swamp-club#4148)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      let stale = false;
+      (server.ctx as ConnectionContext).followerGate = {
+        role: "follower",
+        leader: () => undefined,
+        isStale: () => stale,
+      };
+      await withFeedSocket(server, async (wsUrl) => {
+        const sub = await subscribe(wsUrl, "alice-token", 0);
+        try {
+          await waitFor(() => sub.frames.length > 0, "the first frame");
+          stale = true;
+          await waitFor(
+            () => sub.frames.some((frame) => frame.type === "error"),
+            "the refusal",
+          );
+          assertEquals(
+            sub.frames.find((frame) => frame.type === "error")?.error?.code,
+            "serve_not_leader",
+          );
+        } finally {
+          sub.socket.close();
+        }
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
     "commit feed: a team peer reads the whole feed, and is refused any other request",
   sanitizeOps: false,
   sanitizeResources: false,

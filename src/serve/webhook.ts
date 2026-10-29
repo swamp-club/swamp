@@ -74,6 +74,8 @@ const REDACTED_HEADERS: ReadonlySet<string> = new Set([
   "x-goog-iap-jwt-assertion",
   "cf-access-jwt-assertion",
   "x-forwarded-client-cert",
+  // The team's peer token on a forwarded delivery (swamp-club#4148).
+  TEAM_PEER_HEADER,
 ]);
 
 const REDACTED_HEADER_SUFFIXES: readonly string[] = [
@@ -557,6 +559,7 @@ export interface WebhookQueueStatus {
 import type { WebhookAdmissionSnapshot } from "../domain/remote/run_progress.ts";
 import { SERVE_NOT_LEADER_CODE } from "../domain/datastore_v3/serve_leader.ts";
 import type { LeaderLink } from "./leader_link.ts";
+import { TEAM_PEER_HEADER } from "./peer_auth.ts";
 
 interface QueuedWebhookRun {
   lastProgressAt: string;

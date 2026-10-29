@@ -66,6 +66,22 @@ import type { CommitLogUnitOfWork } from "../src/domain/datastore_v3/commit_log_
 import { V3_REPLICA_ENV } from "../src/infrastructure/datastore_v3/litestream/replica_setting.ts";
 
 /** The pinned Litestream, when the run provides one. */
+/**
+ * Kills a sidecar a test started, with its whole process group, at
+ * teardown. Resumed first, in case the test stopped it. On macOS, signalling
+ * a group whose processes have all exited but are not reaped yet fails with
+ * EPERM: the group is already gone, so that is not a failure here
+ * (swamp-club#4148). The caller still waits for every sidecar to stop.
+ */
+export function killSidecarAtTeardown(pid: number): void {
+  hostLitestreamProcesses.signal(pid, "SIGCONT");
+  try {
+    hostLitestreamProcesses.signalGroup(pid, "SIGKILL");
+  } catch (error) {
+    if (!(error instanceof Deno.errors.PermissionDenied)) throw error;
+  }
+}
+
 export const LITESTREAM_BINARY = Deno.env.get("SWAMP_LITESTREAM_PATH");
 
 /** Why the sidecar tests are ignored here, if they are. */
