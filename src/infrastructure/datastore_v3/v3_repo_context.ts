@@ -778,14 +778,6 @@ export async function holdV3Writer(
 }
 
 /**
- * Brings every handle this process opened on the v3 datastore at
- * `datastorePath` up to serve's log, its read model included, refusing when
- * serve cannot be reached. A serve-mode checkout calls it once it holds a
- * lock at serve (swamp-club#3985), so the work under the lock reads every
- * version another machine wrote before it; {@link holdV3Writer}'s catch-up
- * ran before the lock was taken.
- */
-/**
  * Watches serve's commit feed for every v3 datastore this process reads
  * through serve (a serve-mode checkout), while a long-running command runs
  * (swamp-club#4120): what other callers commit reaches the copy within about
@@ -806,6 +798,15 @@ export function watchV3ServeFeeds(): void {
 
 /** {@link watchV3ServeFeeds}'s watches, stopped at close. */
 const feedWatches: ServeFeedWatch[] = [];
+
+/**
+ * Brings every handle this process opened on the v3 datastore at
+ * `datastorePath` up to serve's log, its read model included, refusing when
+ * serve cannot be reached. A serve-mode checkout calls it once it holds a
+ * lock at serve (swamp-club#3985), so the work under the lock reads every
+ * version another machine wrote before it; {@link holdV3Writer}'s catch-up
+ * ran before the lock was taken.
+ */
 
 export async function catchUpV3HandlesAt(datastorePath: string): Promise<void> {
   const path = resolve(datastorePath);

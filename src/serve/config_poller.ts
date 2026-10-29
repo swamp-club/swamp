@@ -89,6 +89,8 @@ export class ConfigPoller {
   #timer: ReturnType<typeof setInterval> | null = null;
   #pendingPull: Promise<void> = Promise.resolve();
   #pulling = false;
+  /** {@link pollNow} asked for a check while one was running. */
+  #again = false;
   /** Last lockfile hash acted on; `undefined` until seeded. */
   #baselineHash: string | null | undefined;
   #reloadPending = false;
@@ -132,11 +134,16 @@ export class ConfigPoller {
   }
 
   /**
-   * Checks once now, outside the interval. On a v3 datastore serve runs no
-   * interval: the commits it sees, its own and the leader's feed, call this
-   * when the config or the extension lockfile changed (swamp-club#4120).
+   * Checks once now, outside the interval: on a v3 datastore the commits
+   * serve sees, its own and the leader's feed, call this when the config or
+   * the extension lockfile changed (swamp-club#4120). One asked for while a
+   * check runs runs again after it, so a change landing mid-check is seen.
    */
   pollNow(): void {
+    if (this.#pulling) {
+      this.#again = true;
+      return;
+    }
     this.#poll();
   }
 
@@ -157,6 +164,10 @@ export class ConfigPoller {
       await this.#reloadOnLockfileChange();
     } finally {
       this.#pulling = false;
+      if (this.#again) {
+        this.#again = false;
+        this.#poll();
+      }
     }
   }
 

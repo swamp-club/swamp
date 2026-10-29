@@ -112,8 +112,8 @@ export class FollowerFeed implements FollowerCopyFeed {
     this.#leader = leader;
     this.#failed = false;
     this.#lastFrameAt = undefined;
-    if (leader?.address === undefined) return;
     const generation = ++this.#generation;
+    if (leader?.address === undefined) return;
     void this.#open(generation).catch((error) => {
       if (generation !== this.#generation) return;
       this.#failed = true;
@@ -160,11 +160,12 @@ export class FollowerFeed implements FollowerCopyFeed {
       const left = deadline - this.#now();
       if (left <= 0) return;
       await new Promise<void>((resolve) => {
-        const timer = setTimeout(done, left);
-        function done() {
+        const done = () => {
           clearTimeout(timer);
+          this.#appliedWaiters.delete(done);
           resolve();
-        }
+        };
+        const timer = setTimeout(done, left);
         this.#appliedWaiters.add(done);
       });
     }

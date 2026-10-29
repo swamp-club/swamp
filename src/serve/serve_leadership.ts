@@ -135,6 +135,7 @@ export class ServeLeadership {
   #leader: ServeLeader | undefined;
   #refreshedAt: number | undefined;
   #recordedFence: number | undefined;
+  #recordedProof: string | undefined;
   #timer: ReturnType<typeof setInterval> | undefined;
   #ticking: Promise<void> | undefined;
   /**
@@ -324,6 +325,17 @@ export class ServeLeadership {
   async #writeRecordIfMoved(): Promise<void> {
     if (this.#deps.lease.fence() !== this.#recordedFence) {
       await this.#writeRecord();
+      return;
+    }
+    // A record whose proof no longer holds (the team's key was made or
+    // replaced since) is signed again, so followers go on forwarding to it.
+    if (this.#deps.prove !== undefined) {
+      const record = this.#ownRecord();
+      if (record === undefined) return;
+      const proof = await this.#deps.prove(record).catch(() => undefined);
+      if (proof !== undefined && proof !== this.#recordedProof) {
+        await this.#writeRecord();
+      }
     }
   }
 
@@ -331,14 +343,20 @@ export class ServeLeadership {
   async #writeRecord(): Promise<boolean> {
     let record = this.#ownRecord();
     if (record === undefined) return false;
+    // A proof that cannot be made leaves the record unproven, never
+    // unwritten: it still names the leader, and is signed on a later tick.
+    const proof = await this.#deps.prove?.(record).catch((error) => {
+      logger.warn`Signing this serve node's leader record failed: ${error}`;
+      return undefined;
+    });
+    if (proof !== undefined) record = { ...record, proof };
     try {
-      const proof = await this.#deps.prove?.(record);
-      if (proof !== undefined) record = { ...record, proof };
       await this.#deps.store.put(
         SERVE_LEADER_KEY,
         serializeServeLeader(record),
       );
       this.#recordedFence = record.fence;
+      this.#recordedProof = proof;
       return true;
     } catch (error) {
       logger.warn`Recording this serve node as the leader failed: ${error}`;

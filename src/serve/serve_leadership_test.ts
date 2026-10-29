@@ -468,3 +468,29 @@ Deno.test("ServeLeadership: a leader signs the record it writes", async () => {
     await leadership.stop();
   }
 });
+
+Deno.test("ServeLeadership: a leader signs its record again once its proof changes, and still writes it when signing fails", async () => {
+  let key = "k1";
+  let failing = true;
+  const { lease, store, leadership } = setup({
+    prove: (leader) =>
+      failing
+        ? Promise.reject(new Error("vault down"))
+        : Promise.resolve(`${key}:${leader.fence}`),
+  });
+  lease.free = 5;
+  await leadership.start("follower");
+  try {
+    await leadership.tick();
+    assertEquals(recorded(store)?.instanceId, "me");
+    assertEquals(recorded(store)?.proof, undefined);
+    failing = false;
+    await leadership.tick();
+    assertEquals(recorded(store)?.proof, "k1:5");
+    key = "k2";
+    await leadership.tick();
+    assertEquals(recorded(store)?.proof, "k2:5");
+  } finally {
+    await leadership.stop();
+  }
+});

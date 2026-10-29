@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import type { VaultProvider } from "../domain/vaults/vault_provider.ts";
 import {
   isPeerToken,
@@ -26,21 +26,31 @@ import {
   TeamPeerKey,
 } from "./peer_auth.ts";
 
-function memoryVault(): VaultProvider & { secrets: Map<string, string> } {
+function memoryVault(): VaultProvider & {
+  secrets: Map<string, string>;
+  failReads: boolean;
+} {
   const secrets = new Map<string, string>();
-  return {
+  const vault = {
     secrets,
-    get: (key) => {
+    failReads: false,
+    list: () => Promise.resolve([...secrets.keys()]),
+    get: (key: string) => {
+      if (vault.failReads) return Promise.reject(new Error("vault timeout"));
       const value = secrets.get(key);
       return value === undefined
         ? Promise.reject(new Error("missing"))
         : Promise.resolve(value);
     },
-    put: (key, value) => {
+    put: (key: string, value: string) => {
       secrets.set(key, value);
       return Promise.resolve();
     },
-  } as VaultProvider & { secrets: Map<string, string> };
+  };
+  return vault as unknown as VaultProvider & {
+    secrets: Map<string, string>;
+    failReads: boolean;
+  };
 }
 
 Deno.test("TeamPeerKey: makes the key once and every node reads the same one", async () => {
@@ -101,4 +111,28 @@ Deno.test("TeamPeerKey.prove: a leader record the team signed is trusted; one wi
   assert(!await followerKey.trusts(record));
   const otherTeam = new TeamPeerKey(memoryVault());
   assert(!await otherTeam.trusts(signed));
+});
+
+Deno.test("TeamPeerKey: a failed read never replaces the team's key", async () => {
+  const vault = memoryVault();
+  const key = new TeamPeerKey(vault);
+  const token = await key.token();
+  const stored = vault.secrets.get(PEER_KEY_SECRET);
+  vault.failReads = true;
+  await assertRejects(() => new TeamPeerKey(vault).token());
+  assertEquals(vault.secrets.get(PEER_KEY_SECRET), stored);
+  // A node that read the key recently still verifies with it.
+  assert(await key.verify(token));
+});
+
+Deno.test("TeamPeerKey: a value that is not a key is refused, not overwritten", async () => {
+  const vault = memoryVault();
+  vault.secrets.set(PEER_KEY_SECRET, "not-a-key");
+  await assertRejects(() => new TeamPeerKey(vault).token());
+  assertEquals(vault.secrets.get(PEER_KEY_SECRET), "not-a-key");
+  vault.secrets.set(PEER_KEY_SECRET, `${"b".repeat(64)}\n`);
+  assertEquals(
+    await new TeamPeerKey(vault).token(),
+    `${PEER_TOKEN_PREFIX}${"b".repeat(64)}`,
+  );
 });

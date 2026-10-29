@@ -3959,9 +3959,9 @@ export const serveCommand = new Command()
         },
         namespace: serveNamespace,
       });
-      // On a v3 datastore no interval runs: the commits serve sees ask for
-      // the check when the config or the lockfile changed (swamp-club#4120).
-      if (v3Location === undefined) configPoller.start();
+      // On a v3 datastore the commits serve sees also ask for the check at
+      // once (swamp-club#4120); the interval retries a reload that failed.
+      configPoller.start();
     }
 
     // Create the control-plane store AFTER namespace binding (which happens
@@ -4936,7 +4936,11 @@ export const serveCommand = new Command()
           };
           // Signed with the team's peer key, so followers forward to its
           // address (swamp-club#4120).
-          const proof = await teamPeerKey?.prove(record);
+          const proof = await teamPeerKey?.prove(record).catch((error) => {
+            logger
+              .warn`Signing this serve node's leader record failed; followers forward nothing to it until it is signed: ${error}`;
+            return undefined;
+          });
           await controlPlaneStore.put(
             SERVE_LEADER_KEY,
             serializeServeLeader(
@@ -5386,6 +5390,7 @@ export const serveCommand = new Command()
     // takes pass on through it with the caller's own credentials.
     const leaderLink = v3Location === undefined ? undefined : new LeaderLink({
       leader: () => connectionCtx.followerGate?.leader(),
+      trustProxy,
       ...(merged.caCert
         ? { caCerts: [await readServeCaCert(merged.caCert)] }
         : {}),
@@ -7004,6 +7009,7 @@ export const serveCommand = new Command()
                   ? { kind: "bearer", token: extracted.token }
                   : { kind: "cookie" },
                 remoteAddr,
+                trustProxy,
               );
             const { socket, response } = Deno.upgradeWebSocket(
               req,
@@ -7037,7 +7043,12 @@ export const serveCommand = new Command()
           }
           const forwardCredential = leaderLink === undefined
             ? undefined
-            : forwardCredentialOf(req, { kind: "none" }, remoteAddr);
+            : forwardCredentialOf(
+              req,
+              { kind: "none" },
+              remoteAddr,
+              trustProxy,
+            );
           const { socket, response } = Deno.upgradeWebSocket(
             req,
             wsUpgradeOpts,

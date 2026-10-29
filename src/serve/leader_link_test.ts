@@ -64,7 +64,19 @@ Deno.test("forwardNeverSent: connect, DNS and TLS failures never left the node; 
   assert(!forwardNeverSent("not an error"));
 });
 
-Deno.test("forwardedHeaders: keeps the caller's credential, drops hop headers, appends the caller to X-Forwarded-For", () => {
+Deno.test("forwardedHeaders: a caller's own X-Forwarded-For is replaced unless this node trusts its proxy", () => {
+  const incoming = new Headers({ "x-forwarded-for": "198.51.100.66" });
+  assertEquals(
+    forwardedHeaders(incoming, "10.0.0.5").get("x-forwarded-for"),
+    "10.0.0.5",
+  );
+  assertEquals(
+    forwardedHeaders(incoming, "10.0.0.5", true).get("x-forwarded-for"),
+    "198.51.100.66, 10.0.0.5",
+  );
+});
+
+Deno.test("forwardedHeaders: keeps the caller's credential, drops hop headers, appends the caller to a trusted X-Forwarded-For", () => {
   const headers = forwardedHeaders(
     new Headers({
       authorization: "Bearer alice.secret",
@@ -74,6 +86,7 @@ Deno.test("forwardedHeaders: keeps the caller's credential, drops hop headers, a
       "x-forwarded-for": "203.0.113.9",
     }),
     "10.0.0.5",
+    true,
   );
   assertEquals(headers.get("authorization"), "Bearer alice.secret");
   assertEquals(headers.get("host"), null);

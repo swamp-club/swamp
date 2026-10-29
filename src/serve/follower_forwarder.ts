@@ -80,6 +80,7 @@ export function forwardCredentialOf(
     | { kind: "cookie" }
     | { kind: "none" },
   clientIp: string,
+  trustProxy = false,
 ): ForwardCredential {
   const headers: Record<string, string> = {};
   if (credential.kind === "bearer") {
@@ -90,7 +91,10 @@ export function forwardCredentialOf(
     if (cookie !== null) headers["cookie"] = cookie;
     if (origin !== null) headers["origin"] = origin;
   }
-  const prior = req.headers.get("x-forwarded-for");
+  // The address this node took the caller's from: its own peer's, unless
+  // it trusts the proxy in front of it, so a caller cannot name the address
+  // the leader limits and audits it by.
+  const prior = trustProxy ? req.headers.get("x-forwarded-for") : null;
   headers["x-forwarded-for"] = prior ? `${prior}, ${clientIp}` : clientIp;
   const url = new URL(req.url);
   // The token travels in the header, and the leader's frames come back as
@@ -213,9 +217,12 @@ export class FollowerForwarder {
       // A client that went away closes the leader's socket instead, as its
       // own disconnect would have.
       if (this.#client.readyState !== WebSocket.OPEN) return;
-      if (this.#pending.has(id)) {
-        this.#send(JSON.stringify({ type: "cancel", id }));
-      }
+      if (this.#pending.get(id) !== entry) return;
+      this.#send(JSON.stringify({ type: "cancel", id }));
+      // A cancelled request may end with no frame (a detached attach): its
+      // slot is free now, and any frame still coming passes through.
+      this.#pending.delete(id);
+      entry.chain = entry.chain.then(() => entry.done());
     }, { once: true });
     this.#send(raw, entry);
     return true;
@@ -379,6 +386,12 @@ export class FollowerForwarder {
   }
 }
 
+/** Replies of another type that end a request, by request type. */
+const FINAL_REPLY_TYPES: Readonly<Record<string, readonly string[]>> = {
+  // A run live elsewhere, or one that ended without its stream.
+  "run.attach": ["run.elsewhere", "run.interrupted"],
+};
+
 interface Frame {
   readonly type: string;
   readonly id?: string;
@@ -406,6 +419,7 @@ function parseFrame(raw: string): Frame | undefined {
  */
 export function isFinalFrame(frame: Frame, requestType: string): boolean {
   if (frame.type === "error" || frame.type === "done") return true;
+  if (FINAL_REPLY_TYPES[requestType]?.includes(frame.type)) return true;
   if (frame.type === "event") return false;
   if (frame.type !== requestType) return false;
   const payload = frame.payload as { done?: unknown } | undefined;

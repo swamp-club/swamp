@@ -98,6 +98,11 @@ export function notLeaderResponse(
 
 /** What a {@link LeaderLink} needs. */
 export interface LeaderLinkOptions {
+  /**
+   * Whether this node trusts the proxy in front of it (`--trust-proxy`):
+   * only then does a caller's own `X-Forwarded-For` pass on.
+   */
+  readonly trustProxy?: boolean;
   /** The leader as this node last read its record. */
   leader(): ServeLeader | undefined;
   /** PEM CA certificates to trust besides the system store. */
@@ -177,7 +182,11 @@ export class LeaderLink {
     }
     const url = new URL(req.url);
     const target = new URL(url.pathname + url.search, address);
-    const headers = forwardedHeaders(req.headers, options.clientIp);
+    const headers = forwardedHeaders(
+      req.headers,
+      options.clientIp,
+      this.#options.trustProxy ?? false,
+    );
     const hasBody = req.method !== "GET" && req.method !== "HEAD";
     const signal = AbortSignal.any([this.#closed.signal, req.signal]);
     const client = this.client(address);
@@ -272,16 +281,20 @@ function defaultClient(
 
 /**
  * The caller's headers as the leader gets them: hop-by-hop headers dropped
- * and the caller's address appended to `X-Forwarded-For`. Nothing is added
- * that says who the caller is: the leader reads that from the caller's own
- * credential.
+ * and `X-Forwarded-For` set to the caller's address, after the caller's own
+ * only when this node trusts the proxy in front of it (`trustProxy`), so a
+ * caller cannot name the address the leader limits and audits it by.
+ * Nothing is added that says who the caller is: the leader reads that from
+ * the caller's own credential.
  */
 export function forwardedHeaders(
   incoming: Headers,
   clientIp: string | undefined,
+  trustProxy = false,
 ): Headers {
   const headers = new Headers(incoming);
   for (const name of HOP_HEADERS) headers.delete(name);
+  if (!trustProxy) headers.delete("x-forwarded-for");
   if (clientIp !== undefined && clientIp !== "") {
     const prior = headers.get("x-forwarded-for");
     headers.set(

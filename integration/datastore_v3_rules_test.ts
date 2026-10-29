@@ -322,6 +322,7 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/serve/leader_link.ts -> src/domain/datastore_v3/serve_leader.ts",
   "src/serve/follower_forwarder.ts -> src/domain/datastore_v3/serve_leader.ts",
   "src/serve/follower_feed.ts -> src/domain/datastore_v3/serve_leader.ts",
+  "src/serve/peer_auth.ts -> src/domain/datastore_v3/serve_leader.ts",
   "src/serve/commit_read_filter.ts -> src/domain/datastore_v3/commit_authorization.ts",
   "src/serve/commit_read_filter.ts -> src/domain/datastore_v3/commit_store.ts",
   "src/serve/commit_read_filter.ts -> src/domain/datastore_v3/op.ts",

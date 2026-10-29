@@ -65,15 +65,21 @@ export function isPeerToken(token: string): boolean {
 /** The team's peer key, read from the vault on each use. */
 export class TeamPeerKey {
   readonly #vault: VaultProvider;
+  readonly #now: () => number;
+  /** The key last read, for {@link verify} and {@link trusts}. */
+  #cached: { key: string; at: number } | undefined;
 
-  constructor(vault: VaultProvider) {
+  constructor(vault: VaultProvider, now: () => number = Date.now) {
     this.#vault = vault;
+    this.#now = now;
   }
 
   /**
-   * The key, made when the team has none yet. Read back after a write: two
-   * nodes that make one at once agree on whichever landed last, since every
-   * use reads it again.
+   * The key, made only when the vault holds none: a read that fails is
+   * thrown, never taken as "no key", so a passing vault error cannot
+   * replace the team's key. Read back after a write: two nodes that make one
+   * at once agree on whichever landed last, and a leader whose proof no
+   * longer holds signs its record again.
    */
   async current(): Promise<string> {
     const existing = await this.#read();
@@ -97,13 +103,16 @@ export class TeamPeerKey {
     return `${PEER_TOKEN_PREFIX}${await this.current()}`;
   }
 
-  /** Whether `token` carries the team's key, compared in constant time. */
+  /**
+   * Whether `token` carries the team's key, compared in constant time. The
+   * key is read at most every {@link PEER_KEY_CACHE_MS}, so failed upgrades
+   * cannot each cost a vault read.
+   */
   async verify(token: string): Promise<boolean> {
     if (!isPeerToken(token)) return false;
-    const presented = token.slice(PEER_TOKEN_PREFIX.length);
-    const key = await this.#read();
+    const key = await this.#known();
     if (key === undefined) return false;
-    return timingSafeEqual(presented, key);
+    return timingSafeEqual(token.slice(PEER_TOKEN_PREFIX.length), key);
   }
 
   /** The proof a leader record carries: an HMAC of it under the key. */
@@ -114,7 +123,7 @@ export class TeamPeerKey {
   /** Whether `leader` carries the proof the team's key makes. */
   async trusts(leader: ServeLeader): Promise<boolean> {
     if (leader.proof === undefined) return false;
-    const key = await this.#read();
+    const key = await this.#known();
     if (key === undefined) return false;
     return timingSafeEqual(
       leader.proof,
@@ -122,15 +131,43 @@ export class TeamPeerKey {
     );
   }
 
-  async #read(): Promise<string | undefined> {
+  /** The key, from the cache while it is recent; undefined when unread. */
+  async #known(): Promise<string | undefined> {
+    const cached = this.#cached;
+    if (cached !== undefined && this.#now() - cached.at < PEER_KEY_CACHE_MS) {
+      return cached.key;
+    }
     try {
-      const value = await this.#vault.get(PEER_KEY_SECRET);
-      return PEER_KEY_PATTERN.test(value) ? value : undefined;
+      return await this.#read();
     } catch {
-      return undefined;
+      return cached?.key;
     }
   }
+
+  /**
+   * The key the vault holds, or undefined when it holds none. Any other
+   * failure, and a value that is not a key, is thrown: the key is never
+   * replaced because it could not be read.
+   */
+  async #read(): Promise<string | undefined> {
+    let value: string;
+    try {
+      value = await this.#vault.get(PEER_KEY_SECRET);
+    } catch (error) {
+      if ((await this.#vault.list()).includes(PEER_KEY_SECRET)) throw error;
+      return undefined;
+    }
+    const key = value.trim();
+    if (!PEER_KEY_PATTERN.test(key)) {
+      throw new Error("The team peer key in the vault is not a valid key");
+    }
+    this.#cached = { key, at: this.#now() };
+    return key;
+  }
 }
+
+/** How long a read peer key is used before it is read again. */
+export const PEER_KEY_CACHE_MS = 10_000;
 
 const peerSockets = new WeakSet<WebSocket>();
 

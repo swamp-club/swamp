@@ -896,7 +896,8 @@ Serve runs three background pollers to fix this:
 
 On a v3 datastore none of the three polls (swamp-club#4120): there is no
 sync service, so the access and runtime pollers never start, and the config
-poller runs no interval. Every commit a serve node sees, its own and, on a
+poller only hashes the lockfile, its interval kept as the retry for a
+reload that failed. Every commit a serve node sees, its own and, on a
 follower, the leader's commit feed, keeps it current instead ("Team mode:
 forwarding and the commit feed").
 
@@ -7550,7 +7551,8 @@ address and start under the team's peer key (below): a follower forwards
 only to the address of a record that holds it, so whoever can write the
 shared control plane, but not read the peer key, cannot redirect callers'
 credentials to an address of their own. A record without it names the
-leader but no address, and the follower refuses as before. `LeaderLink` (`src/serve/leader_link.ts`) holds one HTTP client
+leader but no address, and the follower refuses as before. `LeaderLink`
+(`src/serve/leader_link.ts`) holds one HTTP client
 per leader address, replaced when the record names another node; HTTP/2
 carries every forwarded HTTP request over one connection. One place per
 surface replaces the refusal:
@@ -7570,7 +7572,12 @@ surface replaces the refusal:
   only refuse, never widen.
 - The datastore API, HTTP signal and cancel: after the follower
   authenticated the caller, the request goes to the leader unchanged, with
-  the caller's address appended to `X-Forwarded-For`.
+  `X-Forwarded-For` set to the caller's address (after the caller's own
+  only when the follower runs with `--trust-proxy`, so a caller cannot name
+  the address it is limited by). The leader reads it only with
+  `--trust-proxy`: without it, the leader's per-address limits count every
+  caller behind a follower as that follower, so a team behind a load
+  balancer runs its nodes with `--trust-proxy`.
 - Webhooks: the follower passes the delivery on as it came, raw body and
   headers, right after its size-limited read and before it verifies the
   signature or runs any extension hook. The leader verifies it with its own

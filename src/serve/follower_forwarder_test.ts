@@ -40,6 +40,10 @@ Deno.test("isFinalFrame: errors, done frames and plain replies end a request; ev
     ),
   );
   assert(!isFinalFrame({ type: "other", id: "1" }, "vault.put"));
+  // An attach ends without a reply of its own type.
+  assert(isFinalFrame({ type: "run.elsewhere", id: "1" }, "run.attach"));
+  assert(isFinalFrame({ type: "run.interrupted", id: "1" }, "run.attach"));
+  assert(!isFinalFrame({ type: "run.attached", id: "1" }, "run.attach"));
 });
 
 Deno.test("isRpcFrame: only a worker's rpc.* frames", () => {
