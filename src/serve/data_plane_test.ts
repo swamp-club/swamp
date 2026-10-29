@@ -1586,6 +1586,11 @@ Deno.test("DataPlane: writtenVersions reports the versions a dispatch's writes f
         [MODEL_TYPE.normalized, "m-1", "log", 1],
       ],
     );
+    // A publish lock tells each write from another clone's of the same
+    // number by its data id (swamp-club#3934).
+    assert(
+      versions.every((v) => typeof v.dataId === "string" && v.dataId !== ""),
+    );
 
     h.plane.releaseDispatch("d-1");
     assertEquals(await h.plane.writtenVersions("d-1", 1_000), []);

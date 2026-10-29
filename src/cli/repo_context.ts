@@ -177,6 +177,7 @@ import {
   UnpublishedDataVersionError,
 } from "../domain/datastore/datastore_sync_service.ts";
 import type {
+  DatastoreSyncOptions,
   DatastoreSyncService,
   HydrateFileHook,
   MarkDirtyHook,
@@ -3415,11 +3416,14 @@ async function discardRefusedVersions(
 /**
  * Replaces the cache's copy of `absPath` with the datastore's (swamp-club#3934),
  * through `fetchContent`, writing the bytes itself as `discardRefusedVersions`
- * does, or else `hydrateFile`, whose contract does not promise to replace a
- * file already present. When the datastore has none, the local copy is
- * removed: a push of the missing marked file then deletes nothing. Throws
- * when neither read is available or the read fails, so the caller pushes
- * nothing rather than this host's copy over the datastore's.
+ * does, or else `hydrateFile`. That contract does not promise to replace a
+ * file already present, so the local copy is moved out of the cache first
+ * and put back when the read fails: never left missing, since a push deletes
+ * the remote copy of a marked file missing here. When the datastore has
+ * none, the local copy is removed: a push of the missing marked file then
+ * deletes nothing. Throws when neither read is available or the read fails,
+ * so the caller pushes nothing rather than this host's copy over the
+ * datastore's.
  */
 async function rehydrateContent(
   absPath: string,
@@ -3439,7 +3443,13 @@ async function rehydrateContent(
     present = bytes !== null;
     if (bytes !== null) await atomicWriteFile(absPath, bytes);
   } else if (syncService.hydrateFile) {
-    present = await syncService.hydrateFile(rel, options());
+    present = await hydrateOverLocal(
+      absPath,
+      rel,
+      cachePath,
+      syncService.hydrateFile.bind(syncService),
+      options(),
+    );
   } else {
     throw new Error(
       `Cannot read ${rel} back from the datastore, so the push is withheld`,
@@ -3451,6 +3461,46 @@ async function rehydrateContent(
   } catch (error) {
     if (!(error instanceof Deno.errors.NotFound)) throw error;
   }
+}
+
+/**
+ * Reads `rel` through `hydrateFile` with this host's copy of it moved beside
+ * the cache, so the read cannot keep it; the copy is put back when the read
+ * fails or reports a file it did not write, and discarded otherwise.
+ */
+async function hydrateOverLocal(
+  absPath: string,
+  rel: string,
+  cachePath: string,
+  hydrateFile: NonNullable<DatastoreSyncService["hydrateFile"]>,
+  options: DatastoreSyncOptions,
+): Promise<boolean> {
+  const aside = `${cachePath}.rehydrate-${crypto.randomUUID()}`;
+  let moved = false;
+  try {
+    await Deno.rename(absPath, aside);
+    moved = true;
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  const restore = async () => {
+    if (moved) await Deno.rename(aside, absPath);
+  };
+  let present: boolean;
+  try {
+    present = await hydrateFile(rel, options);
+  } catch (error) {
+    await restore();
+    throw error;
+  }
+  if (present && !await exists(absPath)) {
+    await restore();
+    throw new Error(
+      `The datastore reported reading ${rel} back but wrote no file, so the push is withheld`,
+    );
+  }
+  if (moved) await Deno.remove(aside);
+  return present;
 }
 
 /**
@@ -4351,7 +4401,9 @@ export async function acquireModelLocks(
     const replaced = pulledUnderLocks
       ? present
         .filter((p) =>
-          p.written.dataId !== undefined && p.localId !== p.written.dataId
+          // Metadata naming no id cannot tell whose version it is.
+          p.written.dataId !== undefined && p.localId !== undefined &&
+          p.localId !== p.written.dataId
         )
         .map((p) => p.written)
       : [];

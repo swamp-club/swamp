@@ -300,6 +300,9 @@ export class DataPlane {
       modelId: dispatch.modelId,
       dataName: handle.name,
       version: handle.version,
+      // A publish lock tells this write from another clone's of the same
+      // number by it (swamp-club#3934).
+      dataId: handle.dataId,
     });
     this.#writtenByDispatch.set(dispatch.dispatchId, versions);
   }

@@ -264,10 +264,10 @@ async function pullBeforeUnlockedRun(
 }
 
 /**
- * Takes a read or list run's model lock without a pull, publishes what the
- * run wrote, refusing versions another clone wrote meanwhile, and releases
- * the lock (swamp-club#3934). The client already has its result, so a
- * failure is logged.
+ * Takes a read or list run's model lock, which pulls the model, publishes
+ * what the run wrote, refusing versions another clone wrote meanwhile, and
+ * releases the lock (swamp-club#3934). The client already has its result,
+ * so a failure is logged.
  */
 async function publishUnlockedRun(
   ctx: ConnectionContext,
@@ -324,8 +324,16 @@ async function publishUnlockedRun(
           model: `${model.modelType}/${model.modelId}`,
         },
       );
-    } else {
+    } else if (isUnpublishedDataError(error)) {
       pushFailure = { error };
+    } else {
+      logger.error(
+        "Failed to publish the data of {modelType}/{modelId}: {error}",
+        {
+          ...model,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
     }
   }
   await releaseModelLocks(publishLocks, pushFailure);

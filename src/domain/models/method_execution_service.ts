@@ -425,7 +425,8 @@ export function writtenVersionsOf(error: unknown): WrittenVersion[] {
   return versions.filter((v): v is WrittenVersion =>
     typeof v === "object" && v !== null &&
     typeof v.modelType === "string" && typeof v.modelId === "string" &&
-    typeof v.dataName === "string" && typeof v.version === "number"
+    typeof v.dataName === "string" && typeof v.version === "number" &&
+    (v.dataId === undefined || typeof v.dataId === "string")
   );
 }
 

@@ -97,6 +97,8 @@ let hideFromFetch: ((relPath: string) => boolean) | undefined;
  * at once for a file already present, a fair reading of its contract.
  */
 let keepCachedContent = false;
+/** While set, the sync service has no `fetchContent`. */
+let withoutFetchContent = false;
 
 /** Every content file under `cacheDir`, with its bytes. */
 async function cachedContent(
@@ -304,6 +306,9 @@ async function withClones(
       return new Proxy(service, {
         get(target, property) {
           if (property === "clearDirty" && hideClearDirty) return undefined;
+          if (property === "fetchContent" && withoutFetchContent) {
+            return undefined;
+          }
           if (property === "fetchContent") {
             return (relPath: string, fetchOptions?: DatastoreSyncOptions) =>
               hideFromFetch?.(relPath)
@@ -377,6 +382,7 @@ async function withClones(
     failPulls = false;
     hideFromFetch = undefined;
     keepCachedContent = false;
+    withoutFetchContent = false;
     await flushDatastoreSync();
     modelRegistry.invalidateType(type);
     datastoreType.dispose();
@@ -1135,6 +1141,35 @@ Deno.test("model method run: on a lazy cache a conflicting read replaces its con
   }, { lazy: true });
 });
 
+Deno.test("model method run: on a lazy cache without fetchContent a conflicting read replaces its content through a hydrateFile that keeps a file already present (swamp-club#3934)", async () => {
+  keepCachedContent = true;
+  withoutFetchContent = true;
+  await withClones(async (c) => {
+    let started!: () => void;
+    const aStarted = new Promise<void>((resolve) => started = resolve);
+    let resume!: () => void;
+    const bDone = new Promise<void>((resolve) => resume = resolve);
+    hooks = {
+      beforeWrite: async () => {
+        started();
+        await bDone;
+      },
+    };
+    const aRun = runMethod(c.repoA, "observe", "from-a");
+    await aStarted;
+    await runMethod(c.repoB, "write", "from-b");
+    resume();
+
+    await aRun;
+    assertEquals(
+      remoteValue(c, 1),
+      "from-b",
+      "A's stale content is not pushed",
+    );
+    assertEquals(await localValue(c.repoA, c, 1), "from-b");
+  }, { lazy: true });
+});
+
 Deno.test("model method run: on a lazy cache a deferred version another clone also wrote keeps that clone's content on the datastore (swamp-club#3934)", async () => {
   await withClones(async (c) => {
     const holder = await requireInitializedRepoUnlocked({
@@ -1198,6 +1233,64 @@ Deno.test("model method run: on a lazy cache a conflicting read whose content ca
     );
 
     // The next locked run reads the content back before it pushes.
+    hooks = {};
+    await runMethod(c.repoA, "write", "from-a-write");
+    assertEquals(remoteValue(c, 1), "from-b");
+    assertEquals(remoteValue(c, 2), "from-a-write");
+    assertEquals(await localValue(c.repoA, c, 1), "from-b");
+    assertEquals(await pendingRecords(c.repoA), 0);
+  }, { lazy: true });
+});
+
+Deno.test("model method run: on a lazy cache without fetchContent a conflicting read whose hydrateFile fails puts this host's content back and leaves it for the next lock (swamp-club#3934)", async () => {
+  keepCachedContent = true;
+  withoutFetchContent = true;
+  await withClones(async (c) => {
+    let started!: () => void;
+    const aStarted = new Promise<void>((resolve) => started = resolve);
+    let resume!: () => void;
+    const bDone = new Promise<void>((resolve) => resume = resolve);
+    hooks = {
+      beforeWrite: async () => {
+        started();
+        await bDone;
+      },
+      // The publish's first remote read is the read-back of the replaced
+      // content.
+      afterWrite: () => {
+        c.remote.failNext("fetch", new Error("injected fetch failure"));
+        return Promise.resolve();
+      },
+    };
+    const aRun = runMethod(c.repoA, "observe", "from-a");
+    await aStarted;
+    await runMethod(c.repoB, "write", "from-b");
+    resume();
+
+    const error = await assertRejects(() => aRun, UserError);
+    assertEquals(error.code, "datastore_publish_failed");
+    assertEquals(remoteValue(c, 1), "from-b", "B's content is kept");
+    // Never left missing: a push deletes the remote copy of a marked file
+    // missing here.
+    assertEquals(
+      JSON.parse(
+        await Deno.readTextFile(
+          join(
+            c.repoA,
+            ".test-cache",
+            "data",
+            ...c.type.normalized.split("/"),
+            c.definition.id,
+            "main",
+            "1",
+            "raw",
+          ),
+        ),
+      ).value,
+      "from-a",
+    );
+    assert(await pendingRecords(c.repoA) > 0);
+
     hooks = {};
     await runMethod(c.repoA, "write", "from-a-write");
     assertEquals(remoteValue(c, 1), "from-b");
