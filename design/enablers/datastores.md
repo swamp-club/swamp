@@ -7999,26 +7999,44 @@ refreshes its resource does. `methodRunLockMode`
 - On a v2 extension datastore the model lock is the only path that pulls
   before a run and publishes what it wrote, and each clone numbers data
   versions from its own cache. So the run pulls the behavior without the lock
-  first (`pullModelsUnlocked`, after the same global-lock wait), runs unlocked,
-  and then takes the lock only to publish (`acquireModelLocks` with
-  `pull: false` and `refuseForeignVersions`). A pull then would silently
-  overwrite its versions wherever the remote holds the same path. Before the
-  first push, each written version the remote already holds under another data
-  id was written by another clone during the run. Every version of that data
+  first (`pullModelsUnlocked`; it skips the pull, rather than wait, while a
+  structural command holds the global lock), runs unlocked, and then tries to
+  take the lock only to publish (`acquirePublishLocksOrDefer`).
+- The publish never waits on a writer. `acquireModelLocks` with `failIfBusy`
+  gives up at once while the global lock is held, and after
+  `READ_PUBLISH_LOCK_WAIT_MS` (two seconds, one retry) while another run
+  holds the per-model lock. Then the run records the versions it wrote
+  beside the cache (`<cache>.pending-publish/`, one file per run, which no
+  push walks), logs that the next run to lock the behavior on this host
+  publishes them, and succeeds. A nested run whose parent holds the lock
+  defers the same way, and the parent's push publishes its data.
+- With the lock, the publish takes no pull: it would silently overwrite the
+  run's versions wherever the remote holds the same path. Before the first
+  push, each written version the remote already holds under another data id
+  was written by another clone during the run. Every version of that data
   name is discarded from this host, which gets the remote's copy back, the
   rest are published, and the push fails with `DataVersionConflictError`
   (`datastore_data_version_conflict`). A version holding the run's own data id
-  was uploaded by an earlier push and is published as usual. If the restore
-  leaves anything under a discarded name marked (a file it could not put back,
-  a failed directory sync, or a sync service without a working `clearDirty`),
-  the push is skipped altogether: a push walks a marked directory, so it would
-  delete or roll back the other clone's copy. The error then says so
-  (`restored: false`) and asks for `swamp datastore sync --pull` before
-  anything else pushes, since the names that failed keep their marks and a
-  later push from this host could still do that. The CLI exits non-zero; serve,
-  which has answered its client before it publishes, logs it.
+  was uploaded by an earlier push and is published as usual. Unless the
+  restore is `"clean"`, the push is skipped altogether: a push walks a marked
+  directory, so a file it could not put back, a failed directory sync, or a
+  mark left by a sync service without a working `clearDirty` would delete or
+  roll back the other clone's copy. The error then says so (`restored:
+  false`) and asks for `swamp datastore sync --pull` before anything else
+  pushes. The CLI exits non-zero; serve, which has answered its client
+  before it publishes, logs it.
+- Every push made under a behavior's lock with a repository context also
+  publishes the versions earlier runs deferred for it, and then removes
+  their records. Under the read's own publish lock they get the remote check
+  above. Under a lock that pulled the behavior first (a mutating run), the
+  pull already replaced any version another clone also wrote with that
+  clone's copy, so a deferred version whose local data id is no longer the
+  one the run wrote is discarded and restored, with a warning, and never
+  pushed. Marks that restore leaves push nothing after the pull, so only an
+  `"incomplete"` restore stops that push. A version no longer on this host is
+  dropped.
 - A run that wrote no data version takes no publish lock. When the CLI
-  publish fails other than by a refusal (a lock timeout, an unreadable
+  publish fails other than by a refusal or a busy lock (an unreadable
   remote), a run that succeeded fails with that error, or with
   `datastore_publish_failed` for an untyped one; a run that failed keeps its
   own error and logs that its data was not published.
@@ -8026,10 +8044,14 @@ refreshes its resource does. `methodRunLockMode`
   another clone's, so there the run holds the lock throughout, as a mutating
   run does.
 
-Another run's push in the same namespace still uploads every dirty path, the
-read run's versions among them, without that check, because the S3 and GCS
-extensions ignore a push's model scope. The pre-run pull narrows that window;
-closing it needs model-scoped pushes in the extensions.
+Until it is published, a read run's data sits in the cache like any other
+unpublished write. Another run's push from this host uploads it without the
+check above: the S3 and GCS extensions push every marked path whatever the
+push's model scope, and a full walk uploads any cache file the remote lacks
+or holds differently, marked or not. A deferral lengthens that window, and
+defers exactly when another clone is writing the behavior. Closing it needs
+the extensions to make every remote write conditional on the copy this host
+last synced; that work is tracked separately.
 
 Workflow commands (`workflow run`, `workflow resume`) and serve-hosted workflow
 runs do not lock up front. A `StepLockHook` callback injected into the

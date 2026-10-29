@@ -28,6 +28,7 @@ import {
 } from "../context.ts";
 import {
   acquireModelLocks,
+  acquirePublishLocksOrDefer,
   libSwampContextForRepo,
   type ModelLockResult,
   pullModelsUnlocked,
@@ -663,21 +664,29 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               output: ctx.outputMode === "log" ? "live-until-outcome" : "held",
               push: locks ? () => pushWritten(locks) : publishTo
                 ? async () => {
-                  // A run that wrote no version waits on no lock
-                  // (swamp-club#1992).
                   if (written.length === 0) return;
                   try {
-                    // No pull: it would overwrite what the run wrote wherever
-                    // another clone wrote the same version (swamp-club#3934).
-                    const publishLocks = await acquireModelLocks(
+                    // Never waits on a writer (swamp-club#1992): when another
+                    // run holds the lock, the next run that takes it on this
+                    // host publishes what this one wrote (swamp-club#3934).
+                    const publishLocks = await acquirePublishLocksOrDefer(
                       datastoreConfig,
-                      [publishTo],
+                      publishTo,
+                      written,
                       repoDir,
                       syncService,
                       repoContext.catalogStore,
-                      undefined,
-                      { repoContext, pull: false, refuseForeignVersions: true },
+                      { repoContext },
                     );
+                    if (publishLocks === undefined) {
+                      ctx.logger.info(
+                        "Behavior {model} is locked by another run, so this run's data will be published by the next run that locks it on this host",
+                        {
+                          model: `${publishTo.modelType}/${publishTo.modelId}`,
+                        },
+                      );
+                      return;
+                    }
                     try {
                       await pushWritten(publishLocks);
                     } finally {

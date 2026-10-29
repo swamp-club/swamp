@@ -40,7 +40,6 @@ import { z } from "zod";
 import {
   createInMemoryRemote,
   type InMemoryRemote,
-  waitFor,
 } from "@swamp-club/swamp-testing";
 import { modelMethodCommand } from "../src/cli/commands/model_method_run.ts";
 import { registerCompletionTypes } from "../src/cli/completion_types.ts";
@@ -50,9 +49,10 @@ import {
 } from "../src/cli/repo_context.ts";
 import { VERSION } from "../src/cli/commands/version.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
-import type {
-  DistributedLock,
-  LockOptions,
+import {
+  type DistributedLock,
+  type LockOptions,
+  LockTimeoutError,
 } from "../src/domain/datastore/distributed_lock.ts";
 import {
   type DatastoreSyncOptions,
@@ -65,6 +65,7 @@ import { RepoPath } from "../src/domain/repo/repo_path.ts";
 import { RepoService } from "../src/domain/repo/repo_service.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { flushDatastoreSync } from "../src/infrastructure/persistence/datastore_sync_coordinator.ts";
+import { pendingPublishDir } from "../src/infrastructure/persistence/pending_publish_store.ts";
 import {
   configureTestDatastore,
   registerTestDatastoreType,
@@ -129,7 +130,8 @@ function registerProbe(): ModelType {
 
 /**
  * Per-key locks over one bucket, shared by both clones: `acquire` waits
- * while another holder has the key, as S3Lock does until its timeout.
+ * while another holder has the key, as S3Lock does, and throws
+ * `LockTimeoutError` once `maxWaitMs` passes.
  */
 class LockTable {
   readonly held = new Set<string>();
@@ -141,12 +143,29 @@ class LockTable {
     }`;
     let holding = false;
     const acquire = async () => {
+      const started = Date.now();
+      const maxWaitMs = options?.maxWaitMs ?? Number.POSITIVE_INFINITY;
       while (this.held.has(key)) {
-        await new Promise<void>((resolve) => {
-          const waiting = this.#waiters.get(key) ?? [];
-          waiting.push(resolve);
-          this.#waiters.set(key, waiting);
-        });
+        const left = maxWaitMs - (Date.now() - started);
+        if (left <= 0) {
+          throw new LockTimeoutError(key, null, Date.now() - started);
+        }
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let wake!: () => void;
+        const woken = new Promise<void>((resolve) => wake = resolve);
+        const waiting = this.#waiters.get(key) ?? [];
+        waiting.push(wake);
+        this.#waiters.set(key, waiting);
+        // The lock's own timeout, as S3Lock's: not a wait for other work.
+        if (Number.isFinite(left)) timer = setTimeout(wake, left);
+        try {
+          await woken;
+        } finally {
+          clearTimeout(timer);
+          const still = this.#waiters.get(key) ?? [];
+          const at = still.indexOf(wake);
+          if (at >= 0) still.splice(at, 1);
+        }
       }
       this.held.add(key);
       holding = true;
@@ -329,6 +348,23 @@ async function localValue(
     if (error instanceof Deno.errors.NotFound) return undefined;
     throw error;
   }
+}
+
+/** How many deferred publishes `repoDir`'s cache has left. */
+async function pendingRecords(repoDir: string): Promise<number> {
+  let count = 0;
+  try {
+    for await (
+      const entry of Deno.readDir(
+        pendingPublishDir(join(repoDir, ".test-cache")),
+      )
+    ) {
+      if (entry.name.endsWith(".json")) count++;
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  return count;
 }
 
 Deno.test("model method run: a read method's writes reach the remote with no later run (swamp-club#3934)", async () => {
@@ -519,19 +555,12 @@ Deno.test("model method run: a read method whose publish cannot check the remote
   });
 });
 
-Deno.test("model method run: a read method runs while a writer holds the model lock and publishes after it releases (swamp-club#3934)", async () => {
+Deno.test("model method run: a read method finishes while a writer holds the model lock, and the next locked run on that host publishes its data (swamp-club#3934)", async () => {
   await withClones(async (c) => {
     const holder = await requireInitializedRepoUnlocked({
       repoDir: c.repoB,
       outputMode: "json",
     });
-    let executed = false;
-    hooks = {
-      afterWrite: () => {
-        executed = true;
-        return Promise.resolve();
-      },
-    };
     const writerLock = await acquireModelLocks(
       holder.datastoreConfig,
       [{
@@ -544,23 +573,61 @@ Deno.test("model method run: a read method runs while a writer holds the model l
       undefined,
       { repoContext: holder.repoContext },
     );
-    let aRun: Promise<void> | undefined;
     try {
-      let finished = false;
-      aRun = runMethod(c.repoA, "observe", "from-a").finally(() => {
-        finished = true;
-      });
-      // The method runs although the writer holds the lock (swamp-club#1992)
-      await waitFor(() => executed, "the read method to run");
-      assertEquals(finished, false, "the publish waits for the lock");
-      assertEquals(remoteValue(c, 1), undefined);
+      // The run neither waits for the writer nor fails (swamp-club#1992).
+      await runMethod(c.repoA, "observe", "from-a");
+      assertEquals(remoteValue(c, 1), undefined, "nothing published yet");
+      assertEquals(await pendingRecords(c.repoA), 1);
     } finally {
-      // Released on every outcome, so the read run's publish can settle.
       await writerLock.flush();
-      await aRun;
       await flushDatastoreSync();
       holder.repoContext.catalogStore.close();
     }
+    assertEquals(c.locks.held.size, 0);
+
+    // A's next locked run on the model publishes the deferred version.
+    await runMethod(c.repoA, "write", "from-a-write");
     assertEquals(remoteValue(c, 1), "from-a");
+    assertEquals(remoteValue(c, 2), "from-a-write");
+    assertEquals(remoteLatest(c), "2");
+    assertEquals(await pendingRecords(c.repoA), 0);
+  });
+});
+
+Deno.test("model method run: a deferred version another clone also wrote is dropped by the next locked run, which keeps the other clone's copy (swamp-club#3934)", async () => {
+  await withClones(async (c) => {
+    const holder = await requireInitializedRepoUnlocked({
+      repoDir: c.repoB,
+      outputMode: "json",
+    });
+    const writerLock = await acquireModelLocks(
+      holder.datastoreConfig,
+      [{
+        modelType: c.type.normalized,
+        modelId: c.definition.id,
+      }],
+      c.repoB,
+      holder.syncService,
+      holder.repoContext.catalogStore,
+      undefined,
+      { repoContext: holder.repoContext },
+    );
+    try {
+      await runMethod(c.repoA, "observe", "from-a");
+    } finally {
+      await writerLock.flush();
+      await flushDatastoreSync();
+      holder.repoContext.catalogStore.close();
+    }
+    // B writes version 1 before A's deferred version 1 is published.
+    await runMethod(c.repoB, "write", "from-b");
+    assertEquals(remoteValue(c, 1), "from-b");
+
+    await runMethod(c.repoA, "write", "from-a-write");
+    assertEquals(remoteValue(c, 1), "from-b", "B's version is kept");
+    assertEquals(remoteValue(c, 2), "from-a-write");
+    assertEquals(remoteLatest(c), "2");
+    assertEquals(await localValue(c.repoA, c, 1), "from-b");
+    assertEquals(await pendingRecords(c.repoA), 0);
   });
 });

@@ -480,6 +480,9 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/serve/sync_gate.ts: runGated": VALUE_FREE_STATUS,
   },
   "file-write": {
+    // swamp-club#3934: a deferred publish names data versions only.
+    "src/infrastructure/persistence/pending_publish_store.ts: recordPendingPublish":
+      "Writes behavior types and ids, data names, version numbers and data ids, never a data value or a value derived from an expression.",
     "src/infrastructure/datastore_v3/litestream/litestream_binary_provider.ts: defaultLitestreamExtractor":
       CONFIG_WRITE,
     "src/infrastructure/datastore_v3/litestream/litestream_replicator.ts: LitestreamReplicator":

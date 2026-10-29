@@ -138,6 +138,7 @@ import {
 } from "../../domain/definitions/definition.ts";
 import {
   acquireModelLocks,
+  acquirePublishLocksOrDefer,
   type ModelLockResult,
   pullModelsUnlocked,
   runUnderModelLocks,
@@ -272,22 +273,21 @@ async function publishUnlockedRun(
   model: PublishedModel,
   written: readonly WrittenVersion[],
 ): Promise<void> {
-  // A run that wrote no version waits on no lock (swamp-club#1992).
   if (written.length === 0) return;
-  let publishLocks: ModelLockResult;
+  let publishLocks: ModelLockResult | undefined;
   try {
-    publishLocks = await acquireModelLocks(
+    // When another run holds the lock, the next run that takes it on this
+    // host publishes what this one wrote (swamp-club#3934).
+    publishLocks = await acquirePublishLocksOrDefer(
       ctx.datastoreConfig,
-      [model],
+      model,
+      written,
       ctx.repoDir,
       ctx.syncService,
       ctx.repoContext.catalogStore,
-      undefined,
       {
         wrapSync: (fn, kind) => withRunSyncGate(ctx.syncGate, fn, kind),
         repoContext: ctx.repoContext,
-        pull: false,
-        refuseForeignVersions: true,
       },
     );
   } catch (error) {
@@ -297,6 +297,13 @@ async function publishUnlockedRun(
         ...model,
         error: error instanceof Error ? error.message : String(error),
       },
+    );
+    return;
+  }
+  if (publishLocks === undefined) {
+    logger.info(
+      "{modelType}/{modelId} is locked by another run; its next run on this host publishes this run's data",
+      { ...model },
     );
     return;
   }
