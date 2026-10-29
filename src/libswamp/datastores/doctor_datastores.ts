@@ -1129,6 +1129,13 @@ export interface UnreadableRecordRepair {
    * left as it is).
    */
   becomesLatest: number | null;
+  /**
+   * After the repair: whether the record is gone from disk. False when
+   * no readable version is left but a crashed write that was never
+   * published still is; the record then reads as absent. Absent in a
+   * preview.
+   */
+  removed?: boolean;
 }
 
 /** What the unreadable-version repair did. */
@@ -1164,19 +1171,18 @@ export interface UnreadableVersionsRepairOps {
   /** The same scan as the check, read again under the locks. */
   scan: () => Promise<UnreadableDataVersion[]>;
   /**
-   * Removes one version through the repository's single-version delete,
-   * which drops its catalog row, recomputes the latest flags and moves the
-   * marker to the highest promoted version left.
+   * Rolls one record back to its last readable version: removes
+   * `versions` (unreadable, published) through the repository's
+   * single-version delete, keeps the catalog from gaining a row for a
+   * crashed write that was never published, and points the latest marker
+   * at the highest readable version. With no versions it only resets the
+   * marker. Resolves with the version left latest (null when none can be
+   * read), and whether the record is gone from disk.
    */
-  removeVersion: (
+  rollBack: (
     record: UnreadableRecordKey,
-    version: number,
-  ) => Promise<void>;
-  /**
-   * Points the record's latest marker at its highest readable promoted
-   * version; resolves with it, or null when none can be read.
-   */
-  resetLatestMarker: (record: UnreadableRecordKey) => Promise<number | null>;
+    versions: readonly number[],
+  ) => Promise<{ latest: number | null; removed: boolean }>;
 }
 
 export interface RepairUnreadableVersionsDeps {
@@ -1229,10 +1235,11 @@ export function planUnreadableVersionRepairs(
  * Without `confirm`, yields a preview: per record, the versions removed and
  * the version left as latest. With `confirm`, takes the affected models'
  * locks, scans again under them, and for each record the preview listed
- * removes its unreadable versions highest first through the repository's
- * single-version delete, then points its latest marker at its highest
- * readable version. A version readable again by then is kept. Only content
- * that is already unreadable is removed.
+ * rolls back: its unreadable versions are removed highest first through
+ * the repository's single-version delete, the catalog gains no row for a
+ * crashed write that was never published, and the latest marker names the
+ * highest readable version. A version readable again by then is kept. Only
+ * content that is already unreadable is removed.
  */
 export async function* repairUnreadableVersions(
   _ctx: LibSwampContext,
@@ -1295,22 +1302,18 @@ export async function* repairUnreadableVersions(
             const markerUnreadable = record.markerUnreadable &&
               current.markerUnreadable;
             if (removeVersions.length === 0 && !markerUnreadable) continue;
-            for (const version of removeVersions) {
-              await ops.removeVersion(record, version);
-              versionsRemoved++;
-            }
-            // The delete moves the marker to the highest promoted version
-            // left, which a crashed write that was never published can be;
-            // the marker is pointed at the highest readable one instead.
-            const becomesLatest = await ops.resetLatestMarker(record);
-            if (becomesLatest === null && removeVersions.length > 0) {
-              recordsRemoved++;
-            }
+            const { latest: becomesLatest, removed } = await ops.rollBack(
+              record,
+              removeVersions,
+            );
+            versionsRemoved += removeVersions.length;
+            if (removed) recordsRemoved++;
             repaired.push({
               ...current,
               removeVersions,
               markerUnreadable,
               becomesLatest,
+              removed,
             });
           }
           return { repaired, recordsRemoved };

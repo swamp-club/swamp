@@ -619,6 +619,24 @@ Deno.test("createUnreadableVersionsRepairRenderer: log mode previews each record
   );
   assertStringIncludes(done, "Removed 2 version(s); 1 record(s)");
   assertStringIncludes(done, "Kept 1 version(s)");
+
+  const absent = stripAnsiCode(
+    captureStdout(() =>
+      renderer.handlers().completed({
+        kind: "completed",
+        result: {
+          records: [{ ...REPAIRS[1], removed: false }],
+          versionsRemoved: 1,
+          recordsRemoved: 0,
+          versionsKept: 0,
+        },
+      })
+    ),
+  );
+  assertStringIncludes(
+    absent,
+    "spec/gone: removed version(s) 1; no readable version is left, so the record reads as absent",
+  );
 });
 
 Deno.test("createUnreadableVersionsRepairRenderer: json mode records its stage in the one repair document (swamp-club#3955)", () => {

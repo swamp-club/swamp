@@ -713,6 +713,10 @@ function unreadableRecordLine(
   }
   if (record.becomesLatest !== null) {
     parts.push(`version ${record.becomesLatest} is latest`);
+  } else if (record.removeVersions.length > 0 && record.removed === false) {
+    parts.push(
+      "no readable version is left, so the record reads as absent",
+    );
   } else if (record.removeVersions.length > 0) {
     parts.push("no readable version is left, so the record is removed");
   } else {

@@ -554,18 +554,12 @@ function createUnreadableVersionsRepairDeps(
                   repoContext.catalogStore,
                   dataRepo.namespace,
                 ),
-              removeVersion: (record, version) =>
-                dataRepo.delete(
+              rollBack: (record, versions) =>
+                dataRepo.rollBackToReadable(
                   ModelType.create(record.modelType),
                   record.modelId,
                   record.dataName,
-                  version,
-                ),
-              resetLatestMarker: (record) =>
-                dataRepo.resetLatestMarkerToReadable(
-                  ModelType.create(record.modelType),
-                  record.modelId,
-                  record.dataName,
+                  versions,
                 ),
             });
           },

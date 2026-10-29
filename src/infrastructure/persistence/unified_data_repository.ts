@@ -4004,6 +4004,79 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
+   * Rolls `dataName` back to its last readable version, for `swamp doctor
+   * datastores --repair` (swamp-club#3955): removes the `unreadable`
+   * published versions, highest first, through the single-version
+   * {@link delete}, then points the marker at the highest readable promoted
+   * version. Run under the model's lock.
+   *
+   * `delete` makes the highest version left on disk latest and writes a
+   * catalog row for it. That can be a save that crashed before it was
+   * published (metadata written, no raw, no row), so any row the deletes
+   * added is dropped again and the latest flags recomputed: the catalog
+   * and the marker then agree on the readable version. When only such
+   * unpublished versions are left, the marker is pointed at
+   * NO_PROMOTED_VERSION, so the name reads as absent, as `delete` leaves a
+   * name with only in-flight writes. With no `unreadable` versions this
+   * only resets the marker.
+   *
+   * Resolves with the version left latest (null when none can be read),
+   * and whether the data name is gone from disk.
+   */
+  async rollBackToReadable(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    unreadable: readonly number[],
+  ): Promise<{ latest: number | null; removed: boolean }> {
+    const group = { typeNormalized: type.normalized, modelId, dataName };
+    const hadRow = new Set(
+      this.catalogStore.versionKeys(this.namespace, group).map((row) =>
+        row.version
+      ),
+    );
+    for (const version of [...unreadable].sort((a, b) => b - a)) {
+      await this.delete(type, modelId, dataName, version);
+    }
+    const added = this.catalogStore.versionKeys(this.namespace, group)
+      .map((row) => row.version)
+      .filter((version) => !hadRow.has(version));
+    if (added.length > 0) {
+      this.catalogStore.bulkRemoveVersions(
+        this.namespace,
+        type.normalized,
+        modelId,
+        dataName,
+        added,
+        computeLatestFlags,
+      );
+      this.catalogStore.recordLocalWrite();
+    }
+    const latest = await this.resetLatestMarkerToReadable(
+      type,
+      modelId,
+      dataName,
+    );
+    const left = await this.listVersions(type, modelId, dataName);
+    if (latest === null && unreadable.length > 0 && left.length > 0) {
+      await this.staged(
+        {
+          kind: "write",
+          path: join(this.getDataNameDir(type, modelId, dataName), "latest"),
+        },
+        () =>
+          this.updateLatestMarker(
+            type,
+            modelId,
+            dataName,
+            NO_PROMOTED_VERSION,
+          ),
+      );
+    }
+    return { latest, removed: left.length === 0 };
+  }
+
+  /**
    * Whether reads check for unreadable versions (swamp-club#3955): only on
    * a v2 datastore whose files are all local. With a hydrate hook a missing
    * or short file is downloaded, and a v3 checkout replays its records

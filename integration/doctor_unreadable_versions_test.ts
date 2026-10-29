@@ -27,6 +27,7 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
+import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { Data } from "../src/domain/data/data.ts";
 import { SOLO_NAMESPACE } from "../src/domain/data/namespace.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
@@ -102,6 +103,26 @@ async function truncate(versionDir: string): Promise<void> {
   await Deno.writeFile(join(versionDir, "metadata.yaml"), new Uint8Array());
 }
 
+/**
+ * Leaves version `version` of a data name as a save killed after its
+ * metadata.yaml landed: metadata copied from version `from` and renumbered,
+ * no raw, no catalog row, and the marker left where it was.
+ */
+async function writeCrashedSave(
+  nameDir: string,
+  from: number,
+  version: number,
+): Promise<void> {
+  const metadata = parseYaml(
+    await Deno.readTextFile(join(nameDir, String(from), "metadata.yaml")),
+  ) as Record<string, unknown>;
+  await Deno.mkdir(join(nameDir, String(version)));
+  await Deno.writeTextFile(
+    join(nameDir, String(version), "metadata.yaml"),
+    stringifyYaml({ ...metadata, version, id: crypto.randomUUID() }),
+  );
+}
+
 /** The libswamp repair over the real repository and catalog. */
 function repairDeps(r: Repo): RepairUnreadableVersionsDeps {
   const scan = () => scanUnreadableVersions(r.repo, r.catalog, SOLO_NAMESPACE);
@@ -110,18 +131,12 @@ function repairDeps(r: Repo): RepairUnreadableVersionsDeps {
     underModelLocks: (_models, fn) =>
       fn({
         scan,
-        removeVersion: (record, version) =>
-          r.repo.delete(
+        rollBack: (record, versions) =>
+          r.repo.rollBackToReadable(
             ModelType.create(record.modelType),
             record.modelId,
             record.dataName,
-            version,
-          ),
-        resetLatestMarker: (record) =>
-          r.repo.resetLatestMarkerToReadable(
-            ModelType.create(record.modelType),
-            record.modelId,
-            record.dataName,
+            versions,
           ),
       }),
   };
@@ -247,5 +262,68 @@ Deno.test("doctor unreadable versions: a foreign-namespace catalog row is neithe
     const events = await repair(r);
     assertEquals(events.map((e) => e.kind), ["scanning", "not_needed"]);
     assertEquals(r.catalog.versionKeys("other").length, 1);
+  });
+});
+
+Deno.test("doctor unreadable versions: a crashed save above an unreadable version gains no catalog row, so the catalog and the marker agree (swamp-club#3955)", async () => {
+  for (const unreadable of [1, 3]) {
+    await withRepo(async (r) => {
+      await r.write("state", 3);
+      await truncate(join(r.nameDir("state"), String(unreadable)));
+      // A save killed after metadata.yaml landed: no raw, no catalog row,
+      // and the marker still names version 3.
+      await writeCrashedSave(r.nameDir("state"), 2, 4);
+
+      const events = await repair(r);
+      assert(
+        events.some((e) => e.kind === "completed"),
+        JSON.stringify(events),
+      );
+
+      const expected = unreadable === 3 ? 2 : 3;
+      assertEquals(
+        await Deno.readTextFile(join(r.nameDir("state"), "latest")),
+        String(expected),
+      );
+      const latestRows = r.catalog.versionKeys(SOLO_NAMESPACE)
+        .filter((k) => k.is_latest === 1)
+        .map((k) => k.version);
+      assertEquals(latestRows, [expected]);
+      assertEquals(
+        r.catalog.versionKeys(SOLO_NAMESPACE).some((k) => k.version === 4),
+        false,
+      );
+      // A live repo's catalog is populated, so the query reads the rows
+      // above instead of rebuilding them from every directory on disk.
+      r.catalog.markPopulated();
+      const records = await new DataQueryService(r.catalog, r.repo).query(
+        'name == "state"',
+      ) as DataRecord[];
+      assertEquals(records.map((rec) => rec.version), [expected]);
+      assertEquals(
+        await scanUnreadableVersions(r.repo, r.catalog, SOLO_NAMESPACE),
+        [],
+      );
+    });
+  }
+});
+
+Deno.test("doctor unreadable versions: a record left with only a crashed save reads as absent and is not reported removed (swamp-club#3955)", async () => {
+  await withRepo(async (r) => {
+    await r.write("state", 1);
+    await writeCrashedSave(r.nameDir("state"), 1, 2);
+    await truncate(join(r.nameDir("state"), "1"));
+
+    const events = await repair(r);
+    const completed = events.find((e) => e.kind === "completed");
+    assert(completed?.kind === "completed", JSON.stringify(events));
+    assertEquals(completed.result.recordsRemoved, 0);
+    assertEquals(completed.result.records[0].becomesLatest, null);
+    assertEquals(r.catalog.versionKeys(SOLO_NAMESPACE), []);
+    assertEquals(await r.repo.findByName(type, r.modelId, "state"), null);
+    assertEquals(
+      await scanUnreadableVersions(r.repo, r.catalog, SOLO_NAMESPACE),
+      [],
+    );
   });
 });

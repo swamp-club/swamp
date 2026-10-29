@@ -2074,15 +2074,18 @@ function fakeUnreadableRepairDeps(
       try {
         return await fn({
           scan: () => Promise.resolve(underLock),
-          removeVersion: (record, version) => {
+          rollBack: (record, versions) => {
             if (failRemove) return Promise.reject(new Error("disk full"));
-            calls.push(`remove ${record.dataName}@${version}`);
-            return Promise.resolve();
-          },
-          resetLatestMarker: (record) => {
+            for (const version of versions) {
+              calls.push(`remove ${record.dataName}@${version}`);
+            }
             calls.push(`reset ${record.dataName}`);
             const left = underLock.find((f) => f.dataName === record.dataName);
-            return Promise.resolve(left?.readableVersion ?? null);
+            const latest = left?.readableVersion ?? null;
+            return Promise.resolve({
+              latest,
+              removed: latest === null && versions.length > 0,
+            });
           },
         });
       } finally {

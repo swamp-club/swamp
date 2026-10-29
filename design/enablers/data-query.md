@@ -817,13 +817,17 @@ pending deferred write, is not published, so it is never unreadable.
 - **Repair rolls back.** `swamp doctor datastores --repair` runs
   `repairUnreadableVersions` before the catalog repair. The preview lists, per
   record, the versions to remove and the version left as latest. With `-y` it
-  takes the affected models' locks, scans again under them, and removes each
-  unreadable version highest first through the repository's single-version
-  `delete`. That call drops the catalog row, recomputes `is_latest` and
-  `is_step_latest`, and moves the marker. The repair then points the marker at
-  the highest readable promoted version (`resetLatestMarkerToReadable`). A
-  record with no readable version left is removed. A version that became
-  readable again before the locks were taken is kept.
+  takes the affected models' locks, scans again under them, and rolls each
+  record back with `rollBackToReadable`. That removes each unreadable version
+  highest first through the repository's single-version `delete`, which drops
+  the catalog row, recomputes `is_latest` and `is_step_latest`, and moves the
+  marker to the highest version left on disk. That version can be a save that
+  crashed before it was published, and `delete` writes a catalog row for it, so
+  any row the deletes added is dropped again and the flags recomputed. The
+  marker is then pointed at the highest readable promoted version. A record
+  with no version left on disk is removed. One left with only unpublished
+  versions has its marker set to `NO_PROMOTED_VERSION` and reads as absent. A
+  version that became readable again before the locks were taken is kept.
 
 ### Remote Datastores (S3)
 
