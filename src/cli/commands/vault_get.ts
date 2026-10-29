@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { markConfigLoaded } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
@@ -105,11 +106,12 @@ export const vaultGetCommand = withRemoteOptions(
     }
 
     const pull = !!(options.pull as boolean | undefined);
-    const { repoDir, managedConfig } = await requireInitializedRepoReadOnly({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-      pull,
-    });
+    const { repoDir, managedConfig, repoContext } =
+      await requireInitializedRepoReadOnly({
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
+        pull,
+      });
     const vaultType = options.type as string | undefined;
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
@@ -119,6 +121,11 @@ export const vaultGetCommand = withRemoteOptions(
     const handlers = renderer.handlers();
     const wrappedHandlers: typeof handlers = {
       ...handlers,
+      // An edit of it now starts from this version (swamp-club#4097).
+      completed: (e) => {
+        markConfigLoaded(repoContext, "vault", e.data.name);
+        return handlers.completed(e);
+      },
       error: (e: VaultGetEvent & { kind: "error" }) => {
         if (
           managedConfig && !pull &&

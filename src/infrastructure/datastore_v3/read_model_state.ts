@@ -61,6 +61,7 @@ import type {
   LiveRecord,
   UnreadableRecord,
 } from "../../domain/datastore_v3/read_model.ts";
+import type { PutExpect } from "../../domain/datastore_v3/op.ts";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import { DataMetadataSchema } from "../../domain/data/data_metadata.ts";
 import {
@@ -270,6 +271,20 @@ const MIGRATIONS: readonly SqliteMigration[] = [
   addColumnsIfAbsent([
     { table: "live_records", column: "writer", type: "TEXT" },
   ]),
+  // 8 → 9 (swamp-club#4097): the version of each managed-config record the
+  // checkout held before another writer's commit replaced it, which a
+  // user's edit of it expects until the user loads it again or the
+  // checkout commits it. NULL is a record the checkout did not hold. Never
+  // cleared by a reset: it is what the user saw, not derived state.
+  `
+  CREATE TABLE IF NOT EXISTS config_edit_bases (
+    namespace TEXT NOT NULL,
+    partition TEXT NOT NULL,
+    record_key TEXT NOT NULL,
+    sha256 TEXT,
+    PRIMARY KEY (namespace, partition, record_key)
+  ) STRICT, WITHOUT ROWID;
+  `,
 ];
 
 export type { FileOwnership };
@@ -643,6 +658,73 @@ export class ReadModelState {
         blob: BlobRef.fromJSON(JSON.parse(row.blob)),
       },
     }));
+  }
+
+  /**
+   * Notes that another writer's commit replaced `key`, whose file held
+   * `prior` (a digest, or undefined when there was none), as the base a
+   * user's edit of it expects (swamp-club#4097). A record that already has
+   * a base keeps it: the user saw neither later version.
+   */
+  recordConfigBase(
+    namespace: string,
+    partition: string,
+    key: string,
+    prior: string | undefined,
+  ): void {
+    this.#requireOpen();
+    this.#db.prepare(
+      "INSERT OR IGNORE INTO config_edit_bases (namespace, partition, record_key, sha256) VALUES (?, ?, ?, ?)",
+    ).run(namespace, partition, key, prior ?? null);
+  }
+
+  /** The base a user's edit of `key` expects, if a commit replaced it. */
+  configBase(
+    namespace: string,
+    partition: string,
+    key: string,
+  ): PutExpect | undefined {
+    this.#requireOpen();
+    const row = this.#db.prepare(
+      "SELECT sha256 FROM config_edit_bases WHERE namespace = ? AND partition = ? AND record_key = ?",
+    ).get(namespace, partition, key) as { sha256: string | null } | undefined;
+    if (row === undefined) return undefined;
+    return row.sha256 === null ? "absent" : { sha256: row.sha256 };
+  }
+
+  /** Every base of `partition`'s records, by record key. */
+  configBases(
+    namespace: string,
+    partition: string,
+  ): { readonly key: string; readonly base: PutExpect }[] {
+    this.#requireOpen();
+    const rows = this.#db.prepare(
+      "SELECT record_key, sha256 FROM config_edit_bases WHERE namespace = ? AND partition = ? ORDER BY record_key",
+    ).all(namespace, partition) as {
+      record_key: string;
+      sha256: string | null;
+    }[];
+    return rows.map((row) => ({
+      key: row.record_key,
+      base: row.sha256 === null ? "absent" : { sha256: row.sha256 },
+    }));
+  }
+
+  /**
+   * Forgets the bases of `partition` (of its `key` only, when given): the
+   * user loaded the definition, or the checkout committed it.
+   */
+  clearConfigBases(namespace: string, partition: string, key?: string): void {
+    this.#requireOpen();
+    if (key === undefined) {
+      this.#db.prepare(
+        "DELETE FROM config_edit_bases WHERE namespace = ? AND partition = ?",
+      ).run(namespace, partition);
+    } else {
+      this.#db.prepare(
+        "DELETE FROM config_edit_bases WHERE namespace = ? AND partition = ? AND record_key = ?",
+      ).run(namespace, partition, key);
+    }
   }
 
   /** One live record of a partition, with its writer; undefined when absent. */

@@ -42,6 +42,7 @@ import {
   type Op,
   type PutOp,
   putOp,
+  type TombstoneExpect,
   type TombstoneOp,
   tombstoneOp,
 } from "./op.ts";
@@ -150,7 +151,7 @@ export function versionOp(name: string, version: number): DataVersionOp {
 export function deleteVersion(
   name: string,
   version: number,
-  expect?: "present",
+  expect?: TombstoneExpect,
 ): TombstoneOp {
   return tombstoneOp({
     intent: modelIntent({ kind: "data.delete", name, version }),

@@ -21,9 +21,11 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   COMMIT_PARTLY_COMMITTED_CODE,
   CommitUnreachableError,
+  PartitionsRefusedError,
   RUN_PARTLY_COMMITTED_CODE,
   RunPartlyCommittedError,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import { partitionOf } from "../../domain/datastore_v3/partition_key.ts";
 import { ValidationError } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
@@ -381,6 +383,58 @@ Deno.test("renderError: no outputMode does not write to stdout", () => {
 // ============================================================================
 // buildErrorJson tests
 // ============================================================================
+
+/** A refused stale edit of workflow `deploy`, as a root unit throws it. */
+function staleEdit(): PartitionsRefusedError {
+  return new PartitionsRefusedError([{
+    partition: partitionOf({
+      kind: "config",
+      definitionKind: "workflow",
+      name: "deploy",
+    }),
+    reason: "expect-failed",
+    message: "Record config/workflows/workflow-deploy.yaml is not sha256 aa",
+    key: "config/workflows/workflow-deploy.yaml",
+    changedBy: "alice",
+    changedAt: "2026-10-29T10:00:00.000Z",
+    versions: [],
+  }], []);
+}
+
+Deno.test("renderError: a refused stale config edit is one plain error line naming the change, not a crash (swamp-club#4097)", () => {
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+  try {
+    renderError(staleEdit());
+    assertEquals(logs.length, 1);
+    assertStringIncludes(logs[0], "Workflow 'deploy' was changed by alice");
+    assertEquals(logs[0].includes("    at "), false);
+  } finally {
+    console.error = originalError;
+  }
+});
+
+Deno.test("renderError: a refused stale config edit in json mode has its code and conflicts (swamp-club#4097)", () => {
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+  try {
+    renderError(staleEdit(), "json");
+    const json = JSON.parse(logs[0]);
+    assertEquals(json.code, "config_edit_conflict");
+    assertEquals(json.stack, undefined);
+    assertEquals(json.conflicts, [{
+      kind: "workflow",
+      name: "deploy",
+      key: "config/workflows/workflow-deploy.yaml",
+      changedBy: "alice",
+      changedAt: "2026-10-29T10:00:00.000Z",
+    }]);
+  } finally {
+    console.error = originalError;
+  }
+});
 
 Deno.test("buildErrorJson: UserError produces error-only JSON", () => {
   const result = buildErrorJson(new UserError("Not found"));

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { startConfigEdit } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createWorkflowEditDeps,
@@ -40,6 +41,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { runManagedConfigMutation } from "../managed_config_sync.ts";
+import { runAsUserConfigEdit } from "../../infrastructure/datastore_v3/config_edit_scope.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -162,23 +164,42 @@ export const workflowEditCommand = withRemoteOptions(
 
     const stdinContent = await readStdin();
     const deps = createWorkflowEditDeps(repoDir, repoContext.workflowRepo);
+    // A stale stdin edit, a rename's included, is refused before it
+    // writes; opening the editor loads the workflow (swamp-club#4097).
+    const target = await repoContext.workflowRepo.findByName(workflowIdOrName)
+      .catch(() => null) ??
+      await repoContext.workflowRepo.findById(
+        workflowIdOrName as Parameters<
+          typeof repoContext.workflowRepo.findById
+        >[0],
+      ).catch(() => null);
+    if (target) {
+      await startConfigEdit(
+        repoContext,
+        "workflow",
+        target.name,
+        stdinContent === null,
+      );
+    }
 
     const renderer = createWorkflowEditRenderer(cliCtx.outputMode);
-    await runManagedConfigMutation(
-      repoContext,
-      syncService,
-      datastoreConfig,
-      marker,
-      "workflow edit",
-      () =>
-        consumeStream(
-          workflowEdit(libCtx, deps, {
-            workflowIdOrName,
-            stdinContent,
-            allowRename: options.allowRename === true,
-          }),
-          renderer.handlers(),
-        ),
+    await runAsUserConfigEdit(() =>
+      runManagedConfigMutation(
+        repoContext,
+        syncService,
+        datastoreConfig,
+        marker,
+        "workflow edit",
+        () =>
+          consumeStream(
+            workflowEdit(libCtx, deps, {
+              workflowIdOrName,
+              stdinContent,
+              allowRename: options.allowRename === true,
+            }),
+            renderer.handlers(),
+          ),
+      )
     );
 
     cliCtx.logger.debug("Workflow edit command completed");

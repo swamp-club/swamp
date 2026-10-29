@@ -157,6 +157,7 @@ import {
   type Op,
   type PutOp,
   putOp,
+  tombstoneOp,
 } from "../../domain/datastore_v3/op.ts";
 import {
   type HeadIdentity,
@@ -167,6 +168,7 @@ import {
   sweepMayOverlap,
   type SweepState,
 } from "../../domain/datastore_v3/commit_outbox.ts";
+import type { ConfigEditBases } from "../../domain/datastore_v3/config_edit_bases.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
 import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
@@ -178,6 +180,8 @@ import {
   type VersionFloorSource,
 } from "../persistence/unit_of_work_binding.ts";
 import { getSwampLogger } from "../logging/logger.ts";
+import { inUserConfigEdit } from "./config_edit_scope.ts";
+import type { RecordLastChange } from "./record_last_change.ts";
 import { isNetworkFailure } from "./network_failure.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
@@ -322,6 +326,21 @@ export interface CommitLogUnitOptions {
    * may already have written to the checkout (swamp-club#3553).
    */
   readonly tracker?: UnitTracker;
+  /**
+   * The versions of managed-config records the user started from
+   * (swamp-club#4097): inside a user's edit, an edited definition expects
+   * its base rather than the version the repository read when it saved.
+   * Told each record this unit commits.
+   */
+  readonly configEditBases?: ConfigEditBases;
+  /**
+   * Who last changed a record and when, for a refused expectation's
+   * message (swamp-club#4097); the refusal names neither when absent.
+   */
+  readonly lastChangeOf?: (
+    partition: PartitionKey,
+    key: string,
+  ) => Promise<RecordLastChange>;
 }
 
 /**
@@ -711,6 +730,7 @@ export function createCommitLogUnitOfWork(
             partition: group.partition,
             reason: error.reason,
             message: error.message,
+            ...await refusedRecord(error, group.partition, options),
             versions: dropped.flatMap((other) => recordedVersions(other)),
           };
           refusedNow.push(refusal);
@@ -721,6 +741,7 @@ export function createCommitLogUnitOfWork(
           inFlight = undefined;
         }
         pending = pending.filter((other) => other !== group);
+        noteCommitted(group, options);
         if (!landed.some((other) => other.equals(group.partition))) {
           landed.push(group.partition);
         }
@@ -887,7 +908,7 @@ export function createCommitLogUnitOfWork(
       for (const change of changes) {
         const key = keyOfChange(change);
         if (key !== undefined && options.admits?.(key) === false) continue;
-        checked.push(await checkChange(change));
+        checked.push(rebased(await checkChange(change), options));
       }
       if (checked.length === 0) return;
       // Each refusal below comes after the repository wrote the files.
@@ -972,6 +993,135 @@ function keyOfChange(change: TypedChange): string | undefined {
   if ("put" in change) return change.put.key.toString();
   const op = change.op;
   return "key" in op ? op.key.toString() : undefined;
+}
+
+/**
+ * Inside a user's edit (swamp-club#4097), an edit of a managed-config
+ * definition another writer replaced in this process expects the version
+ * the user started from; any other change is left as it was staged.
+ */
+function rebased(
+  change: TypedChange,
+  options: CommitLogUnitOptions,
+): TypedChange {
+  const bases = options.configEditBases;
+  if (
+    bases === undefined || change.partition.kind !== "config" ||
+    !inUserConfigEdit()
+  ) {
+    return change;
+  }
+  const baseOf = (key: RecordKey) =>
+    bases.baseOf(
+      options.namespace.toString(),
+      change.partition.toString(),
+      key.toString(),
+    );
+  if ("put" in change) {
+    const put = change.put;
+    // Only an edit in place: a create, a move and a rename expect the key
+    // absent, which no base can tighten.
+    if (
+      put.intent.kind !== "definition.edit" || typeof put.expect !== "object"
+    ) {
+      return change;
+    }
+    const base = baseOf(put.key);
+    // A record the user never saw has no version to start an edit from.
+    if (base === undefined || base === "absent") return change;
+    return Object.freeze({
+      partition: change.partition,
+      put: Object.freeze({ ...put, expect: base }),
+    });
+  }
+  const op = change.op;
+  // A delete, and the old key of a rename or a move, removes the version
+  // the user started from.
+  if (op.kind !== "tombstone" || !REBASED_REMOVALS.has(op.intent.kind)) {
+    return change;
+  }
+  const base = baseOf(op.key);
+  // A record the user never saw has no version to delete.
+  if (base === undefined || base === "absent") return change;
+  return Object.freeze({
+    partition: change.partition,
+    op: tombstoneOp({ intent: op.intent, key: op.key, expect: base }),
+  });
+}
+
+/**
+ * The record a refused expectation names, and who changed it last and
+ * when: as serve's refusal reported them, else from the unit's history.
+ */
+async function refusedRecord(
+  error: CommitRejectedError,
+  partition: PartitionKey,
+  options: CommitLogUnitOptions,
+): Promise<
+  Pick<PartitionRefusal, "key" | "changedBy" | "changedAt">
+> {
+  if (error.reason !== "expect-failed" || error.key === undefined) return {};
+  const key = error.key.toString();
+  const reported = error as { changedBy?: unknown; changedAt?: unknown };
+  let last: RecordLastChange = {
+    ...(typeof reported.changedBy === "string"
+      ? { changedBy: reported.changedBy }
+      : {}),
+    ...(typeof reported.changedAt === "string"
+      ? { changedAt: reported.changedAt }
+      : {}),
+  };
+  if (last.changedBy === undefined && options.lastChangeOf !== undefined) {
+    try {
+      last = await options.lastChangeOf(partition, key);
+    } catch (lookupError) {
+      logger
+        .warn`Looking up who last changed ${key} for a refused commit failed: ${lookupError}`;
+    }
+  }
+  return {
+    key,
+    ...(last.changedBy === undefined ? {} : { changedBy: last.changedBy }),
+    ...(last.changedAt === undefined ? {} : { changedAt: last.changedAt }),
+  };
+}
+
+/**
+ * The tombstone intents of a user's edit that expect its base: a delete, a
+ * rename's old name, and a move's old key (which carries the move's edit or
+ * create intent; a key with no base, as a legacy key has none, keeps its
+ * expectation).
+ */
+const REBASED_REMOVALS: ReadonlySet<string> = new Set([
+  "definition.delete",
+  "definition.rename-from",
+  "definition.edit",
+  "definition.create",
+]);
+
+/**
+ * Tells the bases each managed-config record a user's edit committed: the
+ * user's own version stands from then on. A system rewrite of the record
+ * (a type upgrade, a migration) leaves the base, which the user never saw
+ * past.
+ */
+function noteCommitted(group: Group, options: CommitLogUnitOptions): void {
+  const bases = options.configEditBases;
+  if (
+    bases === undefined || group.partition.kind !== "config" ||
+    !inUserConfigEdit()
+  ) {
+    return;
+  }
+  for (const change of group.changes) {
+    const key = keyOfChange(change);
+    if (key === undefined) continue;
+    bases.committed(
+      options.namespace.toString(),
+      group.partition.toString(),
+      key,
+    );
+  }
 }
 
 /**

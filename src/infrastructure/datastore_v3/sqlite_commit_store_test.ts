@@ -45,6 +45,7 @@ import { DatastoreOwner } from "../../domain/datastore_v3/datastore_owner.ts";
 import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
 import {
   blobPut,
+  dataKey,
   deleteVersion,
   MODEL_TYPE,
   modelCommit,
@@ -684,6 +685,34 @@ Deno.test("SqliteCommitStore.dataHighWater: reads a partition another connection
   });
 });
 
+Deno.test("SqliteCommitStore.recordSha256: reads a record's digest as the file holds it, after another connection wrote (swamp-club#4097)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const reader = SqliteCommitStore.open(path);
+    const writer = SqliteCommitStore.open(path);
+    try {
+      await reader.append(await save(1));
+      assertEquals(
+        await reader.recordSha256("", modelPartition(), dataKey("a", 1)),
+        (await savePut("a", 1)).sha256,
+      );
+      assertEquals(
+        await reader.recordSha256("", modelPartition(), dataKey("a", 2)),
+        undefined,
+      );
+      await writer.append(await save(2));
+      // The reader's cached partition is at seq 1; the file is at seq 2.
+      assertEquals(
+        await reader.recordSha256("", modelPartition(), dataKey("a", 2)),
+        (await savePut("a", 2)).sha256,
+      );
+    } finally {
+      await writer.close();
+      await reader.close();
+    }
+  });
+});
+
 Deno.test("SqliteCommitStore: a stored reuse from before version-reused still rebuilds (swamp-club#3532)", async () => {
   await withTempDir(async (dir) => {
     const path = join(dir, "commits.db");
@@ -1289,6 +1318,26 @@ Deno.test("SqliteCommitStore.owner: a store from before owners migrates with non
     );
     // A swamp at schema 9 would write past a claim it cannot see.
     assertGreater(COMMIT_STORE_SCHEMA_VERSION, 9);
+  });
+});
+
+Deno.test("SqliteCommitStore: a store from schema 10 migrates to a schema a schema-10 swamp refuses as newer, since tombstones may expect a digest (swamp-club#4097)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    await (SqliteCommitStore.open(path)).close();
+    const db = new DatabaseSync(path);
+    try {
+      db.exec("PRAGMA user_version=10");
+    } finally {
+      db.close();
+    }
+    await (SqliteCommitStore.open(path)).close();
+    assertEquals(
+      rawRows(path, "PRAGMA user_version")[0].user_version,
+      COMMIT_STORE_SCHEMA_VERSION,
+    );
+    // A swamp at schema 10 would call a digest-expecting tombstone corrupt.
+    assertGreater(COMMIT_STORE_SCHEMA_VERSION, 10);
   });
 });
 

@@ -3393,17 +3393,95 @@ tombstoned.
 
 **Preconditions.** Only authored managed-config definitions and workflows
 carry them, so a concurrent edit or create from another checkout is refused
-(`expect-failed`) rather than silently overwritten. The refusal surfaces
-when the root commits, as `CommitRejectedError`. Its message names the
-record key and the partition, so it is not wrapped while v3 is dormant; the
-user-facing wording belongs to the opt-in. Two limits:
+(`expect-failed`) rather than silently overwritten. A create expects the
+key absent and an edit the replaced bytes' digest. A delete expects nothing
+from the repository, so a local file out of step with the store stays
+deletable; a user's delete of a definition another checkout changed expects
+the version the user started from (below; a tombstone may expect `present`
+or a digest since commit store schema 11, swamp-club#4097).
 
-- A tombstone can only expect `present`, so a move from a legacy key cannot
-  detect a stale edit of the file it replaces.
+**The version an edit started from (swamp-club#4097).** The repository reads
+its prior after the command's catch-up, which has already written another
+member's change over the checkout's file, so that prior would let a stale
+edit through: two checkouts load `deploy`, A saves, and B's later save
+expects A's bytes and replaces them. So each checkout keeps its
+`ConfigEditBases` in the read model's state (`config_edit_bases`, state
+schema 9): for every managed-config record a catch-up rewrote or removed
+with another writer's bytes, the digest the checkout's file held before
+(`SqliteReadModel` reads it just before it writes or removes the file, in
+the catch-up's transaction). Only the first commit in a catch-up that
+changes a record's bytes counts, since a later one replaces a version the
+catch-up itself wrote; a commit that leaves the bytes as they are (the
+checkout's own, replayed by its next command), a file the guard keeps, and
+a record the checkout held no file for record nothing, so a freshly joined
+checkout's edits start from the head. The first recorded base wins. A base holds
+across commands, a reset included, until the user loads the definition
+(`behavior`/`model`, `workflow` or `vault get`, or an editor-mode `edit`,
+which opens the checkout's current file: `markConfigLoaded`) or a user's
+edit in the checkout commits the record (a system rewrite leaves
+it), so retrying a refused edit unchanged is
+refused again, and a command in between that reads something else does not
+move the base. Inside a user's edit or delete (`runAsUserConfigEdit`, opened
+by the CLI's `behavior`/`model`, `workflow` and `vault` edit and delete or
+remove commands), the commit-log unit replaces a `definition.edit` put's expectation, or
+gives a `definition.delete` tombstone one, with that base. Outside it
+(a type upgrade's rewrite, a migration, an adoption, serve's own handlers)
+the save-time prior stands: those writes have no version a user started
+from, and serve's files are always the head. A rename's or move's
+tombstone of the old key expects the base too.
+
+The unit commits each partition on its own, so a refusal at commit comes
+after the command's other partitions landed: a behavior delete removes its
+outputs and data, and a workflow delete its runs, before the definition's
+tombstone. So every user delete, and every edit whose content came on stdin, first
+checks its target (`assertConfigEditCurrent`, `startConfigEdit`,
+`CommitLogEngine.staleConfigEdits`): a base of
+the definition's partition that is no longer the commit store's version
+refuses the command with `config_edit_conflict` before it changes
+anything; a rename then never creates its new name.
+
+The extension lockfile's put expects the lockfile record the commit store
+held when the transaction hydrated (`CommitLogEngine.storedVersion`,
+`SqliteCommitStore.recordSha256`; not the read model, which applies this
+process's own earlier commits only at its next catch-up, nor the checkout's
+file, which may be out of step), then each version the transaction
+published. It is a race check: a
+lockfile change merges entries into the caught-up file, so only a change
+another checkout landed meanwhile is refused, and the transaction records
+the change as unpublished for the next extension command to replay.
+
+A refusal of any of these is the user's error `config_edit_conflict`
+(`ConfigEditConflictError`, `configEditConflictOf`), translated where it is
+shown: the CLI's error output (log mode: one line; `--json`: `code` and
+`conflicts`, each `{kind, name?, key, changedBy?, changedAt?}`) and serve's
+reply for a write whose commit failed (`replicationErrorForClient`). It
+names the definition (or the lockfile), who changed it (the commit's
+principal, else its writer's host: solo commits carry no principal) and
+when, from the last 200 commits of the partition or serve's
+`precondition_failed` reply, and says how to go on: load it again,
+re-apply the change and save again, or for the lockfile pull and retry.
+The refused edit's file is put back by the dropped-work recovery
+(swamp-club#3553).
+
+Limits:
+
+- A tombstone of a move from a legacy key expects only `present`, so it
+  cannot detect a stale edit of the file it replaces.
 - A local file out of step with the store (an editor-mode edit, a hand
   edit, a write by a hook-less command) makes the next save's precondition
   fail until the read model catches the file up. A rename of a name v3
-  never saw lands its first commit and refuses its second.
+  never saw lands its first commit and refuses its second. Editor-mode
+  edits on v3 are written to the live file and never committed.
+- A base is set only by a catch-up. An edit prepared from a file older
+  than the checkout's (copied out before an earlier `get`, say) starts from
+  the version the checkout last showed, not from that file.
+- An edit sent with `--server` reaches serve's own handler, whose base is
+  serve's file at save time: only a change another writer lands between
+  that read and the commit refuses it. Team members edit through
+  serve-mode checkouts (#3985), which keep their own base.
+- A delete forwarded to a serve older than schema 11 is refused by that
+  serve's parser and nothing is written: upgrade serve first.
+- v2 `managedConfig` has no preconditions: the last writer wins.
 
 Auto-definitions, evaluated definitions and workflows, and run snapshots
 carry none: every direct execution rewrites an auto-definition, and the
@@ -7198,7 +7276,7 @@ never relies on:
 | Unreachable after the request may have reached serve | outbox entry kept; the next recovery settles or re-sends it | 1 (may land) |
 | `401` | the `swamp auth server-login --server …` hint | 1 |
 | `409 stale_seq` | caught up and retried | — |
-| `409 precondition_failed` | serve's "changed by … at …" message, as a local expect-failed | 1 |
+| `409 precondition_failed` | `config_edit_conflict` for a managed-config definition or the lockfile (swamp-club#4097); otherwise serve's "changed by … at …" message, as a local expect-failed | 1 |
 | `409 datastore_v3_writer_fenced` | the same code | 1 |
 | `503` storage unreachable, writer busy, replication | the same code (serve now answers storage-unreachable and writer-busy as 503, not 500) | 75 |
 | `403` | serve's message and the op's index | 1 |
@@ -7234,13 +7312,16 @@ than dropped as `head-moved`.
   - `swamp datastore lock status` in a checkout does not show serve-held
     locks.
   - An outbox entry re-sent by a later recovery is sent outside any lock.
-- Behavior definitions are repository files (`models/`), not datastore
-  records. Serve judges a forwarded run's step outputs against its own
-  checkout's definitions, so a workflow run on a behavior defined only in the
-  client is refused (`403`). The run serve already recorded then stays
-  `running` until serve's next start marks it `interrupted`. Teams sync
-  `models/` to serve's checkout (git) first, until per-file config moves
-  through serve (`p5-config`).
+- Without `managedConfig`, behavior definitions are repository files
+  (`models/`), not datastore records. Serve judges a forwarded run's step
+  outputs against its own checkout's definitions, so a workflow run on a
+  behavior defined only in the client is refused (`403`). The run serve
+  already recorded then stays `running` until serve's next start marks it
+  `interrupted`. Teams run with `managedConfig`, whose definitions,
+  workflows, vault configs and lockfile are datastore records every member
+  shares and whose edits are refused when stale (`config_edit_conflict`,
+  swamp-club#4097); without it, teams sync `models/` to serve's checkout
+  (git) first.
 - Per-file config and the live feed are `p5-config` and `p5-feed`.
 - `swamp datastore claim` and `release` follow in "Team mode: claiming a
   datastore".

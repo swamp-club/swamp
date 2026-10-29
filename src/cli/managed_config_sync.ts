@@ -476,7 +476,12 @@ export function buildV3ManagedLockfileTransaction(
     lock: getRegisteredLockKeys().includes(GLOBAL_LOCK_KEY)
       ? HELD_LOCK
       : coordinatedGlobalLock(datastoreConfig),
-    sync: createV3LockfileSync({ markDirty, lockfilePath, configBase }),
+    sync: createV3LockfileSync({
+      markDirty,
+      lockfilePath,
+      configBase,
+      commitLog: repoContext.commitLog,
+    }),
     pending: createRepoPendingLockfileStore(repoDir),
   });
 }

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { markConfigLoaded } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
@@ -101,9 +102,17 @@ export const workflowGetCommand = withRemoteOptions(
 
   const graph = Boolean(options.graph);
   const renderer = createWorkflowGetRenderer(cliCtx.outputMode, { graph });
+  const handlers = renderer.handlers();
   await consumeStream(
     workflowGet(ctx, deps, workflowIdOrName),
-    renderer.handlers(),
+    {
+      ...handlers,
+      // An edit of it now starts from this version (swamp-club#4097).
+      completed: (e) => {
+        markConfigLoaded(repoContext, "workflow", e.data.name);
+        return handlers.completed(e);
+      },
+    },
   );
 
   cliCtx.logger.debug("Workflow get command completed");

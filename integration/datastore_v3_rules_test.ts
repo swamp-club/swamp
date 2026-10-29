@@ -345,6 +345,22 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/libswamp/datastores/claim.ts -> src/domain/datastore_v3/datastore_owner.ts",
   "src/serve/connection.ts -> src/domain/datastore_v3/datastore_owner.ts",
   "src/serve/handlers/admin_handlers.ts -> src/domain/datastore_v3/datastore_owner.ts",
+  // swamp-club#4097: the CLI's edit and delete commands run as a user's
+  // config edit, so an edit or a delete expects the version the user
+  // started from; get marks a definition loaded; the lockfile publish asks
+  // the commit log for the version it replaces; the error renderer and
+  // serve answer a refused stale edit as config_edit_conflict.
+  "src/cli/commands/model_delete.ts -> src/infrastructure/datastore_v3/config_edit_scope.ts",
+  "src/cli/commands/model_edit.ts -> src/infrastructure/datastore_v3/config_edit_scope.ts",
+  "src/cli/commands/vault_edit.ts -> src/infrastructure/datastore_v3/config_edit_scope.ts",
+  "src/cli/commands/vault_remove.ts -> src/infrastructure/datastore_v3/config_edit_scope.ts",
+  "src/cli/commands/workflow_delete.ts -> src/infrastructure/datastore_v3/config_edit_scope.ts",
+  "src/cli/commands/workflow_edit.ts -> src/infrastructure/datastore_v3/config_edit_scope.ts",
+  "src/infrastructure/persistence/repo_unit_of_work.ts -> src/domain/datastore_v3/config_edit_conflict.ts",
+  "src/infrastructure/persistence/repo_unit_of_work.ts -> src/domain/datastore_v3/op.ts",
+  "src/infrastructure/persistence/repo_unit_of_work.ts -> src/domain/datastore_v3/partition_key.ts",
+  "src/presentation/output/error_output.ts -> src/domain/datastore_v3/config_edit_conflict.ts",
+  "src/serve/handlers/shared.ts -> src/domain/datastore_v3/config_edit_conflict.ts",
 ];
 
 Deno.test("datastore v3: no production code outside v3 imports it", async () => {
@@ -395,7 +411,7 @@ const CHECKPOINT = /wal_(?:auto)?checkpoint/i;
 /** v3 files that mention a checkpoint pragma, as `file:line`. */
 const PINNED_V3_CHECKPOINTS: readonly string[] = [
   // Auto-checkpoint off on a copy Litestream replicates (swamp-club#3935).
-  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2451",
+  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2482",
 ];
 
 Deno.test("datastore v3: no v3 code forces or tunes a WAL checkpoint", async () => {

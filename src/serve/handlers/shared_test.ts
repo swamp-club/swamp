@@ -34,6 +34,8 @@ import {
   RunPartlyCommittedError,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { V3ReplicationError } from "../../domain/datastore_v3/litestream_replication.ts";
+import { PartitionsRefusedError } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import { partitionOf } from "../../domain/datastore_v3/partition_key.ts";
 import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
 import { gunzipSync } from "node:zlib";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
@@ -2067,6 +2069,36 @@ Deno.test("confirmRequest: a commit that fails after a held success sends exactl
     (sent[0] as { error: { code: string } }).error.code,
     "datastore_v3_writer_fenced",
   );
+});
+
+Deno.test("confirmRequest: a managed-config edit another writer's change refused at commit answers config_edit_conflict, not the held success (swamp-club#4097)", async () => {
+  const { socket, sent } = messageSocket();
+  const refusal = new PartitionsRefusedError([{
+    partition: partitionOf({
+      kind: "config",
+      definitionKind: "workflow",
+      name: "deploy",
+    }),
+    reason: "expect-failed",
+    message: "Record config/workflows/workflow-deploy.yaml is not sha256 aa",
+    key: "config/workflows/workflow-deploy.yaml",
+    changedBy: "alice",
+    changedAt: "2026-10-29T10:00:00.000Z",
+    versions: [],
+  }], []);
+  await assertRejects(() =>
+    confirmRequest({ holdRepliesUntilCommitted: true }, socket, "r1", () => {
+      send(socket, { type: "done", id: "r1" });
+      return Promise.reject(refusal);
+    })
+  );
+  assertEquals(sent.map((m) => m.type), ["error"]);
+  const { code, message } = (sent[0] as {
+    error: { code: string; message: string };
+  }).error;
+  assertEquals(code, "config_edit_conflict");
+  assertStringIncludes(message, "Workflow 'deploy' was changed by alice");
+  assertStringIncludes(message, "2026-10-29T10:00:00.000Z");
 });
 
 Deno.test("confirmRequest: an error reply goes out without waiting for a confirmation", async () => {

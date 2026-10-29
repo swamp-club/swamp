@@ -71,6 +71,9 @@ import {
   ChunkCollector,
 } from "../../domain/datastore_v3/chunk_collector.ts";
 import { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
+import type { ConfigEditBases } from "../../domain/datastore_v3/config_edit_bases.ts";
+import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
+import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import {
   type CommitOutbox,
   COMPACTED_TXN_RETENTION_MS,
@@ -142,6 +145,7 @@ import { SqliteCommitOutbox } from "./sqlite_commit_outbox.ts";
 import { registerOwnCommitWriter } from "./commit_outbox_recovery.ts";
 import { localProcess } from "./process_identity.ts";
 import { getSwampLogger } from "../logging/logger.ts";
+import { recordLastChange } from "./record_last_change.ts";
 import { readModelStateDir, v3CatalogPath } from "./record_path_guard.ts";
 import { reconcileRefusedRuns } from "./refused_run_records.ts";
 import {
@@ -928,6 +932,9 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     // indexed.
     recordsChanged: (ns, keys) =>
       ns === namespace ? dropRunIndexEntries(repoDir, keys) : Promise.resolve(),
+    // What a user's edit of a managed-config record started from
+    // (swamp-club#4097).
+    writerInstance: writer.instance,
   });
   // One sink for every engine on this handle: units serialize appends to a
   // partition per sink, so contexts that share the handle queue behind each
@@ -1025,6 +1032,13 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       }
       for (const dir of versionDirs) dirs.add(dir);
     },
+  };
+  // The read model's bases, for a user's edit (swamp-club#4097).
+  const configEditBases: ConfigEditBases = {
+    baseOf: (ns, partition, key) =>
+      readModel.configBase(ns, PartitionKey.parse(partition), key),
+    committed: (ns, partition, key) =>
+      readModel.clearConfigBases(ns, PartitionKey.parse(partition), key),
   };
   const unitNamespace = namespace === ""
     ? SOLO_NAMESPACE
@@ -1176,6 +1190,14 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         writer,
         signal: lifetime.signal,
         tracker,
+        configEditBases,
+        lastChangeOf: (partition: PartitionKey, key: string) =>
+          recordLastChange(
+            commitStore,
+            unitNamespace.toString(),
+            partition,
+            key,
+          ),
       };
       return {
         openUnit(): UnitOfWork {
@@ -1210,6 +1232,48 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
             if (error instanceof PartitionsRefusedError) return "refused";
             throw error;
           }
+        },
+        async storedVersion(partition, key) {
+          // The commit store, not the read model, which applies this
+          // process's own commits only at its next catch-up.
+          const sha256 = await commitStore.recordSha256(
+            unitNamespace.toString(),
+            partition,
+            RecordKey.create(key),
+          );
+          return sha256 === undefined ? "absent" : { sha256 };
+        },
+        async staleConfigEdits(partition) {
+          const ns = unitNamespace.toString();
+          const stale = [];
+          for (const { key, base } of readModel.configBases(ns, partition)) {
+            if (base === "absent") continue;
+            const head = await commitStore.recordSha256(
+              ns,
+              partition,
+              RecordKey.create(key),
+            );
+            if (head === base.sha256) continue;
+            const last = await recordLastChange(
+              commitStore,
+              ns,
+              partition,
+              key,
+            );
+            stale.push({
+              key,
+              ...(last.changedBy === undefined
+                ? {}
+                : { changedBy: last.changedBy }),
+              ...(last.changedAt === undefined
+                ? {}
+                : { changedAt: last.changedAt }),
+            });
+          }
+          return stale;
+        },
+        configLoaded(partition) {
+          readModel.clearConfigBases(unitNamespace.toString(), partition);
         },
         committedBeforeThrowing(error: unknown): boolean {
           return wasThrownAfterCommit(error);

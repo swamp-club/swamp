@@ -122,6 +122,29 @@ Deno.test("tombstoneOp: names one key and an optional 'present' expect", () => {
   );
 });
 
+Deno.test("tombstoneOp: may expect the digest of the version it removes (swamp-club#4097)", async () => {
+  const intent = modelIntent({ kind: "data.delete", name: "vpc", version: 1 });
+  const sha256 = "a".repeat(64);
+  const op = tombstoneOp({ intent, key: KEY, expect: { sha256 } });
+  assertEquals(op.toJSON().expect, { sha256 });
+  assertEquals(
+    (await opFromJSON(JSON.parse(JSON.stringify(op)))).toJSON(),
+    op.toJSON(),
+  );
+  for (
+    const bad of [
+      { sha256: "A".repeat(64) },
+      { sha256: "abc" },
+      { sha256, extra: 1 },
+      "absent",
+    ]
+  ) {
+    assertThrows(() =>
+      tombstoneOp({ intent, key: KEY, expect: bad as { sha256: string } })
+    );
+  }
+});
+
 Deno.test("dataVersionOp: keeps the parsed metadata and rejects invalid metadata", () => {
   const op = dataVersionOp({ key: KEY, metadata: metadata("vpc", 3) });
   assertEquals(op.metadata.version, 3);
