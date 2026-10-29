@@ -58,6 +58,7 @@ import {
   Definition,
 } from "../../domain/definitions/definition.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { DefinitionIdIndex } from "../../infrastructure/persistence/definition_id_index.ts";
 import type {
   DatastoreSyncOptions,
   DatastoreSyncService,
@@ -999,8 +1000,9 @@ Deno.test("handleModelOutputSearch and handleModelMethodHistorySearch: name hist
         ["kept", "kept"],
       );
       assertEquals(findByIdCalls, 0);
-      // One scan names the outputs, one authorizes them.
-      assertEquals(scans, 2);
+      // Without a definition index, one scan names the outputs and
+      // authorizes them (swamp-club#4141).
+      assertEquals(scans, 1);
 
       scans = 0;
       const historySocket = createMockSocket();
@@ -1021,7 +1023,155 @@ Deno.test("handleModelOutputSearch and handleModelMethodHistorySearch: name hist
         ["kept", "kept"],
       );
       assertEquals(findByIdCalls, 0);
-      assertEquals(scans, 2);
+      assertEquals(scans, 1);
+    } finally {
+      modelRegistry.invalidateType(EDIT_TEST_TYPE);
+    }
+  });
+});
+
+Deno.test("handleModelOutputSearch and handleModelMethodHistorySearch: with a definition index, read each definition owning an output once and no other (swamp-club#4141)", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const kept = await saveEditModel(definitionRepo, "kept");
+    const hidden = await saveEditModel(definitionRepo, "hidden");
+    const unused = [
+      await saveEditModel(definitionRepo, "unused-1"),
+      await saveEditModel(definitionRepo, "unused-2"),
+    ];
+    const save = (definition: Definition, startedAt: string) =>
+      outputRepo.save(
+        EDIT_TEST_TYPE,
+        "execute",
+        ModelOutput.create({
+          definitionId: definition.id,
+          methodName: "execute",
+          status: "succeeded",
+          startedAt: new Date(startedAt),
+          provenance: {
+            definitionHash: "h",
+            modelVersion: "1",
+            triggeredBy: "manual",
+          },
+        }),
+      );
+    await save(kept, "2026-01-01T00:00:00Z");
+    await save(kept, "2026-01-02T00:00:00Z");
+    await save(hidden, "2026-01-03T00:00:00Z");
+
+    const reads = new Map<string, number>();
+    const readFile = definitionRepo.readDefinitionFile.bind(definitionRepo);
+    definitionRepo.readDefinitionFile = (path, segments, isSymlink) => {
+      reads.set(path, (reads.get(path) ?? 0) + 1);
+      return readFile(path, segments, isSymlink);
+    };
+    let scans = 0;
+    const scanAll = definitionRepo.findAllIncludingAutoGlobal.bind(
+      definitionRepo,
+    );
+    definitionRepo.findAllIncludingAutoGlobal = () => {
+      scans++;
+      return scanAll();
+    };
+    // Settled at once, so a request's check of the index relists nothing.
+    const definitionIndex = new DefinitionIdIndex(definitionRepo, {
+      racyWindowMs: 0,
+    });
+    await definitionIndex.begin();
+
+    const base = createPolicyEditCtx(dir, definitionRepo, [
+      grant({
+        actions: ["read"],
+        resource: { kind: "model", pattern: "kept" },
+      }),
+    ]);
+    const ctx: ConnectionContext = {
+      ...base,
+      definitionIndex,
+      repoContext: {
+        definitionRepo,
+        outputRepo,
+        workflowRepo: new YamlWorkflowRepository(dir),
+      } as unknown as ConnectionContext["repoContext"],
+    };
+    modelRegistry.register({
+      type: EDIT_TEST_TYPE,
+      version: "2026.01.01.1",
+      methods: {},
+    });
+    try {
+      const requests = [
+        (socket: WebSocket) =>
+          handleModelOutputSearch(
+            socket,
+            ctx,
+            "req-search",
+            new AbortController(),
+            EDITOR,
+            {},
+          ),
+        (socket: WebSocket) =>
+          handleModelMethodHistorySearch(
+            socket,
+            ctx,
+            "req-history",
+            new AbortController(),
+            EDITOR,
+            {},
+          ),
+      ];
+      for (const request of requests) {
+        reads.clear();
+        await withObservedSpans(async (spans) => {
+          const socket = createMockSocket();
+          await request(socket);
+          const [response] = frames(socket);
+          assertEquals(
+            response.payload.data.results.map((r: { modelName?: string }) =>
+              r.modelName
+            ),
+            ["kept", "kept"],
+          );
+
+          // Each definition owning an output is read once; one owning none
+          // is never read.
+          assertEquals(
+            Object.fromEntries(reads),
+            {
+              [definitionRepo.getPath(EDIT_TEST_TYPE, kept.id)]: 1,
+              [definitionRepo.getPath(EDIT_TEST_TYPE, hidden.id)]: 1,
+            },
+          );
+          for (const definition of unused) {
+            assertEquals(
+              reads.has(definitionRepo.getPath(EDIT_TEST_TYPE, definition.id)),
+              false,
+            );
+          }
+
+          // The names phase reads them, and authorization reuses its lookups.
+          const phase = (name: string) =>
+            findSpan(spans, `swamp.diagnostic.${name}`).attributes;
+          assertEquals(
+            phase("definition_names")["swamp.diagnostic.files_read"],
+            2,
+          );
+          assertEquals(
+            phase("authorization")["swamp.diagnostic.files_read"],
+            undefined,
+          );
+          assertEquals(
+            phase("authorization")["swamp.diagnostic.owner_lookups"],
+            3,
+          );
+          assertEquals(
+            phase("authorization")["swamp.diagnostic.owner_lookups_reused"],
+            3,
+          );
+        });
+      }
+      assertEquals(scans, 0);
     } finally {
       modelRegistry.invalidateType(EDIT_TEST_TYPE);
     }

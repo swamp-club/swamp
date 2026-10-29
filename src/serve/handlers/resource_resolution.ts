@@ -749,6 +749,18 @@ export class CanonicalResources {
   }
 
   /**
+   * The name of the first definition of `modelType` declaring `id`, primary
+   * definitions first, as a scan of every definition names it; undefined when
+   * none does. Looked up as the owners are, so naming a collection's items
+   * and then authorizing them reads each definition once (swamp-club#4141).
+   */
+  async modelName(id: string, modelType: string): Promise<string | undefined> {
+    const owners = await this.#definitionsById(id);
+    return owners.find((o) => o.type.normalized === modelType)?.definition
+      .name;
+  }
+
+  /**
    * A model definition a collection lists, as itself: the definition with
    * that id and name, or — when none has both — every definition with the
    * id, since a copy shares its id.
