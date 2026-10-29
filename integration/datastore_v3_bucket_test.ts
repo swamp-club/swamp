@@ -145,6 +145,7 @@ import { vaultAuditTrailCommand } from "../src/cli/commands/vault_audit_trail.ts
 import { vaultReadSecretCommand } from "../src/cli/commands/vault_read_secret.ts";
 import {
   commitCount,
+  killSidecarAtTeardown,
   SIDECAR_TESTS_IGNORED,
   TEST_TIMINGS,
 } from "./datastore_v3_litestream_helpers.ts";
@@ -886,10 +887,7 @@ async function withSidecar(
   } finally {
     await closeV3Datastores().catch(() => {});
     setV3ReplicationForTesting(undefined);
-    for (const pid of started) {
-      hostLitestreamProcesses.signal(pid, "SIGCONT");
-      hostLitestreamProcesses.signalGroup(pid, "SIGKILL");
-    }
+    for (const pid of started) killSidecarAtTeardown(pid);
   }
 }
 
