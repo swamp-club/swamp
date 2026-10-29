@@ -376,6 +376,8 @@ Deno.test("model method run: a read method refuses to publish over a version ano
 
     const error = await assertRejects(() => aRun, DataVersionConflictError);
     assertEquals(error.code, "datastore_data_version_conflict");
+    assertEquals(error.restored, true);
+    assertStringIncludes(error.message, "now holds the datastore's copy");
     // B's run also wrote version 1 of its summary reports.
     assertEquals(
       error.versions.map((v) => `${v.dataName}/${v.version}`).sort(),
@@ -415,8 +417,11 @@ Deno.test("model method run: a refusal whose restore is incomplete pushes nothin
     failLatestReads = true;
     resume();
 
-    await assertRejects(() => aRun, DataVersionConflictError);
+    const error = await assertRejects(() => aRun, DataVersionConflictError);
     failLatestReads = false;
+    assertEquals(error.restored, false);
+    assertStringIncludes(error.message, "could not all be read back");
+    assertStringIncludes(error.message, "swamp datastore sync --pull");
     assertEquals(remoteValue(c, 1), "from-b", "B's version is kept");
     assertEquals(remoteLatest(c), "1", "B's latest marker is kept");
     assert(

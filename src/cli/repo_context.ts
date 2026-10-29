@@ -4153,7 +4153,7 @@ export async function acquireModelLocks(
       } finally {
         catalogStore?.invalidate();
       }
-      conflict = new DataVersionConflictError(foreign);
+      conflict = new DataVersionConflictError(foreign, { restored });
       // A file the restore could not put back is still marked dirty, and
       // this push would delete or roll back the other clone's copy: push
       // nothing (swamp-club#3934).

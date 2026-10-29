@@ -877,28 +877,44 @@ export class ModelLockLostError extends UserError {
  * when another clone wrote a data version with the same number while the
  * run was unlocked (swamp-club#3934). The run numbered its versions from
  * this host's cache, so publishing them would overwrite the other clone's.
- * Those data names were discarded from this host, which now holds the
- * datastore's copy; the run's other versions were published.
+ * Those data names were discarded from this host, which then holds the
+ * datastore's copy, and the run's other versions were published. When the
+ * datastore's copy could not all be read back (`restored` false), nothing
+ * was published, and the message says how to fetch it before this host
+ * pushes again.
  *
  * Extends `UserError` so the message renders clean at the CLI error boundary.
  */
 export class DataVersionConflictError extends UserError {
   readonly versions: readonly WrittenVersion[];
+  /** Whether this host now holds the datastore's copy of those names. */
+  readonly restored: boolean;
 
-  constructor(versions: readonly WrittenVersion[]) {
+  constructor(
+    versions: readonly WrittenVersion[],
+    options: { restored?: boolean } = {},
+  ) {
     const names = versions.map((v) =>
       `${v.modelType}/${v.modelId} ${v.dataName} version ${v.version}`
     ).join(", ");
+    const restored = options.restored ?? true;
+    const outcome = restored
+      ? `published: it was discarded from this host, which now holds the ` +
+        `datastore's copy. Run the method again to write and publish it.`
+      : `published, and nothing else from this run was: it was discarded ` +
+        `from this host, but the datastore's copy could not all be read ` +
+        `back. Run 'swamp datastore sync --pull' to fetch it before ` +
+        `anything else in this repository pushes, then run the method ` +
+        `again to write and publish it.`;
     super(
       `Another swamp process, most likely another clone of this ` +
         `repository, wrote ${names} while this run was running, so this ` +
-        `run's data with the same version was not ` +
-        `published: it was discarded from this host, which now holds the ` +
-        `datastore's copy. Run the method again to write and publish it.`,
+        `run's data with the same version was not ${outcome}`,
       "datastore_data_version_conflict",
     );
     this.name = "DataVersionConflictError";
     this.versions = versions;
+    this.restored = restored;
   }
 }
 

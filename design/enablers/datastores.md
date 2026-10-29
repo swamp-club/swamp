@@ -8011,7 +8011,10 @@ refreshes its resource does. `methodRunLockMode`
   was uploaded by an earlier push and is published as usual. If the restore
   cannot put every discarded file and marker back, the push is skipped
   altogether: a file left removed is still marked dirty, and pushing it would
-  delete or roll back the other clone's copy. The CLI exits non-zero; serve,
+  delete or roll back the other clone's copy. The error then says so
+  (`restored: false`) and asks for `swamp datastore sync --pull` before
+  anything else pushes, since the names that failed keep their marks and a
+  later push from this host could still do that. The CLI exits non-zero; serve,
   which has answered its client before it publishes, logs it.
 - A run that wrote no data version takes no publish lock. When the CLI
   publish fails other than by a refusal (a lock timeout, an unreadable
