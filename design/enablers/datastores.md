@@ -8028,7 +8028,10 @@ refreshes its resource does. `methodRunLockMode`
   content is read back from the datastore over this host's copy, never
   removed: the run's write left it marked, and a push deletes the remote
   copy of a marked file missing here. If it cannot be read back, nothing is
-  pushed. The push then fails with
+  pushed, and the run's own such versions are recorded beside the deferred
+  ones, so the next lock finds them replaced again and reads their content
+  back before it pushes; a pull alone would not, since their metadata is
+  already current. The push then fails with
   `DataVersionConflictError` (`datastore_data_version_conflict`), which says
   this host now holds the datastore's copy. Because the cache holds what the
   datastore holds for the behavior under its lock, a push that walks a

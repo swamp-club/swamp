@@ -1066,3 +1066,44 @@ Deno.test("model method run: on a lazy cache a deferred version another clone al
     assertEquals(await pendingRecords(c.repoA), 0);
   }, { lazy: true });
 });
+
+Deno.test("model method run: on a lazy cache a conflicting read whose content cannot be read back pushes nothing and leaves it for the next lock (swamp-club#3934)", async () => {
+  await withClones(async (c) => {
+    let started!: () => void;
+    const aStarted = new Promise<void>((resolve) => started = resolve);
+    let resume!: () => void;
+    const bDone = new Promise<void>((resolve) => resume = resolve);
+    hooks = {
+      beforeWrite: async () => {
+        started();
+        await bDone;
+      },
+      // The publish's first remote read is the read-back of the replaced
+      // content.
+      afterWrite: () => {
+        c.remote.failNext("fetch", new Error("injected fetch failure"));
+        return Promise.resolve();
+      },
+    };
+    const aRun = runMethod(c.repoA, "observe", "from-a");
+    await aStarted;
+    await runMethod(c.repoB, "write", "from-b");
+    resume();
+
+    const error = await assertRejects(() => aRun, UserError);
+    assertEquals(error.code, "datastore_publish_failed");
+    assertEquals(remoteValue(c, 1), "from-b", "B's content is kept");
+    assert(
+      await pendingRecords(c.repoA) > 0,
+      "the replaced versions are kept for the next lock",
+    );
+
+    // The next locked run reads the content back before it pushes.
+    hooks = {};
+    await runMethod(c.repoA, "write", "from-a-write");
+    assertEquals(remoteValue(c, 1), "from-b");
+    assertEquals(remoteValue(c, 2), "from-a-write");
+    assertEquals(await localValue(c.repoA, c, 1), "from-b");
+    assertEquals(await pendingRecords(c.repoA), 0);
+  }, { lazy: true });
+});

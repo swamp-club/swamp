@@ -4365,27 +4365,43 @@ export async function acquireModelLocks(
       // it marked, and a push deletes the remote copy of a marked file that
       // is missing here (swamp-club#3934). Equal to the remote, the push
       // sends nothing for it.
+      const own = replaced.filter((w) => ownKeys.has(versionKey(w)));
+      const earlier = replaced.filter((w) => !ownKeys.has(versionKey(w)));
       if (custom.hydrationStrategy === "lazy") {
-        for (const w of replaced) {
-          await rehydrateContent(
-            join(
-              publishContext.unifiedDataRepo.getPath(
-                ModelType.create(w.modelType),
-                w.modelId,
-                w.dataName,
-                w.version,
+        try {
+          for (const w of replaced) {
+            await rehydrateContent(
+              join(
+                publishContext.unifiedDataRepo.getPath(
+                  ModelType.create(w.modelType),
+                  w.modelId,
+                  w.dataName,
+                  w.version,
+                ),
+                "raw",
               ),
-              "raw",
-            ),
-            syncService,
-            cachePath,
-            custom.namespace,
-          );
+              syncService,
+              cachePath,
+              custom.namespace,
+            );
+          }
+        } catch (error) {
+          // The content left beside the other clone's metadata is still
+          // marked, and nothing would read it back again: the next pull
+          // finds the metadata current. Record the run's own such versions
+          // (an earlier run's keep their records, since nothing is
+          // settled), so the next lock finds them replaced and reads their
+          // content back before it pushes.
+          try {
+            await recordPendingPublish(cachePath, own);
+          } catch (recordError) {
+            logger
+              .warn`Recording the versions whose content could not be read back failed: ${recordError}`;
+          }
+          throw error;
         }
       }
       catalogStore?.invalidate();
-      const own = replaced.filter((w) => ownKeys.has(versionKey(w)));
-      const earlier = replaced.filter((w) => !ownKeys.has(versionKey(w)));
       if (earlier.length > 0) {
         const names = earlier.map((w) =>
           `${w.modelType}/${w.modelId} ${w.dataName} version ${w.version}`
