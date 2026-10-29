@@ -82,3 +82,22 @@ export function resolvePlacement(
       : undefined,
   };
 }
+
+/**
+ * Resolves the worker affinity key for a step from its workflow's and job's
+ * `affinity` settings. A job that sets `affinity: false` opts out of
+ * workflow-level affinity, so its steps are placed independently. Otherwise
+ * workflow-level affinity pins the step to the run's worker (also when the
+ * job sets `affinity: true`), and job-level affinity pins it to the job's.
+ */
+export function resolveAffinityKey(
+  workflowAffinity: boolean | undefined,
+  jobAffinity: boolean | undefined,
+  runId: string,
+  jobName: string,
+): string | undefined {
+  if (jobAffinity === false) return undefined;
+  if (workflowAffinity) return runId;
+  if (jobAffinity) return `${runId}:${jobName}`;
+  return undefined;
+}

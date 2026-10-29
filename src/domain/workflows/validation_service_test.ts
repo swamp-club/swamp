@@ -2490,6 +2490,77 @@ Deno.test("validate: no warning when workflow affinity is set with placement", a
   assertEquals(warning, undefined);
 });
 
+Deno.test("validate: warns when workflow affinity pins only jobs without placement", async () => {
+  const workflow = Workflow.create({
+    name: "affinity-only-opted-out-placement",
+    affinity: true,
+    jobs: [
+      Job.create({
+        name: "local",
+        steps: [
+          Step.create({
+            name: "local-step",
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      }),
+      Job.create({
+        name: "remote",
+        affinity: false,
+        labels: { pool: "gpu" },
+        steps: [
+          Step.create({
+            name: "remote-step",
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const warning = results.find((r) =>
+    r.name === "affinity without placement at workflow level"
+  );
+  assertEquals(warning?.passed, true);
+  assertEquals(warning?.warning, true);
+});
+
+Deno.test("validate: no workflow affinity warning when a pinned job has placement beside an opted-out job", async () => {
+  const workflow = Workflow.create({
+    name: "affinity-mixed-opt-out",
+    affinity: true,
+    labels: { pool: "gpu" },
+    jobs: [
+      Job.create({
+        name: "pinned",
+        steps: [
+          Step.create({
+            name: "remote-step",
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      }),
+      Job.create({
+        name: "independent",
+        affinity: false,
+        steps: [
+          Step.create({
+            name: "other-remote-step",
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const warning = results.find((r) =>
+    r.name.includes("affinity without placement")
+  );
+  assertEquals(warning, undefined);
+});
+
 Deno.test("validate: warns when job affinity is set without placement", async () => {
   const workflow = Workflow.create({
     name: "job-affinity-no-placement",
@@ -2593,6 +2664,30 @@ Deno.test("validate: warns once across jobs when workflow affinity groups steps 
   assertStringIncludes(
     warnings[0].error!,
     "'deploy/push' (labels pool=worker and platform 'windows')",
+  );
+});
+
+Deno.test("validate: no mixed placement warning for a job that opts out of workflow affinity (swamp-club#4123)", async () => {
+  const workflow = Workflow.create({
+    name: "workflow-affinity-opt-out",
+    affinity: true,
+    labels: { pool: "worker" },
+    jobs: [
+      Job.create({
+        name: "build",
+        steps: [placedStep("compile")],
+      }),
+      Job.create({
+        name: "deploy",
+        affinity: false,
+        steps: [placedStep("push", { platform: "windows" })],
+      }),
+    ],
+  });
+
+  assertEquals(
+    mixedPlacementWarnings(await service.validate(workflow)).length,
+    0,
   );
 });
 

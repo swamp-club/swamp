@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { mergePlacementFields, resolvePlacement } from "./placement.ts";
+import {
+  mergePlacementFields,
+  resolveAffinityKey,
+  resolvePlacement,
+} from "./placement.ts";
 
 Deno.test("mergePlacementFields: both undefined returns undefined", () => {
   assertEquals(mergePlacementFields(undefined, undefined), undefined);
@@ -135,4 +139,27 @@ Deno.test("resolvePlacement: labels alone produces placement", () => {
     platform: undefined,
     queueTimeoutMs: undefined,
   });
+});
+
+Deno.test("resolveAffinityKey: resolves every workflow and job combination", () => {
+  const cases: Array<
+    [boolean | undefined, boolean | undefined, string | undefined]
+  > = [
+    [true, undefined, "run-1"],
+    [true, true, "run-1"],
+    [true, false, undefined],
+    [false, undefined, undefined],
+    [false, true, "run-1:build"],
+    [false, false, undefined],
+    [undefined, undefined, undefined],
+    [undefined, true, "run-1:build"],
+    [undefined, false, undefined],
+  ];
+  for (const [workflowAffinity, jobAffinity, expected] of cases) {
+    assertEquals(
+      resolveAffinityKey(workflowAffinity, jobAffinity, "run-1", "build"),
+      expected,
+      `workflow ${workflowAffinity}, job ${jobAffinity}`,
+    );
+  }
 });

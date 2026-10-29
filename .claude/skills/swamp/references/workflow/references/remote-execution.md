@@ -115,16 +115,18 @@ jobs:
 ```
 
 Workflow-level affinity scopes the pin to the entire run; job-level scopes it to
-the job. If the pinned worker disconnects or starts draining mid-group, steps
-fail with a `WorkerAffinityLostError` rather than silently re-dispatching — the
-co-location contract is preserved. The pin binds when the first step completes;
-before that, a first step that loses its worker without writing re-dispatches. A
-first step that fails for another reason (a method error, refused arguments)
-still binds the group to its worker, so the rest of the group runs there; only a
-lost worker fails the other steps. Validation warns when `affinity: true` is set
-without any placement fields (a no-op), and when placed steps in one affinity
-group declare different placement, since which step dispatches first (and so
-picks the worker) varies between runs.
+the job. A job sets `affinity: false` to opt out of workflow-level affinity —
+its steps are placed independently — while a job's `affinity: true` under
+workflow-level affinity keeps the run-wide pin. If the pinned worker disconnects
+or starts draining mid-group, steps fail with a `WorkerAffinityLostError` rather
+than silently re-dispatching — the co-location contract is preserved. The pin
+binds when the first step completes; before that, a first step that loses its
+worker without writing re-dispatches. A first step that fails for another reason
+(a method error, refused arguments) still binds the group to its worker, so the
+rest of the group runs there; only a lost worker fails the other steps.
+Validation warns when `affinity: true` is set without any placement fields (a
+no-op), and when placed steps in one affinity group declare different placement,
+since which step dispatches first (and so picks the worker) varies between runs.
 
 ## Remote-only mode
 

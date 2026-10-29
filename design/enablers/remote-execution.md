@@ -1421,7 +1421,10 @@ whole workflow to one worker is the single-worker special case.
 that scope to one worker. The first step picks a worker through normal
 label/platform matching, and later steps in the group are bound to it.
 Workflow-level affinity covers the whole run; job-level covers the job, and only
-forms its own group when the workflow sets no affinity.
+forms its own group when the workflow sets no affinity. A job that sets
+`affinity: false` opts out of workflow-level affinity and its steps are placed
+independently. `resolveAffinityKey` in `src/domain/workflows/placement.ts` holds
+this precedence.
 
 The pin narrows where a step may run but does not replace the step's own
 placement. A later step whose own `target`, `labels` or `platform` the pinned
