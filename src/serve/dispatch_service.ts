@@ -753,6 +753,9 @@ export class DispatchService {
         redactorSeeds: request.redactorSeeds,
       };
     }
+    // Placed on the sentinel form first, so a refusal comes before the
+    // version 5 frame reads any vault value.
+    place(request);
     const legacy = await request.legacyDelivery?.();
     // A version 5 frame's arguments hold values in place of sentinels; the
     // placer refuses one whose data-bearing text no longer matches. The

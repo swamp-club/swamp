@@ -37,7 +37,6 @@ import { scanShellPositions } from "./shell_context_scanner.ts";
 import {
   getQuoteContext,
   posixDataReference,
-  powerShellReference,
   VaultSecretBag,
 } from "./vault_secret_bag.ts";
 
@@ -108,7 +107,8 @@ const POWERSHELL_SINGLE_REFUSAL: RefusedDataPlacement = {
 // bash evaluates an expanded value inside arithmetic again, array subscripts
 // included, so a quoted reference there still runs a command substitution.
 const ARITHMETIC_REFUSAL: RefusedDataPlacement = {
-  where: "shell arithmetic, $(( ... )) or (( ... ))",
+  where:
+    "shell arithmetic ($(( )), (( )), $[ ], an array subscript or a substring offset)",
   why: "the shell evaluates an expanded value again as code, so a reference " +
     "does not keep it literal",
   fix:
@@ -128,6 +128,66 @@ export interface ShellDataPlacement {
    * one literal word it can only name a program, never run a script.
    */
   readonly wholeCommandIsData: boolean;
+}
+
+/** The index of the `close` matching the `open` before `from`, or the end. */
+function matching(
+  text: string,
+  from: number,
+  open: string,
+  close: string,
+): number {
+  let depth = 0;
+  for (let i = from; i < text.length; i++) {
+    if (text[i] === open) depth++;
+    else if (text[i] === close) {
+      if (depth === 0) return i;
+      depth--;
+    }
+  }
+  return text.length;
+}
+
+/**
+ * Spans of `command` that bash evaluates as an arithmetic expression after
+ * expansion, read from the text alone and regardless of quoting, so it errs
+ * toward more spans: `((...))` wherever it is written (`for((`, `while((`),
+ * `$[...]`, a subscript or substring offset inside `${...}`, and an array
+ * element assignment's subscript. The shell context scanner finds the
+ * plain `$(( ))` and `(( ))` forms too; this pass covers what its grammar
+ * does not.
+ */
+function bashArithmeticSpans(command: string): DataRange[] {
+  const spans: DataRange[] = [];
+  for (const m of command.matchAll(/\(\(/g)) {
+    const start = m.index + 2;
+    spans.push([start, matching(command, start, "(", ")")]);
+  }
+  for (const m of command.matchAll(/\$\[/g)) {
+    const start = m.index + 2;
+    spans.push([start, matching(command, start, "[", "]")]);
+  }
+  // ${name[subscript]} and ${name:offset:length}, but not ${name:-word}.
+  for (
+    const m of command.matchAll(
+      /\$\{[#!]?[A-Za-z_][A-Za-z0-9_]*(\[|:(?![-=+?]))/g,
+    )
+  ) {
+    const start = m.index + m[0].length;
+    spans.push([
+      start,
+      m[1] === "["
+        ? matching(command, start, "[", "]")
+        : matching(command, start, "{", "}"),
+    ]);
+  }
+  // name[subscript]= and name[subscript]+=, including after declare/local.
+  for (const m of command.matchAll(/[A-Za-z_][A-Za-z0-9_]*\[/g)) {
+    const start = m.index + m[0].length;
+    const end = matching(command, start, "[", "]");
+    if (/^\]\+?=/.test(command.slice(end, end + 3))) spans.push([start, end]);
+  }
+  return spans;
 }
 
 /** The parts of `ranges` in `command` that are data text, sentinels cut out. */
@@ -216,17 +276,22 @@ export function placeShellData(
   };
 
   const textOf = (i: number) => command.slice(pieces[i][0], pieces[i][1]);
+  const arithmeticSpans = dialect === "posix" ? bashArithmeticSpans(inert) : [];
+  const inArithmetic = (position: number) =>
+    arithmeticSpans.some(([s, e]) => position >= s && position < e);
   const references: (string | RefusedDataPlacement)[] = dialect === "posix"
     ? scanShellPositions(inert, positions).map(({ context, arithmetic }, i) => {
-      if (arithmetic) return ARITHMETIC_REFUSAL;
+      if (arithmetic || inArithmetic(positions[i])) return ARITHMETIC_REFUSAL;
       return posixDataReference(nameFor(textOf(i)), context) ??
         QUOTED_HEREDOC_REFUSAL;
     })
     : positions.map((position, i) => {
       const quote = getQuoteContext(inert, position);
-      return quote === "single"
-        ? POWERSHELL_SINGLE_REFUSAL
-        : powerShellReference(nameFor(textOf(i)), quote);
+      if (quote === "single") return POWERSHELL_SINGLE_REFUSAL;
+      // Braced inside double quotes, so word characters the author wrote
+      // right after the splice are not read as part of the name.
+      const name = nameFor(textOf(i));
+      return quote === "double" ? `\${env:${name}}` : `"$env:${name}"`;
     });
 
   const refused = references.find((reference) => typeof reference !== "string");

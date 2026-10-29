@@ -2967,3 +2967,33 @@ Deno.test("DispatchService: a refused placement fails the step before anything i
   assertEquals(h.transitions, []);
   assertEquals(h.dispatches.forWorker("w1"), []);
 });
+
+Deno.test("DispatchService: a worker gone before its frame is built sends the step back to the scheduler (swamp-club#3868)", async () => {
+  const h = createHarness({
+    workers: [
+      snapshot({ name: "w1", platform: "linux" }),
+      snapshot({ name: "w2", platform: "linux" }),
+    ],
+  });
+  // The first lookup of the chosen worker misses, as when it leaves the
+  // pool between the choice and the frame.
+  const get = h.pool.get.bind(h.pool);
+  let missed: string | undefined;
+  h.pool.get = (name: string) => {
+    if (missed === undefined) {
+      missed = name;
+      return undefined;
+    }
+    return get(name);
+  };
+  const platforms: string[] = [];
+  await h.service.executeRemote(stepRequest({
+    placement: { labels: {} },
+    placeArguments: (args, platform) => {
+      platforms.push(platform);
+      return args;
+    },
+  }));
+  assertEquals(platforms, ["linux"]);
+  assertEquals(h.dispatchCalls.length, 1);
+});

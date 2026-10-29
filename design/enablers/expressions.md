@@ -1569,7 +1569,8 @@ argument (its provenance), and the shell behavior places each data range of
 `__SWAMP_IN_<n>`, with the context-aware references a secret read through data
 gets: `"${__SWAMP_IN_0}"` unquoted, `${__SWAMP_IN_0}` inside double quotes, a
 break-out `'"${__SWAMP_IN_0}"'` inside single quotes, and `"$env:__SWAMP_IN_0"`
-on PowerShell. The text reaches the shell as one literal word.
+on PowerShell (`${env:__SWAMP_IN_0}` inside double quotes, so text written
+right after it is not read as part of the name). The text reaches the shell as one literal word.
 
 ```yaml
 # Caller input: name = "x; touch /tmp/p"
@@ -1599,12 +1600,16 @@ reference can expand or the text cannot be placed safely:
 
 - data in a here-document with a quoted delimiter (POSIX) or inside single
   quotes (PowerShell);
-- data inside shell arithmetic, `$(( ... ))` or `(( ... ))`, quoted or not:
-  bash evaluates an expanded value there again as an expression, and an array
-  subscript in it (`a[$(id)]`) runs a command substitution, so no reference
-  keeps the value literal;
-- a `run` that is nothing but data, which as one literal word could only name a
-  program;
+- data inside shell arithmetic, quoted or not: `$(( ... ))`, `(( ... ))`
+  (`for((`, `while((` included), `$[ ... ]`, an array subscript (`a[...]=`,
+  `${a[...]}`) or a substring offset (`${s:...}`). bash evaluates an expanded
+  value there again as an expression, and an array subscript in it
+  (`a[$(id)]`) runs a command substitution, so no reference keeps the value
+  literal. Swamp reads these spans from the text alone, so it may refuse one
+  that quoting makes harmless;
+- a `run` that is a single data value, which as one literal word could only
+  name a program (several values with only spaces between them are not
+  refused: see command position below);
 - a host whose shell swamp does not know, and a remote step dispatched to such
   a worker;
 - an `env` argument that is not an object of variables;

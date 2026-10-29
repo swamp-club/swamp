@@ -417,7 +417,8 @@ recorded `command` shows `"${__SWAMP_IN_0}"`, or the step fails with
 variable so it is never parsed as shell syntax. Authored text, including an
 input equal to its default, is unchanged. Refused: data inside a quoted
 here-document (`<<'EOF'`) or PowerShell single quotes, data inside shell
-arithmetic (`$(( ))`, `(( ))`), and a `run` that is nothing but data.
+arithmetic (`$(( ))`, `(( ))`, `for((`, `$[ ]`, array subscripts,
+`${s:offset}`), and a `run` that is nothing but data.
 
 **Solutions**:
 

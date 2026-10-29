@@ -73,16 +73,38 @@ Deno.test("placeShellData: data in shell arithmetic is refused, quoted or not", 
     ['echo "n=$(( ', ' + 1 ))"'],
     ["(( ", " > 3 )) && echo big"],
     ["echo $(( (", ") * 2 ))"],
+    ["for((i=0;i<", ";i++)); do echo $i; done"],
+    ["while((", ")); do break; done"],
+    ["echo $[ ", " + 1 ]"],
+    ["arr[", "]=x"],
+    ["declare -a arr; arr[", "]+=x"],
+    ['echo "${arr[', ']}"'],
+    ["echo ${s:", ":2}"],
+    ['echo "${#arr[', ']}"'],
   ];
   for (const [before, after] of cases) {
     const { command, ranges } = spliced(before, "a[$(id)]", after);
     const placed = placeShellData(command, ranges, [], "posix");
     assertEquals(
       placed.refused?.where,
-      "shell arithmetic, $(( ... )) or (( ... ))",
+      "shell arithmetic ($(( )), (( )), $[ ], an array subscript or a substring offset)",
       before,
     );
     assertEquals(placed.env, {});
+  }
+  // A default value and a glob bracket are words, not arithmetic.
+  for (
+    const [before, after, expected] of [
+      ["echo ${X:-", "}", 'echo ${X:-"${__SWAMP_IN_0}"}'],
+      ["ls file[", "].txt", 'ls file["${__SWAMP_IN_0}"].txt'],
+    ]
+  ) {
+    const { command, ranges } = spliced(before, "v", after);
+    assertEquals(
+      placeShellData(command, ranges, [], "posix").command,
+      expected,
+      before,
+    );
   }
   // Text after the arithmetic is back in its own context.
   const after = spliced('echo "$(( 1 + 1 )) ', "$(id)", '"');
@@ -98,10 +120,10 @@ Deno.test("placeShellData: PowerShell double and bare data expand, single quotes
     placeShellData(bare.command, bare.ranges, [], "powershell").command,
     'Write-Output "$env:__SWAMP_IN_0"',
   );
-  const double = spliced('Write-Output "a ', "$(calc)", '"');
+  const double = spliced('Write-Output "a ', "$(calc)", '_log.txt"');
   assertEquals(
     placeShellData(double.command, double.ranges, [], "powershell").command,
-    'Write-Output "a $env:__SWAMP_IN_0"',
+    'Write-Output "a ${env:__SWAMP_IN_0}_log.txt"',
   );
   const single = spliced("Write-Output 'a ", "x", "'");
   assertEquals(
