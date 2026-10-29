@@ -97,7 +97,9 @@ across matching workers (each worker runs one dispatch at a time).
 Add `affinity: true` at the **workflow** or **job** level to pin all remote
 steps in that scope to the same worker. The first step dispatched via normal
 label/platform matching picks the worker; every subsequent step in the group is
-forced to that worker via an internal target override.
+bound to that worker. The pin does not replace a step's own placement: a later
+step whose `target`, `labels` or `platform` the pinned worker does not meet
+fails with an `AffinityPlacementMismatchError` and is never sent elsewhere.
 
 ```yaml
 jobs:
@@ -119,7 +121,9 @@ before that, a first step that loses its worker without writing re-dispatches. A
 first step that fails for another reason (a method error, refused arguments)
 still binds the group to its worker, so the rest of the group runs there; only a
 lost worker fails the other steps. Validation warns when `affinity: true` is set
-without any placement fields (a no-op).
+without any placement fields (a no-op), and when placed steps in one affinity
+group declare different placement, since which step dispatches first (and so
+picks the worker) varies between runs.
 
 ## Remote-only mode
 

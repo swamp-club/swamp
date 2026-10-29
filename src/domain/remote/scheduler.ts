@@ -146,6 +146,37 @@ export function eligibleWorkers(
 }
 
 /**
+ * The first of a placement's own requirements a worker does not meet —
+ * its target, then each label, then its platform — or null when the
+ * worker meets them all. Ignores connection and status, which decide
+ * whether the worker can take a dispatch now, not whether it may.
+ */
+export function unmetPlacement(
+  placement: StepPlacement,
+  worker: SchedulableWorker,
+): string | null {
+  if (
+    placement.target !== undefined &&
+    worker.name !== placement.target &&
+    worker.instanceUuid !== placement.target
+  ) {
+    return `target '${placement.target}'`;
+  }
+  for (const [key, value] of Object.entries(placement.labels ?? {})) {
+    if (worker.labels[key] !== value) {
+      return `label ${key}=${value}`;
+    }
+  }
+  if (
+    placement.platform !== undefined &&
+    !matchesPlatform(worker, placement.platform)
+  ) {
+    return `platform '${placement.platform}'`;
+  }
+  return null;
+}
+
+/**
  * Decide where a step goes right now. `dispatch` names an eligible worker
  * with available capacity; `queue` means every eligible worker is at
  * capacity, or no connected worker matches the placement at all.

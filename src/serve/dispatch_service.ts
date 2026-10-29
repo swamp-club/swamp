@@ -72,6 +72,7 @@ import {
   type ScheduleDecision,
   scheduleStep,
   type StepPlacement,
+  unmetPlacement,
 } from "../domain/remote/scheduler.ts";
 import type {
   RemoteStepRequest,
@@ -498,11 +499,24 @@ export class DispatchService {
       }
       // A bound pin whose worker has left or is draining can never be
       // honoured, so the step fails rather than queueing until its timeout.
+      // The pin narrows where the step may run but does not replace its own
+      // placement: a pinned worker that does not meet it fails the step,
+      // which is never sent elsewhere, since that would break co-location.
       const assertPinHeld = () => {
-        if (
-          affinityKey && pinnedWorker && this.#pinnedWorkerLost(pinnedWorker)
-        ) {
+        if (!affinityKey || !pinnedWorker) return;
+        if (this.#pinnedWorkerLost(pinnedWorker)) {
           throw new WorkerAffinityLostError(pinnedWorker, affinityKey);
+        }
+        const unmet = unmetPlacement(
+          request.placement,
+          this.#gateway!.worker(pinnedWorker)!,
+        );
+        if (unmet !== null) {
+          throw new AffinityPlacementMismatchError(
+            pinnedWorker,
+            affinityKey,
+            unmet,
+          );
         }
       };
       assertPinHeld();
@@ -1495,6 +1509,25 @@ export class WorkerAffinityLostError extends Error {
     this.name = "WorkerAffinityLostError";
     this.workerName = workerName;
     this.affinityKey = affinityKey;
+  }
+}
+
+/** A step's affinity-pinned worker does not meet the step's own placement. */
+export class AffinityPlacementMismatchError extends Error {
+  readonly workerName: string;
+  readonly affinityKey: string;
+  readonly unmet: string;
+
+  constructor(workerName: string, affinityKey: string, unmet: string) {
+    super(
+      `Worker '${workerName}' pinned by affinity group '${affinityKey}' ` +
+        `does not meet this step's placement (${unmet}) — failing step ` +
+        `rather than running it on a worker it does not match`,
+    );
+    this.name = "AffinityPlacementMismatchError";
+    this.workerName = workerName;
+    this.affinityKey = affinityKey;
+    this.unmet = unmet;
   }
 }
 

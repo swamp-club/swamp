@@ -2515,6 +2515,139 @@ Deno.test("validate: warns when job affinity is set without placement", async ()
   assertEquals(warning?.warning, true);
 });
 
+function placedStep(
+  name: string,
+  placement: {
+    target?: string;
+    labels?: Record<string, string>;
+    platform?: string;
+  } = {},
+): Step {
+  return Step.create({
+    name,
+    task: StepTask.model("test-model", "run"),
+    ...placement,
+  });
+}
+
+function mixedPlacementWarnings(
+  results: Awaited<ReturnType<typeof service.validate>>,
+) {
+  return results.filter((r) =>
+    r.name.includes("affinity with mixed placement")
+  );
+}
+
+Deno.test("validate: warns when steps in a job affinity group declare different placement (swamp-club#4122)", async () => {
+  const workflow = Workflow.create({
+    name: "job-affinity-mixed",
+    jobs: [
+      Job.create({
+        name: "main",
+        affinity: true,
+        steps: [
+          placedStep("bad", { labels: { pool: "worker", slot: "a" } }),
+          placedStep("good", { labels: { pool: "worker" } }),
+        ],
+      }),
+    ],
+  });
+
+  const warnings = mixedPlacementWarnings(await service.validate(workflow));
+  assertEquals(warnings.length, 1);
+  assertEquals(warnings[0].name, "affinity with mixed placement in job 'main'");
+  assertEquals(warnings[0].warning, true);
+  assertStringIncludes(
+    warnings[0].error!,
+    "'bad' (labels pool=worker,slot=a)",
+  );
+  assertStringIncludes(warnings[0].error!, "'good' (labels pool=worker)");
+});
+
+Deno.test("validate: warns once across jobs when workflow affinity groups steps with different placement (swamp-club#4122)", async () => {
+  const workflow = Workflow.create({
+    name: "workflow-affinity-mixed",
+    affinity: true,
+    labels: { pool: "worker" },
+    jobs: [
+      Job.create({
+        name: "build",
+        affinity: true,
+        steps: [placedStep("compile")],
+      }),
+      Job.create({
+        name: "deploy",
+        affinity: true,
+        steps: [placedStep("push", { platform: "windows" })],
+      }),
+    ],
+  });
+
+  const warnings = mixedPlacementWarnings(await service.validate(workflow));
+  assertEquals(warnings.length, 1);
+  assertEquals(
+    warnings[0].name,
+    "affinity with mixed placement at workflow level",
+  );
+  assertStringIncludes(warnings[0].error!, "'build/compile'");
+  assertStringIncludes(
+    warnings[0].error!,
+    "'deploy/push' (labels pool=worker and platform 'windows')",
+  );
+});
+
+Deno.test("validate: no mixed placement warning when an affinity group agrees on placement (swamp-club#4122)", async () => {
+  const workflow = Workflow.create({
+    name: "affinity-agrees",
+    jobs: [
+      Job.create({
+        name: "main",
+        affinity: true,
+        labels: { pool: "worker", slot: "a" },
+        steps: [
+          placedStep("inherits"),
+          placedStep("reordered", { labels: { slot: "a", pool: "worker" } }),
+          Step.create({
+            name: "local",
+            task: StepTask.model("test-model", "run"),
+            labels: {},
+          }),
+        ],
+      }),
+      Job.create({
+        name: "no-affinity",
+        steps: [placedStep("elsewhere", { platform: "windows" })],
+      }),
+    ],
+  });
+
+  assertEquals(
+    mixedPlacementWarnings(await service.validate(workflow)).length,
+    0,
+  );
+});
+
+Deno.test("validate: no mixed placement warning when an affinity group's placement holds an expression (swamp-club#4122)", async () => {
+  const workflow = Workflow.create({
+    name: "affinity-expression",
+    jobs: [
+      Job.create({
+        name: "main",
+        affinity: true,
+        steps: [
+          placedStep("a", { labels: { pool: "${{ inputs.pool }}" } }),
+          placedStep("b", { labels: { pool: "worker" } }),
+        ],
+      }),
+    ],
+  });
+
+  assertEquals(
+    mixedPlacementWarnings(await service.validate(workflow)).length,
+    0,
+  );
+});
+
 // --- Guard expression type validation tests ---
 
 Deno.test("validate: fails when guard references boolean input", async () => {

@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { Job } from "./job.ts";
 import type { Workflow } from "./workflow.ts";
 import { workflowDeclaresInputs, WorkflowSchema } from "./workflow.ts";
 import { WorkflowSchemaError } from "./workflow_schema_error.ts";
@@ -640,7 +641,93 @@ export class DefaultWorkflowValidationService
       }
     }
 
+    // The runtime keys workflow affinity on the whole run, so job affinity
+    // only forms its own group when the workflow sets none.
+    const scopes = workflow.affinity
+      ? [{ where: "at workflow level", jobs: workflow.jobs }]
+      : workflow.jobs.filter((job) => job.affinity).map((job) => ({
+        where: `in job '${job.name}'`,
+        jobs: [job],
+      }));
+    for (const scope of scopes) {
+      const mixed = this.mixedAffinityPlacement(
+        workflow,
+        scope.jobs,
+        scope.jobs.length > 1,
+      );
+      if (mixed !== null) {
+        results.push(
+          WorkflowValidationResult.warning(
+            `affinity with mixed placement ${scope.where}`,
+            `Steps in this affinity group declare different placement: ` +
+              `${mixed}. The first step to dispatch picks the worker for ` +
+              `the whole group, and a later step whose placement that ` +
+              `worker does not meet fails — give every step in the group ` +
+              `placement one worker can meet, usually by setting it at the ` +
+              `workflow or job level`,
+          ),
+        );
+      }
+    }
+
     return results;
+  }
+
+  /**
+   * The placed steps of an affinity group grouped by their effective
+   * target, labels and platform, or null when they all agree. A group
+   * whose placement holds an expression is not compared, since its value
+   * is only known at run time.
+   */
+  private mixedAffinityPlacement(
+    workflow: Workflow,
+    jobs: readonly Job[],
+    qualifyStepNames: boolean,
+  ): string | null {
+    const stepsByPlacement = new Map<string, string[]>();
+    for (const job of jobs) {
+      const jobFields = mergePlacementFields(
+        workflow.placementFields,
+        job.placementFields,
+      );
+      for (const step of job.steps) {
+        const placement = resolvePlacement(
+          mergePlacementFields(jobFields, step.placementFields),
+        );
+        if (placement === undefined) continue;
+        const labels = Object.entries(placement.labels ?? {}).sort(
+          ([a], [b]) => a.localeCompare(b),
+        );
+        const values = [
+          placement.target,
+          placement.platform,
+          ...labels.flat(),
+        ].filter((value) => value !== undefined);
+        if (values.some((value) => containsExpression(value))) return null;
+        const description = [
+          placement.target !== undefined
+            ? `target '${placement.target}'`
+            : null,
+          labels.length > 0
+            ? `labels ${labels.map(([k, v]) => `${k}=${v}`).join(",")}`
+            : null,
+          placement.platform !== undefined
+            ? `platform '${placement.platform}'`
+            : null,
+        ].filter((part) => part !== null).join(" and ");
+        const name = qualifyStepNames
+          ? `'${job.name}/${step.name}'`
+          : `'${step.name}'`;
+        stepsByPlacement.set(description, [
+          ...(stepsByPlacement.get(description) ?? []),
+          name,
+        ]);
+      }
+    }
+    if (stepsByPlacement.size <= 1) return null;
+    return [...stepsByPlacement].map(([description, names]) =>
+      `${names.join(", ")} (${description})`
+    ).join("; ");
   }
 
   private validateWritesPlacement(

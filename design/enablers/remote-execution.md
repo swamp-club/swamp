@@ -1419,9 +1419,17 @@ whole workflow to one worker is the single-worker special case.
 
 `affinity: true` at the **workflow** or **job** level pins all remote steps in
 that scope to one worker. The first step picks a worker through normal
-label/platform matching, and later steps in the group are forced there by an
-internal target override. Workflow-level affinity covers the whole run;
-job-level covers the job.
+label/platform matching, and later steps in the group are bound to it.
+Workflow-level affinity covers the whole run; job-level covers the job, and only
+forms its own group when the workflow sets no affinity.
+
+The pin narrows where a step may run but does not replace the step's own
+placement. A later step whose own `target`, `labels` or `platform` the pinned
+worker does not meet fails with an `AffinityPlacementMismatchError` naming the
+unmet requirement. It is never sent to another worker, which would break
+co-location, and never run on a worker it does not match. Which step dispatches
+first can vary between runs, so validation warns when the placed steps of one
+group declare different placement.
 
 If the pinned worker disconnects or starts draining mid-group, between steps or
 during a dispatch, the step fails with a `WorkerAffinityLostError` rather than
