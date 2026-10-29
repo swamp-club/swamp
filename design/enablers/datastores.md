@@ -89,9 +89,11 @@ disks). It applies to the filesystem backend and to an extension datastore's
 local cache, and `datastore setup` keeps it across a re-run
 (`SETUP_PRESERVED_DATASTORE_KEYS`). Off, writes are as before swamp-club#4017:
 atomic, so they survive a process crash, but a power cut can publish an empty
-version (swamp-club#3955). The writing construction sites of
-`FileSystemUnifiedDataRepository` (the repository factory, the workflow
-execution service, and `data delete`, `rename`, `gc`, `prune` and
+version (swamp-club#3955). `swamp doctor datastores` reports such versions on a
+filesystem datastore, and `--repair` rolls each record back to its last readable
+version; see [data-query.md](data-query.md#unreadable-versions). The writing
+construction sites of `FileSystemUnifiedDataRepository` (the repository factory,
+the workflow execution service, and `data delete`, `rename`, `gc`, `prune` and
 `model delete`) pass the resolved setting; any other site keeps the
 constructor's default, off.
 

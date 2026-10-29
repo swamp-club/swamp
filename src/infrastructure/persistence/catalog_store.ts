@@ -96,6 +96,17 @@ export interface RenameForwardRow {
   renamed_to: string;
 }
 
+/** A row {@link CatalogStore.versionKeys} returns. */
+export interface CatalogVersionKey {
+  type_normalized: string;
+  model_id: string;
+  data_name: string;
+  version: number;
+  is_latest: number;
+  size: number;
+  model_name: string;
+}
+
 /** A row {@link CatalogStore.rowsCreatedBefore} returns. */
 export interface CatalogAgedRow {
   row_id: number;
@@ -972,6 +983,32 @@ export class CatalogStore {
       version: number;
     }[];
     return new Set(rows.map((r) => r.version));
+  }
+
+  /**
+   * The published (not pending) versions of one namespace, or of one
+   * (type, model, name) group of it, with the latest flag, size and model
+   * name of each. Rows of other namespaces are never read. For `swamp
+   * doctor datastores`, which checks each published version's files
+   * against the catalog (swamp-club#3955), and for the read warning's
+   * check that a version is published.
+   */
+  versionKeys(
+    namespace: string,
+    group?: { typeNormalized: string; modelId: string; dataName: string },
+  ): CatalogVersionKey[] {
+    const clauses = ["namespace = ?", "is_pending = 0"];
+    const params: string[] = [namespace];
+    if (group !== undefined) {
+      clauses.push("type_normalized = ?", "model_id = ?", "data_name = ?");
+      params.push(group.typeNormalized, group.modelId, group.dataName);
+    }
+    return this.db.prepare(
+      `SELECT type_normalized, model_id, data_name, version, is_latest, size,
+              model_name
+       FROM catalog WHERE ${clauses.join(" AND ")}
+       ORDER BY type_normalized, model_id, data_name, version`,
+    ).all(...params) as unknown as CatalogVersionKey[];
   }
 
   /**

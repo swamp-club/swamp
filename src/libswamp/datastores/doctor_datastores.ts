@@ -42,6 +42,7 @@ import {
   retentionCheckFailed,
   type RetentionCheckSummary,
 } from "./retention_check.ts";
+import type { UnreadableDataVersion } from "../../domain/data/unreadable_data_version.ts";
 
 /** Result of a single health check within the datastore doctor scan. */
 export interface DatastoreHealthFinding {
@@ -74,6 +75,75 @@ export interface CatalogCompletenessSummary {
   diskRecords: number;
   catalogRecords: number;
   shortfalls: ReadonlyArray<CatalogShortfall>;
+}
+
+/** How many unreadable versions the check's finding lists. */
+export const UNREADABLE_VERSIONS_LISTED = 20;
+
+/**
+ * Published data versions of a v2 filesystem datastore whose stored content
+ * cannot be read (swamp-club#3955). `findings` holds the first
+ * {@link UNREADABLE_VERSIONS_LISTED}; the counts hold them all.
+ */
+export interface UnreadableVersionsSummary {
+  unreadableVersions: number;
+  /** Records with at least one finding. */
+  records: number;
+  /** Records whose latest version cannot be read: they read as empty. */
+  darkRecords: number;
+  findings: ReadonlyArray<UnreadableDataVersion>;
+}
+
+/** The summary of a scan's findings. */
+export function summarizeUnreadableVersions(
+  findings: ReadonlyArray<UnreadableDataVersion>,
+): UnreadableVersionsSummary {
+  const records = new Set<string>();
+  const dark = new Set<string>();
+  for (const finding of findings) {
+    const key = recordKeyOf(finding);
+    records.add(key);
+    if (finding.latest) dark.add(key);
+  }
+  return {
+    unreadableVersions: findings.length,
+    records: records.size,
+    darkRecords: dark.size,
+    findings: findings.slice(0, UNREADABLE_VERSIONS_LISTED),
+  };
+}
+
+/** The one-line message of the unreadable_versions check. */
+export function unreadableVersionsFindingMessage(
+  summary: UnreadableVersionsSummary,
+): string {
+  if (summary.unreadableVersions === 0) {
+    return "Every published data version is readable";
+  }
+  const darkNames = [
+    ...new Set(
+      summary.findings.filter((f) => f.latest).map((f) =>
+        `${f.modelName || f.modelId}/${f.dataName}`
+      ),
+    ),
+  ];
+  const dark = summary.darkRecords > 0
+    ? ` ${summary.darkRecords} of them read as empty or not found, because their latest version is unreadable (${
+      firstOf(darkNames, summary.darkRecords)
+    }).`
+    : "";
+  return `${summary.unreadableVersions} published data version(s) in ` +
+    `${summary.records} record(s) cannot be read: their files are missing, ` +
+    `empty or short, as an unclean shutdown leaves them.${dark} ` +
+    `Run 'swamp doctor datastores --repair' to preview rolling each record ` +
+    `back to its last readable version.`;
+}
+
+/** The key of the record a finding belongs to. */
+function recordKeyOf(
+  finding: Pick<UnreadableDataVersion, "modelType" | "modelId" | "dataName">,
+): string {
+  return `${finding.modelType}\0${finding.modelId}\0${finding.dataName}`;
 }
 
 /** Foreign namespace objects detected under the repo's own namespace. */
@@ -211,6 +281,8 @@ export interface DoctorDatastoresData {
   vaultMismatchFindings: VaultMismatchFinding[];
   contaminationFinding?: NamespaceContaminationFinding;
   catalogCompletenessFinding?: CatalogCompletenessSummary;
+  /** Present when the unreadable-version check found some (swamp-club#3955). */
+  unreadableVersionsFinding?: UnreadableVersionsSummary;
   /** Present when the scan ran with `retention` (swamp-club#3473). */
   retentionFinding?: RetentionCheckSummary;
   /** Present when the v3 content check found something (swamp-club#3617). */
@@ -256,6 +328,14 @@ export interface DoctorDatastoresDeps {
    * measures always reports health.
    */
   checkCatalogCompleteness?: () => Promise<CatalogCompletenessSummary | null>;
+  /**
+   * Every published data version whose stored content cannot be read
+   * (swamp-club#3955); given only on a format 2 filesystem datastore, whose
+   * files are all local (a v3 checkout is covered by `checkV3Content`).
+   * Read-only, and like `checkCatalogCompleteness` it never issues a data
+   * query.
+   */
+  checkUnreadableVersions?: () => Promise<UnreadableDataVersion[]>;
   /**
    * Scans storage for items older than each kind's retention; run only with
    * the `retention` option. Read-only.
@@ -395,6 +475,7 @@ export async function* doctorDatastores(
       const vaultMismatchFindings: VaultMismatchFinding[] = [];
       let contaminationFinding: NamespaceContaminationFinding | undefined;
       let catalogCompletenessFinding: CatalogCompletenessSummary | undefined;
+      let unreadableVersionsFinding: UnreadableVersionsSummary | undefined;
       let retentionFinding: RetentionCheckSummary | undefined;
       let v3ContentFinding: V3ContentSummary | undefined;
       let v3KeptLineagesFinding: V3KeptLineageFinding[] | undefined;
@@ -480,6 +561,32 @@ export async function* doctorDatastores(
             message: `No foreign namespace data under "${config.namespace}"`,
           });
         }
+      }
+
+      // Unreadable data versions (swamp-club#3955). A scan that fails fails
+      // this check on its own; the other checks still report. It runs before
+      // the completeness walk, so the versions it reports are not warned
+      // about again when that walk reads them.
+      if (deps.checkUnreadableVersions) {
+        let summary: UnreadableVersionsSummary | undefined;
+        let failure: string | undefined;
+        try {
+          summary = summarizeUnreadableVersions(
+            await deps.checkUnreadableVersions(),
+          );
+        } catch (error) {
+          failure = error instanceof Error ? error.message : String(error);
+        }
+        if (summary !== undefined && summary.unreadableVersions > 0) {
+          unreadableVersionsFinding = summary;
+        }
+        healthFindings.push({
+          check: "unreadable_versions",
+          passed: summary !== undefined && summary.unreadableVersions === 0,
+          message: summary === undefined
+            ? `Could not check whether every published data version is readable: ${failure}`
+            : unreadableVersionsFindingMessage(summary),
+        });
       }
 
       // Catalog completeness check — the catalog is a local index, so this
@@ -671,6 +778,7 @@ export async function* doctorDatastores(
           vaultMismatchFindings,
           contaminationFinding,
           catalogCompletenessFinding,
+          ...(unreadableVersionsFinding ? { unreadableVersionsFinding } : {}),
           ...(retentionFinding ? { retentionFinding } : {}),
           ...(v3ContentFinding ? { v3ContentFinding } : {}),
           ...(v3KeptLineagesFinding ? { v3KeptLineagesFinding } : {}),
@@ -997,6 +1105,242 @@ export async function* repairUnmigratedData(
         },
         namespace,
       };
+    })(),
+  );
+}
+
+// ============================================================================
+// Repair: unreadable data versions (swamp-club#3955)
+// ============================================================================
+
+/** One record the repair rolls back to its last readable version. */
+export interface UnreadableRecordRepair {
+  modelType: string;
+  modelId: string;
+  modelName: string;
+  dataName: string;
+  /** The unreadable versions removed, highest first. */
+  removeVersions: number[];
+  /** Whether the record's latest marker names no version. */
+  markerUnreadable: boolean;
+  /**
+   * The version left as latest, or null when no readable version is left
+   * and the record is removed (or, when only its marker is unreadable,
+   * left as it is).
+   */
+  becomesLatest: number | null;
+  /**
+   * After the repair: whether the record is gone from disk. False when
+   * no readable version is left but a crashed write that was never
+   * published still is; the record then reads as absent. Absent in a
+   * preview.
+   */
+  removed?: boolean;
+}
+
+/** What the unreadable-version repair did. */
+export interface UnreadableVersionsRepairResult {
+  records: UnreadableRecordRepair[];
+  versionsRemoved: number;
+  /** Records left with no readable version, removed with their versions. */
+  recordsRemoved: number;
+  /**
+   * Versions the preview listed that were readable again by the time the
+   * repair held the lock, and were kept.
+   */
+  versionsKept: number;
+}
+
+export type RepairUnreadableVersionsEvent =
+  | { kind: "scanning" }
+  | { kind: "preview"; records: UnreadableRecordRepair[] }
+  | { kind: "step"; description: string }
+  | { kind: "completed"; result: UnreadableVersionsRepairResult }
+  | { kind: "not_needed" }
+  | { kind: "error"; error: SwampError };
+
+/** A record, as the repair's operations name it. */
+export interface UnreadableRecordKey {
+  modelType: string;
+  modelId: string;
+  dataName: string;
+}
+
+/** What the repair does under the affected models' locks. */
+export interface UnreadableVersionsRepairOps {
+  /** The same scan as the check, read again under the locks. */
+  scan: () => Promise<UnreadableDataVersion[]>;
+  /**
+   * Rolls one record back to its last readable version: removes
+   * `versions` (unreadable, published) through the repository's
+   * single-version delete, keeps the catalog from gaining a row for a
+   * crashed write that was never published, and points the latest marker
+   * at the highest readable version. With no versions it only resets the
+   * marker. Resolves with the version left latest (null when none can be
+   * read), and whether the record is gone from disk.
+   */
+  rollBack: (
+    record: UnreadableRecordKey,
+    versions: readonly number[],
+  ) => Promise<{ latest: number | null; removed: boolean }>;
+}
+
+export interface RepairUnreadableVersionsDeps {
+  /** The check's scan: read-only, no locks. */
+  scan: () => Promise<UnreadableDataVersion[]>;
+  /**
+   * Opens the repository for writing, takes the per-model locks of
+   * `models`, runs `fn`, and releases the locks in a `finally`, so a repair
+   * that fails never leaves a model locked against a running serve.
+   */
+  underModelLocks: <T>(
+    models: ReadonlyArray<{ modelType: string; modelId: string }>,
+    fn: (ops: UnreadableVersionsRepairOps) => Promise<T>,
+  ) => Promise<T>;
+}
+
+/** The records a scan's findings roll back, in the findings' order. */
+export function planUnreadableVersionRepairs(
+  findings: ReadonlyArray<UnreadableDataVersion>,
+): UnreadableRecordRepair[] {
+  const records = new Map<string, UnreadableRecordRepair>();
+  for (const finding of findings) {
+    const key = recordKeyOf(finding);
+    let record = records.get(key);
+    if (record === undefined) {
+      record = {
+        modelType: finding.modelType,
+        modelId: finding.modelId,
+        modelName: finding.modelName,
+        dataName: finding.dataName,
+        removeVersions: [],
+        markerUnreadable: false,
+        becomesLatest: finding.readableVersion,
+      };
+      records.set(key, record);
+    }
+    if (finding.version === null) record.markerUnreadable = true;
+    else record.removeVersions.push(finding.version);
+  }
+  for (const record of records.values()) {
+    record.removeVersions.sort((a, b) => b - a);
+  }
+  return [...records.values()];
+}
+
+/**
+ * Detect and repair published data versions whose stored content cannot be
+ * read, by rolling each affected record back to its last readable version.
+ *
+ * Without `confirm`, yields a preview: per record, the versions removed and
+ * the version left as latest. With `confirm`, takes the affected models'
+ * locks, scans again under them, and for each record the preview listed
+ * rolls back: its unreadable versions are removed highest first through
+ * the repository's single-version delete, the catalog gains no row for a
+ * crashed write that was never published, and the latest marker names the
+ * highest readable version. A version readable again by then is kept. Only
+ * content that is already unreadable is removed.
+ */
+export async function* repairUnreadableVersions(
+  _ctx: LibSwampContext,
+  deps: RepairUnreadableVersionsDeps,
+  options: { confirm: boolean },
+): AsyncGenerator<RepairUnreadableVersionsEvent> {
+  yield* withGeneratorSpan(
+    "swamp.doctor.datastores.repair.unreadable_versions",
+    {},
+    (async function* () {
+      yield { kind: "scanning" };
+
+      const planned = planUnreadableVersionRepairs(await deps.scan());
+      if (planned.length === 0) {
+        yield { kind: "not_needed" };
+        return;
+      }
+      if (!options.confirm) {
+        yield { kind: "preview", records: planned };
+        return;
+      }
+
+      const plannedVersions = planned.reduce(
+        (n, record) => n + record.removeVersions.length,
+        0,
+      );
+      yield {
+        kind: "step",
+        description:
+          `Rolling ${planned.length} record(s) back to their last readable version`,
+      };
+      const models = [
+        ...new Map(
+          planned.map((record) => [
+            `${record.modelType}\0${record.modelId}`,
+            { modelType: record.modelType, modelId: record.modelId },
+          ]),
+        ).values(),
+      ];
+      let versionsRemoved = 0;
+      try {
+        const result = await deps.underModelLocks(models, async (ops) => {
+          // Under the locks no write is in flight: what is unreadable now
+          // stays so until the repair is done.
+          const now = new Map(
+            planUnreadableVersionRepairs(await ops.scan()).map((record) => [
+              recordKeyOf(record),
+              record,
+            ]),
+          );
+          const repaired: UnreadableRecordRepair[] = [];
+          let recordsRemoved = 0;
+          for (const record of planned) {
+            const current = now.get(recordKeyOf(record));
+            if (current === undefined) continue;
+            const listed = new Set(record.removeVersions);
+            const removeVersions = current.removeVersions.filter((v) =>
+              listed.has(v)
+            );
+            const markerUnreadable = record.markerUnreadable &&
+              current.markerUnreadable;
+            if (removeVersions.length === 0 && !markerUnreadable) continue;
+            const { latest: becomesLatest, removed } = await ops.rollBack(
+              record,
+              removeVersions,
+            );
+            versionsRemoved += removeVersions.length;
+            if (removed) recordsRemoved++;
+            repaired.push({
+              ...current,
+              removeVersions,
+              markerUnreadable,
+              becomesLatest,
+              removed,
+            });
+          }
+          return { repaired, recordsRemoved };
+        });
+        yield {
+          kind: "completed",
+          result: {
+            records: result.repaired,
+            versionsRemoved,
+            recordsRemoved: result.recordsRemoved,
+            versionsKept: plannedVersions - versionsRemoved,
+          },
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        yield {
+          kind: "error",
+          error: {
+            code: "unreadable_versions_repair_failed",
+            message: `Could not roll back the unreadable data versions: ` +
+              `${message}. ${versionsRemoved} unreadable version(s) were ` +
+              `removed before the failure. Run 'swamp doctor datastores ` +
+              `--repair' again to preview what is left.`,
+            cause: err instanceof Error ? err : undefined,
+          },
+        };
+      }
     })(),
   );
 }

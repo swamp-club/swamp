@@ -36,8 +36,14 @@ import {
   createPreV3RecordsRepairRenderer,
   createRepairDatastoresRenderer,
   createUnmigratedDataRepairRenderer,
+  createUnreadableVersionsRepairRenderer,
   DatastoreRepairJsonReport,
+  unreadableVersionsDetailLines,
 } from "./doctor_datastores.ts";
+import type {
+  UnreadableRecordRepair,
+  UnreadableVersionsSummary,
+} from "../../libswamp/datastores/doctor_datastores.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { RetentionCheckSummary } from "../../libswamp/datastores/retention_check.ts";
 
@@ -456,6 +462,7 @@ Deno.test("DatastoreRepairJsonReport: the json repair renderers record their sta
       namespace: "team",
       directories: ["data"],
     },
+    unreadableVersions: null,
     catalog: { status: "catalog_not_needed" },
     duplicateLatest: { status: "duplicate_latest_preview", duplicateCount: 2 },
     contamination: null,
@@ -471,8 +478,185 @@ Deno.test("DatastoreRepairJsonReport: log mode renderers leave the report empty 
   assertStringIncludes(stripAnsiCode(printed), "No namespace contamination");
   assertEquals(JSON.parse(captureStdout(() => report.print())), {
     unmigrated: null,
+    unreadableVersions: null,
     catalog: null,
     duplicateLatest: null,
     contamination: null,
   });
+});
+
+// --- swamp-club#3955: unreadable data versions ---
+
+const UNREADABLE: UnreadableVersionsSummary = {
+  unreadableVersions: 3,
+  records: 2,
+  darkRecords: 1,
+  findings: [
+    {
+      modelType: "@test/spec",
+      modelId: "m-1",
+      modelName: "spec",
+      dataName: "state",
+      version: 3,
+      reason: "metadata_empty",
+      latest: true,
+      readableVersion: 2,
+    },
+    {
+      modelType: "@test/spec",
+      modelId: "m-1",
+      modelName: "",
+      dataName: "journal",
+      version: null,
+      reason: "marker_unreadable",
+      latest: true,
+      readableVersion: 4,
+    },
+  ],
+};
+
+Deno.test("unreadableVersionsDetailLines: names each version or marker, marks the latest, counts the rest and points at --repair (swamp-club#3955)", () => {
+  const out = stripAnsiCode(
+    unreadableVersionsDetailLines(UNREADABLE).join("\n"),
+  );
+  assertStringIncludes(out, "Unreadable data versions:");
+  assertStringIncludes(
+    out,
+    "spec/state version 3 (latest): its metadata.yaml is empty",
+  );
+  assertStringIncludes(out, "m-1/journal latest marker (latest)");
+  assertStringIncludes(out, "… and 1 more");
+  assertStringIncludes(out, "swamp doctor datastores --repair");
+});
+
+Deno.test("createDoctorDatastoresRenderer: json mode carries the unreadable versions finding, null without one (swamp-club#3955)", () => {
+  const render = (extra: Partial<DoctorDatastoresData>) => {
+    const renderer = createDoctorDatastoresRenderer("json");
+    return JSON.parse(captureStdout(() =>
+      renderer.handlers().completed({
+        kind: "completed",
+        data: { ...data(), ...extra },
+      })
+    ));
+  };
+  assertEquals(
+    render({ unreadableVersionsFinding: UNREADABLE }).unreadableVersionsFinding,
+    UNREADABLE,
+  );
+  assertEquals(render({}).unreadableVersionsFinding, null);
+});
+
+const REPAIRS: UnreadableRecordRepair[] = [
+  {
+    modelType: "@test/spec",
+    modelId: "m-1",
+    modelName: "spec",
+    dataName: "state",
+    removeVersions: [3],
+    markerUnreadable: false,
+    becomesLatest: 2,
+  },
+  {
+    modelType: "@test/spec",
+    modelId: "m-1",
+    modelName: "spec",
+    dataName: "gone",
+    removeVersions: [1],
+    markerUnreadable: false,
+    becomesLatest: null,
+  },
+  {
+    modelType: "@test/spec",
+    modelId: "m-1",
+    modelName: "spec",
+    dataName: "journal",
+    removeVersions: [],
+    markerUnreadable: true,
+    becomesLatest: 4,
+  },
+];
+
+Deno.test("createUnreadableVersionsRepairRenderer: log mode previews each record, then reports what it removed (swamp-club#3955)", () => {
+  const renderer = createUnreadableVersionsRepairRenderer(
+    "log",
+    new DatastoreRepairJsonReport(),
+  );
+  const preview = stripAnsiCode(
+    captureStdout(() =>
+      renderer.handlers().preview({ kind: "preview", records: REPAIRS })
+    ),
+  );
+  assertEquals(renderer.overallStatus, "preview");
+  assertStringIncludes(
+    preview,
+    "spec/state: remove version(s) 3; version 2 is latest",
+  );
+  assertStringIncludes(
+    preview,
+    "spec/gone: remove version(s) 1; no readable version is left, so the record is removed",
+  );
+  assertStringIncludes(
+    preview,
+    "spec/journal: rewrite its latest marker; version 4 is latest",
+  );
+  assertStringIncludes(preview, "Run with -y to proceed.");
+
+  const done = stripAnsiCode(captureStdout(() =>
+    renderer.handlers().completed({
+      kind: "completed",
+      result: {
+        records: REPAIRS,
+        versionsRemoved: 2,
+        recordsRemoved: 1,
+        versionsKept: 1,
+      },
+    })
+  ));
+  assertEquals(renderer.overallStatus, "pass");
+  assertStringIncludes(
+    done,
+    "spec/state: removed version(s) 3; version 2 is latest",
+  );
+  assertStringIncludes(done, "Removed 2 version(s); 1 record(s)");
+  assertStringIncludes(done, "Kept 1 version(s)");
+
+  const absent = stripAnsiCode(
+    captureStdout(() =>
+      renderer.handlers().completed({
+        kind: "completed",
+        result: {
+          records: [{ ...REPAIRS[1], removed: false }],
+          versionsRemoved: 1,
+          recordsRemoved: 0,
+          versionsKept: 0,
+        },
+      })
+    ),
+  );
+  assertStringIncludes(
+    absent,
+    "spec/gone: removed version(s) 1; no readable version is left, so the record reads as absent",
+  );
+});
+
+Deno.test("createUnreadableVersionsRepairRenderer: json mode records its stage in the one repair document (swamp-club#3955)", () => {
+  const report = new DatastoreRepairJsonReport();
+  const renderer = createUnreadableVersionsRepairRenderer("json", report);
+  const printed = captureStdout(() =>
+    renderer.handlers().preview({ kind: "preview", records: REPAIRS })
+  );
+  assertEquals(printed, "");
+  const doc = JSON.parse(captureStdout(() => report.print()));
+  assertEquals(doc.unreadableVersions, {
+    status: "unreadable_versions_preview",
+    records: REPAIRS,
+  });
+
+  const notNeeded = new DatastoreRepairJsonReport();
+  createUnreadableVersionsRepairRenderer("json", notNeeded).handlers()
+    .not_needed({ kind: "not_needed" });
+  assertEquals(
+    JSON.parse(captureStdout(() => notNeeded.print())).unreadableVersions,
+    { status: "unreadable_versions_not_needed" },
+  );
 });

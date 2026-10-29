@@ -773,7 +773,10 @@ const PINNED_STAGED_CHANGES: readonly string[] = [
   // directory and the latest marker, both present after it.
   // swamp-club#3473: deleting a name's newest version writes its version
   // floor (v2 only).
-  "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository write (x11)",
+  // swamp-club#3955: resetLatestMarkerToReadable writes the latest marker,
+  // and rollBackToReadable writes it as NO_PROMOTED_VERSION when only
+  // unpublished versions are left; both present after it.
+  "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository write (x13)",
   "src/infrastructure/persistence/yaml_output_repository.ts: YamlOutputRepository remove (x3)",
   "src/infrastructure/persistence/yaml_output_repository.ts: YamlOutputRepository write",
   // swamp-club#2980, move B. "write|remove" is a delete whose resolved path
@@ -891,6 +894,9 @@ const PINNED_CLI_ROOT_UNIT_COMMANDS: readonly string[] = [
   "src/cli/commands/data_rename.ts: dataRenameCommand",
   "src/cli/commands/datastore_compact.ts: datastoreCompactCommand",
   "src/cli/commands/datastore_config_migrate.ts: datastoreConfigMigrateCommand",
+  // swamp-club#3955: doctor datastores --repair -y rolls back unreadable
+  // data versions under the affected models' locks.
+  "src/cli/commands/doctor_datastores.ts: createUnreadableVersionsRepairDeps",
   "src/cli/commands/model_create.ts: createModelCreateCommand",
   "src/cli/commands/model_delete.ts: createModelDeleteCommand",
   "src/cli/commands/model_edit.ts: createModelEditCommand",

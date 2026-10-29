@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { Command } from "@cliffy/command";
 import { join } from "@std/path";
 import { ensureDirSync } from "@std/fs";
@@ -627,6 +632,7 @@ Deno.test("doctor datastores --repair --json: prints every stage's result as one
   await withV2Repo(undefined, async (repoDir) => {
     const expected = {
       unmigrated: null,
+      unreadableVersions: { status: "unreadable_versions_not_needed" },
       catalog: { status: "catalog_not_needed" },
       duplicateLatest: { status: "duplicate_latest_not_needed" },
       contamination: null,
@@ -641,6 +647,7 @@ Deno.test("doctor datastores --repair --json: a namespaced datastore's unmigrate
   await withV2Repo("team", async (repoDir) => {
     assertEquals(JSON.parse(await repair(repoDir, "-y", "--json")), {
       unmigrated: { status: "unmigrated_not_needed" },
+      unreadableVersions: { status: "unreadable_versions_not_needed" },
       catalog: { status: "catalog_not_needed" },
       duplicateLatest: { status: "duplicate_latest_not_needed" },
       contamination: null,
@@ -668,7 +675,8 @@ Deno.test("doctor datastores --repair --json: a stage that fails still leaves th
       namespace: "team",
     });
     // A directory where SQLite expects the catalog's rollback journal makes
-    // the catalog stage throw after the unmigrated stage has reported.
+    // the first stage that opens the catalog (the unreadable-version stage,
+    // swamp-club#3955) throw after the unmigrated stage has reported.
     const journal = `${catalogDbPath(repoDir, resolver)}-journal`;
     await Deno.mkdir(join(journal, "held"), { recursive: true });
 
@@ -700,9 +708,113 @@ Deno.test("doctor datastores --repair --json: a stage that fails still leaves th
     const out = lines.join("\n");
     assertEquals(JSON.parse(out), {
       unmigrated: { status: "unmigrated_not_needed" },
+      unreadableVersions: null,
       catalog: null,
       duplicateLatest: null,
       contamination: null,
     });
+  });
+});
+
+// --- swamp-club#3955: unreadable data versions ---
+
+/**
+ * Saves three versions of `state` into a format 2 filesystem repo's
+ * datastore, through the repository and catalog every command uses, and
+ * empties the newest version's files as an unclean shutdown leaves them.
+ */
+async function writeUnreadableLatest(
+  repoDir: string,
+  datastorePath: string,
+): Promise<{ modelId: string; nameDir: string }> {
+  const resolver = new DefaultDatastorePathResolver(repoDir, {
+    type: "filesystem",
+    path: datastorePath,
+  });
+  const catalog = new CatalogStore(catalogDbPath(repoDir, resolver));
+  const modelId = crypto.randomUUID();
+  const type = ModelType.create("@test/spec");
+  try {
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      join(datastorePath, "data"),
+      catalog,
+    );
+    for (let i = 1; i <= 3; i++) {
+      await repo.save(
+        type,
+        modelId,
+        Data.create({
+          name: "state",
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          tags: { type: "resource", modelName: "spec" },
+          ownerDefinition: { ownerType: "manual", ownerRef: "test" },
+        }),
+        new TextEncoder().encode(JSON.stringify({ stageId: `s${i}` })),
+      );
+    }
+    const nameDir = join(repo.getPath(type, modelId, "state", 3), "..");
+    await Deno.writeFile(join(nameDir, "3", "raw"), new Uint8Array());
+    await Deno.writeFile(join(nameDir, "3", "metadata.yaml"), new Uint8Array());
+    return { modelId, nameDir };
+  } finally {
+    catalog.close();
+  }
+}
+
+function doctorJson(repoDir: string): Promise<string> {
+  return captureLogs(() =>
+    new Command()
+      .globalOption("--json", "JSON output")
+      .command("datastores", doctorDatastoresCommand)
+      .parse(["datastores", "--repo-dir", repoDir, "--json"])
+  );
+}
+
+Deno.test("doctor datastores: a format 2 filesystem datastore runs the unreadable_versions check (swamp-club#3955)", async () => {
+  await initializeLogging({});
+  await withV2Repo(undefined, async (repoDir) => {
+    const report = JSON.parse(await doctorJson(repoDir));
+    const check = report.healthFindings.find((
+      f: { check: string },
+    ) => f.check === "unreadable_versions");
+    assertEquals(check?.passed, true);
+    assertEquals(report.unreadableVersionsFinding, null);
+  });
+});
+
+Deno.test("doctor datastores --repair -y: rolls an unreadable latest version back before the catalog repair runs (swamp-club#3955)", async () => {
+  await initializeLogging({});
+  await withV2Repo(undefined, async (repoDir, datastorePath) => {
+    const { nameDir } = await writeUnreadableLatest(repoDir, datastorePath);
+
+    const preview = await repair(repoDir, "--json");
+    const planned = JSON.parse(preview).unreadableVersions;
+    assertEquals(planned.status, "unreadable_versions_preview");
+    assertEquals(planned.records[0].removeVersions, [3]);
+    assertEquals(planned.records[0].becomesLatest, 2);
+    // A preview changes nothing.
+    assertEquals(await Deno.readTextFile(join(nameDir, "latest")), "3");
+
+    const out = await repair(repoDir, "-y");
+    assertStringIncludes(out, "Unreadable data versions rolled back:");
+    assert(
+      out.indexOf("Scanning for unreadable data versions") <
+        out.indexOf("Comparing the catalog index"),
+      out,
+    );
+    assertEquals(await Deno.readTextFile(join(nameDir, "latest")), "2");
+    let gone = false;
+    try {
+      await Deno.stat(join(nameDir, "3"));
+    } catch (error) {
+      gone = error instanceof Deno.errors.NotFound;
+    }
+    assertEquals(gone, true);
+
+    const report = JSON.parse(await doctorJson(repoDir));
+    assertEquals(report.overallStatus, "pass");
   });
 });
