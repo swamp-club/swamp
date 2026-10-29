@@ -485,6 +485,9 @@ const PINNED_MARK_CALL_SITES: readonly string[] = [
   // Use cases that mark directly. datastoreNamespaceMigrate: a bulk
   // migration of the whole tree.
   "src/libswamp/datastores/namespace_migrate.ts: datastoreNamespaceMigrate",
+  // datastoreSetupExtension: a bulk mark for .swamp/ copied into the cache
+  // behind the sync service, before its push (swamp-club#4100).
+  "src/libswamp/datastores/setup.ts: datastoreSetupExtension",
 ];
 
 const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [

@@ -8865,7 +8865,12 @@ Each setup command (`src/libswamp/datastores/setup.ts`):
    completed result then carries `sourceKept: true`, and log mode prints
    "Copied from" instead of "Moved from".
 3. Pushes migrated data to the remote (extension datastores; skipped with
-   `--skip-migration` or when there is nothing to push).
+   `--skip-migration` or when there is nothing to push). The copy writes into
+   the cache behind the sync service, so setup first calls `markDirty()` with
+   no path. Otherwise a cache that an earlier setup or pull left clean (a
+   committed `repoId` maps every clone to the same cache) takes the zero-diff
+   fast path, and the push uploads none of the copied files
+   (swamp-club#4100).
 4. Hydrates the local cache from the remote (extension datastores only).
    Runs regardless of `--skip-migration`, but only if no earlier step
    reported an error.
