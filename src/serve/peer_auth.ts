@@ -263,3 +263,15 @@ export function requestClientAddress(
   }
   return socketPeer;
 }
+
+/**
+ * `req` without {@link TEAM_PEER_HEADER}, once its client address is taken:
+ * no handler, payload, hook or record downstream ever sees the team's peer
+ * token (swamp-club#4148). A request without the header is returned as is.
+ */
+export function withoutTeamPeerHeader(req: Request): Request {
+  if (!req.headers.has(TEAM_PEER_HEADER)) return req;
+  const headers = new Headers(req.headers);
+  headers.delete(TEAM_PEER_HEADER);
+  return new Request(req, { headers });
+}

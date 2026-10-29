@@ -2150,3 +2150,17 @@ Deno.test("WebhookService.cancelByRunId: cancels only the targeted run among con
   assertEquals(runs.map((r) => r.signal.aborted), [true, true, true]);
   await service.stop();
 });
+
+Deno.test("buildWebhookPayload: the team's peer token on a forwarded delivery never reaches the payload (swamp-club#4148)", () => {
+  assertEquals(isSensitiveHeader("X-Swamp-Team-Peer"), true);
+  const payload = buildWebhookPayload(
+    new TextEncoder().encode("{}"),
+    new Headers({
+      "x-swamp-team-peer": "swamp-peer.secret",
+      "x-github-event": "push",
+    }),
+    "/hooks/gh",
+  );
+  assertEquals(payload.headers["x-swamp-team-peer"], undefined);
+  assertEquals(payload.headers["x-github-event"], "push");
+});

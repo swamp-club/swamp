@@ -147,6 +147,6 @@ Deno.test("FollowerFeed: an error frame stops the feed, and it is no longer curr
     id: "follower-feed",
     error: { code: "commits_compacted", message: "compacted" },
   });
-  assertEquals(t.feed.current(leader("a", 1)), false);
+  await waitFor(() => !t.feed.current(leader("a", 1)), "the feed stopped");
   await t.feed.stop();
 });

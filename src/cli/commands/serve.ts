@@ -610,6 +610,7 @@ import {
   markPeerSocket,
   requestClientAddress,
   TeamPeerKey,
+  withoutTeamPeerHeader,
 } from "../../serve/peer_auth.ts";
 import {
   advertiseAddressInCleartext,
@@ -6817,16 +6818,23 @@ export const serveCommand = new Command()
       unscopedHttpHandler(traceHttpRequests(async (req, info) => {
         // A request a team follower forwarded carries the team's peer token
         // (swamp-club#4148): the follower is then a trusted proxy for it.
-        const clientAddress = () =>
-          requestClientAddress(
-            req.headers,
-            info.remoteAddr.hostname,
-            Boolean(trustProxy),
-            (header) => teamPeerKey?.verifyCached(header) === true,
-          );
+        const resolvedClientAddress = requestClientAddress(
+          req.headers,
+          info.remoteAddr.hostname,
+          Boolean(trustProxy),
+          (header) => teamPeerKey?.verifyCached(header) === true,
+        );
+        const clientAddress = () => resolvedClientAddress;
 
         // WebSocket upgrade (check first — upgrade requests are also GETs)
         const upgrade = req.headers.get("upgrade") ?? "";
+        // Once the client address is taken, the team's peer token goes no
+        // further: no webhook payload, hook or record downstream sees it.
+        // An upgrade keeps its request (the upgrade needs it); its headers
+        // are never passed on or kept.
+        if (upgrade.toLowerCase() !== "websocket") {
+          req = withoutTeamPeerHeader(req);
+        }
         if (upgrade.toLowerCase() === "websocket") {
           const remoteAddr = clientAddress();
 

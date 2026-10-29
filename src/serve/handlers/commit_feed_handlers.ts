@@ -113,8 +113,6 @@ export async function handleCommitsSubscribe(
   try {
     let lastSent = 0;
     while (!signal.aborted && socket.readyState === WebSocket.OPEN) {
-      // Fail-secure audit refuses reads it cannot record, as GET changes
-      // does, for a subscription already running too.
       // A follower's copy too old to read from ends the stream, as a new
       // subscribe or GET changes is refused (swamp-club#4148).
       const gate = ctx.followerGate;
@@ -129,6 +127,8 @@ export async function handleCommitsSubscribe(
         );
         return;
       }
+      // Fail-secure audit refuses reads it cannot record, as GET changes
+      // does, for a subscription already running too.
       if (auditUnavailable(ctx)) {
         sendError(
           socket,

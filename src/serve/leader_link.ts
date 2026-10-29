@@ -242,7 +242,7 @@ export class LeaderLink {
    */
   openSocket(
     pathAndQuery: string,
-    headers: HeadersInit,
+    headers: Readonly<Record<string, string>>,
   ): { socket: WebSocket; leader: ServeLeader } | undefined {
     const leader = this.#options.leader();
     const address = leader?.address;
@@ -260,7 +260,7 @@ export class LeaderLink {
     const socket = new WebSocket(url, {
       headers: peer === undefined
         ? headers
-        : { ...headers as Record<string, string>, [TEAM_PEER_HEADER]: peer },
+        : { ...headers, [TEAM_PEER_HEADER]: peer },
       ...(client !== undefined ? { client } : {}),
     } as unknown as string[]);
     return { socket, leader };

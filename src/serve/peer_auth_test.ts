@@ -28,6 +28,7 @@ import {
   requestClientAddress,
   TEAM_PEER_HEADER,
   TeamPeerKey,
+  withoutTeamPeerHeader,
 } from "./peer_auth.ts";
 
 function memoryVault(): VaultProvider & {
@@ -200,4 +201,22 @@ Deno.test("requestClientAddress: the socket peer, the first entry behind a trust
     ),
     "10.0.0.2",
   );
+});
+
+Deno.test("withoutTeamPeerHeader: drops the team's peer token and keeps the rest of the request (swamp-club#4148)", async () => {
+  const req = new Request("http://leader.example/hooks/gh", {
+    method: "POST",
+    headers: {
+      [TEAM_PEER_HEADER]: "swamp-peer.secret",
+      "x-hub-signature-256": "sha256=abc",
+    },
+    body: "delivery",
+  });
+  const stripped = withoutTeamPeerHeader(req);
+  assertEquals(stripped.headers.get(TEAM_PEER_HEADER), null);
+  assertEquals(stripped.headers.get("x-hub-signature-256"), "sha256=abc");
+  assertEquals(stripped.method, "POST");
+  assertEquals(await stripped.text(), "delivery");
+  const plain = new Request("http://leader.example/x");
+  assertEquals(withoutTeamPeerHeader(plain), plain);
 });

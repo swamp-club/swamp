@@ -132,4 +132,6 @@ Deno.test("advertiseAddressInCleartext: plain http to a host that is not loopbac
   assertEquals(advertiseAddressInCleartext("http://127.0.0.1:9090"), false);
   assertEquals(advertiseAddressInCleartext("http://localhost:9090"), false);
   assertEquals(advertiseAddressInCleartext("http://[::1]:9090"), false);
+  // A host name that merely starts with 127 is not loopback.
+  assertEquals(advertiseAddressInCleartext("http://127.example.com"), true);
 });

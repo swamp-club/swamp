@@ -146,7 +146,8 @@ export function advertiseAddressInCleartext(address: string): boolean {
   const url = new URL(address);
   if (url.protocol !== "http:") return false;
   const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  return !(host === "localhost" || host === "::1" || /^127\./.test(host));
+  return !(host === "localhost" || host === "::1" ||
+    /^127(\.\d{1,3}){3}$/.test(host));
 }
 
 const advertiseAddressMessage =
