@@ -402,13 +402,16 @@ export {
 } from "./datastores/retention_check.ts";
 export {
   modelOutputSearch,
+  type ModelOutputSearchCandidate,
   type ModelOutputSearchData,
   type ModelOutputSearchDeps,
   type ModelOutputSearchEvent,
   type ModelOutputSearchInput,
   type ModelOutputSearchItem,
+  type ModelOutputSearchKey,
   type ModelOutputSearchModel,
   type ModelOutputSearchOutput,
+  type ModelOutputSearchSelector,
 } from "./models/output_search.ts";
 export {
   type ArtifactsData,

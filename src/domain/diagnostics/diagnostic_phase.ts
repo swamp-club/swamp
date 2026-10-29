@@ -100,6 +100,7 @@ const AREA_PHASES = {
   ],
   output_search: [
     "candidate_scan",
+    "candidate_authorization",
     "definition_names",
     "workflow_names",
     "authorization",

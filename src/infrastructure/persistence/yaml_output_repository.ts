@@ -56,7 +56,11 @@ import {
   withScanPermit,
 } from "./scan_permits.ts";
 import { SharedScans } from "./shared_scans.ts";
-import type { OutputRepository } from "../../domain/models/repositories.ts";
+import type {
+  OutputKey,
+  OutputRepository,
+  SelectReadableOutputs,
+} from "../../domain/models/repositories.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import type {
   MarkDirtyHook,
@@ -126,6 +130,53 @@ function nameStampOf(instant: Date | undefined): string | undefined {
 
 /** An output with the type and method it was found under. */
 type GlobalOutput = { output: ModelOutput; type: ModelType; method: string };
+
+/**
+ * An output file a global scan listed, with the method directory it is in
+ * and, when its name is in {@link getPath}'s form, the definition id the
+ * name carries.
+ */
+interface ListedOutput {
+  modelType: ModelType;
+  method: string;
+  path: string;
+  definitionId?: string;
+}
+
+/**
+ * The files of `listed` to read: every file when there is no
+ * `selectReadable`, otherwise each file whose name carries no key and each
+ * whose key it accepts. It is asked once, about the distinct keys.
+ */
+async function chooseReadable(
+  listed: ListedOutput[],
+  selectReadable: SelectReadableOutputs | undefined,
+): Promise<ListedOutput[]> {
+  if (selectReadable === undefined) return listed;
+  const keys: OutputKey[] = [];
+  const keyIndex = new Map<string, number>();
+  const keyOf = (file: ListedOutput): string =>
+    JSON.stringify([file.modelType.normalized, file.definitionId, file.method]);
+  for (const file of listed) {
+    if (file.definitionId === undefined) continue;
+    const key = keyOf(file);
+    if (keyIndex.has(key)) continue;
+    keyIndex.set(key, keys.length);
+    keys.push({
+      type: file.modelType,
+      definitionId: file.definitionId,
+      methodName: file.method,
+    });
+  }
+  const readable = keys.length === 0 ? [] : await selectReadable(keys);
+  const tally = currentDiagnosticTally();
+  return listed.filter((file) => {
+    if (file.definitionId === undefined) return true;
+    if (readable[keyIndex.get(keyOf(file))!] === true) return true;
+    tally.add("skipped_by_authorization");
+    return false;
+  });
+}
 
 /** The window of a definition's history search. */
 interface HistoryWindow {
@@ -217,12 +268,22 @@ export class YamlOutputRepository implements OutputRepository {
     HistoryWindow,
     ModelOutput[]
   >(widenHistoryWindow);
-  private readonly sinceScans = new SharedScans<Date, GlobalOutput[]>(
-    earlier,
-  );
-  private readonly allScans = new SharedScans<undefined, GlobalOutput[]>(
-    () => undefined,
-  );
+  private readonly listingScans = new SharedScans<
+    Date | undefined,
+    ListedOutput[]
+  >((a, b) => a === undefined || b === undefined ? undefined : earlier(a, b));
+  /**
+   * The global scans' reads, shared by the callers of the same kind of scan
+   * whatever each listed: a caller joining adds the files it chose to the
+   * pending reads.
+   */
+  private readonly readScans = new SharedScans<
+    Map<string, ListedOutput>,
+    Map<string, GlobalOutput>
+  >((pending, joining) => {
+    for (const [path, file] of joining) pending.set(path, file);
+    return pending;
+  });
 
   /**
    * `unreadableContent` tells an output record a v3 read model could not
@@ -651,56 +712,28 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   /**
-   * Every output of every registered type. Concurrent calls share one scan
-   * as {@link findHistoryByDefinition}'s do (swamp-club#4074): each gets its
-   * own array, but the outputs in it are shared, so callers must not mutate
-   * them. Once `signal` aborts, the call rejects with its reason, and a scan
-   * no other call waits on starts no further listing or read
-   * (swamp-club#4070); one that had already started its last read returns
-   * as usual.
+   * Every output of every registered type. Concurrent calls share their
+   * listing and their reads as {@link findAllGlobalSince}'s do
+   * (swamp-club#4074): each gets its own array, but the outputs in it are
+   * shared, so callers must not mutate them. With `selectReadable`, a file
+   * whose name carries a key it refuses is not read, as in
+   * {@link findAllGlobalSince}. Once `signal` aborts, the call rejects with
+   * its reason, and a scan no other call waits on starts no further listing
+   * or read (swamp-club#4070); one that had already started its last read
+   * returns as usual.
    */
-  async findAllGlobal(signal?: AbortSignal): Promise<GlobalOutput[]> {
-    const { value, joined } = await this.allScans.run(
+  async findAllGlobal(
+    signal?: AbortSignal,
+    selectReadable?: SelectReadableOutputs,
+  ): Promise<GlobalOutput[]> {
+    const found = await this.findGlobal(
       "all",
       undefined,
-      (_, scanSignal) => this.readAllGlobal(scanSignal),
+      selectReadable,
       signal,
     );
-    if (joined) currentDiagnosticTally().add("scans_joined");
     await warnUnreadableLeftOut(this.unreadableContent, this.baseDir);
-    return [...value];
-  }
-
-  /** The scan {@link findAllGlobal} shares. */
-  private async readAllGlobal(signal: AbortSignal): Promise<GlobalOutput[]> {
-    // Output directories are found by walking the registered model types. The
-    // CLI configures the extension loader but does not run it, so a command
-    // that never loaded the registry would walk only built-in types and miss
-    // every extension-typed output (swamp-club#2510). ensureLoaded is
-    // memoized, so callers that already loaded the registry (serve, model
-    // output get) pay nothing.
-    await modelRegistry.ensureLoaded();
-
-    const results: GlobalOutput[] = [];
-
-    // Iterate over all registered model types
-    for (const modelType of modelRegistry.types()) {
-      const typeOutputs = await this.readAll(
-        modelType,
-        "search",
-        undefined,
-        undefined,
-        signal,
-      );
-      for (const output of typeOutputs) {
-        results.push({
-          output,
-          type: modelType,
-          method: output.methodName,
-        });
-      }
-    }
-    return results;
+    return found;
   }
 
   /**
@@ -715,6 +748,13 @@ export class YamlOutputRepository implements OutputRepository {
    * `startedAt`, so a file last modified before the cutoff cannot have started
    * on or after it. Every record read is checked against the cutoff again.
    *
+   * With `selectReadable`, a file is read only when the key its location
+   * carries (type and method directories, definition id from its name) is
+   * one `selectReadable` accepts (swamp-club#4142). It is asked once, in
+   * the caller's own context, about the distinct keys the listing found. A
+   * file whose name is not in {@link getPath}'s form carries no key, and is
+   * read and returned for the caller to judge.
+   *
    * Directories are listed and files read {@link SCAN_CONCURRENCY} at a
    * time: every awaited listing or read waits for a turn of the event loop,
    * so on a busy serve a scan that awaited them one by one took as long as
@@ -723,11 +763,13 @@ export class YamlOutputRepository implements OutputRepository {
    * Inside a diagnostic phase the scan is counted (directories, entries,
    * names skipped, stats, reads) into that phase's tally.
    *
-   * Concurrent calls share one scan as {@link findHistoryByDefinition}'s
-   * do (swamp-club#4074): a call joining a scan that has not started moves
-   * its cutoff back to its own if that is earlier, and keeps only the
-   * outputs at or after its own. Each gets its own array, but the outputs in
-   * it are shared, so callers must not mutate them.
+   * Concurrent calls share one listing and one read (swamp-club#4074): a
+   * call joining a listing that has not started moves its cutoff back to
+   * its own if that is earlier, and a call joining reads that have not
+   * started adds the files it chose to them, so callers that may read
+   * different files read the union once. Each keeps only its own files, and
+   * the outputs at or after its own cutoff. Each gets its own array, but the
+   * outputs in it are shared, so callers must not mutate them.
    *
    * Once `signal` aborts, the call rejects with its reason, and a scan no
    * other call waits on starts no further listing or read
@@ -737,15 +779,14 @@ export class YamlOutputRepository implements OutputRepository {
   async findAllGlobalSince(
     cutoff: Date,
     signal?: AbortSignal,
+    selectReadable?: SelectReadableOutputs,
   ): Promise<GlobalOutput[]> {
-    const { value, joined } = await this.sinceScans.run(
+    const found = await this.findGlobal(
       "since",
       cutoff,
-      (scanCutoff, scanSignal) =>
-        this.readAllGlobalSince(scanCutoff, scanSignal),
+      selectReadable,
       signal,
     );
-    if (joined) currentDiagnosticTally().add("scans_joined");
     const cutoffMs = cutoff.getTime();
     // A cutoff outside years 0000-9999 has a signed stamp, which sorts
     // before every name's.
@@ -762,23 +803,74 @@ export class YamlOutputRepository implements OutputRepository {
           cutoffStamp,
     );
 
-    return value.filter((found) =>
+    return found.filter((found) =>
       found.output.startedAt.getTime() >= cutoffMs
     );
   }
 
-  /** The scan {@link findAllGlobalSince} shares. */
-  private async readAllGlobalSince(
-    cutoff: Date,
-    signal: AbortSignal,
+  /**
+   * The shared listing, the caller's own choice of files from it, then the
+   * shared reads of them: the outputs of the files chosen, in walk order.
+   */
+  private async findGlobal(
+    key: "all" | "since",
+    cutoff: Date | undefined,
+    selectReadable: SelectReadableOutputs | undefined,
+    signal: AbortSignal | undefined,
   ): Promise<GlobalOutput[]> {
-    // Load extension types before walking them; see findAllGlobal.
+    const listing = await this.listingScans.run(
+      key,
+      cutoff,
+      (scanCutoff, scanSignal) => this.listAllGlobal(scanCutoff, scanSignal),
+      signal,
+    );
+    const chosen = await chooseReadable(listing.value, selectReadable);
+    // A caller with nothing to read waits behind no one's reads.
+    if (chosen.length === 0) {
+      signal?.throwIfAborted();
+      if (listing.joined) currentDiagnosticTally().add("scans_joined");
+      return [];
+    }
+    // Reads share a flight only with the same kind of scan, so a full read
+    // never holds up a `since` search's few reads.
+    const reads = await this.readScans.run(
+      key,
+      new Map(chosen.map((file) => [file.path, file])),
+      (files, scanSignal) => this.readListed(files, scanSignal),
+      signal,
+    );
+    if (listing.joined || reads.joined) {
+      currentDiagnosticTally().add("scans_joined");
+    }
+    const found: GlobalOutput[] = [];
+    for (const file of chosen) {
+      const output = reads.value.get(file.path);
+      if (output !== undefined) found.push(output);
+    }
+    return found;
+  }
+
+  /**
+   * The output files of every registered type, in walk order: with a
+   * `cutoff`, leaving out unread a file whose name is stamped before it,
+   * or, when its name is not in {@link getPath}'s form, whose mtime is.
+   */
+  private async listAllGlobal(
+    cutoff: Date | undefined,
+    signal: AbortSignal,
+  ): Promise<ListedOutput[]> {
+    // Output directories are found by walking the registered model types. The
+    // CLI configures the extension loader but does not run it, so a command
+    // that never loaded the registry would walk only built-in types and miss
+    // every extension-typed output (swamp-club#2510). ensureLoaded is
+    // memoized, so callers that already loaded the registry (serve, model
+    // output get) pay nothing.
     await modelRegistry.ensureLoaded();
 
-    const cutoffMs = cutoff.getTime();
+    const cutoffMs = cutoff?.getTime();
     // A cutoff outside years 0000-9999 has a signed stamp, which sorts
     // before every name's: then no name is skipped, only stat'ed.
-    const cutoffStamp = fileStamp(cutoff);
+    const cutoffStamp = cutoff === undefined ? undefined : fileStamp(cutoff);
     const tally = currentDiagnosticTally();
 
     // Each stage keeps its items in walk order, so the result is in the
@@ -797,7 +889,11 @@ export class YamlOutputRepository implements OutputRepository {
           tally.add("type_dirs");
           return methodEntries
             .filter((entry) => entry.isDirectory)
-            .map((entry) => ({ modelType, dir: join(typeDir, entry.name) }));
+            .map((entry) => ({
+              modelType,
+              method: entry.name,
+              dir: join(typeDir, entry.name),
+            }));
         } catch (error) {
           // The type directory itself doesn't exist.
           if (error instanceof Deno.errors.NotFound) return [];
@@ -807,10 +903,10 @@ export class YamlOutputRepository implements OutputRepository {
       signal,
     )).flat();
 
-    const files = (await mapBounded(
+    const named = (await mapBounded(
       methodDirs,
       SCAN_CONCURRENCY,
-      async ({ modelType, dir }) => {
+      async ({ modelType, method, dir }) => {
         // A concurrent bulk delete can remove the method directory between
         // listing its type and listing it. NotFound on a single method
         // directory means "skip it" — never "abandon results already
@@ -827,51 +923,84 @@ export class YamlOutputRepository implements OutputRepository {
           throw error;
         }
         tally.add("method_dirs");
-        const found: { modelType: ModelType; path: string; named: boolean }[] =
-          [];
+        const found: ListedOutput[] = [];
         for (const entry of entries) {
           if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
           tally.add("entries");
           // Stage A: the name's stamp, or the mtime when the name has none
-          const stamp = OUTPUT_FILE_NAME.exec(entry.name)?.[2];
-          if (stamp !== undefined && stamp < cutoffStamp) {
+          const match = OUTPUT_FILE_NAME.exec(entry.name);
+          if (
+            match !== null && cutoffStamp !== undefined &&
+            match[2] < cutoffStamp
+          ) {
             tally.add("skipped_by_name");
             continue;
           }
           found.push({
             modelType,
+            method,
             path: join(dir, entry.name),
-            named: stamp !== undefined,
+            definitionId: match?.[1],
           });
         }
         return found;
       },
       signal,
     )).flat();
+    if (cutoffMs === undefined) return named;
 
-    const read = await mapBounded(
-      files,
+    const listed = await mapBounded(
+      named,
       SCAN_CONCURRENCY,
-      async ({ modelType, path, named }) => {
-        // Per-file try/catch closes the TOCTOU window: a concurrent delete
-        // can remove the file between readDir and stat or between stat and
-        // readTextFile. NotFound on a single file means "skip it" — never
-        // "abandon the rest of the scan."
+      async (file) => {
+        if (file.definitionId !== undefined) return file;
+        // A file that cannot be stat'ed is skipped as a read of it would
+        // be: one deleted since its listing silently, any other with a
+        // warning, and only an I/O error fails the scan.
         try {
-          if (!named) {
-            const stat = await withScanPermit(
-              "search",
-              () => tally.measure("stat", () => Deno.stat(path)),
-              signal,
-            );
-            tally.add("stats");
-            const mtimeMs = stat.mtime?.getTime();
-            if (mtimeMs !== undefined && mtimeMs < cutoffMs) {
-              tally.add("skipped_by_mtime");
-              return undefined;
-            }
+          const stat = await withScanPermit(
+            "search",
+            () => tally.measure("stat", () => Deno.stat(file.path)),
+            signal,
+          );
+          tally.add("stats");
+          const mtimeMs = stat.mtime?.getTime();
+          if (mtimeMs !== undefined && mtimeMs < cutoffMs) {
+            tally.add("skipped_by_mtime");
+            return undefined;
           }
+          return file;
+        } catch (error) {
+          signal.throwIfAborted();
+          this.skipUnreadableRecord(file.path, error);
+          return undefined;
+        }
+      },
+      signal,
+    );
+    return listed.filter((file) => file !== undefined);
+  }
 
+  /**
+   * The reads {@link findGlobal} shares: each of `files` read and parsed,
+   * by path. A record whose type, method or definition differs from what
+   * its file's location says counts `key_mismatch`, so a layout that would
+   * make a caller's choice of files wrong shows in its traces.
+   */
+  private async readListed(
+    files: ReadonlyMap<string, ListedOutput>,
+    signal: AbortSignal,
+  ): Promise<Map<string, GlobalOutput>> {
+    const tally = currentDiagnosticTally();
+    const read = await mapBounded(
+      [...files.values()],
+      SCAN_CONCURRENCY,
+      async ({ modelType, method, path, definitionId }) => {
+        // Per-file try/catch closes the TOCTOU window: a concurrent delete
+        // can remove the file between its listing and readTextFile.
+        // NotFound on a single file means "skip it" — never "abandon the
+        // rest of the scan."
+        try {
           // Stage B: parse and verify
           const content = await withScanPermit(
             "search",
@@ -891,8 +1020,17 @@ export class YamlOutputRepository implements OutputRepository {
             data.logFile = toAbsolutePath(this.repoDir, data.logFile);
           }
           const output = ModelOutput.fromData(data);
-          if (output.startedAt.getTime() < cutoffMs) return undefined;
-          return { output, type: modelType, method: output.methodName };
+          if (
+            definitionId !== undefined &&
+            (output.definitionId !== definitionId ||
+              output.methodName !== method)
+          ) {
+            tally.add("key_mismatch");
+          }
+          return [
+            path,
+            { output, type: modelType, method: output.methodName },
+          ] as const;
         } catch (error) {
           // A cancelled scan is not an unreadable record: it ends the scan.
           signal?.throwIfAborted();
@@ -902,7 +1040,7 @@ export class YamlOutputRepository implements OutputRepository {
       },
       signal,
     );
-    return read.filter((found) => found !== undefined);
+    return new Map(read.filter((entry) => entry !== undefined));
   }
 
   async save(

@@ -25,7 +25,8 @@ import {
 } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { stringify as stringifyYaml } from "@std/yaml";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
+import { SERVER_TOKEN_MODEL_TYPE } from "../../domain/models/access/server_token_model.ts";
 import {
   handleModelCreate,
   handleModelDelete,
@@ -72,6 +73,7 @@ import { PolicySnapshot } from "../../domain/access/policy_snapshot.ts";
 import { createConditionEvaluator } from "../../domain/access/policy_snapshot_loader.ts";
 import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
 import type { Principal } from "../../domain/access/principal.ts";
+import type { SelectReadableOutputs } from "../../domain/models/repositories.ts";
 
 // --- handleModelEdit sync tests ---
 
@@ -1101,31 +1103,43 @@ Deno.test("handleModelOutputSearch and handleModelMethodHistorySearch: with a de
       methods: {},
     });
     try {
+      // Output search decides each key before its scan reads
+      // (swamp-club#4142), and its authorization decides again only the key
+      // its results carry, on the same lookups; the history search decides
+      // each of its two keys once.
       const requests = [
-        (socket: WebSocket) =>
-          handleModelOutputSearch(
-            socket,
-            ctx,
-            "req-search",
-            new AbortController(),
-            EDITOR,
-            {},
-          ),
-        (socket: WebSocket) =>
-          handleModelMethodHistorySearch(
-            socket,
-            ctx,
-            "req-history",
-            new AbortController(),
-            EDITOR,
-            {},
-          ),
+        {
+          run: (socket: WebSocket) =>
+            handleModelOutputSearch(
+              socket,
+              ctx,
+              "req-search",
+              new AbortController(),
+              EDITOR,
+              {},
+            ),
+          authorizationLookups: 1,
+          scanLookups: 2,
+        },
+        {
+          run: (socket: WebSocket) =>
+            handleModelMethodHistorySearch(
+              socket,
+              ctx,
+              "req-history",
+              new AbortController(),
+              EDITOR,
+              {},
+            ),
+          authorizationLookups: 2,
+          scanLookups: undefined,
+        },
       ];
-      for (const request of requests) {
+      for (const { run, authorizationLookups, scanLookups } of requests) {
         reads.clear();
         await withObservedSpans(async (spans) => {
           const socket = createMockSocket();
-          await request(socket);
+          await run(socket);
           const [response] = frames(socket);
           assertEquals(
             response.payload.data.results.map((r: { modelName?: string }) =>
@@ -1163,12 +1177,26 @@ Deno.test("handleModelOutputSearch and handleModelMethodHistorySearch: with a de
           );
           assertEquals(
             phase("authorization")["swamp.diagnostic.owner_lookups"],
-            3,
+            authorizationLookups,
           );
           assertEquals(
             phase("authorization")["swamp.diagnostic.owner_lookups_reused"],
-            3,
+            authorizationLookups,
           );
+          if (scanLookups !== undefined) {
+            assertEquals(
+              phase(
+                "candidate_authorization",
+              )["swamp.diagnostic.owner_lookups"],
+              scanLookups,
+            );
+            assertEquals(
+              phase("candidate_authorization")[
+                "swamp.diagnostic.owner_lookups_reused"
+              ],
+              scanLookups,
+            );
+          }
         });
       }
       assertEquals(scans, 0);
@@ -1654,8 +1682,22 @@ Deno.test("handleModelOutputSearch: limits only after authorization, and exports
           phase("candidate_scan")["swamp.diagnostic.area"],
           "output_search",
         );
-        assertEquals(phase("candidate_scan")["swamp.diagnostic.candidates"], 5);
-        assertEquals(phase("authorization")["swamp.diagnostic.items"], 5);
+        // The hidden model's outputs are left unread (swamp-club#4142).
+        assertEquals(phase("candidate_scan")["swamp.diagnostic.candidates"], 2);
+        assertEquals(phase("candidate_scan")["swamp.diagnostic.files_read"], 2);
+        assertEquals(
+          phase("candidate_scan")["swamp.diagnostic.skipped_by_authorization"],
+          3,
+        );
+        assertEquals(
+          phase("candidate_authorization")["swamp.diagnostic.keys"],
+          2,
+        );
+        assertEquals(
+          phase("candidate_authorization")["swamp.diagnostic.readable_keys"],
+          1,
+        );
+        assertEquals(phase("authorization")["swamp.diagnostic.items"], 2);
         assertEquals(phase("authorization")["swamp.diagnostic.readable"], 2);
         assertEquals(phase("response")["swamp.diagnostic.results"], 2);
       });
@@ -1941,6 +1983,301 @@ Deno.test("handleModelOutputSearch: a search cancelled during its scan stops rea
     } finally {
       (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile =
         readTextFile;
+    }
+  });
+});
+
+Deno.test("handleModelOutputSearch: a restricted search leaves unread the outputs it may not read, and answers as filtering every output after reading it does (swamp-club#4142)", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const teamA = await saveEditModel(definitionRepo, "team-a-model", {
+      team: "team-a",
+    });
+    const scoped = await saveEditModel(definitionRepo, "scoped-model");
+    const hidden = await saveEditModel(definitionRepo, "hidden-model");
+    // An output whose definition is gone is judged on its id.
+    const orphanId = crypto.randomUUID();
+    const record = (definitionId: string, method: string, startedAt: string) =>
+      ModelOutput.create({
+        definitionId: createDefinitionId(definitionId),
+        methodName: method,
+        status: "succeeded",
+        startedAt: new Date(startedAt),
+        provenance: {
+          definitionHash: "h",
+          modelVersion: "1",
+          triggeredBy: "manual",
+        },
+      });
+    const save = (
+      type: ModelType,
+      definitionId: string,
+      method: string,
+      startedAt: string,
+    ) => outputRepo.save(type, method, record(definitionId, method, startedAt));
+    await save(EDIT_TEST_TYPE, teamA.id, "execute", "2026-01-01T00:00:00Z");
+    await save(EDIT_TEST_TYPE, scoped.id, "execute", "2026-01-02T00:00:00Z");
+    await save(EDIT_TEST_TYPE, scoped.id, "other", "2026-01-03T00:00:00Z");
+    await save(EDIT_TEST_TYPE, hidden.id, "execute", "2026-01-04T00:00:00Z");
+    await save(EDIT_TEST_TYPE, hidden.id, "execute", "2026-01-05T00:00:00Z");
+    await save(EDIT_TEST_TYPE, orphanId, "execute", "2026-01-06T00:00:00Z");
+    await save(
+      SERVER_TOKEN_MODEL_TYPE,
+      crypto.randomUUID(),
+      "redeem",
+      "2026-01-07T00:00:00Z",
+    );
+    // Names not in the output form carry no key, so they are read.
+    const writeUnnamed = async (
+      definitionId: string,
+      startedAt: string,
+      name: string,
+    ) => {
+      const output = record(definitionId, "execute", startedAt);
+      const path = join(
+        dirname(outputRepo.getPath(EDIT_TEST_TYPE, "execute", output)),
+        name,
+      );
+      await Deno.writeTextFile(
+        path,
+        stringifyYaml(JSON.parse(JSON.stringify(output.toData()))),
+      );
+    };
+    await writeUnnamed(teamA.id, "2026-01-08T00:00:00Z", "renamed-a.yaml");
+    await writeUnnamed(hidden.id, "2026-01-09T00:00:00Z", "renamed-h.yaml");
+
+    const base = createPolicyEditCtx(dir, definitionRepo, [
+      grant({ actions: ["read"], condition: 'tags.team == "team-a"' }),
+      grant({
+        actions: ["read"],
+        resource: { kind: "model", pattern: "scoped-model" },
+        methods: ["execute"],
+      }),
+      grant({
+        actions: ["read"],
+        resource: { kind: "model", pattern: orphanId },
+      }),
+    ]);
+    const admin = createPolicyEditCtx(dir, definitionRepo, [
+      grant({ actions: ["admin"], resource: { kind: "access", pattern: "*" } }),
+    ]);
+    const ctxWith = (repo: unknown, policy = base): ConnectionContext => ({
+      ...policy,
+      repoContext: {
+        definitionRepo,
+        outputRepo: repo,
+        workflowRepo: new YamlWorkflowRepository(dir),
+      } as unknown as ConnectionContext["repoContext"],
+    });
+    // The repository as before: every output read, then filtered.
+    const readsEverything = {
+      findAllGlobalSince: (cutoff: Date, signal?: AbortSignal) =>
+        outputRepo.findAllGlobalSince(cutoff, signal),
+    };
+    const search = async (ctx: ConnectionContext) => {
+      const socket = createMockSocket();
+      await handleModelOutputSearch(
+        socket,
+        ctx,
+        "req-1",
+        new AbortController(),
+        EDITOR,
+        { since: "2025-12-01T00:00:00Z" },
+      );
+      const [response] = frames(socket);
+      assertEquals(response.type, "model.output.search");
+      return (response.payload.data.results as { id: string }[])
+        .map((r) => r.id);
+    };
+
+    // The global scan enumerates registered types; the server-token type
+    // registers itself when its module loads.
+    modelRegistry.register({
+      type: EDIT_TEST_TYPE,
+      version: "2026.01.01.1",
+      methods: {},
+    });
+    try {
+      const expected = await search(ctxWith(readsEverything));
+      assertEquals(expected.length, 4);
+      await withObservedSpans(async (spans) => {
+        assertEquals(await search(ctxWith(outputRepo)), expected);
+        const phase = (name: string) =>
+          findSpan(spans, `swamp.diagnostic.${name}`).attributes;
+        // Read: team-a, scoped execute, the orphan, and both unnamed files.
+        assertEquals(phase("candidate_scan")["swamp.diagnostic.files_read"], 5);
+        assertEquals(
+          phase("candidate_scan")["swamp.diagnostic.skipped_by_authorization"],
+          4,
+        );
+        assertEquals(
+          phase("candidate_authorization")["swamp.diagnostic.keys"],
+          6,
+        );
+        assertEquals(
+          phase("candidate_authorization")["swamp.diagnostic.readable_keys"],
+          3,
+        );
+        assertEquals(phase("authorization")["swamp.diagnostic.items"], 5);
+        assertEquals(phase("authorization")["swamp.diagnostic.readable"], 4);
+      });
+      // An admin reads every output, as before.
+      const adminExpected = await search(ctxWith(readsEverything, admin));
+      assertEquals(adminExpected.length, 9);
+      assertEquals(await search(ctxWith(outputRepo, admin)), adminExpected);
+    } finally {
+      modelRegistry.invalidateType(EDIT_TEST_TYPE);
+    }
+  });
+});
+
+Deno.test("handleModelOutputSearch: with authorization off, every output is read and none is asked about (swamp-club#4142)", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const model = await saveEditModel(definitionRepo, "any-model");
+    for (const startedAt of ["2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"]) {
+      await outputRepo.save(
+        EDIT_TEST_TYPE,
+        "execute",
+        ModelOutput.create({
+          definitionId: model.id,
+          methodName: "execute",
+          status: "succeeded",
+          startedAt: new Date(startedAt),
+          provenance: {
+            definitionHash: "h",
+            modelVersion: "1",
+            triggeredBy: "manual",
+          },
+        }),
+      );
+    }
+    const selections: unknown[] = [];
+    const ctx: ConnectionContext = {
+      ...createEditCtx(dir, definitionRepo),
+      repoContext: {
+        definitionRepo,
+        outputRepo: {
+          findAllGlobalSince: (
+            cutoff: Date,
+            signal?: AbortSignal,
+            selectReadable?: unknown,
+          ) => {
+            selections.push(selectReadable);
+            return outputRepo.findAllGlobalSince(cutoff, signal);
+          },
+        },
+        workflowRepo: new YamlWorkflowRepository(dir),
+      } as unknown as ConnectionContext["repoContext"],
+    };
+    modelRegistry.register({
+      type: EDIT_TEST_TYPE,
+      version: "2026.01.01.1",
+      methods: {},
+    });
+    try {
+      await withObservedSpans(async (spans) => {
+        const socket = createMockSocket();
+        await handleModelOutputSearch(
+          socket,
+          ctx,
+          "req-1",
+          new AbortController(),
+          null,
+          { since: "2025-12-01T00:00:00Z" },
+        );
+        const [response] = frames(socket);
+        assertEquals(response.payload.data.results.length, 2);
+        assertEquals(selections, [undefined]);
+        assertEquals(
+          spans.some((span) =>
+            span.name === "swamp.diagnostic.candidate_authorization"
+          ),
+          false,
+        );
+      });
+    } finally {
+      modelRegistry.invalidateType(EDIT_TEST_TYPE);
+    }
+  });
+});
+
+Deno.test("handleModelOutputSearch: a grant revoked while the search reads leaves its outputs out of the result (swamp-club#4142)", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const model = await saveEditModel(definitionRepo, "revoked-model");
+    await outputRepo.save(
+      EDIT_TEST_TYPE,
+      "execute",
+      ModelOutput.create({
+        definitionId: model.id,
+        methodName: "execute",
+        status: "succeeded",
+        startedAt: new Date("2026-01-01T00:00:00Z"),
+        provenance: {
+          definitionHash: "h",
+          modelVersion: "1",
+          triggeredBy: "manual",
+        },
+      }),
+    );
+    const decisionService = (grants: Grant[]) =>
+      new GrantBasedAccessDecisionService(
+        new PolicySnapshot(grants, [], createConditionEvaluator()),
+      );
+    // The loader hands out the current snapshot's service, as a reload
+    // replaces it.
+    const loader = {
+      decisionService: decisionService([grant({ actions: ["read"] })]),
+    };
+    let chose: readonly boolean[] = [];
+    const ctx: ConnectionContext = {
+      ...createPolicyEditCtx(dir, definitionRepo, []),
+      policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+      repoContext: {
+        definitionRepo,
+        outputRepo: {
+          findAllGlobalSince: async (
+            cutoff: Date,
+            signal?: AbortSignal,
+            selectReadable?: SelectReadableOutputs,
+          ) => {
+            const found = await outputRepo.findAllGlobalSince(
+              cutoff,
+              signal,
+              async (keys) => (chose = await selectReadable!(keys)),
+            );
+            // The grant is revoked once the files are chosen and read.
+            loader.decisionService = decisionService([]);
+            return found;
+          },
+        },
+        workflowRepo: new YamlWorkflowRepository(dir),
+      } as unknown as ConnectionContext["repoContext"],
+    };
+    modelRegistry.register({
+      type: EDIT_TEST_TYPE,
+      version: "2026.01.01.1",
+      methods: {},
+    });
+    try {
+      const socket = createMockSocket();
+      await handleModelOutputSearch(
+        socket,
+        ctx,
+        "req-1",
+        new AbortController(),
+        EDITOR,
+        { since: "2025-12-01T00:00:00Z" },
+      );
+      const [response] = frames(socket);
+      assertEquals(chose, [true]);
+      assertEquals(response.payload.data.results, []);
+    } finally {
+      modelRegistry.invalidateType(EDIT_TEST_TYPE);
     }
   });
 });

@@ -86,20 +86,51 @@ export interface ModelOutputSearchModel {
 }
 
 /**
+ * What an output file's location says about the output before it is read.
+ */
+export interface ModelOutputSearchKey {
+  type: { normalized: string };
+  definitionId: string;
+  methodName: string;
+}
+
+/** Which of `keys` (distinct) may be read: one answer per key, in order. */
+export type ModelOutputSearchSelector = (
+  keys: readonly ModelOutputSearchKey[],
+) => Promise<readonly boolean[]>;
+
+/** An output the search may leave out unread, as `canRead` is asked of it. */
+export interface ModelOutputSearchCandidate {
+  definitionId: string;
+  /** The model name the output's result would carry. */
+  modelName?: string;
+  type: string;
+  methodName: string;
+}
+
+/**
  * Dependencies for the model output search generator.
  */
 export interface ModelOutputSearchDeps {
-  findAllOutputsGlobal(): Promise<
+  /**
+   * Every output. With `selectReadable`, it may leave out unread the
+   * outputs whose location carries a key it refuses.
+   */
+  findAllOutputsGlobal(selectReadable?: ModelOutputSearchSelector): Promise<
     Array<{
       output: ModelOutputSearchOutput;
       type: { normalized: string };
     }>
   >;
   /**
-   * Outputs started at or after `cutoff`, for a `since` filter. Optional:
-   * without it the search reads every output and filters.
+   * Outputs started at or after `cutoff`, for a `since` filter, leaving out
+   * what `selectReadable` refuses as {@link findAllOutputsGlobal} does.
+   * Optional: without it the search reads every output and filters.
    */
-  findAllOutputsGlobalSince?(cutoff: Date): Promise<
+  findAllOutputsGlobalSince?(
+    cutoff: Date,
+    selectReadable?: ModelOutputSearchSelector,
+  ): Promise<
     Array<{
       output: ModelOutputSearchOutput;
       type: { normalized: string };
@@ -150,6 +181,15 @@ export interface ModelOutputSearchDeps {
   resolveWorkflowNames?(
     ids: ReadonlySet<string>,
   ): Promise<ReadonlyMap<string, string>>;
+  /**
+   * Which of `candidates` the caller may read, one answer per candidate, in
+   * order. With it, a search without `model` leaves out unread the outputs
+   * it refuses (swamp-club#4142). Outputs whose location says nothing about
+   * them are still read, so the results still need authorizing.
+   */
+  canRead?(
+    candidates: readonly ModelOutputSearchCandidate[],
+  ): Promise<readonly boolean[]>;
 }
 
 /**
@@ -242,13 +282,39 @@ export async function* modelOutputSearch(
         return;
       }
 
+      // Names are looked up once each, by the scan's choice of files and
+      // then for the results alike (swamp-club#4141, swamp-club#4142).
+      const namer = definitionNamer(deps);
+
+      // Each key asked about with the name its outputs' results would carry,
+      // so it is judged as their results are.
+      const canRead = deps.canRead;
+      const selectReadable: ModelOutputSearchSelector | undefined = canRead &&
+        (async (keys) => {
+          await namer.resolve(keys);
+          return canRead(
+            await Promise.all(keys.map(async (key) => ({
+              definitionId: key.definitionId,
+              modelName: await namer.nameOf(key.type, key.definitionId),
+              type: key.type.normalized,
+              methodName: key.methodName,
+            }))),
+          );
+        });
+
       // Exported as the output_search diagnostic area's phases when the
       // caller runs this in it (swamp-club#4056); silent otherwise.
       const candidates = await observeDiagnosticPhase(
         "candidate_scan",
         {},
         async (phase) => {
-          const found = await findCandidates(deps, input.model, since, until);
+          const found = await findCandidates(
+            deps,
+            input.model,
+            since,
+            until,
+            selectReadable,
+          );
           phase.tally.add("candidates", found.length);
           return found;
         },
@@ -259,7 +325,15 @@ export async function* modelOutputSearch(
         return !(since && startedMs < since.getTime()) &&
           !(until && startedMs >= until.getTime());
       });
-      const modelNameOf = await definitionNamer(deps, inWindow);
+      await namer.resolve(
+        inWindow
+          .filter(({ modelName }) => modelName === undefined)
+          .map(({ output, type }) => ({
+            type,
+            definitionId: output.definitionId,
+          })),
+      );
+      const modelNameOf = namer.nameOf;
 
       const items: ModelOutputSearchItem[] = [];
       for (const { output, type, modelName: knownName } of inWindow) {
@@ -339,75 +413,76 @@ export async function* modelOutputSearch(
 }
 
 /**
- * Names the candidates' definitions. With {@link
- * ModelOutputSearchDeps.resolveModelNames}, the definitions of the
- * candidates not already named are looked up together, once each. Otherwise
- * one scan of every definition, only once an output needs a name. Either way
- * the first definition per type and id wins, so a primary definition names
- * its outputs over an auto-definition sharing its id.
+ * Names definitions. With {@link ModelOutputSearchDeps.resolveModelNames},
+ * `resolve` looks up together the names of the definitions not looked up
+ * yet, once each, and `nameOf` answers from what was looked up. Otherwise
+ * `resolve` does nothing, and one scan of every definition answers `nameOf`,
+ * only once an output needs a name. Either way the first definition per type
+ * and id wins, so a primary definition names its outputs over an
+ * auto-definition sharing its id.
  */
-async function definitionNamer(
-  deps: ModelOutputSearchDeps,
-  candidates: ReadonlyArray<{
-    output: ModelOutputSearchOutput;
-    type: { normalized: string };
-    modelName?: string;
-  }>,
-): Promise<
-  (
+function definitionNamer(deps: ModelOutputSearchDeps): {
+  resolve(
+    keys: ReadonlyArray<
+      { type: { normalized: string }; definitionId: string }
+    >,
+  ): Promise<void>;
+  nameOf(
     type: { normalized: string },
     definitionId: string,
-  ) => Promise<string | undefined>
-> {
+  ): Promise<string | undefined>;
+} {
   const keyOf = (type: { normalized: string }, definitionId: string) =>
     JSON.stringify([type.normalized, definitionId]);
 
   if (deps.resolveModelNames) {
     const resolveModelNames = deps.resolveModelNames;
-    const wanted = new Map<
-      string,
-      { type: { normalized: string }; definitionId: string }
-    >();
-    for (const { output, type, modelName } of candidates) {
-      if (modelName !== undefined) continue;
-      const key = keyOf(type, output.definitionId);
-      if (!wanted.has(key)) {
-        wanted.set(key, { type, definitionId: output.definitionId });
-      }
-    }
-    const names = new Map<string, string>();
-    if (wanted.size > 0) {
-      await observeDiagnosticPhase("definition_names", {}, async (phase) => {
-        phase.tally.add("definitions", wanted.size);
-        const keys = [...wanted.keys()];
-        const resolved = await resolveModelNames([...wanted.values()]);
-        keys.forEach((key, i) => {
-          const name = resolved[i];
-          if (name !== undefined) names.set(key, name);
+    const names = new Map<string, string | undefined>();
+    return {
+      resolve: async (keys) => {
+        const wanted = new Map<
+          string,
+          { type: { normalized: string }; definitionId: string }
+        >();
+        for (const { type, definitionId } of keys) {
+          const key = keyOf(type, definitionId);
+          if (!names.has(key) && !wanted.has(key)) {
+            wanted.set(key, { type, definitionId });
+          }
+        }
+        if (wanted.size === 0) return;
+        await observeDiagnosticPhase("definition_names", {}, async (phase) => {
+          phase.tally.add("definitions", wanted.size);
+          const keys = [...wanted.keys()];
+          const resolved = await resolveModelNames([...wanted.values()]);
+          keys.forEach((key, i) => names.set(key, resolved[i]));
         });
-      });
-    }
-    return (type, definitionId) =>
-      Promise.resolve(names.get(keyOf(type, definitionId)));
+      },
+      nameOf: (type, definitionId) =>
+        Promise.resolve(names.get(keyOf(type, definitionId))),
+    };
   }
 
   let names: Promise<Map<string, string>> | undefined;
-  return async (type, definitionId) => {
-    names ??= observeDiagnosticPhase(
-      "definition_names",
-      {},
-      (phase) =>
-        deps.findAllDefinitions().then((all) => {
-          phase.tally.add("definitions", all.length);
-          const index = new Map<string, string>();
-          for (const entry of all) {
-            const key = keyOf(entry.type, entry.definition.id);
-            if (!index.has(key)) index.set(key, entry.definition.name);
-          }
-          return index;
-        }),
-    );
-    return (await names).get(keyOf(type, definitionId));
+  return {
+    resolve: () => Promise.resolve(),
+    nameOf: async (type, definitionId) => {
+      names ??= observeDiagnosticPhase(
+        "definition_names",
+        {},
+        (phase) =>
+          deps.findAllDefinitions().then((all) => {
+            phase.tally.add("definitions", all.length);
+            const index = new Map<string, string>();
+            for (const entry of all) {
+              const key = keyOf(entry.type, entry.definition.id);
+              if (!index.has(key)) index.set(key, entry.definition.name);
+            }
+            return index;
+          }),
+      );
+      return (await names).get(keyOf(type, definitionId));
+    },
   };
 }
 
@@ -415,13 +490,15 @@ async function definitionNamer(
  * The outputs worth considering: only the named model's when the
  * repository can look them up by definition (within `since` and `until`
  * when it can skip the rest), otherwise every output (since the `since`
- * cutoff when the repository can skip older ones).
+ * cutoff when the repository can skip older ones) that `selectReadable`
+ * does not refuse.
  */
 async function findCandidates(
   deps: ModelOutputSearchDeps,
   model: string | undefined,
   since: Date | undefined,
   until: Date | undefined,
+  selectReadable: ModelOutputSearchSelector | undefined,
 ): Promise<
   Array<{
     output: ModelOutputSearchOutput;
@@ -456,7 +533,7 @@ async function findCandidates(
     return found;
   }
   if (since !== undefined && deps.findAllOutputsGlobalSince) {
-    return await deps.findAllOutputsGlobalSince(since);
+    return await deps.findAllOutputsGlobalSince(since, selectReadable);
   }
-  return await deps.findAllOutputsGlobal();
+  return await deps.findAllOutputsGlobal(selectReadable);
 }

@@ -20,13 +20,19 @@
 // Output search names history from one scan of every definition, with the
 // real definition repository: primary definitions over auto-definitions, by
 // type and id, however many deleted definitions the history holds
-// (swamp-club#3959).
+// (swamp-club#3959). A search that may not read everything is judged on
+// those same names before it reads (swamp-club#4142).
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
-import { Definition } from "../src/domain/definitions/definition.ts";
+import {
+  createDefinitionId,
+  Definition,
+} from "../src/domain/definitions/definition.ts";
+import { ModelOutput } from "../src/domain/models/model_output.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
+import { YamlOutputRepository } from "../src/infrastructure/persistence/yaml_output_repository.ts";
 import {
   captureUnreadableWarnings,
   fakeUnreadableLookup,
@@ -36,8 +42,11 @@ import {
   modelOutputSearch,
   type ModelOutputSearchData,
   type ModelOutputSearchDeps,
+  type ModelOutputSearchSelector,
 } from "../src/libswamp/models/output_search.ts";
 import { collect } from "../src/libswamp/testing.ts";
+// The global output scans walk the registered types.
+import "../src/domain/models/models.ts";
 
 const TYPE = ModelType.create("command/shell");
 
@@ -164,5 +173,86 @@ Deno.test("model output search: an auto-definition stored under its id the datas
     assertEquals(names.get(lostId), undefined);
     assertEquals(warnings.length, 1, warnings.join("\n"));
     assertStringIncludes(warnings[0], lostPath);
+  });
+});
+
+Deno.test("model output search: with canRead, the real repositories leave unread what it refuses, judged on the names the results carry, and answer as filtering every result does (swamp-club#4142)", async () => {
+  await withTempDir(async (dir) => {
+    const autoDir = join(dir, ".swamp", "auto-definitions");
+    const definitionRepo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      undefined,
+      autoDir,
+    );
+    const autoRepo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      autoDir,
+      false,
+    );
+    const outputRepo = new YamlOutputRepository(dir);
+    const primary = Definition.create({ name: "primary" });
+    await definitionRepo.save(TYPE, primary);
+    // Shadowed by the primary definition: its outputs carry "primary".
+    await autoRepo.save(
+      TYPE,
+      Definition.create({ id: primary.id, name: "auto-copy" }),
+    );
+    const other = Definition.create({ name: "other" });
+    await definitionRepo.save(TYPE, other);
+    const deleted = crypto.randomUUID();
+    let at = Date.UTC(2026, 0, 1);
+    for (const definitionId of [primary.id, other.id, deleted, primary.id]) {
+      await outputRepo.save(
+        TYPE,
+        "execute",
+        ModelOutput.create({
+          definitionId: createDefinitionId(definitionId),
+          methodName: "execute",
+          status: "succeeded",
+          startedAt: new Date(at += 1000),
+          provenance: {
+            definitionHash: "h",
+            modelVersion: "1",
+            triggeredBy: "manual",
+          },
+        }),
+      );
+    }
+
+    const asked: (string | undefined)[] = [];
+    const readable = (item: { modelName?: string; definitionId: string }) =>
+      item.modelName === "primary" || item.definitionId === deleted;
+    const deps = (canRead?: ModelOutputSearchDeps["canRead"]) => ({
+      findAllOutputsGlobal: (selectReadable?: ModelOutputSearchSelector) =>
+        outputRepo.findAllGlobal(undefined, selectReadable),
+      findAllOutputsGlobalSince: (
+        cutoff: Date,
+        selectReadable?: ModelOutputSearchSelector,
+      ) => outputRepo.findAllGlobalSince(cutoff, undefined, selectReadable),
+      findAllDefinitions: () => definitionRepo.findAllIncludingAutoGlobal(),
+      canRead,
+    });
+    const resultsOf = async (searchDeps: ModelOutputSearchDeps) => {
+      const events = await collect(
+        modelOutputSearch(createLibSwampContext(), searchDeps, {
+          since: "2025-12-01T00:00:00Z",
+        }),
+      );
+      const last = events[events.length - 1];
+      assertEquals(last.kind, "completed");
+      return (last as { data: ModelOutputSearchData }).data.results;
+    };
+
+    const everything = await resultsOf(deps());
+    const filtered = await resultsOf(deps((candidates) => {
+      asked.push(...candidates.map((c) => c.modelName));
+      return Promise.resolve(candidates.map(readable));
+    }));
+
+    assertEquals(filtered, everything.filter(readable));
+    assertEquals(filtered.length, 3);
+    assertEquals(asked.sort(), ["other", "primary", undefined].sort());
   });
 });

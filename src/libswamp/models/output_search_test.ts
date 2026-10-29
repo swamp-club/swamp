@@ -28,6 +28,7 @@ import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   modelOutputSearch,
+  type ModelOutputSearchCandidate,
   type ModelOutputSearchDeps,
   type ModelOutputSearchEvent,
 } from "./output_search.ts";
@@ -703,4 +704,96 @@ Deno.test("modelOutputSearch: definition_names counts the definitions resolveMod
     const phase = findSpan(spans, "swamp.diagnostic.definition_names");
     assertEquals(phase.attributes["swamp.diagnostic.definitions"], 2);
   });
+});
+
+Deno.test("modelOutputSearch: asks canRead about each key the scan finds, named as its results would be, and passes the scan its answers (swamp-club#4142)", async () => {
+  const asked: ModelOutputSearchCandidate[][] = [];
+  const selections: boolean[][] = [];
+  const deps = makeDeps({
+    canRead: (candidates) => {
+      asked.push([...candidates]);
+      return Promise.resolve(
+        candidates.map((candidate) => candidate.modelName === "my-ec2"),
+      );
+    },
+    findAllOutputsGlobalSince: async (_cutoff, selectReadable) => {
+      selections.push([
+        ...(await selectReadable!([
+          {
+            type: { normalized: "aws/ec2-instance" },
+            definitionId: "def-1",
+            methodName: "start",
+          },
+          {
+            type: { normalized: "aws/s3-bucket" },
+            definitionId: "def-2",
+            methodName: "sync",
+          },
+          // A definition no longer found carries no name.
+          {
+            type: { normalized: "aws/s3-bucket" },
+            definitionId: "gone",
+            methodName: "sync",
+          },
+        ])),
+      ]);
+      return [];
+    },
+  });
+  await collect(
+    modelOutputSearch(createLibSwampContext(), deps, {
+      since: "2026-01-01T00:00:00Z",
+    }),
+  );
+  assertEquals(asked, [[
+    {
+      definitionId: "def-1",
+      modelName: "my-ec2",
+      type: "aws/ec2-instance",
+      methodName: "start",
+    },
+    {
+      definitionId: "def-2",
+      modelName: "my-bucket",
+      type: "aws/s3-bucket",
+      methodName: "sync",
+    },
+    {
+      definitionId: "gone",
+      modelName: undefined,
+      type: "aws/s3-bucket",
+      methodName: "sync",
+    },
+  ]]);
+  assertEquals(selections, [[true, false, false]]);
+});
+
+Deno.test("modelOutputSearch: gives the full scan a selection only when canRead is given (swamp-club#4142)", async () => {
+  let selected: unknown = "not called";
+  const scan: ModelOutputSearchDeps["findAllOutputsGlobal"] = (
+    selectReadable,
+  ) => {
+    selected = selectReadable;
+    return Promise.resolve([]);
+  };
+  await collect(
+    modelOutputSearch(
+      createLibSwampContext(),
+      makeDeps({ findAllOutputsGlobal: scan }),
+      {},
+    ),
+  );
+  assertEquals(selected, undefined);
+
+  await collect(
+    modelOutputSearch(
+      createLibSwampContext(),
+      makeDeps({
+        findAllOutputsGlobal: scan,
+        canRead: (candidates) => Promise.resolve(candidates.map(() => true)),
+      }),
+      {},
+    ),
+  );
+  assertEquals(typeof selected, "function");
 });

@@ -179,6 +179,7 @@ import {
   recordAuditedResource,
   rejectEditWithoutContent,
   resourceDecider,
+  resourceReadability,
   runFailureForClient,
   sanitizeErrorForClient,
   send,
@@ -2102,12 +2103,21 @@ export async function handleModelOutputSearch(
     // (swamp-club#4141).
     const canonical = canonicalResources(ctx, controller.signal);
 
+    // One decision per output key for the scan's choice of files. The final
+    // check decides again, on the policy current once the scan is done.
+    const readable = outputReadability(canonical, socket, principal, ctx);
+
     // The scans stop when the request is cancelled, so it gives up its
     // place among the shared scan permits (swamp-club#4070).
     const deps: ModelOutputSearchDeps = {
-      findAllOutputsGlobal: () => outputRepo.findAllGlobal(controller.signal),
-      findAllOutputsGlobalSince: (cutoff) =>
-        outputRepo.findAllGlobalSince(cutoff, controller.signal),
+      findAllOutputsGlobal: (selectReadable) =>
+        outputRepo.findAllGlobal(controller.signal, selectReadable),
+      findAllOutputsGlobalSince: (cutoff, selectReadable) =>
+        outputRepo.findAllGlobalSince(
+          cutoff,
+          controller.signal,
+          selectReadable,
+        ),
       findAllDefinitions: () => definitionRepo.findAllIncludingAutoGlobal(),
       resolveModelNames: (keys) => resolveModelNames(canonical, keys),
       resolveModel: async (idOrName) => {
@@ -2146,6 +2156,23 @@ export async function handleModelOutputSearch(
         }
         return names;
       },
+      // Files the caller may not read are left unread (swamp-club#4142).
+      ...(ctx.authConfig.mode === "none" ? {} : {
+        canRead: (candidates) =>
+          observeDiagnosticPhase(
+            "candidate_authorization",
+            {},
+            async (phase) => {
+              phase.tally.add("keys", candidates.length);
+              const answers = await Promise.all(candidates.map(readable));
+              phase.tally.add(
+                "readable_keys",
+                answers.filter((answer) => answer).length,
+              );
+              return answers;
+            },
+          ),
+      }),
     };
 
     // Exported as the output_search diagnostic area's phases
@@ -2185,15 +2212,15 @@ export async function handleModelOutputSearch(
           {},
           async (phase) => {
             phase.tally.add("items", results.length);
-            const readable = await filterOutputItems(
+            const kept = await filterOutputItems(
               results,
               canonical,
               socket,
               principal,
               ctx,
             );
-            phase.tally.add("readable", readable.length);
-            return readable;
+            phase.tally.add("readable", kept.length);
+            return kept;
           },
         );
       }
@@ -3121,6 +3148,12 @@ export async function redactWorkflowLinks(
   }
 }
 
+/** What an output or method run is judged on for reading. */
+type OutputReadKey = Pick<
+  ModelOutputSearchItem,
+  "definitionId" | "type" | "modelName" | "methodName"
+>;
+
 /**
  * The names of the definitions an output search asks for, in order, from the
  * request's owner lookups, which authorizing its items then reuses. One at a
@@ -3139,34 +3172,69 @@ async function resolveModelNames(
 }
 
 /**
- * Keeps the output or method-run items the caller may read: each is judged on
- * every model owning its definition id, with the method it ran, so a
- * methods-scoped or tag-conditioned grant applies to it (swamp-club#2675).
+ * Whether the caller may read an output or method run: judged on every model
+ * owning its definition id, with the method it ran, so a methods-scoped or
+ * tag-conditioned grant applies to it (swamp-club#2675). Decided once per
+ * distinct key, for the request it is built in, on the request's owner
+ * lookups.
  */
-function filterOutputItems(
-  items: ModelOutputSearchItem[],
+function outputReadability(
   canonical: CanonicalResources,
   socket: WebSocket,
   principal: Principal | null,
   ctx: ConnectionContext,
-): Promise<ModelOutputSearchItem[]> {
-  return filterByResources(
-    items,
-    async (item) =>
+): (key: OutputReadKey) => Promise<boolean> {
+  const readable = resourceReadability(
+    async (key: OutputReadKey) =>
       (await canonical.modelOwners(
-        item.definitionId,
-        item.type,
-        item.modelName ?? item.definitionId,
+        key.definitionId,
+        key.type,
+        key.modelName ?? key.definitionId,
         "model",
       )).map((owner) => ({
         ...owner,
-        fields: { ...owner.fields, methodName: item.methodName },
+        fields: { ...owner.fields, methodName: key.methodName },
       })),
     socket,
     principal,
     "read",
     ctx,
   );
+  const decided = new Map<string, Promise<boolean>>();
+  return (key) => {
+    const id = JSON.stringify([
+      key.type,
+      key.definitionId,
+      key.modelName ?? key.definitionId,
+      key.methodName,
+    ]);
+    let allowed = decided.get(id);
+    if (allowed === undefined) {
+      allowed = readable(key);
+      decided.set(id, allowed);
+    }
+    return allowed;
+  };
+}
+
+/**
+ * Keeps the output or method-run items the caller may read, as
+ * {@link outputReadability} judges them on the policy current when called.
+ */
+async function filterOutputItems(
+  items: ModelOutputSearchItem[],
+  canonical: CanonicalResources,
+  socket: WebSocket,
+  principal: Principal | null,
+  ctx: ConnectionContext,
+): Promise<ModelOutputSearchItem[]> {
+  if (ctx.authConfig.mode === "none") return items;
+  const readable = outputReadability(canonical, socket, principal, ctx);
+  const kept: ModelOutputSearchItem[] = [];
+  for (const item of items) {
+    if (await readable(item)) kept.push(item);
+  }
+  return kept;
 }
 
 /**
