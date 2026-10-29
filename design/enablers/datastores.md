@@ -7998,20 +7998,19 @@ refreshes its resource does. `methodRunLockMode`
   no push, and a v3 root commits through its commit log whatever the locks.
   Nor does it on a v2 extension datastore whose provider builds no sync
   service, which has nothing to pull or publish through.
-- On a v2 extension datastore the model lock is the only path that pulls
-  before a run and publishes what it wrote, and each clone numbers data
-  versions from its own cache. So the run pulls the behavior without the lock
-  first (`pullModelsUnlocked`), runs unlocked, and then tries to take the
-  lock only to publish (`acquirePublishLocksOrDefer`). The pull never waits
-  and never fails the run: while a structural command holds the global lock,
-  while a run on this host holds the behavior's lock (it writes into the
-  same cache, and a pull would overwrite its unpublished files with the
-  datastore's older copies), or when the pull fails (an unreachable remote),
-  the run uses this host's cache, and the publish check still refuses a
-  version another clone wrote. A holder on another host does not share the
-  cache, so the pull goes ahead.
-  A global lock past its TTL is force-released, as a waiting run does, so a
-  crashed structural command does not hold reads off.
+- On a v2 extension datastore the model lock is the only path that pulls before
+  a run and publishes what it wrote, and each clone numbers data versions from
+  its own cache. So the run pulls the behavior without the lock first
+  (`pullModelsUnlocked`), runs unlocked, and then tries to take the lock only to
+  publish (`acquirePublishLocksOrDefer`). The pull never waits and never fails
+  the run: while a structural command holds the global lock, while a run on this
+  host holds the behavior's lock (it writes into the same cache, and a pull
+  would overwrite its unpublished files with the datastore's older copies), or
+  when the pull fails (an unreachable remote), the run uses this host's cache,
+  and the publish check still refuses a version another clone wrote. A holder on
+  another host does not share the cache, so the pull goes ahead. A global lock
+  past its TTL is force-released, as a waiting run does, so a crashed structural
+  command does not hold reads off.
 - The publish never waits on a writer. `acquireModelLocks` with `failIfBusy`
   gives up at once while the global lock is held, and after
   `READ_PUBLISH_LOCK_WAIT_MS` (two seconds, one retry) while another run
@@ -8050,15 +8049,14 @@ refreshes its resource does. `methodRunLockMode`
   run's result waits for its publish and lists what it left on this host
   in `unpublishedVersions` (`dataName`, `version`, and `reason`: `conflict`
   or `unauthorized`); the field is absent when nothing was left.
-- A refusal of the credentials (HTTP 401 or 403, an access-denied code,
-  read by `isDatastoreAuthorizationError`), whether taking the publish
-  lock, pulling under it or pushing, does not fail a read or list run
-  either: read-only credentials never stopped a read before reads
-  published. The CLI warns
-  that the data stays on this host only, and records nothing for a later
-  lock, which the same credentials would be refused again. Any other
-  failure, such as an unreachable datastore, still fails the run, and a
-  mutating run whose credentials are refused fails as before.
+- A refusal of the credentials (HTTP 401 or 403, an access-denied code, read by
+  `isDatastoreAuthorizationError`), whether taking the publish lock, pulling
+  under it or pushing, does not fail a read or list run either: read-only
+  credentials never stopped a read before reads published. The CLI warns that
+  the data stays on this host only, and records nothing for a later lock, which
+  the same credentials would be refused again. Any other failure, such as an
+  unreachable datastore, still fails the run, and a mutating run whose
+  credentials are refused fails as before.
 - Every push made under a behavior's lock with a repository context also
   publishes the versions earlier runs deferred for it, with the same
   data-id check, and removes their records once the datastore confirms
@@ -8069,11 +8067,11 @@ refreshes its resource does. `methodRunLockMode`
   cannot be read fails the publish rather than being left out. A version no
   longer on this host is dropped, and a record naming another behavior's
   versions too waits for a lock that holds them all.
-- A run that wrote no data version takes no publish lock. When the CLI
-  publish fails other than by a conflict, a refusal of the credentials or a
-  busy lock (an unreachable remote), a run that succeeded fails with that error, or with
-  `datastore_publish_failed` for an untyped one; a run that failed keeps its
-  own error and logs that its data was not published.
+- A run that wrote no data version takes no publish lock. When the CLI publish
+  fails other than by a conflict, a refusal of the credentials or a busy lock
+  (an unreachable remote), a run that succeeded fails with that error, or with
+  `datastore_publish_failed` for an untyped one; a run that failed keeps its own
+  error and logs that its data was not published.
 
 Until it is published, a read run's data sits in the cache like any other
 unpublished write. Another run's push from this host uploads it without the

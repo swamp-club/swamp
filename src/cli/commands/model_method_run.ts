@@ -135,18 +135,18 @@ import {
 type AnyOptions = any;
 
 /**
- * The text that differs between the CLI surfaces a method run is reachable
- * from. Everything else about the command — arguments, options, the action —
- * is identical: `swamp model method run` and `swamp behavior run` are two
- * spellings of one invocation, not two commands (swamp-club#3265).
- */
-/**
  * Where the publish of a run's data and its locks report: the run's own
  * category reaches only its log file unless `--log` is passed, and the
  * publish runs after the method has finished writing it (swamp-club#3934).
  */
 const publishLogger = getSwampLogger(["datastore", "lock"]);
 
+/**
+ * The text that differs between the CLI surfaces a method run is reachable
+ * from. Everything else about the command — arguments, options, the action —
+ * is identical: `swamp model method run` and `swamp behavior run` are two
+ * spellings of one invocation, not two commands (swamp-club#3265).
+ */
 export interface RunCommandSyntax {
   /** Renders `swamp … <model> <method>` for a named definition. */
   readonly invocation: (model: string, method: string) => string;
@@ -955,7 +955,29 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               : error;
           })
             // A held JSON result names what the publish left unpublished.
-            .finally(renderHeldResults);
+            // Rendered whichever way the root ended; a render failure never
+            // replaces the error the command is already failing with.
+            .then(
+              async (value) => {
+                await renderHeldResults();
+                return value;
+              },
+              async (error) => {
+                try {
+                  await renderHeldResults();
+                } catch (renderError) {
+                  publishLogger.warn(
+                    "Failed to render the run's result: {error}",
+                    {
+                      error: renderError instanceof Error
+                        ? renderError.message
+                        : String(renderError),
+                    },
+                  );
+                }
+                throw error;
+              },
+            );
           if (!finished) return;
           if (publishFailure !== undefined) {
             const { error } = publishFailure;
