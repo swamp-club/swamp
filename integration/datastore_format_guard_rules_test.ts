@@ -212,7 +212,7 @@ const GUARDED_PINNED = [
   "src/cli/retention_teardown.ts:runRetentionAtCommandEnd",
   "src/cli/managed_config_sync.ts:coordinatedGlobalLock",
   "src/cli/repo_context.ts:acquireModelLocks (x5)",
-  // swamp-club#3934: a read or list run's unlocked pull waits on the global
+  // swamp-club#3934: a read or list run's unlocked pull reads the global
   // lock and pulls, and checks its config itself, as acquireModelLocks does.
   "src/cli/repo_context.ts:pullModelsUnlocked (x2)",
   "src/cli/repo_context.ts:createModelLock (x2)",

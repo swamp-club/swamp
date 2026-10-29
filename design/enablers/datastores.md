@@ -7999,9 +7999,13 @@ refreshes its resource does. `methodRunLockMode`
 - On a v2 extension datastore the model lock is the only path that pulls
   before a run and publishes what it wrote, and each clone numbers data
   versions from its own cache. So the run pulls the behavior without the lock
-  first (`pullModelsUnlocked`; it skips the pull, rather than wait, while a
-  structural command holds the global lock), runs unlocked, and then tries to
-  take the lock only to publish (`acquirePublishLocksOrDefer`).
+  first (`pullModelsUnlocked`), runs unlocked, and then tries to take the
+  lock only to publish (`acquirePublishLocksOrDefer`). The pull never waits
+  and never fails the run: while a structural command holds the global lock,
+  or when the pull fails (an unreachable remote), the run uses this host's
+  cache, and the publish check still refuses a version another clone wrote.
+  A global lock past its TTL is force-released, as a waiting run does, so a
+  crashed structural command does not hold reads off.
 - The publish never waits on a writer. `acquireModelLocks` with `failIfBusy`
   gives up at once while the global lock is held, and after
   `READ_PUBLISH_LOCK_WAIT_MS` (two seconds, one retry) while another run

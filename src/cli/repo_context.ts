@@ -3738,12 +3738,39 @@ async function waitForGlobalLockRelease(
 }
 
 /**
- * Pulls the models' data without taking their locks, after waiting for the
- * datastore's global lock as {@link acquireModelLocks} does. A read or list
- * run on a v2 extension datastore pulls this way before it runs unlocked, so
- * it reads current data and numbers its versions past every published one
- * (swamp-club#3934). Returns whether the local cache may have changed, so
- * the caller invalidates the catalog. Pulls nothing on another datastore.
+ * The global lock's holder, for a run that never waits on it, or undefined
+ * when it is free. A lock past its TTL is force-released, as
+ * {@link waitForGlobalLockRelease} does, so a crashed structural command
+ * does not hold such runs off until a waiting run clears it.
+ */
+async function liveGlobalLockHolder(
+  globalLock: DistributedLock,
+  write: LockProgressWriter,
+): Promise<LockInfo | undefined> {
+  const info = await globalLock.inspect();
+  if (!info) return undefined;
+  if (Date.now() - new Date(info.acquiredAt).getTime() > info.ttlMs) {
+    write(
+      dim(
+        `Global lock held by ${info.holder} appears stale (exceeded TTL of ${info.ttlMs}ms) — proceeding`,
+      ),
+    );
+    await tryForceReleaseStaleLock(globalLock, info);
+    return undefined;
+  }
+  return info;
+}
+
+/**
+ * Pulls the models' data without taking their locks. A read or list run on
+ * a v2 extension datastore pulls this way before it runs unlocked, so it
+ * reads current data and numbers its versions past every published one
+ * (swamp-club#3934). It never waits and never fails the run: while a
+ * structural command holds the global lock, or when the pull fails, the
+ * run uses this host's cache, as it did before it pulled, and its publish
+ * check still refuses any version another clone wrote. Returns whether the
+ * local cache may have changed, so the caller invalidates the catalog.
+ * Pulls nothing on another datastore.
  */
 export async function pullModelsUnlocked(
   config: DatastoreConfig,
@@ -3769,10 +3796,13 @@ export async function pullModelsUnlocked(
   const provider = await resolveCustomProvider(config);
   // A read never waits on a structural command (swamp-club#1992): it runs
   // on this host's cache instead.
-  const globalInfo = await provider.createLock(config.datastorePath, {
-    ...datastoreGlobalLockOptions(config),
-    maxWaitMs: resolveLockTimeoutMs(),
-  }).inspect();
+  const globalInfo = await liveGlobalLockHolder(
+    provider.createLock(config.datastorePath, {
+      ...datastoreGlobalLockOptions(config),
+      maxWaitMs: resolveLockTimeoutMs(),
+    }),
+    write,
+  );
   if (globalInfo) {
     write(
       dim(
@@ -3798,10 +3828,10 @@ export async function pullModelsUnlocked(
       // 0 means the local cache is unchanged; void means unknown.
       if (pulled !== 0) synced = true;
     } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      throw new Error(
-        `Datastore sync failed: could not pull data for ${modelType}/${modelId}: ${msg}`,
-      );
+      getSwampLogger(["datastore", "sync"])
+        .warn`Could not pull ${modelType}/${modelId} from the datastore, so this run uses this host's data: ${error}`;
+      // A pull that failed part-way may have written some files.
+      return true;
     }
   }
   return synced;
@@ -3849,7 +3879,14 @@ export async function acquirePublishLocksOrDefer(
     }
     getSwampLogger(["datastore", "lock"])
       .debug`Deferring the publish of ${written.length} data version(s): ${error.message}`;
-    await recordPendingPublish(config.cachePath, written);
+    // Only the locked model's versions: a record naming another's would
+    // wait for a lock that holds both, which no method run takes.
+    await recordPendingPublish(
+      config.cachePath,
+      written.filter((w) =>
+        w.modelType === model.modelType && w.modelId === model.modelId
+      ),
+    );
     return undefined;
   }
 }
@@ -3917,7 +3954,7 @@ export async function acquireModelLocks(
     : await createDatastoreLock(config);
   if (options?.failIfBusy) {
     // Never waits; the re-check after each lock below throws busy too.
-    if (await globalLock.inspect()) {
+    if (await liveGlobalLockHolder(globalLock, write)) {
       throw new ModelLocksBusyError(".datastore.lock");
     }
   } else {
@@ -4017,7 +4054,9 @@ export async function acquireModelLocks(
       // Re-check global lock after acquiring each per-model lock to close TOCTOU race.
       // If a structural command acquired the global lock between our initial check
       // and this per-model acquisition, release everything and wait.
-      const postAcquireGlobalInfo = await globalLock.inspect();
+      const postAcquireGlobalInfo = options?.failIfBusy
+        ? await liveGlobalLockHolder(globalLock, write)
+        : await globalLock.inspect();
       if (postAcquireGlobalInfo && options?.failIfBusy) {
         throw new ModelLocksBusyError(".datastore.lock");
       }

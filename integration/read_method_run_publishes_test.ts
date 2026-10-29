@@ -45,12 +45,14 @@ import { modelMethodCommand } from "../src/cli/commands/model_method_run.ts";
 import { registerCompletionTypes } from "../src/cli/completion_types.ts";
 import {
   acquireModelLocks,
+  acquirePublishLocksOrDefer,
   requireInitializedRepoUnlocked,
 } from "../src/cli/repo_context.ts";
 import { VERSION } from "../src/cli/commands/version.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import {
   type DistributedLock,
+  type LockInfo,
   type LockOptions,
   LockTimeoutError,
 } from "../src/domain/datastore/distributed_lock.ts";
@@ -65,7 +67,10 @@ import { RepoPath } from "../src/domain/repo/repo_path.ts";
 import { RepoService } from "../src/domain/repo/repo_service.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { flushDatastoreSync } from "../src/infrastructure/persistence/datastore_sync_coordinator.ts";
-import { pendingPublishDir } from "../src/infrastructure/persistence/pending_publish_store.ts";
+import {
+  pendingPublishDir,
+  readPendingPublishes,
+} from "../src/infrastructure/persistence/pending_publish_store.ts";
 import {
   configureTestDatastore,
   registerTestDatastoreType,
@@ -85,6 +90,8 @@ let hooks: Hooks = {};
 let failLatestReads = false;
 /** Set to connect a sync service without `clearDirty`. */
 let hideClearDirty = false;
+/** While set, every clone's pull fails, as with an unreachable remote. */
+let failPulls = false;
 
 function registerProbe(): ModelType {
   const type = ModelType.create(`test/read-publish-${crypto.randomUUID()}`);
@@ -135,6 +142,8 @@ function registerProbe(): ModelType {
  */
 class LockTable {
   readonly held = new Set<string>();
+  /** What `inspect` reports for the global lock, as a crashed holder left it. */
+  staleGlobal: LockInfo | undefined;
   #waiters = new Map<string, Array<() => void>>();
 
   lockFor = (options?: LockOptions): DistributedLock => {
@@ -189,8 +198,19 @@ class LockTable {
           await release();
         }
       },
-      inspect: () => Promise.resolve(null),
-      forceRelease: () => Promise.resolve(false),
+      inspect: () =>
+        Promise.resolve(
+          key.endsWith(".datastore.lock") ? this.staleGlobal ?? null : null,
+        ),
+      forceRelease: (nonce: string) => {
+        if (
+          !key.endsWith(".datastore.lock") || this.staleGlobal?.nonce !== nonce
+        ) {
+          return Promise.resolve(false);
+        }
+        this.staleGlobal = undefined;
+        return Promise.resolve(true);
+      },
     };
   };
 }
@@ -230,6 +250,9 @@ async function withClones(fn: (clones: Clones) => Promise<void>) {
                 : target.fetchContent!(relPath, fetchOptions);
           }
           if (property === "clearDirty" && hideClearDirty) return undefined;
+          if (property === "pullChanged" && failPulls) {
+            return () => Promise.reject(new Error("injected pull failure"));
+          }
           const value = Reflect.get(target, property, target);
           return typeof value === "function" ? value.bind(target) : value;
         },
@@ -263,6 +286,7 @@ async function withClones(fn: (clones: Clones) => Promise<void>) {
     hooks = {};
     failLatestReads = false;
     hideClearDirty = false;
+    failPulls = false;
     await flushDatastoreSync();
     modelRegistry.invalidateType(type);
     datastoreType.dispose();
@@ -666,5 +690,85 @@ Deno.test("model method run: a read run after a deferred version was overwritten
     assertEquals(remoteValue(c, 2), "from-a-again");
     assertEquals(remoteLatest(c), "2");
     assertEquals(await pendingRecords(c.repoA), 0);
+  });
+});
+
+Deno.test("model method run: a stale global lock does not stop a read from pulling and publishing (swamp-club#3934)", async () => {
+  await withClones(async (c) => {
+    // A structural command crashed holding the global lock, long past its TTL.
+    c.locks.staleGlobal = {
+      holder: "crashed@elsewhere",
+      hostname: "elsewhere",
+      pid: 1,
+      acquiredAt: new Date(Date.now() - 3_600_000).toISOString(),
+      ttlMs: 30_000,
+      nonce: crypto.randomUUID(),
+    };
+    await runMethod(c.repoA, "observe", "from-a");
+    assertEquals(c.locks.staleGlobal, undefined, "the stale lock is released");
+    assertEquals(remoteValue(c, 1), "from-a", "published, not deferred");
+    assertEquals(await pendingRecords(c.repoA), 0);
+  });
+});
+
+Deno.test("model method run: a read whose pull fails runs on this host's data and still publishes (swamp-club#3934)", async () => {
+  await withClones(async (c) => {
+    failPulls = true;
+    await runMethod(c.repoA, "observe", "from-a");
+    failPulls = false;
+    assertEquals(remoteValue(c, 1), "from-a");
+  });
+});
+
+Deno.test("acquirePublishLocksOrDefer: a deferral records only the locked behavior's versions (swamp-club#3934)", async () => {
+  await withClones(async (c) => {
+    const model = { modelType: c.type.normalized, modelId: c.definition.id };
+    const other = {
+      modelType: c.type.normalized,
+      modelId: crypto.randomUUID(),
+    };
+    const holder = await requireInitializedRepoUnlocked({
+      repoDir: c.repoB,
+      outputMode: "json",
+    });
+    const a = await requireInitializedRepoUnlocked({
+      repoDir: c.repoA,
+      outputMode: "json",
+    });
+    const writerLock = await acquireModelLocks(
+      holder.datastoreConfig,
+      [model],
+      c.repoB,
+      holder.syncService,
+      holder.repoContext.catalogStore,
+      undefined,
+      { repoContext: holder.repoContext },
+    );
+    try {
+      const locks = await acquirePublishLocksOrDefer(
+        a.datastoreConfig,
+        model,
+        [
+          { ...model, dataName: "main", version: 1, dataId: "x" },
+          { ...other, dataName: "main", version: 1, dataId: "y" },
+        ],
+        c.repoA,
+        a.syncService,
+        a.repoContext.catalogStore,
+        { repoContext: a.repoContext },
+      );
+      assertEquals(locks, undefined, "the lock is busy, so it defers");
+      const cache = join(c.repoA, ".test-cache");
+      const records = await readPendingPublishes(cache, [model, other]);
+      assertEquals(records.length, 1);
+      assertEquals(records[0].versions, [
+        { ...model, dataName: "main", version: 1, dataId: "x" },
+      ]);
+    } finally {
+      await writerLock.flush();
+      await flushDatastoreSync();
+      holder.repoContext.catalogStore.close();
+      a.repoContext.catalogStore.close();
+    }
   });
 });
