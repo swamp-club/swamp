@@ -528,6 +528,9 @@ Deno.test(
     const sink = new WalSink({ wal, downstream, deliveryWaitMs: 20 });
 
     await sink.write([makeEvent("stuck")]);
+    // The segment is read back before it reaches the downstream, so wait for
+    // the delivery to hang there; release() only resolves writes it holds.
+    await waitFor(() => downstream.outstanding === 1, "the delivery to hang");
     await sink.flush();
     await sink.flush();
     assertEquals(downstream.written.length, 0);
