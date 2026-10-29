@@ -1535,6 +1535,73 @@ Core treats the method's presence as the capability. `createInMemoryRemote`
 models it, and the conformance suite's `clear-dirty` case holds an adapter to
 it. `@swamp/s3-datastore` and `@swamp/gcs-datastore` do not implement it yet.
 
+#### `repairUnpushedFiles()` contract
+
+`repairUnpushedFiles({ namespace, dryRun, exact, signal })` is optional
+(swamp-club#4112). It recovers files written into the cache behind the sync
+service and never marked, which no push sends: before swamp-club#4100 was
+fixed, `datastore setup extension` could copy `.swamp/` into a cache whose
+sidecar was clean, push nothing and delete the source. A bare `markDirty()`
+is not a safe recovery. Its bulk walk drops the pending per-path marks
+(recorded deletions among them) and uploads stale copies over newer remote
+ones. Marking each file overflows the dirty-path cap into a walk that deletes
+remote keys the cache never pulled. So the extension finds and uploads the
+files itself, shaped like `repairNamespaceContamination`.
+
+1. **Unpushed** means a regular file (`lstat`; a symlink is never followed)
+   that passes exactly the push walk's filter, lies under `{namespace}/` (or
+   anywhere outside a foreign namespace's directory when there is none), and
+   is absent from both the live remote index and the last-synced index. A file
+   in the last-synced index but gone from the remote is a peer's deletion, not
+   unpushed.
+2. **Local versions the remote lacks are reported, never uploaded.**
+   `alreadyPresent` counts files absent from last-synced whose key the remote
+   holds, as an entry or an unindexed object, with other bytes. Two counts
+   compare with the last-synced index, never the live remote, so a stale copy
+   is not a local change:
+   - `locallyModified` counts files that differ from their last-synced entry;
+   - `unknown` counts entries with no sha256 whose size matches and mtime does
+     not, when `exact` cannot settle them.
+
+   `remoteMovedOn` counts last-synced keys the remote has since changed, for
+   information only. Each count is computed on its own.
+3. **`dryRun` mutates nothing** and finds unindexed objects with one listing
+   of the namespace prefix.
+4. **`exact`** hashes a file whose mtime differs from its last-synced
+   `localMtime`, and settles an `unknown` entry by a streamed hash of the remote
+   object when the remote entry is unchanged since last-synced.
+5. **Shard index only.** A v1 monolith is refused, pointing at `swamp datastore
+   sync --pull` and then `swamp datastore migrate-index`.
+6. **Create-only uploads.** Each unpushed file is uploaded with a conditional
+   create that records its sha256 (S3 `If-None-Match: *`, GCS
+   `ifGenerationMatch=0`). Index entries for the created files are committed
+   in batches through the shard compare-and-swap. There is never an
+   unconditional write: an endpoint without conditional create rejects. A 409
+   conflict, or a refused create that left no object, is retried up to a fixed
+   limit.
+7. **Refused creates are settled in the same run.** An object at the key whose
+   sha256 matches the local file is an earlier upload of ours, and is indexed.
+   Any other object is `alreadyPresent`, and the remote is left as it is.
+8. **Pending work is untouched.** Nothing is deleted. Dirty state is never
+   read, set or cleared, so an upload helper that marks the cache dirty is not
+   reused. The sync fingerprint (commit sequence, index ETag, last-verified
+   time) never advances. The uploaded entries are merged into the on-disk
+   last-synced index. `pendingChanges` says whether dirty state is pending.
+9. **Failures.** Without a last-synced index, reject rather than guess.
+   Batches already committed stay committed.
+
+Limits: a file pulled only by a models-scoped pull is recorded in last-synced
+only once the extension merges scoped pulls into `.datastore-index.json`.
+Files the remote already holds with other bytes are reported, never recovered.
+If a peer's unconditional upload overwrites a key just created and the peer's
+commit then fails, the index entry describes the peer's bytes.
+
+`createInMemoryRemote` models the method; the conformance suite's
+`repair-unpushed` cases hold an adapter to it. `@swamp/s3-datastore` and
+`@swamp/gcs-datastore` do not implement it yet. The release that adds it also
+records scoped pulls in last-synced and keeps the commit sequence monotonic
+when `migrate-index` or contamination repair rebuilds the index.
+
 `assertSyncServiceRoundTripConformance` in `@swamp-club/swamp-testing` holds
 every `DatastoreSyncService` adapter to this contract, delete propagation and
 two-phase push semantics, by syncing two caches over one backend. The suite is

@@ -271,6 +271,10 @@ const ALL_ROUND_TRIP_CASES = [
   "bulk-between-prepare-and-commit",
   "vanish-during-walk",
   "clear-dirty",
+  "repair-unpushed",
+  "repair-unpushed-keeps-pending",
+  "repair-unpushed-classifies",
+  "repair-unpushed-already-present",
 ];
 
 /** Cases that skip on this OS whatever the fixture. */
@@ -333,6 +337,26 @@ Deno.test("assertSyncServiceRoundTripConformance: skips every fetch-content case
     { name: "fetch-content-namespace", reason },
   ]);
   assertEquals(result.skipped[0].name, "pull-deletes");
+});
+
+Deno.test("assertSyncServiceRoundTripConformance: skips every repair-unpushed case for a service without repairUnpushedFiles", async () => {
+  const result = await assertSyncServiceRoundTripConformance(
+    inMemoryRemoteFactory(undefined, true, (fixture) => {
+      const { repairUnpushedFiles: _repair, ...service } =
+        fixture.first.service;
+      return withFirst(fixture, service);
+    }),
+  );
+  const reason = "first.service has no repairUnpushedFiles";
+  assertEquals(
+    result.skipped.filter((s) => s.name.startsWith("repair-unpushed")),
+    [
+      { name: "repair-unpushed", reason },
+      { name: "repair-unpushed-keeps-pending", reason },
+      { name: "repair-unpushed-classifies", reason },
+      { name: "repair-unpushed-already-present", reason },
+    ],
+  );
 });
 
 Deno.test("assertSyncServiceRoundTripConformance: a fetchContent that returns a Buffer passes every fetch-content case", async () => {
@@ -870,6 +894,68 @@ const BROKEN_IMPLEMENTATIONS: BrokenImplementation[] = [
         ...fixture.first.service,
         clearDirty: () => Promise.resolve(),
       }),
+  },
+  {
+    caseName: "repair-unpushed",
+    bug: "repairUnpushedFiles never uploads",
+    breakFixture: (fixture) => {
+      const { service } = fixture.first;
+      return withFirst(fixture, {
+        ...service,
+        repairUnpushedFiles: (options) =>
+          service.repairUnpushedFiles!({ ...options, dryRun: true }),
+      });
+    },
+  },
+  {
+    caseName: "repair-unpushed-keeps-pending",
+    bug:
+      "repairUnpushedFiles uploads through a helper that marks the cache dirty",
+    breakFixture: (fixture) => {
+      const { service } = fixture.first;
+      return withFirst(fixture, {
+        ...service,
+        repairUnpushedFiles: async (options) => {
+          const summary = await service.repairUnpushedFiles!(options);
+          if (!options?.dryRun) await service.markDirty();
+          return summary;
+        },
+      });
+    },
+  },
+  {
+    caseName: "repair-unpushed-classifies",
+    bug: "repairUnpushedFiles reports no local edit",
+    breakFixture: (fixture) => {
+      const { service } = fixture.first;
+      return withFirst(fixture, {
+        ...service,
+        repairUnpushedFiles: async (options) => ({
+          ...(await service.repairUnpushedFiles!(options)),
+          locallyModified: 0,
+          sampleModified: [],
+        }),
+      });
+    },
+  },
+  {
+    caseName: "repair-unpushed-already-present",
+    bug: "repairUnpushedFiles overwrites a key the remote holds",
+    breakFixture: (fixture) => {
+      const { service } = fixture.first;
+      return withFirst(fixture, {
+        ...service,
+        repairUnpushedFiles: async (options) => {
+          const summary = await service.repairUnpushedFiles!(options);
+          if (options?.dryRun || summary.alreadyPresent === 0) return summary;
+          for (const relPath of summary.sampleAlreadyPresent) {
+            await service.markDirty({ relPath });
+          }
+          await service.pushChanged();
+          return summary;
+        },
+      });
+    },
   },
 ];
 

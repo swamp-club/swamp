@@ -509,6 +509,72 @@ export interface DatastoreSyncService {
   ): Promise<NamespaceContaminationSummary>;
 
   /**
+   * Find cache files the remote has never received, and with `dryRun:
+   * false` upload them. Recovers files written into the cache behind the
+   * sync service and never marked, such as those an earlier
+   * `datastore setup extension` migration left (swamp-club#4100, #4112).
+   *
+   * Contract — implementations MUST obey these rules:
+   *
+   * 1. **What is unpushed.** A file is unpushed when it is a regular file
+   *    (checked with `lstat`; a symlink is never followed), passes exactly
+   *    the filter the push walk applies (internal sidecar and index files,
+   *    the catalog, `.namespace.json`, `_index/`, `_control/`, stray
+   *    doubled-namespace paths), lies under `{namespace}/` (or, with no
+   *    namespace, anywhere outside a foreign namespace's directory), and is
+   *    absent from both the live remote index and the last-synced index.
+   * 2. **Local versions the remote lacks are reported, never uploaded.**
+   *    `alreadyPresent` counts files absent from the last-synced index whose
+   *    key the remote holds, as an index entry or an unindexed object, with
+   *    other bytes. `locallyModified` counts files whose content differs
+   *    from their last-synced entry, and `unknown` those whose entry has no
+   *    sha256, whose size matches and whose mtime does not, when `exact`
+   *    cannot settle them (rule 4). Both compare with the last-synced
+   *    index, never the live remote, so a stale copy is not a local change;
+   *    `remoteMovedOn` counts last-synced keys the remote now holds with
+   *    other content, for information only. Each count is computed on its
+   *    own: a file can be in more than one.
+   * 3. **`dryRun` mutates nothing.** It finds unindexed objects with one
+   *    listing of the namespace prefix, never a request per key.
+   * 4. **`exact`.** Hash a file whose mtime differs from its last-synced
+   *    `localMtime`, never one whose mtime equals it. Settle an `unknown`
+   *    entry by comparing the local sha256 with a streamed sha256 of the
+   *    remote object when the remote entry is unchanged since last-synced.
+   * 5. **Shard index only.** Reject a remote whose index is a v1 monolith,
+   *    telling the user to run `swamp datastore sync --pull` and then
+   *    `swamp datastore migrate-index`.
+   * 6. **Create-only uploads.** Without `dryRun`, run the push preflight
+   *    (namespace binding, migration gates), upload each unpushed file with
+   *    a conditional create that records its sha256 (S3 `If-None-Match: *`,
+   *    GCS `ifGenerationMatch=0`), and commit index entries for the files
+   *    created, in batches, through the shard compare-and-swap, with the
+   *    size, mtime and sha256 a push writes. Never fall back to an
+   *    unconditional write: an endpoint without conditional create rejects.
+   *    Retry a conflicting create (HTTP 409) and a refused create that left
+   *    no object, up to a fixed attempt limit, then reject.
+   * 7. **Refused creates are settled in the same run.** When a create is
+   *    refused or an unindexed object already holds the key, compare its
+   *    recorded sha256 (or a streamed sha256) with the local file: equal is
+   *    an earlier upload of ours, indexed and counted as uploaded; other is
+   *    `alreadyPresent`, and the remote object is left as it is.
+   * 8. **Pending work is untouched.** Delete nothing, locally or remotely.
+   *    Never read, set or clear dirty state, so never reuse an upload
+   *    helper that marks the cache dirty. Never advance the sync
+   *    fingerprint (commit sequence, index ETag, last-verified time). Merge
+   *    the uploaded entries into the on-disk last-synced index.
+   *    `pendingChanges` reports whether dirty state is pending.
+   * 9. **Failures.** With no last-synced index, reject rather than guess.
+   *    Any other failure rejects, honoring `options.signal`; batches already
+   *    committed stay committed.
+   *
+   * Optional — core treats the method's presence as the capability, and
+   * checks for it before calling.
+   */
+  repairUnpushedFiles?(
+    options?: RepairUnpushedFilesOptions,
+  ): Promise<UnpushedFilesSummary>;
+
+  /**
    * Migrate the remote index from monolithic format to shard-first.
    *
    * Reads the existing monolithic `.datastore-index.json`, partitions all
@@ -547,6 +613,45 @@ export interface RepairNamespaceContaminationOptions {
    * When `false`, delete foreign objects and rebuild the namespace index.
    */
   dryRun?: boolean;
+}
+
+/** Options for {@link DatastoreSyncService.repairUnpushedFiles}. */
+export interface RepairUnpushedFilesOptions {
+  signal?: AbortSignal;
+  namespace?: string;
+  /** When `true`, report without uploading anything. */
+  dryRun?: boolean;
+  /**
+   * When `true`, compare content by sha256 where size and mtime cannot
+   * decide. Costlier; the default compares size and mtime only.
+   */
+  exact?: boolean;
+}
+
+/** Summary of {@link DatastoreSyncService.repairUnpushedFiles}. */
+export interface UnpushedFilesSummary {
+  /**
+   * Files the remote has never received: every one found on a dry run, and
+   * those still not uploaded on a real run.
+   */
+  unpushed: number;
+  /** Up to 20 of them, cache-relative with forward slashes. */
+  samplePaths: readonly string[];
+  /** Local files whose key the remote holds with other bytes. */
+  alreadyPresent: number;
+  sampleAlreadyPresent: readonly string[];
+  /** Local files whose content differs from their last-synced entry. */
+  locallyModified: number;
+  sampleModified: readonly string[];
+  /** Local files that may differ from a last-synced entry with no sha256. */
+  unknown: number;
+  sampleUnknown: readonly string[];
+  /** Last-synced keys the remote now holds with other content. */
+  remoteMovedOn: number;
+  /** Files uploaded and indexed. Zero when `dryRun` is `true`. */
+  uploaded: number;
+  /** Whether the cache holds marks a push has not sent yet. */
+  pendingChanges: boolean;
 }
 
 /** Result of a shard-first index migration. */

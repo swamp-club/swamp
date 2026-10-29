@@ -1820,3 +1820,199 @@ Deno.test("createInMemoryRemote: clearDirty on a cache with no marks is a no-op,
     );
   });
 });
+
+/** A cache that pulled once, then gained a file it never marked. */
+async function strandedCache(
+  dir: string,
+  options?: Parameters<typeof createInMemoryRemote>[0],
+) {
+  const machines = await twoMachines(dir, options);
+  await write(machines.aCache, "data/m/stranded", "mine");
+  return machines;
+}
+
+Deno.test("repairUnpushedFiles: uploads a file that was never marked, so a peer pulls it", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, b, bCache } = await strandedCache(dir);
+    assertEquals(await a.pushChanged(), 0);
+
+    const summary = await a.repairUnpushedFiles!();
+
+    assertEquals(summary.uploaded, 1);
+    assertEquals(summary.unpushed, 0);
+    assertEquals(remoteText(remote, "data/m/stranded"), "mine");
+    await b.pullChanged();
+    assertEquals(await read(bCache, "data/m/stranded"), "mine");
+  });
+});
+
+Deno.test("repairUnpushedFiles: a dry run reports the file and changes nothing", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, aCache } = await strandedCache(dir);
+    const pending = await remote.pendingPush(aCache);
+
+    const summary = await a.repairUnpushedFiles!({ dryRun: true });
+
+    assertEquals(summary.unpushed, 1);
+    assertEquals(summary.samplePaths, ["data/m/stranded"]);
+    assertEquals(summary.uploaded, 0);
+    assertEquals(remote.files().has("data/m/stranded"), false);
+    assertEquals(await remote.pendingPush(aCache), pending);
+    assertEquals(remote.ops().some((op) => op.op === "repair"), false);
+  });
+});
+
+Deno.test("repairUnpushedFiles: keeps a pending delete, which the next push applies", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, b, aCache, bCache } = await twoMachines(dir);
+    await write(bCache, "data/m/old", "old");
+    await b.markDirty({ relPath: "data/m/old" });
+    await b.pushChanged();
+    await a.pullChanged();
+    await remove(aCache, "data/m/old");
+    await a.markDirty({ relPath: "data/m/old" });
+    await write(aCache, "data/m/stranded", "mine");
+
+    const summary = await a.repairUnpushedFiles!();
+
+    assertEquals(summary.pendingChanges, true);
+    assertEquals(remote.files().has("data/m/old"), true);
+    assertEquals((await remote.pendingPush(aCache)).marked, ["data/m/old"]);
+    await a.pushChanged();
+    assertEquals(remote.files().has("data/m/old"), false);
+    assertEquals(remoteText(remote, "data/m/stranded"), "mine");
+  });
+});
+
+Deno.test("repairUnpushedFiles: tells a local edit from a stale copy, counting a file in both", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, b, aCache, bCache } = await twoMachines(dir);
+    for (const name of ["edited", "stale", "both"]) {
+      await write(bCache, `data/m/${name}`, "v1");
+      await b.markDirty({ relPath: `data/m/${name}` });
+    }
+    await b.pushChanged();
+    await a.pullChanged();
+    await write(aCache, "data/m/edited", "local");
+    await write(aCache, "data/m/both", "local");
+    for (const name of ["stale", "both"]) {
+      await write(bCache, `data/m/${name}`, "v2");
+      await b.markDirty({ relPath: `data/m/${name}` });
+    }
+    await b.pushChanged();
+
+    const summary = await a.repairUnpushedFiles!({ dryRun: true });
+
+    assertEquals(summary.sampleModified, ["data/m/both", "data/m/edited"]);
+    assertEquals(summary.remoteMovedOn, 2);
+    assertEquals(summary.unpushed, 0);
+    assertEquals(remoteText(remote, "data/m/stale"), "v2");
+  });
+});
+
+Deno.test("repairUnpushedFiles: a key a peer committed first is alreadyPresent and keeps the peer's bytes", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, b, bCache } = await strandedCache(dir);
+    await write(bCache, "data/m/stranded", "theirs");
+    await b.markDirty({ relPath: "data/m/stranded" });
+    await b.pushChanged();
+
+    const summary = await a.repairUnpushedFiles!();
+
+    assertEquals(summary.alreadyPresent, 1);
+    assertEquals(summary.uploaded, 0);
+    assertEquals(remoteText(remote, "data/m/stranded"), "theirs");
+    const again = await a.repairUnpushedFiles!({ dryRun: true });
+    assertEquals(again.sampleAlreadyPresent, ["data/m/stranded"]);
+    assertEquals(again.unpushed, 0);
+  });
+});
+
+Deno.test("repairUnpushedFiles: indexes an unindexed object holding its bytes, and leaves one holding other bytes", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, aCache } = await strandedCache(dir);
+    await write(aCache, "data/m/other", "mine");
+    const encode = (text: string) => new TextEncoder().encode(text);
+    remote.storeObject("data/m/stranded", encode("mine"));
+    remote.storeObject("data/m/other", encode("theirs"));
+
+    const summary = await a.repairUnpushedFiles!();
+
+    assertEquals(summary.uploaded, 1);
+    assertEquals(remoteText(remote, "data/m/stranded"), "mine");
+    assertEquals(summary.sampleAlreadyPresent, ["data/m/other"]);
+    assertEquals(remote.files().has("data/m/other"), false);
+  });
+});
+
+Deno.test("repairUnpushedFiles: reports only files under the bound namespace", async () => {
+  await withTempDir(async (dir) => {
+    const remote = createInMemoryRemote();
+    const cache = join(dir, "cache");
+    await Deno.mkdir(cache);
+    const service = remote.connect(cache);
+    await service.pullChanged({ namespace: "infra" });
+    await write(cache, "infra/data/m/stranded", "mine");
+    await write(cache, "other/data/m/foreign", "theirs");
+
+    const summary = await service.repairUnpushedFiles!({
+      namespace: "infra",
+      dryRun: true,
+    });
+
+    assertEquals(summary.samplePaths, ["infra/data/m/stranded"]);
+  });
+});
+
+Deno.test("repairUnpushedFiles: rejects without a last-synced index, on a monolith index, and without create-only writes", async () => {
+  await withTempDir(async (dir) => {
+    const fresh = createInMemoryRemote();
+    const cache = join(dir, "fresh");
+    await Deno.mkdir(cache);
+    await assertRejects(
+      () => fresh.connect(cache).repairUnpushedFiles!({ dryRun: true }),
+      Error,
+      "no last-synced index",
+    );
+
+    await Deno.mkdir(join(dir, "monolith"));
+    const monolith = await strandedCache(join(dir, "monolith"), {
+      monolithIndex: true,
+    });
+    await assertRejects(
+      () => monolith.a.repairUnpushedFiles!({ dryRun: true }),
+      Error,
+      "migrate-index",
+    );
+
+    await Deno.mkdir(join(dir, "plain"));
+    const plain = await strandedCache(join(dir, "plain"), {
+      conditionalCreate: false,
+    });
+    assertEquals(
+      (await plain.a.repairUnpushedFiles!({ dryRun: true })).unpushed,
+      1,
+    );
+    await assertRejects(
+      () => plain.a.repairUnpushedFiles!(),
+      Error,
+      "create-only",
+    );
+    assertEquals(plain.remote.files().has("data/m/stranded"), false);
+  });
+});
+
+Deno.test("repairUnpushedFiles: is left out when asked, and takes an injected failure", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, aCache } = await strandedCache(dir);
+    assertEquals(
+      remote.connect(aCache, { repairUnpushedFiles: false })
+        .repairUnpushedFiles,
+      undefined,
+    );
+    const service = remote.connect(aCache, { instance: "c" });
+    remote.failNext("repair", new Error("boom"));
+    await assertRejects(() => service.repairUnpushedFiles!(), Error, "boom");
+    assertEquals(remote.files().has("data/m/stranded"), false);
+  });
+});

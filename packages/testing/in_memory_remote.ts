@@ -126,6 +126,11 @@
  * path that starts with a namespace reads that key, and it rejects a path
  * that is absolute or has a `..` segment.
  *
+ * `repairUnpushedFiles` compares the cache with the committed index, the
+ * objects stored and what the cache last synced, bytes for bytes. A real run
+ * stores and commits the unpushed files at once, touching neither the
+ * sidecar nor the commit sequence it last saw.
+ *
  * No method looks at `options.signal`, so a test of cancellation needs a
  * service of its own.
  *
@@ -168,9 +173,11 @@ import type {
   DatastoreStorage,
   DatastoreSyncOptions,
   DatastoreSyncService,
+  RepairUnpushedFilesOptions,
   ReplicaPathStore,
   StoredChunk,
   SyncCapabilities,
+  UnpushedFilesSummary,
   V3ReplicaTarget,
   WritableDatastoreControlPlaneStore,
 } from "./datastore_types.ts";
@@ -323,6 +330,16 @@ export interface InMemoryRemoteOptions {
    * so a fence with more exercises its paging. Default false.
    */
   replicaPaths?: boolean;
+  /**
+   * Makes the remote index a v1 monolith, which `repairUnpushedFiles`
+   * rejects. Nothing else changes. Default false.
+   */
+  monolithIndex?: boolean;
+  /**
+   * Whether the remote can create an object only if its key is free, which
+   * `repairUnpushedFiles` needs to upload. Default true.
+   */
+  conditionalCreate?: boolean;
 }
 
 /** A remote operation a failure can be injected into. */
@@ -332,6 +349,7 @@ export type InMemoryRemoteFailure =
   | "prepare"
   | "commit"
   | "fetch"
+  | "repair"
   | "controlPlane"
   | "replicaPaths";
 
@@ -358,6 +376,7 @@ export interface InMemoryRemoteOpRecord {
     | "prepare"
     | "commit"
     | "fetch"
+    | "repair"
     | "controlPlane";
   /** Paths marked, cleared, uploaded, downloaded or fetched, sorted. */
   paths: string[];
@@ -410,6 +429,11 @@ export interface ConnectOptions {
    * (swamp-club#4091).
    */
   clearDirty?: boolean;
+  /**
+   * Whether the service has `repairUnpushedFiles`. Default true; false
+   * leaves the method out, as an extension that predates it would.
+   */
+  repairUnpushedFiles?: boolean;
 }
 
 /** A remote datastore shared by any number of simulated machines. */
@@ -418,6 +442,11 @@ export interface InMemoryRemote {
   connect(cacheDir: string, options?: ConnectOptions): InMemorySyncService;
   /** The committed content other machines can pull. */
   files(): ReadonlyMap<string, Uint8Array>;
+  /**
+   * Stores an object at `key` without indexing it, as an upload whose
+   * index commit never ran leaves one. Other machines cannot pull it.
+   */
+  storeObject(key: string, bytes: Uint8Array): void;
   /** Fails the next matching operation with `error`. */
   failNext(
     op: InMemoryRemoteFailure,
@@ -810,6 +839,8 @@ export function createInMemoryRemote(
     ...options?.semantics,
   };
   const dirtyPathsCap = options?.dirtyPathsCap ?? 2000;
+  const monolithIndex = options?.monolithIndex ?? false;
+  const conditionalCreate = options?.conditionalCreate ?? true;
   const controlPlane = options?.controlPlane ?? false;
   const capabilities: SyncCapabilities = {
     ...(options?.capabilities ?? { twoPhaseSync: true }),
@@ -1509,6 +1540,109 @@ export function createInMemoryRemote(
     }
 
     /**
+     * Models the `repairUnpushedFiles` contract, which no released extension
+     * implements yet. The fake compares bytes, so `exact` changes nothing
+     * and `unknown` is always 0. Its index is never split into shards, so
+     * the created files are committed in one batch. With no namespace every
+     * cache file is in scope: the fake keeps no foreign namespace
+     * directories to leave out.
+     */
+    async function repairUnpushedFiles(
+      options?: RepairUnpushedFilesOptions,
+    ): Promise<UnpushedFilesSummary> {
+      const dryRun = options?.dryRun ?? false;
+      bindNamespace(options?.namespace);
+      checkReachable("repair", instance);
+      if (monolithIndex) {
+        throw new Error(
+          "The remote index is a v1 monolith. Run `swamp datastore sync " +
+            "--pull` and then `swamp datastore migrate-index` first.",
+        );
+      }
+      const synced = syncedIndexes.get(key);
+      if (!synced) {
+        throw new Error(
+          "This cache has no last-synced index, so unpushed files cannot " +
+            "be told apart from files a peer deleted. Pull first.",
+        );
+      }
+      if (!dryRun && !conditionalCreate) {
+        throw new Error(
+          "The remote does not support create-only writes, so unpushed " +
+            "files cannot be uploaded without risking a peer's object.",
+        );
+      }
+      const inScope = (rel: string) => !namespace || isUnder(rel, namespace);
+
+      const unpushed: Array<[string, Uint8Array]> = [];
+      const alreadyPresent: string[] = [];
+      const modified: string[] = [];
+      for (const rel of filesOf(await walkLocalEntries(cacheDir, ""))) {
+        if (!inScope(rel)) continue;
+        const bytes = await readLocal(cacheDir, rel);
+        if (!bytes) continue;
+        const syncedBytes = synced.get(rel);
+        if (syncedBytes) {
+          if (!sameBytes(bytes, syncedBytes)) modified.push(rel);
+          continue;
+        }
+        if (committed.has(rel)) {
+          if (!sameBytes(bytes, committed.get(rel))) alreadyPresent.push(rel);
+          continue;
+        }
+        // An unindexed object with these bytes is an upload of ours whose
+        // commit never ran; one with other bytes is a peer's.
+        const object = objects.get(rel);
+        if (object && !sameBytes(bytes, object)) {
+          alreadyPresent.push(rel);
+        } else {
+          unpushed.push([rel, bytes]);
+        }
+      }
+      let remoteMovedOn = 0;
+      for (const [rel, bytes] of synced) {
+        if (!inScope(rel) || isInternalCacheFile(rel)) continue;
+        const remote = committed.get(rel);
+        if (remote && !sameBytes(remote, bytes)) remoteMovedOn++;
+      }
+
+      const created = new Map<string, Uint8Array>();
+      if (!dryRun) {
+        for (const [rel, bytes] of unpushed) {
+          if (!objects.has(rel)) objects.set(rel, bytes);
+          created.set(rel, bytes);
+        }
+        // Commits the entries and leaves the sidecar alone: the dirty state
+        // and the commit sequence this cache last saw are not touched.
+        publish(created, []);
+        for (const [rel, bytes] of created) synced.set(rel, bytes);
+        record({
+          instance,
+          op: "repair",
+          paths: [...created.keys()],
+          deleted: [],
+        });
+      }
+      const remaining = unpushed.map(([rel]) => rel).filter((rel) =>
+        !created.has(rel)
+      );
+      const sample = (paths: string[]) => paths.sort().slice(0, SAMPLE_LIMIT);
+      return {
+        unpushed: remaining.length,
+        samplePaths: sample(remaining),
+        alreadyPresent: alreadyPresent.length,
+        sampleAlreadyPresent: sample(alreadyPresent),
+        locallyModified: modified.length,
+        sampleModified: sample(modified),
+        unknown: 0,
+        sampleUnknown: [],
+        remoteMovedOn,
+        uploaded: created.size,
+        pendingChanges: loadSidecar()?.localDirty ?? false,
+      };
+    }
+
+    /**
      * The extensions' store: a service that has not bound a namespace binds
      * none on its first call, so its keys are datastore-wide from then on.
      */
@@ -1603,6 +1737,9 @@ export function createInMemoryRemote(
       capabilities: () => ({ ...capabilities }),
       ...(connectOptions?.fetchContent === false ? {} : { fetchContent }),
       ...(connectOptions?.clearDirty === false ? {} : { clearDirty }),
+      ...(connectOptions?.repairUnpushedFiles === false
+        ? {}
+        : { repairUnpushedFiles }),
       ...(controlPlane ? { controlPlaneStore } : {}),
     };
   }
@@ -1736,6 +1873,9 @@ export function createInMemoryRemote(
   return {
     connect,
     files: () => new Map(committed),
+    storeObject(key, bytes) {
+      objects.set(key, bytes.slice());
+    },
     failNext(op, error, failOptions) {
       failures.push({
         op,
@@ -1827,6 +1967,9 @@ export function createInMemoryRemote(
     },
   };
 }
+
+/** Paths a `repairUnpushedFiles` summary lists per category. */
+const SAMPLE_LIMIT = 20;
 
 /** Where the in-memory remote keeps replica objects. */
 const REPLICA_ROOT = "_litestream/";
