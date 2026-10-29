@@ -118,6 +118,13 @@ const MIGRATIONS: readonly string[] = [
   // access. No table changes; a swamp at schema 3 would reject the op
   // field and call the entry corrupt, so it must refuse the outbox as newer.
   `SELECT 1;`,
+  // 4 → 5 (swamp-club#4121): the fenced model lease an entry was built
+  // under, which its recovery names. A swamp at schema 4 refuses the outbox
+  // as newer: it would resend the entry outside its lease.
+  `
+  ALTER TABLE outbox_entries ADD COLUMN lease_id TEXT;
+  ALTER TABLE outbox_entries ADD COLUMN lease_fence INTEGER;
+  `,
 ];
 
 /** The schema version this outbox writes. */
@@ -178,6 +185,8 @@ interface EntryRow {
   readonly writer_process: string | null;
   readonly left_at_fence: number | null;
   readonly abandoned_at: number | null;
+  readonly lease_id: string | null;
+  readonly lease_fence: number | null;
 }
 
 /**
@@ -291,14 +300,15 @@ export class SqliteCommitOutbox implements CommitOutbox {
     preparation: OutboxPreparation,
     process: ProcessIdentity | undefined,
   ): void {
-    const { commit, unitId, base } = preparation;
+    const { commit, unitId, base, lease } = preparation;
     // A prepare again is a new preparation: no recovery left it since.
     const row = db.prepare(
-      "INSERT INTO outbox_entries (namespace, partition, txn_id, unit_id, base_seq, base_txn_id, created_at, body, writer_process) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+      "INSERT INTO outbox_entries (namespace, partition, txn_id, unit_id, base_seq, base_txn_id, created_at, body, writer_process, lease_id, lease_fence) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
         "ON CONFLICT (namespace, partition, txn_id) DO UPDATE SET unit_id = excluded.unit_id, " +
         "base_seq = excluded.base_seq, base_txn_id = excluded.base_txn_id, body = excluded.body, " +
-        "writer_process = excluded.writer_process, left_at_fence = NULL, abandoned_at = NULL " +
+        "writer_process = excluded.writer_process, left_at_fence = NULL, abandoned_at = NULL, " +
+        "lease_id = excluded.lease_id, lease_fence = excluded.lease_fence " +
         "RETURNING sequence",
     ).get(
       commit.namespace,
@@ -310,6 +320,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
       this.#clock().getTime(),
       JSON.stringify(commit.toJSON()),
       process !== undefined ? JSON.stringify(process) : null,
+      lease?.leaseId ?? null,
+      lease?.fence ?? null,
     ) as { sequence: number };
     db.prepare("DELETE FROM outbox_chunks WHERE sequence = ?").run(
       row.sequence,
@@ -376,7 +388,7 @@ export class SqliteCommitOutbox implements CommitOutbox {
     const rows = this.#read((db) =>
       db.prepare(
         "SELECT sequence, namespace, partition, txn_id, unit_id, base_seq, base_txn_id, created_at, body, " +
-          "writer_process, left_at_fence, abandoned_at FROM outbox_entries ORDER BY sequence",
+          "writer_process, left_at_fence, abandoned_at, lease_id, lease_fence FROM outbox_entries ORDER BY sequence",
       ).all() as unknown as EntryRow[]
     ) ?? [];
     const entries: OutboxEntry[] = [];
@@ -409,6 +421,9 @@ export class SqliteCommitOutbox implements CommitOutbox {
             : {}),
           ...(row.abandoned_at !== null
             ? { abandonedAt: row.abandoned_at }
+            : {}),
+          ...(row.lease_id !== null && row.lease_fence !== null
+            ? { lease: { leaseId: row.lease_id, fence: row.lease_fence } }
             : {}),
         });
       } catch (error) {

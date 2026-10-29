@@ -42,7 +42,10 @@ import {
 } from "./commit_outbox_recovery.ts";
 import { SqliteCommitOutbox } from "./sqlite_commit_outbox.ts";
 import { setLocalProcessForTesting } from "./process_identity.ts";
-import { ServeCommitRefusedError } from "./serve_upstream_errors.ts";
+import {
+  ServeCommitRefusedError,
+  ServeCommitRejectedError,
+} from "./serve_upstream_errors.ts";
 import { SqliteCommitStore } from "./sqlite_commit_store.ts";
 import { FileSystemStorage } from "../persistence/fs_datastore_storage.ts";
 
@@ -491,6 +494,206 @@ Deno.test("recoverCommitOutbox: an entry serve refuses on the caller's access is
   });
 });
 
+// Forwarded resends (swamp-club#4121): a resend never lands on a newer head.
+
+/**
+ * Recovers `fixture`'s outbox as a serve-mode checkout does: its store's
+ * appends stand in for serve's, and every send is recorded with the lease
+ * it names.
+ */
+async function recoverForwarded(
+  fixture: Fixture,
+  fence: number,
+  serve: (commit: Commit) => Promise<void> = async (commit) => {
+    await fixture.store.append(commit);
+  },
+): Promise<{
+  report: Awaited<ReturnType<typeof recoverCommitOutbox>>;
+  sent: { txnId: string; lease: string | undefined }[];
+}> {
+  const { store, outbox, chunkStore } = fixture;
+  await store.raiseWriterFence(fence);
+  await outbox.recordFence(fence);
+  const sent: { txnId: string; lease: string | undefined }[] = [];
+  const upstream = {
+    append: () =>
+      Promise.reject(new Error("a forwarded resend names its lease")),
+    headIdentity: store.headIdentity.bind(store),
+    landedSeq: store.landedSeq.bind(store),
+    appendUnderLease: async (commit: Commit, lease: string | undefined) => {
+      sent.push({ txnId: commit.txnId, lease });
+      await serve(commit);
+    },
+  };
+  const report = await recoverCommitOutbox(
+    { outbox, commitStore: upstream, chunkStore },
+    {
+      fence,
+      writer: RECOVERER,
+      writerAlive: () => false,
+      clock: () => NOW,
+      forwarded: true,
+    },
+  );
+  return { report, sent };
+}
+
+Deno.test("recoverCommitOutbox: a forwarded entry whose head moved is dropped, never sent over the newer record (swamp-club#4121)", async () => {
+  await withFixture(async (fixture) => {
+    const { store, prepare } = fixture;
+    // Built on an empty partition: a put with no expect.
+    await prepare(prepared(1, [await savePut("a", 1, "stale")], "t1"), {
+      base: { seq: 0, txnId: undefined },
+    });
+    // Another writer's newer record of the same key lands first.
+    await store.append(prepared(1, [await savePut("a", 1, "newer")], "other"));
+    const { report, sent } = await recoverForwarded(fixture, 2);
+    assertEquals(
+      report.drops.map((drop) => [drop.entry.commit.txnId, drop.reason]),
+      [["t1", "head-moved"]],
+    );
+    assertEquals(sent, []);
+    assertEquals((await commitsOf(store)).map((commit) => commit.txnId), [
+      "other",
+    ]);
+  });
+});
+
+Deno.test("recoverCommitOutbox: a forwarded entry serve answers with a moved head is dropped, not built again (swamp-club#4121)", async () => {
+  await withFixture(async (fixture) => {
+    await fixture.prepare(prepared(1, [await savePut("a", 1)], "t1"));
+    let sends = 0;
+    const { report } = await recoverForwarded(fixture, 2, () => {
+      sends++;
+      return Promise.reject(
+        new ServeCommitRejectedError(
+          "seq-gap",
+          "stale_seq",
+          "Serve's partition is past this commit's head",
+        ),
+      );
+    });
+    assertEquals(sends, 1);
+    assertEquals(
+      report.drops.map((drop) => [drop.entry.commit.txnId, drop.reason]),
+      [["t1", "head-moved"]],
+    );
+    assertEquals(await commitsOf(fixture.store), []);
+  });
+});
+
+Deno.test("recoverCommitOutbox: a forwarded entry is resent naming the lease it was built under, and once that lease has ended, under none on its unmoved head (swamp-club#4121)", async () => {
+  await withFixture(async (fixture) => {
+    const { outbox, store } = fixture;
+    const lease = { leaseId: crypto.randomUUID(), fence: 3 };
+    await outbox.prepare({
+      commit: prepared(1, [await savePut("a", 1)], "t1"),
+      unitId: "unit",
+      base: await store.headIdentity("", modelPartition()),
+      lease,
+    });
+    let first = true;
+    const { report, sent } = await recoverForwarded(
+      fixture,
+      2,
+      async (commit) => {
+        // Serve no longer holds the lease its writer died with.
+        if (first) {
+          first = false;
+          throw new ServeCommitRejectedError(
+            "lease-lost",
+            "commit_lease-lost",
+            "This commit's model lease is not held",
+          );
+        }
+        await store.append(commit);
+      },
+    );
+    assertEquals(sent, [
+      { txnId: "t1", lease: lease.leaseId },
+      { txnId: "t1", lease: undefined },
+    ]);
+    assertEquals(report.landed, 1);
+    assertEquals(report.drops, []);
+  });
+});
+
+Deno.test("recoverCommitOutbox: a forwarded entry whose lease was superseded is dropped (swamp-club#4121)", async () => {
+  await withFixture(async (fixture) => {
+    const { outbox, store } = fixture;
+    await outbox.prepare({
+      commit: prepared(1, [await savePut("a", 1)], "t1"),
+      unitId: "unit",
+      base: await store.headIdentity("", modelPartition()),
+      lease: { leaseId: crypto.randomUUID(), fence: 3 },
+    });
+    const { report } = await recoverForwarded(
+      fixture,
+      2,
+      () =>
+        Promise.reject(
+          new ServeCommitRejectedError(
+            "stale-lease",
+            "commit_stale-lease",
+            "Lease fence 3 is below the partition's lease fence 4",
+          ),
+        ),
+    );
+    assertEquals(
+      report.drops.map((drop) => [drop.entry.commit.txnId, drop.reason]),
+      [["t1", "lease-superseded"]],
+    );
+    assertEquals(await commitsOf(store), []);
+  });
+});
+
+Deno.test("recoverCommitOutbox: a deferred data entry holds back its unit's run entry, so a run record never lands without its data (swamp-club#4121)", async () => {
+  await withFixture(async (fixture) => {
+    await fixture.prepare(prepared(1, [await savePut("a", 1)], "t1"), {
+      unitId: "u",
+    });
+    await fixture.prepare(
+      modelCommit(1, [await runPut("r")], {
+        partition: runPartition(),
+        txnId: "run",
+        writer: DEAD,
+        fence: 1,
+        at: NOW.toISOString(),
+      }),
+      { unitId: "u" },
+    );
+    const sent: string[] = [];
+    const { report } = await recoverForwarded(fixture, 2, (commit) => {
+      sent.push(commit.txnId);
+      return Promise.reject(
+        new ServeCommitRejectedError(
+          "lease-lost",
+          "commit_lease-lost",
+          "This commit's model lease is not held",
+        ),
+      );
+    });
+    assertEquals(sent, ["t1"]);
+    assertEquals(report.skipped, 2);
+    assertEquals(await commitsOf(fixture.store, runPartition()), []);
+    assertEquals(
+      (await fixture.outbox.entries()).entries.map((e) => e.commit.txnId)
+        .sort(),
+      ["run", "t1"],
+    );
+  });
+});
+
+Deno.test("recoverCommitOutbox: a forwarded entry built outside any lease is resent naming none, and lands on an unmoved head", async () => {
+  await withFixture(async (fixture) => {
+    await fixture.prepare(prepared(1, [await savePut("a", 1)], "t1"));
+    const { report, sent } = await recoverForwarded(fixture, 2);
+    assertEquals(sent, [{ txnId: "t1", lease: undefined }]);
+    assertEquals(report.landed, 1);
+    assertEquals((await commitsOf(fixture.store)).map((c) => c.txnId), ["t1"]);
+  });
+});
+
 Deno.test("recoverCommitOutbox: an outbox that cannot be read names its path", async () => {
   await withFixture(async ({ store, chunkStore, dir }) => {
     const path = join(dir, "broken.db");
@@ -602,5 +805,36 @@ Deno.test("recoverCommitOutbox: a failed chunk barrier lands nothing and keeps t
     );
     assertEquals(await commitsOf(store), []);
     assertEquals(await outbox.hasEntries(), true);
+  });
+});
+
+Deno.test("recoverCommitOutbox: a forwarded entry built outside any lease is left for a later recovery while another holder's lease covers its partition (swamp-club#4121)", async () => {
+  await withFixture(async (fixture) => {
+    await fixture.prepare(prepared(1, [await savePut("a", 1)], "t1"));
+    await fixture.prepare(prepared(2, [await savePut("a", 2)], "t2"), {
+      base: { seq: 1, txnId: "t1" },
+    });
+    let sends = 0;
+    const { report } = await recoverForwarded(fixture, 2, () => {
+      sends++;
+      return Promise.reject(
+        new ServeCommitRejectedError(
+          "lease-lost",
+          "commit_lease-lost",
+          "This commit's model lease is not held",
+        ),
+      );
+    });
+    // The second waits with the first, unsent.
+    assertEquals(sends, 1);
+    assertEquals(report.drops, []);
+    assertEquals(report.skipped, 2);
+    assertEquals(
+      (await fixture.outbox.entries()).entries.map((e) => e.commit.txnId),
+      ["t1", "t2"],
+    );
+    // A later recovery, once the lease is gone, lands both.
+    const later = await recoverForwarded(fixture, 3);
+    assertEquals(later.report.landed, 2);
   });
 });

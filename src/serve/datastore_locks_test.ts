@@ -25,9 +25,13 @@ import {
   type DatastoreLockLeasesOptions,
   lockKeyOf,
   type LockTarget,
+  lockTargetOfPartition,
   parseLockKey,
   type TryLock,
 } from "./datastore_locks.ts";
+import { partitionOf } from "../domain/datastore_v3/partition_key.ts";
+import { ModelType } from "../domain/models/model_type.ts";
+import { leaseLockKeyOfPartition } from "../infrastructure/datastore_v3/serve_lease_registry.ts";
 
 const ID = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a01";
 const RUN = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a02";
@@ -332,6 +336,135 @@ Deno.test("DatastoreLockLeases.dispose: releases every lease and ends waiting ac
   assertEquals(locks.held.size, 0);
 });
 
+// Fenced leases (swamp-club#4121).
+
+Deno.test("DatastoreLockLeases.acquire: a fenced lease's fence is above the partition's lease fence and every fence issued for the key", async () => {
+  const locks = fakeLocks();
+  const subject = leases(locks);
+  try {
+    const base = { leaseFence: 4, names: [{ name: "vpc", highWater: 9 }] };
+    const first = await subject.acquire({
+      ...request("user:alice"),
+      fenced: () => Promise.resolve(base),
+    });
+    assert(first.kind === "acquired");
+    assertEquals(first.lease.fence, 5);
+    assertEquals(first.lease.floor, base.names);
+    assertEquals(subject.fencedLeaseOn(model), {
+      leaseId: first.lease.leaseId,
+      principal: "user:alice",
+      fence: 5,
+    });
+    // While it lives, a second lease on the key starts above it: the
+    // partition's own fence has not seen 5 yet.
+    assertEquals(
+      (await subject.acquire({
+        ...request("user:bob"),
+        fenced: () => Promise.resolve(base),
+      })).kind,
+      "held",
+    );
+    assert(await subject.release("user:alice", first.lease.leaseId));
+    assertEquals(subject.fencedLeaseOn(model), undefined);
+    // Once it ends, the next lease starts from the partition's fence: an
+    // unused fence may come back, under another lease id serve checks.
+    const second = await subject.acquire({
+      ...request("user:bob"),
+      fenced: () => Promise.resolve({ ...base, leaseFence: 5 }),
+    });
+    assert(second.kind === "acquired");
+    assertEquals(second.lease.fence, 6);
+    assert(second.lease.leaseId !== first.lease.leaseId);
+  } finally {
+    await subject.dispose();
+  }
+});
+
+Deno.test("DatastoreLockLeases.acquire: an unfenced lease carries no fence and covers nothing", async () => {
+  const locks = fakeLocks();
+  const subject = leases(locks);
+  try {
+    const acquired = await subject.acquire(request("user:alice"));
+    assert(acquired.kind === "acquired");
+    assertEquals(acquired.lease.fence, undefined);
+    assertEquals(acquired.lease.floor, undefined);
+    assertEquals(subject.fencedLeaseOn(model), undefined);
+  } finally {
+    await subject.dispose();
+  }
+});
+
+Deno.test("DatastoreLockLeases.acquire: a fence read that fails releases the lock and takes no lease", async () => {
+  const locks = fakeLocks();
+  const subject = leases(locks);
+  try {
+    let failed = false;
+    try {
+      await subject.acquire({
+        ...request("user:alice"),
+        fenced: () => Promise.reject(new Error("store unreadable")),
+      });
+    } catch {
+      failed = true;
+    }
+    assert(failed);
+    assertEquals(locks.held.has(lockKeyOf(model)), false);
+    assertEquals(subject.size, 0);
+  } finally {
+    await subject.dispose();
+  }
+});
+
+Deno.test("lockTargetOfPartition: a behavior's partition is its model lock's, a run's its claim's, and nothing else is covered", () => {
+  assertEquals(
+    lockTargetOfPartition(
+      partitionOf({ kind: "model", type: ModelType.create("aws/ec2"), id: ID }),
+    ),
+    model,
+  );
+  assertEquals(
+    lockTargetOfPartition(
+      partitionOf({ kind: "run", workflowId: ID, runId: RUN }),
+    ),
+    { kind: "workflow-run", runId: RUN },
+  );
+  assertEquals(
+    lockTargetOfPartition(partitionOf({ kind: "lockfile" })),
+    undefined,
+  );
+  // Each covered partition's key is the lock key serve holds for it.
+  assertEquals(
+    lockKeyOf(
+      lockTargetOfPartition(
+        partitionOf({
+          kind: "model",
+          type: ModelType.create("aws/ec2"),
+          id: ID,
+        }),
+      )!,
+    ),
+    "data/aws/ec2/" + ID + "/.lock",
+  );
+});
+
+Deno.test("lockTargetOfPartition: serve's lock key for a partition is the one a checkout names its lease by", () => {
+  for (
+    const partition of [
+      partitionOf({
+        kind: "model",
+        type: ModelType.create("@Scope/My-Type"),
+        id: ID.toUpperCase(),
+      }),
+      partitionOf({ kind: "run", workflowId: ID, runId: RUN }),
+    ]
+  ) {
+    assertEquals(
+      leaseLockKeyOfPartition(partition),
+      lockKeyOf(lockTargetOfPartition(partition)!),
+    );
+  }
+});
+
 Deno.test("asTryLock: refuses a lock that cannot be tried without waiting", () => {
   assertThrows(() => asTryLock({ release: () => Promise.resolve() }));
   const lock = {
@@ -339,4 +472,24 @@ Deno.test("asTryLock: refuses a lock that cannot be tried without waiting", () =
     release: () => Promise.resolve(),
   };
   assertEquals(asTryLock(lock), lock);
+});
+
+Deno.test("DatastoreLockLeases.acquire: a caller that hangs up while the fence is read takes no lease, and the lock is released", async () => {
+  const locks = fakeLocks();
+  const subject = leases(locks);
+  try {
+    const hangUp = new AbortController();
+    const outcome = await subject.acquire({
+      ...request("user:alice", { signal: hangUp.signal }),
+      fenced: () => {
+        hangUp.abort();
+        return Promise.resolve({ leaseFence: undefined, names: [] });
+      },
+    });
+    assertEquals(outcome.kind, "held");
+    assertEquals(subject.size, 0);
+    assertEquals(locks.held.has(lockKeyOf(model)), false);
+  } finally {
+    await subject.dispose();
+  }
 });

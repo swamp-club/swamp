@@ -28,8 +28,16 @@ import { intentPartition } from "./intent.ts";
 import { isOp, type Op, opFromJSON, type OpJSON, requireFence } from "./op.ts";
 import { PartitionKey } from "./partition_key.ts";
 
-/** The most ops one commit may carry. The commit store may revisit it. */
+/**
+ * The most ops one commit may carry, besides the one lease op serve may
+ * stamp on it (swamp-club#4121): a writer fills a commit to this limit
+ * before it knows whether serve will add one. The commit store may revisit
+ * it.
+ */
 export const MAX_COMMIT_OPS = 10_000;
+
+/** The most ops a commit may carry with serve's lease op among them. */
+const MAX_OPS_WITH_LEASE = MAX_COMMIT_OPS + 1;
 
 /** The longest namespace, txnId, writer field or principal accepted. */
 const MAX_FIELD_LENGTH = 1024;
@@ -151,7 +159,12 @@ export class Commit {
     if (!Array.isArray(props.ops) || props.ops.length === 0) {
       throw new Error("A commit carries at least one op");
     }
-    if (props.ops.length > MAX_COMMIT_OPS) {
+    const leaseOps = props.ops.filter((op) => isOp(op) && op.kind === "lease")
+      .length;
+    if (
+      props.ops.length - leaseOps > MAX_COMMIT_OPS ||
+      props.ops.length > MAX_OPS_WITH_LEASE
+    ) {
       throw new Error(`A commit carries at most ${MAX_COMMIT_OPS} ops`);
     }
     for (const op of props.ops) {
@@ -224,7 +237,8 @@ export class Commit {
     if (!Array.isArray(json.ops)) {
       throw new TypeError("Commit ops must be an array");
     }
-    if (json.ops.length > MAX_COMMIT_OPS) {
+    // Bounded before each op is parsed; the exact rule is create's.
+    if (json.ops.length > MAX_OPS_WITH_LEASE) {
       throw new Error(`A commit carries at most ${MAX_COMMIT_OPS} ops`);
     }
     const ops: Op[] = [];

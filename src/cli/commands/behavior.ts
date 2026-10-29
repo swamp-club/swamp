@@ -63,6 +63,10 @@ import {
   BEHAVIOR_OUTPUT_SYNTAX,
   createModelOutputCommand,
 } from "./model_output.ts";
+import {
+  BEHAVIOR_LEASE_SYNTAX,
+  createModelLeaseCommand,
+} from "./model_lease.ts";
 import { BEHAVIOR_TYPE_SYNTAX, createModelTypeCommand } from "./model_type.ts";
 
 /** The preferred spelling of the group: `swamp behavior`. */
@@ -110,6 +114,7 @@ export const behaviorCommand = new Command()
   .command("evaluate", createModelEvaluateCommand(BEHAVIOR_EVALUATE_SYNTAX))
   .command("search", createModelSearchCommand(BEHAVIOR_SEARCH_SYNTAX))
   .command("cancel", createModelCancelCommand(BEHAVIOR_CANCEL_SYNTAX))
+  .command("lease", createModelLeaseCommand(BEHAVIOR_LEASE_SYNTAX))
   .command(
     "describe",
     createModelMethodDescribeCommand(BEHAVIOR_DESCRIBE_SYNTAX),

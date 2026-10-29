@@ -54,7 +54,15 @@ import {
   ServeCopyHoldsUnlandedCommitsError,
 } from "./checkout_view.ts";
 import { ServeDatastoreClient } from "./serve_datastore_client.ts";
-import { registerServeUpstream } from "./serve_upstream_registry.ts";
+import {
+  registerServeUpstream,
+  serveUpstreamAt,
+} from "./serve_upstream_registry.ts";
+import {
+  readExplicitLeases,
+  renewExplicitLeases,
+} from "./explicit_model_leases.ts";
+import { holdServeLease } from "./serve_lease_registry.ts";
 import {
   ACCESS_RESET_COOLDOWN_MS,
   accessResetDue,
@@ -138,6 +146,7 @@ export async function bindV3ServeUpstream(
   // Before any catch-up or read: the copy must be this caller's view of
   // serve. The projection follows when the context opens.
   await resetCopyForCaller(repoDir, root, target);
+  await renewCheckoutLeases(root);
   return {
     path: root,
     ...(config.namespace !== undefined ? { namespace: config.namespace } : {}),
@@ -146,6 +155,51 @@ export async function bindV3ServeUpstream(
       : {}),
     ...(config.exclude !== undefined ? { exclude: config.exclude } : {}),
   };
+}
+
+/** The checkout roots whose explicit leases this process renewed. */
+const renewedLeaseRoots = new Set<string>();
+
+/** Test seam: renews each checkout's explicit leases again, as a new process. */
+export function resetLeaseRenewalsForTesting(): void {
+  renewedLeaseRoots.clear();
+}
+
+/**
+ * Renews the explicit model leases recorded for `root` (swamp-club#4121),
+ * once per process: every swamp command in the checkout keeps them alive
+ * while they live. A failure is a warning, never the command's: a lease
+ * not renewed lapses at serve once its hold passes.
+ */
+async function renewCheckoutLeases(root: string): Promise<void> {
+  if (renewedLeaseRoots.has(root)) return;
+  renewedLeaseRoots.add(root);
+  const binding = serveUpstreamAt(root);
+  if (binding === undefined || (await readExplicitLeases(root)).length === 0) {
+    return;
+  }
+  const client = binding.client();
+  try {
+    const { renewed } = await renewExplicitLeases(
+      root,
+      client,
+      AbortSignal.timeout(client.timeoutMs),
+    );
+    // Every commit this process makes to a behavior the checkout holds
+    // names its lease, whether or not the command takes the behavior's
+    // lock: a read-kind method saves data without one.
+    for (const lease of renewed) {
+      holdServeLease(root, lease.lockKey, {
+        leaseId: lease.leaseId,
+        fence: lease.fence,
+        floor: lease.floor,
+      });
+    }
+  } catch (error) {
+    logger.warn`Could not renew this checkout's model leases: ${error}`;
+  } finally {
+    client.close();
+  }
 }
 
 /** The copy's files a reset removes: the commit log and the outbox. */

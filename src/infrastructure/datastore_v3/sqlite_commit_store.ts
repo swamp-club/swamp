@@ -75,6 +75,7 @@ import {
   type DataNameMarks,
   InvalidBasePageTokenError,
   type PartitionHead,
+  type PartitionLeaseMarks,
 } from "../../domain/datastore_v3/commit_store.ts";
 import {
   type BaseRecord,
@@ -451,6 +452,12 @@ const MIGRATIONS: readonly SqliteMigration[] = [
   // A swamp at schema 10 or below refuses the new op field as a bad one and
   // would call the store corrupt, so it must refuse the store as newer
   // instead.
+  `SELECT 1;`,
+  // 11 → 12: a partition snapshot may carry a lease fence, counted apart
+  // from the writer fence (swamp-club#4121). No table changes; the version
+  // number is the point. A swamp at schema 11 or below rejects the new
+  // snapshot field as an unknown one and would call the store corrupt, so
+  // it must refuse the store as newer instead.
   `SELECT 1;`,
 ];
 
@@ -1018,6 +1025,35 @@ export class SqliteCommitStore implements CommitStore {
         partition = await this.#partition(namespace, key);
       }
       return partition.record(record)?.sha256;
+    });
+  }
+
+  /**
+   * A partition's lease fence and each data name's version marks as it
+   * stands now, from the file (swamp-club#4121): what serve hands a model
+   * lease's holder, so it allocates versions above every one already used
+   * and serve issues a fence above every one a lease op carried.
+   */
+  leaseMarks(
+    namespace: string,
+    key: PartitionKey,
+  ): Promise<PartitionLeaseMarks> {
+    if (this.#closed) return Promise.reject(closedError());
+    return this.#enqueue(async () => {
+      let partition = await this.#partition(namespace, key);
+      const head = this.#selectHead.get(namespace, key.toString()) as
+        | { seq: number }
+        | undefined;
+      if ((head?.seq ?? 0) !== partition.seq) {
+        this.#cache.delete(cacheKeyOf(namespace, key.toString()));
+        partition = await this.#partition(namespace, key);
+      }
+      const names = partition.snapshot().names.map((name) => ({
+        name: name.name,
+        highWater: name.highWater,
+        ...(name.removed === undefined ? {} : { removed: name.removed }),
+      }));
+      return { leaseFence: partition.leaseFence, names };
     });
   }
 

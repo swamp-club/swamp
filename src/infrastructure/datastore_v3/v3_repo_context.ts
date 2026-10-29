@@ -157,7 +157,6 @@ import { unreadableContentLookup } from "./unreadable_content_lookup.ts";
 import { assertV3CheckoutJoinable } from "./v3_checkout_join.ts";
 import { v3ForeignContentFetcher } from "./v3_foreign_content.ts";
 import { isChunkQuarantine } from "../../domain/datastore/datastore_storage.ts";
-import { SERVE_SEQ_GAP_ATTEMPTS } from "./serve_commit_sink.ts";
 import { serveUpstreamAt } from "./serve_upstream_registry.ts";
 import { type ServeFeedWatch, watchServeFeed } from "./serve_feed_client.ts";
 
@@ -1286,9 +1285,7 @@ async function recoverV3Outbox(
     {
       fence,
       writer: handle.writer,
-      ...(upstream !== undefined
-        ? { forwardedAttempts: SERVE_SEQ_GAP_ATTEMPTS }
-        : {}),
+      ...(upstream !== undefined ? { forwarded: true } : {}),
     },
   );
   outboxRecoveredAt.set(store, fence);

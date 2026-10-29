@@ -116,6 +116,7 @@ import {
   ServeUpstreamState,
 } from "./serve_upstream_state.ts";
 import { serveUpstreamAt } from "./serve_upstream_registry.ts";
+import { heldServeLeaseOf } from "./serve_lease_registry.ts";
 import { syncDirectory } from "../persistence/sync_directory.ts";
 import { swampPath } from "../persistence/paths.ts";
 import { dropRunIndexEntries } from "../persistence/workflow_run_index.ts";
@@ -968,6 +969,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       outbox,
       sweepBatch: () => sweepBatchAt(outbox.path),
       signal: () => lifetime.signal,
+      leaseOf: (partition) => heldServeLeaseOf(serve!.root, partition),
     })
     : undefined;
   const baseSink: OutboxCommitSink = serveSink ??

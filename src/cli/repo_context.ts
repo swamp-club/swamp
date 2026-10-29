@@ -188,7 +188,10 @@ import type {
 } from "../domain/datastore/datastore_sync_service.ts";
 import type { ForeignContentFetcher } from "../domain/data/repositories.ts";
 import { ModelType } from "../domain/models/model_type.ts";
-import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
+import {
+  checkpointOpenUnitOfWork,
+  runInRootUnitOfWork,
+} from "../infrastructure/persistence/repo_unit_of_work.ts";
 import {
   atomicWriteFile,
   type AtomicWriteSync,
@@ -280,7 +283,14 @@ import {
 import { lockingConfigOf } from "../infrastructure/persistence/datastore_lock_target.ts";
 import { setV3RecoveryProgress } from "../infrastructure/datastore_v3/interrupted_writer_recovery.ts";
 import type { DatastoreEngine } from "../domain/datastore/datastore_format.ts";
-import { createServeLock } from "../infrastructure/datastore_v3/serve_lock.ts";
+import {
+  createServeLock,
+  ServeLock,
+} from "../infrastructure/datastore_v3/serve_lock.ts";
+import {
+  explicitLeaseOn,
+  forgetExplicitLease,
+} from "../infrastructure/datastore_v3/explicit_model_leases.ts";
 import {
   catchUpV3HandlesAt,
   holdV3Writer,
@@ -2014,6 +2024,7 @@ function serveLockOf(
   serveKey: string,
   displayKey: string,
   maxWaitMs: number,
+  options?: ServeLockHoldOptions,
 ): DistributedLock | undefined {
   if (isCustomDatastoreConfig(config)) return undefined;
   const root = config.path;
@@ -2022,7 +2033,33 @@ function serveLockOf(
     displayKey,
     maxWaitMs,
     onAcquired: () => catchUpV3HandlesAt(root),
+    // Registered while held, so the checkout's commits to the partition
+    // name the lease (swamp-club#4121).
+    root,
+    ...(options?.onLost === undefined ? {} : { onLost: options.onLost }),
+    // An explicit lease this checkout holds on the key is used, not
+    // asked for again (`swamp model lease acquire`).
+    adopt: () => explicitLeaseOn(root, serveKey),
+    forget: (leaseId) => forgetExplicitLease(root, leaseId),
+    // Under an explicit lease serve no longer keeps the checkout's own
+    // commands apart, so a lock local to the checkout does.
+    localLock: () =>
+      new FileLock(root, {
+        lockKey: `explicit-leases/${serveKey}`,
+        maxWaitMs,
+        retryIntervalMs: MODEL_LOCK_RETRY_INTERVAL_MS,
+        maxBackoffMs: MODEL_LOCK_MAX_BACKOFF_MS,
+      }),
   });
+}
+
+/** What the holder of a lock at serve is told (swamp-club#4121). */
+export interface ServeLockHoldOptions {
+  /**
+   * Called once when a fenced lease at serve lapses: the work under the
+   * lock must stop. Never called for a local lock.
+   */
+  readonly onLost?: (error: Error) => void;
 }
 
 /**
@@ -2039,6 +2076,7 @@ export async function createModelLock(
   datastoreConfig: DatastoreConfig,
   modelType: string,
   modelId: string,
+  options?: ServeLockHoldOptions,
 ): Promise<DistributedLock> {
   // A v3 bucket datastore locks as a filesystem one (swamp-club#3534).
   const config = lockingConfigOf(datastoreConfig);
@@ -2050,6 +2088,7 @@ export async function createModelLock(
     modelLockKey(undefined, modelType, modelId),
     lockKey,
     maxWaitMs,
+    options,
   );
   if (atServe !== undefined) return atServe;
   if (isCustomDatastoreConfig(config)) {
@@ -2939,6 +2978,58 @@ export interface ModelLockResult {
    * hop that has ended stops skipping them.
    */
   lentLocks: LentLocks;
+  /**
+   * Aborts, with the lapse as its reason, when a fenced lease these locks
+   * hold at serve lapses (swamp-club#4121): the work under them must stop,
+   * as a cancelled run does. Never aborts for local locks.
+   */
+  leaseLost?: AbortSignal;
+}
+
+/**
+ * Commits a step's staged writes before its lease at serve is released
+ * (swamp-club#4121). A refusal fails the step: its writes were not taken
+ * under the lease. Any other failure is warned about, as a run checkpoint
+ * is: the run's end commit tries again.
+ */
+async function checkpointStepUnderLease(
+  repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
+): Promise<void> {
+  let outcome: Awaited<ReturnType<typeof checkpointOpenUnitOfWork>>;
+  try {
+    outcome = await checkpointOpenUnitOfWork(repoContext);
+  } catch (error) {
+    getSwampLogger(["cli", "lock"])
+      .warn`Could not commit this step's writes before releasing its lock at serve; the run's end commit tries again: ${error}`;
+    return;
+  }
+  if (outcome === "refused") {
+    throw new UserError(
+      "Serve refused this step's writes while it held the behavior's lock: " +
+        "the lease may have lapsed. See 'swamp datastore lock status'",
+    );
+  }
+}
+
+/**
+ * Aborts `controller` with the lapse when `leaseLost` (a
+ * {@link ModelLockResult.leaseLost}) fires (swamp-club#4121): the run
+ * under the locks is cancelled, its cause naming the lapse.
+ */
+export function cancelOnLeaseLost(
+  leaseLost: AbortSignal | undefined,
+  controller: AbortController,
+): void {
+  if (leaseLost === undefined) return;
+  if (leaseLost.aborted) {
+    controller.abort(leaseLost.reason);
+    return;
+  }
+  leaseLost.addEventListener(
+    "abort",
+    () => controller.abort(leaseLost.reason),
+    { once: true },
+  );
 }
 
 /** Test seams and settings for {@link reclaimModelLocks}. */
@@ -4001,6 +4092,8 @@ export async function acquireModelLocks(
   options?: AcquireModelLocksOptions,
 ): Promise<ModelLockResult> {
   const write = progressWriter ?? defaultLockWriter;
+  // Fired by a fenced lease at serve that lapses (swamp-club#4121).
+  const leaseLost = new AbortController();
   const logger = getSwampLogger(["datastore", "lock"]);
   const wrapSync: SyncCallWrapper = options?.wrapSync ?? ((fn) => fn());
   let synced = false;
@@ -4117,7 +4210,9 @@ export async function acquireModelLocks(
             ? READ_PUBLISH_LOCK_WAIT_MS
             : resolveLockTimeoutMs(),
         })
-        : await createModelLock(config, modelType, modelId);
+        : await createModelLock(config, modelType, modelId, {
+          onLost: (error) => leaseLost.abort(error),
+        });
       // Unique coordinator key so parallel steps on the same model get
       // separate entries — prevents the second registration from
       // overwriting the first (which would orphan the first lock).
@@ -4604,8 +4699,16 @@ export async function acquireModelLocks(
     if (conflict !== undefined) throw conflict;
   };
 
+  // A step's v3 writes are staged in its run's unit and committed by the
+  // run's checkpoints, which can land after the step releases its locks.
+  // Under a lease at serve they are committed before the release, so they
+  // reach serve naming the lease (swamp-club#4121).
+  const atServe = heldLocks.some((lock) => lock instanceof ServeLock);
   const flush = async (written?: readonly WrittenVersion[]) => {
     try {
+      if (atServe && options?.repoContext !== undefined) {
+        await checkpointStepUnderLease(options.repoContext);
+      }
       await push(written);
     } finally {
       // Always release per-model locks, even if push fails
@@ -4638,6 +4741,7 @@ export async function acquireModelLocks(
     synced,
     heldLockIds: lockIds(),
     lentLocks,
+    leaseLost: leaseLost.signal,
   };
 }
 

@@ -455,6 +455,8 @@ export async function buildOp(spec: OpSpec): Promise<Op> {
 export interface Model {
   seq: number;
   fence: number | undefined;
+  /** A model lease's fence, counted apart from the writer's (swamp-club#4121). */
+  leaseFence: number | undefined;
   txnIds: string[];
   records: Record<string, string>;
   live: Record<string, number[]>;
@@ -548,8 +550,11 @@ export async function modelAppend(
         next.highWater[spec.name] ?? 0,
         spec.version,
       );
-    } else if (!raise(spec.fence)) {
-      return reject("stale-fence");
+    } else {
+      if (next.leaseFence !== undefined && spec.fence < next.leaseFence) {
+        return reject("stale-lease");
+      }
+      next.leaseFence = spec.fence;
     }
   }
   next.seq = commit.seq;
@@ -562,6 +567,7 @@ export function observe(partition: Partition) {
   return {
     seq: partition.seq,
     fence: partition.highestFence,
+    leaseFence: partition.leaseFence,
     records: Object.fromEntries(
       partition.recordKeys().map((key) => [
         key,
@@ -588,6 +594,7 @@ export function expected(model: Model) {
   return {
     seq: model.seq,
     fence: model.fence,
+    leaseFence: model.leaseFence,
     records: Object.fromEntries(
       Object.entries(model.records).sort(([a], [b]) => a.localeCompare(b)),
     ),
@@ -614,6 +621,7 @@ export function emptyModel(): Model {
   return {
     seq: 0,
     fence: undefined,
+    leaseFence: undefined,
     txnIds: [],
     records: {},
     live: {},

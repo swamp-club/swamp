@@ -399,6 +399,17 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/infrastructure/persistence/repo_unit_of_work.ts -> src/domain/datastore_v3/partition_key.ts",
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/config_edit_conflict.ts",
   "src/serve/handlers/shared.ts -> src/domain/datastore_v3/config_edit_conflict.ts",
+  // swamp-club#4121: fenced model leases. Serve maps a commit's partition
+  // to the lease covering it and hands a lease its data-version floor; a
+  // checkout lists serve's leases in lock status, adopts an explicit lease
+  // when it takes a behavior's lock, and holds one across commands with
+  // `model lease`.
+  "src/serve/datastore_locks.ts -> src/domain/datastore_v3/commit_store.ts",
+  "src/serve/datastore_locks.ts -> src/domain/datastore_v3/partition_key.ts",
+  "src/cli/commands/datastore_lock.ts -> src/infrastructure/datastore_v3/serve_upstream_registry.ts",
+  "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/explicit_model_leases.ts",
+  "src/cli/commands/model_lease.ts -> src/infrastructure/datastore_v3/explicit_model_leases.ts",
+  "src/cli/commands/model_lease.ts -> src/infrastructure/datastore_v3/serve_upstream_registry.ts",
 ];
 
 Deno.test("datastore v3: no production code outside v3 imports it", async () => {
@@ -449,7 +460,7 @@ const CHECKPOINT = /wal_(?:auto)?checkpoint/i;
 /** v3 files that mention a checkpoint pragma, as `file:line`. */
 const PINNED_V3_CHECKPOINTS: readonly string[] = [
   // Auto-checkpoint off on a copy Litestream replicates (swamp-club#3935).
-  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2611",
+  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2647",
 ];
 
 Deno.test("datastore v3: no v3 code forces or tunes a WAL checkpoint", async () => {

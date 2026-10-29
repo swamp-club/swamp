@@ -28,8 +28,21 @@ import { waitFor } from "@swamp-club/swamp-testing";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { initializeLogging } from "../logging/logger.ts";
 import type { LockAcquireReply, LockLease } from "./serve_datastore_client.ts";
-import { ServeLock, type ServeLockClient } from "./serve_lock.ts";
-import { ServeUnreachableError } from "./serve_upstream_errors.ts";
+import {
+  ServeLeaseLapsedError,
+  ServeLock,
+  type ServeLockClient,
+} from "./serve_lock.ts";
+import {
+  ServeUnreachableError,
+  ServeUpstreamError,
+} from "./serve_upstream_errors.ts";
+import {
+  heldServeLeaseOf,
+  resetServeLeasesForTesting,
+} from "./serve_lease_registry.ts";
+import { partitionOf } from "../../domain/datastore_v3/partition_key.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
 
 await initializeLogging({});
 
@@ -46,6 +59,9 @@ class FakeServe implements ServeLockClient {
   renewal: "renew" | "expired" | Error = "renew";
   releaseError: Error | undefined;
   closed = 0;
+  /** The fence each granted lease carries; undefined is an older serve. */
+  fence: number | undefined;
+  floor: LockLease["floor"];
   #leases = 0;
 
   acquireLock(
@@ -96,6 +112,8 @@ class FakeServe implements ServeLockClient {
       lockKey: KEY,
       ttlMs,
       expiresAt: new Date(Date.now() + ttlMs).toISOString(),
+      ...(this.fence === undefined ? {} : { fence: this.fence }),
+      ...(this.floor === undefined ? {} : { floor: this.floor }),
     };
   }
 }
@@ -255,5 +273,229 @@ Deno.test("ServeLock.withLock: holds the lease for the callback only", async () 
   );
   assertEquals(inside, "lease-1");
   assertEquals(subject.lease, undefined);
+  assert(serve.calls.includes("release lease-1"));
+});
+
+// Fenced leases (swamp-club#4121).
+
+const ROOT = "/checkout/.swamp/datastore";
+const PARTITION = partitionOf({
+  kind: "model",
+  type: ModelType.create("aws/ec2"),
+  id: "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a01",
+});
+
+Deno.test("ServeLock: a fenced lease is registered once acquire succeeds, and released from the registry", async () => {
+  resetServeLeasesForTesting();
+  const serve = new FakeServe();
+  serve.fence = 4;
+  serve.floor = [{ name: "vpc", highWater: 9 }];
+  let seenDuringCatchUp: unknown = "unset";
+  const subject = lock(serve, {
+    root: ROOT,
+    onAcquired: () => {
+      seenDuringCatchUp = heldServeLeaseOf(ROOT, PARTITION);
+      return Promise.resolve();
+    },
+  });
+  await subject.acquire();
+  // Not before acquire succeeded.
+  assertEquals(seenDuringCatchUp, undefined);
+  assertEquals(heldServeLeaseOf(ROOT, PARTITION), {
+    leaseId: "lease-1",
+    fence: 4,
+    floor: [{ name: "vpc", highWater: 9 }],
+  });
+  await subject.release();
+  assertEquals(heldServeLeaseOf(ROOT, PARTITION), undefined);
+});
+
+Deno.test("ServeLock: a failed catch-up registers nothing", async () => {
+  resetServeLeasesForTesting();
+  const serve = new FakeServe();
+  serve.fence = 1;
+  const subject = lock(serve, {
+    root: ROOT,
+    onAcquired: () => Promise.reject(new Error("catch-up failed")),
+  });
+  await assertRejects(() => subject.acquire(), Error, "catch-up failed");
+  assertEquals(heldServeLeaseOf(ROOT, PARTITION), undefined);
+});
+
+Deno.test("ServeLock: an unfenced lease (an older serve) is not registered, and its expiry only stops renewing", async () => {
+  resetServeLeasesForTesting();
+  const serve = new FakeServe();
+  serve.renewal = "expired";
+  const lost: Error[] = [];
+  const subject = lock(serve, {
+    root: ROOT,
+    ttlMs: 30,
+    onLost: (error) => lost.push(error),
+  });
+  await subject.acquire();
+  assertEquals(heldServeLeaseOf(ROOT, PARTITION), undefined);
+  await waitFor(
+    () => serve.calls.some((call) => call.startsWith("renew")),
+    "a renewal",
+  );
+  await subject.release();
+  assertEquals(lost, []);
+});
+
+for (
+  const [label, renewal] of [
+    ["serve says it expired", "expired"],
+    [
+      "serve refuses the renewal",
+      new ServeUpstreamError(403, "forbidden", "run was revoked"),
+    ],
+  ] as const
+) {
+  Deno.test(`ServeLock: a fenced lease lapses once when ${label}, and leaves the registry`, async () => {
+    resetServeLeasesForTesting();
+    const serve = new FakeServe();
+    serve.fence = 2;
+    serve.renewal = renewal;
+    const lost: ServeLeaseLapsedError[] = [];
+    const subject = lock(serve, {
+      root: ROOT,
+      ttlMs: 30,
+      onLost: (error) => lost.push(error),
+    });
+    await subject.acquire();
+    await waitFor(() => lost.length > 0, "the lapse");
+    assertEquals(lost.length, 1);
+    assertInstanceOf(lost[0], ServeLeaseLapsedError);
+    assertStringIncludes(lost[0].message, KEY);
+    assertEquals(heldServeLeaseOf(ROOT, PARTITION), undefined);
+    await subject.release();
+    assertEquals(lost.length, 1);
+  });
+}
+
+Deno.test("ServeLock: a fenced lease that cannot be renewed before its local deadline lapses, by the local clock", async () => {
+  resetServeLeasesForTesting();
+  const serve = new FakeServe();
+  serve.fence = 2;
+  // Serve away: every renewal fails as unreachable.
+  serve.renewal = new ServeUnreachableError(
+    "https://serve.test",
+    "maybe",
+    new Error("connection refused"),
+  );
+  let monotonic = 0;
+  const lost: Error[] = [];
+  const subject = lock(serve, {
+    root: ROOT,
+    ttlMs: 60,
+    // Serve's wall clock is far off; only the local monotonic one counts.
+    now: () => Date.now() + 3_600_000,
+    monotonic: () => monotonic,
+    onLost: (error) => lost.push(error),
+  });
+  await subject.acquire();
+  monotonic = 1_000;
+  await waitFor(() => lost.length > 0, "the lapse");
+  assertStringIncludes(lost[0].message, "could not be renewed in time");
+  assertEquals(heldServeLeaseOf(ROOT, PARTITION), undefined);
+  await subject.release();
+});
+
+Deno.test("ServeLock: a renewed fenced lease keeps its fence and floor", async () => {
+  resetServeLeasesForTesting();
+  const serve = new FakeServe();
+  serve.fence = 5;
+  serve.floor = [{ name: "vpc", highWater: 1 }];
+  const subject = lock(serve, { root: ROOT, ttlMs: 30 });
+  await subject.acquire();
+  serve.fence = undefined;
+  serve.floor = undefined;
+  await waitFor(
+    () => serve.calls.filter((call) => call.startsWith("renew")).length >= 2,
+    "two renewals",
+  );
+  assertEquals(subject.lease?.fence, 5);
+  assertEquals(subject.lease?.floor, [{ name: "vpc", highWater: 1 }]);
+  await subject.release();
+});
+
+/** A checkout-local lock, recording when it is held. */
+function localLock(events: string[]) {
+  return {
+    acquire: () => {
+      events.push("local acquire");
+      return Promise.resolve();
+    },
+    release: () => {
+      events.push("local release");
+      return Promise.resolve();
+    },
+    withLock: <T>(fn: () => Promise<T>) => fn(),
+    inspect: () => Promise.resolve(null),
+    forceRelease: () => Promise.resolve(false),
+  };
+}
+
+Deno.test("ServeLock: a recorded explicit lease is adopted, renewed for its hold, registered, and left held at release", async () => {
+  resetServeLeasesForTesting();
+  const serve = new FakeServe();
+  const events: string[] = [];
+  const explicit = {
+    leaseId: "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a55",
+    lockKey: KEY,
+    fence: 9,
+    holdMs: 1_800_000,
+    expiresAt: "2026-10-29T12:30:00.000Z",
+    floor: [{ name: "vpc", highWater: 4 }],
+  };
+  const subject = lock(serve, {
+    root: ROOT,
+    adopt: () => Promise.resolve(explicit),
+    localLock: () => localLock(events),
+  });
+  await subject.acquire();
+  assertEquals(serve.calls, [`renew ${explicit.leaseId}`]);
+  assertEquals(heldServeLeaseOf(ROOT, PARTITION), {
+    leaseId: explicit.leaseId,
+    fence: 9,
+    floor: explicit.floor,
+  });
+  await subject.release();
+  // Never released at serve, and still registered: the lease outlives the
+  // command, and the process's other commits still name it.
+  assertEquals(serve.calls.filter((call) => call.startsWith("release")), []);
+  assertEquals(heldServeLeaseOf(ROOT, PARTITION)?.leaseId, explicit.leaseId);
+  assertEquals(events, ["local acquire", "local release"]);
+});
+
+Deno.test("ServeLock: a recorded explicit lease serve ended is forgotten, and the lock is taken as usual", async () => {
+  resetServeLeasesForTesting();
+  const serve = new FakeServe();
+  serve.renewal = "expired";
+  serve.fence = 2;
+  const events: string[] = [];
+  const forgotten: string[] = [];
+  const subject = lock(serve, {
+    root: ROOT,
+    adopt: () =>
+      Promise.resolve({
+        leaseId: "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a56",
+        lockKey: KEY,
+        fence: 1,
+        holdMs: 60_000,
+        expiresAt: "2026-10-29T12:30:00.000Z",
+        floor: [],
+      }),
+    forget: (leaseId) => {
+      forgotten.push(leaseId);
+      return Promise.resolve();
+    },
+    localLock: () => localLock(events),
+  });
+  await subject.acquire();
+  assertEquals(forgotten, ["0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a56"]);
+  assert(serve.calls.some((call) => call.startsWith("acquire")));
+  assertEquals(events, ["local acquire", "local release"]);
+  await subject.release();
   assert(serve.calls.includes("release lease-1"));
 });

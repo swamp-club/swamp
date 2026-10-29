@@ -21,6 +21,7 @@ import type {
   DatastoreLockReleaseEvent,
   DatastoreLockStatusData,
   DatastoreLockStatusEvent,
+  ServeLeaseStatusData,
 } from "../../libswamp/datastores/lock.ts";
 import type { EventHandlers } from "../../libswamp/stream.ts";
 import type { Renderer } from "../renderer.ts";
@@ -68,6 +69,19 @@ function renderLockStatusLog(data: DatastoreLockStatusData): void {
 
 // ── Lock status renderer ───────────────────────────────────────────────
 
+function renderServeLeaseLog(data: ServeLeaseStatusData): void {
+  const holder = data.heldBy === "caller"
+    ? "another command of yours"
+    : "another caller";
+  writeOutput(
+    [
+      `${bold("Serve Lease:")} ${red("held")} [${data.lockKey}]`,
+      `  Holder:   ${holder}`,
+      `  Expires:  ${data.expiresAt} ${dim("(unless renewed)")}`,
+    ].join("\n"),
+  );
+}
+
 class LogDatastoreLockStatusRenderer
   implements Renderer<DatastoreLockStatusEvent> {
   handlers(): EventHandlers<DatastoreLockStatusEvent> {
@@ -77,6 +91,14 @@ class LogDatastoreLockStatusRenderer
       },
       model_lock: (e) => {
         renderLockStatusLog(e.data);
+      },
+      serve_lease: (e) => {
+        renderServeLeaseLog(e.data);
+      },
+      serve_leases_truncated: (e) => {
+        writeOutput(
+          dim(`Serve holds more leases than the ${e.data.listed} listed.`),
+        );
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -94,6 +116,12 @@ class JsonDatastoreLockStatusRenderer
       },
       model_lock: (e) => {
         console.log(JSON.stringify(e.data, null, 2));
+      },
+      serve_lease: (e) => {
+        console.log(JSON.stringify({ serveLease: e.data }, null, 2));
+      },
+      serve_leases_truncated: (e) => {
+        console.log(JSON.stringify({ serveLeases: e.data }, null, 2));
       },
       error: (e) => {
         throw new UserError(e.error.message);

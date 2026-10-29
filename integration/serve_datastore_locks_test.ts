@@ -227,8 +227,14 @@ Deno.test({
           .status,
         401,
       );
+      // GET lists the leases serve holds (swamp-club#4121); other methods
+      // are still refused.
       assertEquals(
         (await call(server, "GET", "locks", "alice-token")).status,
+        200,
+      );
+      assertEquals(
+        (await call(server, "PUT", "locks", "alice-token", {})).status,
         405,
       );
       assertEquals(server.locks.size, 0);

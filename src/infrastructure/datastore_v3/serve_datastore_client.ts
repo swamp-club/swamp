@@ -38,7 +38,9 @@ import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
 import { CHUNK_BYTES } from "../../domain/datastore_v3/chunk_store.ts";
 import { MAX_COMMIT_OPS } from "../../domain/datastore_v3/commit.ts";
 import { MAX_FIELD_LENGTH as MAX_INTENT_FIELD_LENGTH } from "../../domain/datastore_v3/intent.ts";
+import type { DataNameMarks } from "../../domain/datastore_v3/commit_store.ts";
 import {
+  dataNameMarksFromJSON,
   type ObservedBaseEntry,
   observedBaseEntryFromJSON,
   type ObservedBasePage,
@@ -143,6 +145,18 @@ export const SERVE_DATASTORE_LOG_HEADER = "x-swamp-datastore-log";
 export const SERVE_DATASTORE_ACCESS_HEADER = "x-swamp-datastore-access";
 
 /**
+ * The header every datastore API request carries naming what this client's
+ * copy understands (swamp-club#4121). `lease-ops`: the commits it reads may
+ * hold the lease ops serve stamps. Serve leaves them out of the commits it
+ * sends a client that does not name it: a swamp from before #4121 judges a
+ * lease op's fence against the writer fence and would refuse the commit.
+ */
+export const SERVE_DATASTORE_FEATURES_HEADER = "x-swamp-datastore-features";
+
+/** The {@link SERVE_DATASTORE_FEATURES_HEADER} value for lease ops. */
+export const LEASE_OPS_FEATURE = "lease-ops";
+
+/**
  * The per-request timeout `SWAMP_SERVE_TIMEOUT_MS` sets (a positive
  * integer of milliseconds), as the remote-run client reads it, else
  * {@link DEFAULT_SERVE_TIMEOUT_MS}.
@@ -202,6 +216,11 @@ export interface CommitEnvelope {
   /** Lowercase UUID; a retry of the commit carries the same one. */
   readonly txnId: string;
   readonly fence?: number;
+  /**
+   * The fenced model lease the commit is made under (swamp-club#4121): its
+   * id only. Serve stamps the lease op from its own record of the lease.
+   */
+  readonly lease?: string;
   /** The commit's ops, as `opToJSON` writes them. */
   readonly ops: readonly unknown[];
 }
@@ -253,6 +272,34 @@ export interface LockLease {
   readonly ttlMs: number;
   /** When the lease ends unless renewed, by serve's clock. */
   readonly expiresAt: string;
+  /**
+   * A fenced lease's fence (swamp-club#4121). Absent when serve does not
+   * fence leases (an older serve): the lease is then unfenced.
+   */
+  readonly fence?: number;
+  /**
+   * A fenced model lease's data-version floor when it was taken: each data
+   * name's marks. The holder allocates versions above them.
+   */
+  readonly floor?: readonly DataNameMarks[];
+  /** An explicit lease's hold: each renewal extends it by this long. */
+  readonly holdMs?: number;
+}
+
+/** One lease serve holds, as its listing names it (swamp-club#4121). */
+export interface ServeLeaseEntry {
+  readonly lockKey: string;
+  /** Who holds it, as far as the caller may be told. */
+  readonly heldBy: "caller" | "other";
+  /** When it ends unless renewed, by serve's clock. */
+  readonly expiresAt: string;
+}
+
+/** Serve's lease listing. */
+export interface ServeLeaseListing {
+  readonly leases: readonly ServeLeaseEntry[];
+  /** Serve listed only the first of more. */
+  readonly truncated: boolean;
 }
 
 /** What serve answered a lock request with. */
@@ -431,6 +478,7 @@ export class ServeDatastoreClient {
       expectedSeq: envelope.expectedSeq,
       txnId: envelope.txnId,
       ...(envelope.fence === undefined ? {} : { fence: envelope.fence }),
+      ...(envelope.lease === undefined ? {} : { lease: envelope.lease }),
       ops: envelope.ops,
       chunks: chunks.map((chunk) => ({
         sha256: chunk.sha256,
@@ -577,13 +625,21 @@ export class ServeDatastoreClient {
     ttlMs: number,
     waitMs: number,
     signal: AbortSignal,
+    options: { readonly holdMs?: number } = {},
   ): Promise<LockAcquireReply> {
     return await this.#exchange(
       {
         method: "POST",
         path: "locks",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ lockKey, ttlMs, waitMs }),
+        // An older serve ignores `fenced` and grants an unfenced lease. An
+        // explicit lease is held for `holdMs` between renewals
+        // (swamp-club#4121).
+        body: JSON.stringify(
+          options.holdMs === undefined
+            ? { lockKey, ttlMs, waitMs, fenced: true }
+            : { lockKey, waitMs, fenced: true, holdMs: options.holdMs },
+        ),
       },
       signal,
       async (response) => {
@@ -623,13 +679,20 @@ export class ServeDatastoreClient {
     leaseId: string,
     ttlMs: number,
     signal: AbortSignal,
+    options: { readonly holdMs?: number } = {},
   ): Promise<LockLease | undefined> {
     return await this.#exchange(
       {
         method: "PUT",
         path: `locks/${encodeURIComponent(leaseId)}`,
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ttlMs }),
+        // `holdMs` makes the lease explicit, or changes its hold
+        // (swamp-club#4121).
+        body: JSON.stringify(
+          options.holdMs === undefined
+            ? { ttlMs }
+            : { ttlMs, holdMs: options.holdMs },
+        ),
       },
       signal,
       async (response) => {
@@ -669,6 +732,35 @@ export class ServeDatastoreClient {
         }
         await response.body?.cancel();
         return true;
+      },
+    );
+  }
+
+  /**
+   * The leases serve holds on locks this caller could take (swamp-club#4121),
+   * whose keys start with `prefix`. Undefined from an older serve, which
+   * does not list them.
+   */
+  async listLocks(
+    prefix: string,
+    signal: AbortSignal,
+  ): Promise<ServeLeaseListing | undefined> {
+    return await this.#exchange(
+      {
+        method: "GET",
+        path: "locks",
+        ...(prefix === "" ? {} : { query: { prefix } }),
+      },
+      signal,
+      async (response) => {
+        if (response.status === 405) {
+          await response.body?.cancel();
+          return undefined;
+        }
+        if (!response.ok) throw await this.#refusal(response, "locks");
+        return leaseListingOf(
+          await readBoundedJson(response, "locks", SERVE_REPLY_MAX_BYTES),
+        );
       },
     );
   }
@@ -842,6 +934,7 @@ export class ServeDatastoreClient {
 
   #headers(spec: RequestSpec): Headers {
     const headers = new Headers(this.#extraHeaders);
+    headers.set(SERVE_DATASTORE_FEATURES_HEADER, LEASE_OPS_FEATURE);
     for (const [name, value] of Object.entries(spec.headers ?? {})) {
       headers.set(name, value);
     }
@@ -873,12 +966,54 @@ function leaseOf(body: unknown): LockLease {
   ) {
     throw invalidReply("locks", "leaseId, lockKey, ttlMs and expiresAt");
   }
+  if (fields.fence !== undefined && !isSeq(fields.fence)) {
+    throw invalidReply("locks", "a fence that is a non-negative integer");
+  }
+  let floor: DataNameMarks[] | undefined;
+  if (fields.floor !== undefined) {
+    if (!Array.isArray(fields.floor)) {
+      throw invalidReply("locks", "a floor that is a list of data names");
+    }
+    try {
+      floor = fields.floor.map(dataNameMarksFromJSON);
+    } catch {
+      throw invalidReply("locks", "a well-formed floor");
+    }
+  }
   return {
     leaseId: fields.leaseId,
     lockKey: fields.lockKey,
     ttlMs: fields.ttlMs,
     expiresAt: fields.expiresAt,
+    ...(fields.fence === undefined ? {} : { fence: fields.fence as number }),
+    ...(floor === undefined ? {} : { floor }),
+    ...(isSeq(fields.holdMs) ? { holdMs: fields.holdMs } : {}),
   };
+}
+
+function leaseListingOf(body: unknown): ServeLeaseListing {
+  const fields = typeof body === "object" && body !== null
+    ? body as Record<string, unknown>
+    : {};
+  if (!Array.isArray(fields.leases)) throw invalidReply("locks", "leases");
+  const leases = fields.leases.map((raw): ServeLeaseEntry => {
+    const lease = typeof raw === "object" && raw !== null
+      ? raw as Record<string, unknown>
+      : {};
+    if (
+      typeof lease.lockKey !== "string" ||
+      (lease.heldBy !== "caller" && lease.heldBy !== "other") ||
+      typeof lease.expiresAt !== "string"
+    ) {
+      throw invalidReply("locks", "each lease's lockKey, heldBy and expiresAt");
+    }
+    return {
+      lockKey: lease.lockKey,
+      heldBy: lease.heldBy,
+      expiresAt: lease.expiresAt,
+    };
+  });
+  return { leases, truncated: fields.truncated === true };
 }
 
 function isSeq(value: unknown): value is number {

@@ -457,6 +457,12 @@ export function createStepLockHook(
   syncService: DatastoreSyncService | undefined,
   syncGate: SyncGate | undefined,
   progressWriter?: (modelId: string) => LockProgressWriter,
+  /**
+   * Called with the lapse when a step's fenced lease at serve lapses
+   * (swamp-club#4121): the caller cancels the run. Only a checkout's locks
+   * are serve leases; serve's own runs lock locally.
+   */
+  onLeaseLost?: (reason: unknown) => void,
 ): StepLockHook {
   return async (modelType, modelId) => {
     const result = await acquireModelLocks(
@@ -472,6 +478,15 @@ export function createStepLockHook(
       },
     );
     if (result.synced) repoContext.catalogStore.invalidate();
+    const lost = result.leaseLost;
+    if (lost !== undefined && onLeaseLost !== undefined) {
+      if (lost.aborted) onLeaseLost(lost.reason);
+      else {
+        lost.addEventListener("abort", () => onLeaseLost(lost.reason), {
+          once: true,
+        });
+      }
+    }
     return result;
   };
 }

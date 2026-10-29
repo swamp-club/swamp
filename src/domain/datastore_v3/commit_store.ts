@@ -50,11 +50,21 @@ export type CommitStoreAppendResult =
    */
   | { readonly kind: "duplicate"; readonly seq: number };
 
+/**
+ * What a model lease's holder needs of its partition (swamp-club#4121): the
+ * highest lease fence a lease op carried, and each data name's version
+ * marks. Names and numbers only, never content.
+ */
+export interface PartitionLeaseMarks {
+  readonly leaseFence: number | undefined;
+  readonly names: readonly DataNameMarks[];
+}
+
 /** A partition's last commit, as the store records it. */
 export interface PartitionHead {
   /** The seq of the last commit; 0 for a partition with none. */
   readonly seq: number;
-  /** The highest fence any commit or lease op carried, if any. */
+  /** The highest fence any commit carried, if any. */
   readonly highestFence: number | undefined;
 }
 

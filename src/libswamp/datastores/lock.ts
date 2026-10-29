@@ -141,9 +141,26 @@ export interface DatastoreLockStatusData {
   lockScope?: string;
 }
 
+/**
+ * A lease serve holds on a behavior's lock or a run's claim, as a
+ * serve-mode checkout sees it (swamp-club#4121): who holds it only as
+ * `caller` or `other`, never who.
+ */
+export interface ServeLeaseStatusData {
+  lockKey: string;
+  heldBy: "caller" | "other";
+  /** When it ends unless renewed, by serve's clock. */
+  expiresAt: string;
+}
+
 export type DatastoreLockStatusEvent =
   | { kind: "completed"; data: DatastoreLockStatusData }
   | { kind: "model_lock"; data: DatastoreLockStatusData }
+  | { kind: "serve_lease"; data: ServeLeaseStatusData }
+  | {
+    kind: "serve_leases_truncated";
+    data: { truncated: true; listed: number };
+  }
   | { kind: "error"; error: SwampError };
 
 /** Input for lock status. */
@@ -166,6 +183,14 @@ export interface DatastoreLockStatusDeps {
       modelId: string;
       info: LockInfo;
     }>
+  >;
+  /**
+   * The leases serve holds on locks the caller could take, for a
+   * serve-mode checkout (swamp-club#4121); undefined from an older serve.
+   */
+  listServeLeases?: () => Promise<
+    | { leases: readonly ServeLeaseStatusData[]; truncated: boolean }
+    | undefined
   >;
 }
 
@@ -194,6 +219,37 @@ export async function* datastoreLockStatus(
             datastoreType: input.datastoreType,
             lockScope: `${ml.modelType}/${ml.modelId}`,
           },
+        };
+      }
+
+      // Then the leases serve holds, for a checkout written through serve.
+      // A serve that cannot answer never hides the local locks: this is the
+      // command to run when things are stuck.
+      let served: Awaited<
+        ReturnType<NonNullable<DatastoreLockStatusDeps["listServeLeases"]>>
+      >;
+      try {
+        served = await deps.listServeLeases?.();
+      } catch (error) {
+        ctx.logger
+          .warn`Could not list the leases serve holds: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+      }
+      for (const lease of served?.leases ?? []) {
+        yield {
+          kind: "serve_lease",
+          data: {
+            lockKey: lease.lockKey,
+            heldBy: lease.heldBy,
+            expiresAt: lease.expiresAt,
+          },
+        };
+      }
+      if (served?.truncated === true) {
+        yield {
+          kind: "serve_leases_truncated",
+          data: { truncated: true, listed: served.leases.length },
         };
       }
 

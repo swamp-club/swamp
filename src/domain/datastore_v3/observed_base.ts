@@ -235,6 +235,16 @@ export function observedBaseEntryFromJSON(
   return fail(`unknown base entry kind ${JSON.stringify(kind)}`);
 }
 
+/**
+ * Parses one data name's version marks as serve sends them, in a base
+ * entry or with a fenced model lease (swamp-club#4121).
+ *
+ * @throws ObservedBaseEntryError for a malformed value
+ */
+export function dataNameMarksFromJSON(raw: unknown): DataNameMarks {
+  return marksOf(raw);
+}
+
 function marksOf(raw: unknown): DataNameMarks {
   const json = objectOf(raw, "A data name's marks");
   only(json, ["name", "highWater", "removed"]);

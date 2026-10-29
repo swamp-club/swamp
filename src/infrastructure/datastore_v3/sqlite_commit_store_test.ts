@@ -1341,6 +1341,26 @@ Deno.test("SqliteCommitStore: a store from schema 10 migrates to a schema a sche
   });
 });
 
+Deno.test("SqliteCommitStore: a store from schema 11 migrates to a schema a schema-11 swamp refuses as newer, since snapshots may carry a lease fence (swamp-club#4121)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    await (SqliteCommitStore.open(path)).close();
+    const db = new DatabaseSync(path);
+    try {
+      db.exec("PRAGMA user_version=11");
+    } finally {
+      db.close();
+    }
+    await (SqliteCommitStore.open(path)).close();
+    assertEquals(
+      rawRows(path, "PRAGMA user_version")[0].user_version,
+      COMMIT_STORE_SCHEMA_VERSION,
+    );
+    // A swamp at schema 11 would call a snapshot with a lease fence corrupt.
+    assertGreater(COMMIT_STORE_SCHEMA_VERSION, 11);
+  });
+});
+
 // Bounded txnIds in a cached partition (swamp-club#3915).
 
 Deno.test("SqliteCommitStore: a long-cached partition holds at most a snapshot interval of txnIds and still detects older duplicates", async () => {

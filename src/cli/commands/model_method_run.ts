@@ -29,6 +29,7 @@ import {
 import {
   acquireModelLocks,
   acquirePublishLocksOrDefer,
+  cancelOnLeaseLost,
   libSwampContextForRepo,
   type ModelLockResult,
   pullModelsUnlocked,
@@ -615,6 +616,9 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               );
               if (lockResult.synced) repoContext.catalogStore.invalidate();
               modelLocks = lockResult;
+              // A lapsed lease at serve cancels the run, as a signal would:
+              // its cause names the lapse (swamp-club#4121).
+              cancelOnLeaseLost(lockResult.leaseLost, abort);
             } else if (lockMode === "publish") {
               if (
                 await pullModelsUnlocked(

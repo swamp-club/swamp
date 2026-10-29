@@ -41,7 +41,7 @@ import {
   CommitsCompactedError,
   type CommitStore,
 } from "../../domain/datastore_v3/commit_store.ts";
-import type { Op } from "../../domain/datastore_v3/op.ts";
+import type { LeaseOp, Op } from "../../domain/datastore_v3/op.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
 import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
@@ -64,6 +64,13 @@ export interface ForwardedCommitRequest {
   /** The authenticated caller, as serve names it. */
   readonly principal: string;
   readonly ops: readonly Op[];
+  /**
+   * The lease op serve stamps for the model lease the commit was made
+   * under (swamp-club#4121), built from serve's own lease record, never
+   * the client's. It lands after the client's ops, and a retry is compared
+   * without it.
+   */
+  readonly lease?: LeaseOp;
 }
 
 /** A landed forwarded commit. */
@@ -169,7 +176,9 @@ export async function commitForwarded(
       txnId: request.txnId,
       expectedSeq: request.expectedSeq,
       principal: request.principal,
-      ops: request.ops,
+      ops: request.lease === undefined
+        ? request.ops
+        : [...request.ops, request.lease],
     });
   } catch (error) {
     // Two attempts of one commit in flight: the second finds the head moved
@@ -235,10 +244,14 @@ async function landedResult(
     }
     throw error;
   }
+  // The lease op is serve's, stamped from the lease live when the commit
+  // landed: a retry is the same commit whatever lease it names now. A
+  // client never sends one (checkCommitBindings refuses it).
+  const clientOps = commit?.ops.filter((op) => op.kind !== "lease") ?? [];
   if (
     commit === undefined || commit.txnId !== request.txnId ||
     commit.principal !== request.principal ||
-    JSON.stringify(commit.ops.map((op) => op.toJSON())) !==
+    JSON.stringify(clientOps.map((op) => op.toJSON())) !==
       JSON.stringify(request.ops.map((op) => op.toJSON()))
   ) {
     throw new TxnIdReusedError(request.txnId);

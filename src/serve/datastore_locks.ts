@@ -27,12 +27,20 @@
  * released or its TTL passes without a renewal. Client work and serve's own
  * runs therefore exclude each other.
  *
+ * A lease the caller asks to be fenced (swamp-club#4121) carries a fence:
+ * a number above every lease fence its partition has seen and every fence
+ * this process issued for the key. Serve stamps it, as a lease op, on each
+ * commit the holder forwards under the lease, and refuses a commit to the
+ * partition a live fenced lease covers unless it names that lease.
+ *
  * See "Model locks" under "Team mode: the CLI's serve upstream" in
  * `design/enablers/datastores.md`.
  *
  * @module
  */
 
+import type { DataNameMarks } from "../domain/datastore_v3/commit_store.ts";
+import type { PartitionKey } from "../domain/datastore_v3/partition_key.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
@@ -46,6 +54,12 @@ export const MAX_LOCK_TTL_MS = 120_000;
 export const DEFAULT_LOCK_TTL_MS = 30_000;
 /** The longest one acquire request waits at serve for a held lock. */
 export const MAX_LOCK_WAIT_MS = 10_000;
+/**
+ * The longest an explicit lease (`swamp model lease acquire --for`) is held
+ * between renewals (swamp-club#4121). Longer would let a caller keep serve's
+ * own runs off a behavior for hours.
+ */
+export const MAX_HOLD_MS = 3_600_000;
 /** The most leases one principal holds at once. */
 export const MAX_LEASES_PER_PRINCIPAL = 256;
 /** How often a waiting acquire tries the lock again. */
@@ -135,6 +149,28 @@ export function parseLockKey(raw: unknown): LockTarget | undefined {
   return { kind: "model", modelType: normalized, modelId: id.toLowerCase() };
 }
 
+/**
+ * The lock target whose lease covers `partition`: a behavior's partition
+ * is covered by its model lock, a run's by its claim. Undefined for any
+ * other partition, which no lease covers.
+ */
+export function lockTargetOfPartition(
+  partition: PartitionKey,
+): LockTarget | undefined {
+  const identity = partition.identity;
+  if (identity.kind === "model") {
+    return {
+      kind: "model",
+      modelType: identity.type,
+      modelId: identity.id.toLowerCase(),
+    };
+  }
+  if (identity.kind === "run") {
+    return { kind: "workflow-run", runId: identity.runId.toLowerCase() };
+  }
+  return undefined;
+}
+
 /** The canonical lock key of `target`, without a namespace. */
 export function lockKeyOf(target: LockTarget): string {
   return target.kind === "model"
@@ -177,13 +213,56 @@ export interface LeaseView {
   readonly ttlMs: number;
   /** ISO time the lease ends unless renewed. */
   readonly expiresAt: string;
+  /** A fenced lease's fence (swamp-club#4121); absent for an unfenced one. */
+  readonly fence?: number;
+  /**
+   * An explicit lease's hold (swamp-club#4121): each renewal extends it by
+   * this long. Absent for a command's lease.
+   */
+  readonly holdMs?: number;
+}
+
+/**
+ * What a fenced lease's fence and floor start from, read once the lock is
+ * taken: the partition's lease fence and its data names' version marks.
+ * Undefined fields for a partition serve does not hold yet.
+ */
+export interface LeaseBase {
+  readonly leaseFence: number | undefined;
+  readonly names: readonly DataNameMarks[];
+}
+
+/** A lease as acquire returns it: a fenced model lease adds its floor. */
+export interface AcquiredLease extends LeaseView {
+  /**
+   * Each data name's version marks when the lease was taken: the holder
+   * allocates versions above them (swamp-club#4121). Names and numbers
+   * only.
+   */
+  readonly floor?: readonly DataNameMarks[];
+}
+
+/** A live lease, as serve's listing reads it (swamp-club#4121). */
+export interface LiveLease {
+  readonly lockKey: string;
+  readonly target: LockTarget;
+  readonly principal: string;
+  /** ISO time the lease ends unless renewed. */
+  readonly expiresAt: string;
+}
+
+/** A live fenced lease, as a commit check reads it. */
+export interface FencedLease {
+  readonly leaseId: string;
+  readonly principal: string;
+  readonly fence: number;
 }
 
 /** Who holds a lock a caller could not take, as far as it may be told. */
 export type LockHolder = "caller" | "other" | "serve";
 
 export type AcquireOutcome =
-  | { readonly kind: "acquired"; readonly lease: LeaseView }
+  | { readonly kind: "acquired"; readonly lease: AcquiredLease }
   | { readonly kind: "held"; readonly heldBy: LockHolder }
   | { readonly kind: "too-many" };
 
@@ -195,6 +274,7 @@ export interface DatastoreLockLeasesOptions {
   readonly maxTtlMs?: number;
   readonly maxWaitMs?: number;
   readonly maxLeasesPerPrincipal?: number;
+  readonly maxHoldMs?: number;
   readonly retryIntervalMs?: number;
 }
 
@@ -207,6 +287,8 @@ interface Lease {
   ttlMs: number;
   expiresAt: number;
   timer: ReturnType<typeof setTimeout> | undefined;
+  readonly fence: number | undefined;
+  holdMs: number | undefined;
 }
 
 /**
@@ -222,12 +304,18 @@ export class DatastoreLockLeases {
   readonly #maxTtlMs: number;
   readonly #maxWaitMs: number;
   readonly #maxPerPrincipal: number;
+  readonly #maxHoldMs: number;
   readonly #retryIntervalMs: number;
   readonly #leases = new Map<string, Lease>();
   /** Lease ids by lock key. */
   readonly #byKey = new Map<string, string>();
   /** Releases under way: expiries, and leases taken for a caller gone. */
   readonly #releasing = new Set<Promise<void>>();
+  /**
+   * The highest fence issued per lock key by this process, so two leases
+   * on one key never share a fence even before a commit records one.
+   */
+  readonly #issued = new Map<string, number>();
   /** Aborted at shutdown: acquires still waiting give up. */
   readonly #lifetime = new AbortController();
   /** Acquires in flight, so shutdown waits for them to settle. */
@@ -242,6 +330,7 @@ export class DatastoreLockLeases {
     this.#maxWaitMs = options.maxWaitMs ?? MAX_LOCK_WAIT_MS;
     this.#maxPerPrincipal = options.maxLeasesPerPrincipal ??
       MAX_LEASES_PER_PRINCIPAL;
+    this.#maxHoldMs = options.maxHoldMs ?? MAX_HOLD_MS;
     this.#retryIntervalMs = options.retryIntervalMs ?? RETRY_INTERVAL_MS;
   }
 
@@ -272,6 +361,13 @@ export class DatastoreLockLeases {
     readonly ttlMs: number;
     readonly waitMs: number;
     readonly signal: AbortSignal;
+    /**
+     * For a fenced lease: reads the partition's lease fence and version
+     * marks once the lock is taken. Absent for an unfenced lease.
+     */
+    readonly fenced?: () => Promise<LeaseBase>;
+    /** An explicit lease's hold; `ttlMs` must equal it. */
+    readonly holdMs?: number;
   }): Promise<AcquireOutcome> {
     if (this.#disposed) return { kind: "held", heldBy: "serve" };
     const attempt = this.#acquire(request);
@@ -289,6 +385,13 @@ export class DatastoreLockLeases {
     readonly ttlMs: number;
     readonly waitMs: number;
     readonly signal: AbortSignal;
+    /**
+     * For a fenced lease: reads the partition's lease fence and version
+     * marks once the lock is taken. Absent for an unfenced lease.
+     */
+    readonly fenced?: () => Promise<LeaseBase>;
+    /** An explicit lease's hold; `ttlMs` must equal it. */
+    readonly holdMs?: number;
   }): Promise<AcquireOutcome> {
     const { principal, target, ttlMs } = request;
     if (this.#heldBy(principal) >= this.#maxPerPrincipal) {
@@ -320,6 +423,26 @@ export class DatastoreLockLeases {
       await lock.release();
       return { kind: "too-many" };
     }
+    let fence: number | undefined;
+    let floor: readonly DataNameMarks[] | undefined;
+    if (request.fenced !== undefined) {
+      let base: LeaseBase;
+      try {
+        base = await request.fenced();
+      } catch (error) {
+        await lock.release();
+        throw error;
+      }
+      fence = Math.max(base.leaseFence ?? 0, this.#issued.get(key) ?? 0) + 1;
+      this.#issued.set(key, fence);
+      floor = base.names;
+    }
+    // Checked again after the read: the caller may have hung up, or
+    // shutdown begun, meanwhile; nobody would renew or release the lease.
+    if (signal.aborted || this.#disposed) {
+      await lock.release();
+      return { kind: "held", heldBy: "serve" };
+    }
     const lease: Lease = {
       id: crypto.randomUUID(),
       principal,
@@ -329,11 +452,19 @@ export class DatastoreLockLeases {
       ttlMs,
       expiresAt: this.#now() + ttlMs,
       timer: undefined,
+      fence,
+      holdMs: request.holdMs,
     };
     this.#leases.set(lease.id, lease);
     this.#byKey.set(key, lease.id);
     this.#schedule(lease);
-    return { kind: "acquired", lease: view(lease) };
+    return {
+      kind: "acquired",
+      lease: {
+        ...view(lease),
+        ...(floor === undefined ? {} : { floor }),
+      },
+    };
   }
 
   /**
@@ -349,6 +480,43 @@ export class DatastoreLockLeases {
     return { view: view(lease), target: lease.target };
   }
 
+  /** The shortest and longest hold an explicit lease may ask for. */
+  get holdBounds(): { readonly min: number; readonly max: number } {
+    return { min: this.#minTtlMs, max: this.#maxHoldMs };
+  }
+
+  /**
+   * The live fenced lease on `target`, if one holds it: what a commit to
+   * the partition it covers is judged against (swamp-club#4121). An
+   * unfenced lease, or none, is undefined.
+   */
+  fencedLeaseOn(target: LockTarget): FencedLease | undefined {
+    const id = this.#byKey.get(lockKeyOf(target));
+    const lease = id === undefined ? undefined : this.#leases.get(id);
+    if (lease === undefined || lease.fence === undefined) return undefined;
+    return {
+      leaseId: lease.id,
+      principal: lease.principal,
+      fence: lease.fence,
+    };
+  }
+
+  /**
+   * Every live lease whose lock key starts with `prefix`, in key order:
+   * what `GET locks` filters by the caller's access (swamp-club#4121).
+   */
+  list(prefix = ""): readonly LiveLease[] {
+    return [...this.#leases.values()]
+      .filter((lease) => lease.key.startsWith(prefix))
+      .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+      .map((lease) => ({
+        lockKey: lease.key,
+        target: lease.target,
+        principal: lease.principal,
+        expiresAt: new Date(lease.expiresAt).toISOString(),
+      }));
+  }
+
   /**
    * Extends `principal`'s lease `leaseId` by `ttlMs` from now; undefined
    * when it holds no such lease (it was released or expired, or is
@@ -358,9 +526,13 @@ export class DatastoreLockLeases {
     principal: string,
     leaseId: string,
     ttlMs: number,
+    holdMs?: number,
   ): LeaseView | undefined {
     const lease = this.#leases.get(leaseId);
     if (lease === undefined || lease.principal !== principal) return undefined;
+    // A hold makes it an explicit lease, held that long between renewals
+    // from now on (swamp-club#4121); `ttlMs` must equal it.
+    if (holdMs !== undefined) lease.holdMs = holdMs;
     lease.ttlMs = ttlMs;
     lease.expiresAt = this.#now() + ttlMs;
     this.#schedule(lease);
@@ -429,6 +601,10 @@ export class DatastoreLockLeases {
     }
     if (this.#leases.get(lease.id) !== lease) return;
     this.#leases.delete(lease.id);
+    // The fence a later lease starts above is the partition's durable one:
+    // a commit names its lease by id, so reusing an ended lease's unused
+    // fence lets nothing through, and the map stays bounded by live leases.
+    this.#issued.delete(lease.key);
     if (this.#byKey.get(lease.key) === lease.id) this.#byKey.delete(lease.key);
     try {
       await lease.lock.release();
@@ -445,6 +621,8 @@ function view(lease: Lease): LeaseView {
     lockKey: lease.key,
     ttlMs: lease.ttlMs,
     expiresAt: new Date(lease.expiresAt).toISOString(),
+    ...(lease.fence === undefined ? {} : { fence: lease.fence }),
+    ...(lease.holdMs === undefined ? {} : { holdMs: lease.holdMs }),
   };
 }
 

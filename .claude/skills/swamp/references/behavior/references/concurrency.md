@@ -48,6 +48,23 @@ global datastore lock with a symmetric drain protocol. Per-behavior commands
 inspect this lock before acquiring their own — if a structural command is in
 flight, behavior commands wait for it to finish.
 
+## Team Mode: Leases at Serve
+
+In a checkout whose datastore is written through serve, per-behavior locks are
+fenced leases at serve. If a lease lapses (serve unreachable past its TTL, or
+the grant revoked), the run under it is cancelled with the lapse as its cause,
+and serve refuses any commit still sent under it (`commit_lease-lost`). To hold
+a behavior across several commands:
+
+```bash
+swamp behavior lease acquire my-server --for 30m  # 5s to 60m; renewed as each command starts
+swamp behavior lease status                       # leases this checkout holds
+swamp behavior lease release my-server
+```
+
+`swamp datastore lock status` in such a checkout also lists the leases serve
+holds (holder `caller` or `other`, never who).
+
 ## Breakglass Commands
 
 If a lock gets stuck (e.g., after a crash where stale detection hasn't kicked
