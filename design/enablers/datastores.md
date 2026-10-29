@@ -8009,8 +8009,9 @@ refreshes its resource does. `methodRunLockMode`
   rest are published, and the push fails with `DataVersionConflictError`
   (`datastore_data_version_conflict`). A version holding the run's own data id
   was uploaded by an earlier push and is published as usual. If the restore
-  cannot put every discarded file and marker back, the push is skipped
-  altogether: a file left removed is still marked dirty, and pushing it would
+  leaves anything under a discarded name marked (a file it could not put back,
+  a failed directory sync, or a sync service without a working `clearDirty`),
+  the push is skipped altogether: a push walks a marked directory, so it would
   delete or roll back the other clone's copy. The error then says so
   (`restored: false`) and asks for `swamp datastore sync --pull` before
   anything else pushes, since the names that failed keep their marks and a

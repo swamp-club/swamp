@@ -82,6 +82,8 @@ interface Hooks {
 let hooks: Hooks = {};
 /** While set, every clone's read of a `latest` marker fails. */
 let failLatestReads = false;
+/** Set to connect a sync service without `clearDirty`. */
+let hideClearDirty = false;
 
 function registerProbe(): ModelType {
   const type = ModelType.create(`test/read-publish-${crypto.randomUUID()}`);
@@ -208,6 +210,7 @@ async function withClones(fn: (clones: Clones) => Promise<void>) {
                 ? Promise.reject(new Error("injected latest read failure"))
                 : target.fetchContent!(relPath, fetchOptions);
           }
+          if (property === "clearDirty" && hideClearDirty) return undefined;
           const value = Reflect.get(target, property, target);
           return typeof value === "function" ? value.bind(target) : value;
         },
@@ -240,6 +243,7 @@ async function withClones(fn: (clones: Clones) => Promise<void>) {
   } finally {
     hooks = {};
     failLatestReads = false;
+    hideClearDirty = false;
     await flushDatastoreSync();
     modelRegistry.invalidateType(type);
     datastoreType.dispose();
@@ -420,7 +424,7 @@ Deno.test("model method run: a refusal whose restore is incomplete pushes nothin
     const error = await assertRejects(() => aRun, DataVersionConflictError);
     failLatestReads = false;
     assertEquals(error.restored, false);
-    assertStringIncludes(error.message, "could not all be read back");
+    assertStringIncludes(error.message, "could not be brought back");
     assertStringIncludes(error.message, "swamp datastore sync --pull");
     assertEquals(remoteValue(c, 1), "from-b", "B's version is kept");
     assertEquals(remoteLatest(c), "1", "B's latest marker is kept");
@@ -428,6 +432,33 @@ Deno.test("model method run: a refusal whose restore is incomplete pushes nothin
       remoteFile(c, "/main/1/metadata.yaml"),
       "B's metadata is not deleted",
     );
+    assertEquals(c.locks.held.size, 0, "the publish lock was released");
+  });
+});
+
+Deno.test("model method run: a refusal on a sync service that cannot clear its marks pushes nothing and says this host is not back in line (swamp-club#3934)", async () => {
+  hideClearDirty = true;
+  await withClones(async (c) => {
+    let started!: () => void;
+    const aStarted = new Promise<void>((resolve) => started = resolve);
+    let resume!: () => void;
+    const bDone = new Promise<void>((resolve) => resume = resolve);
+    hooks = {
+      beforeWrite: async () => {
+        started();
+        await bDone;
+      },
+    };
+    const aRun = runMethod(c.repoA, "observe", "from-a");
+    await aStarted;
+    await runMethod(c.repoB, "write", "from-b");
+    resume();
+
+    const error = await assertRejects(() => aRun, DataVersionConflictError);
+    assertEquals(error.restored, false, "the refused names stay marked");
+    assertStringIncludes(error.message, "swamp datastore sync --pull");
+    assertEquals(remoteValue(c, 1), "from-b", "B's version is kept");
+    assertEquals(remoteLatest(c), "1", "B's latest marker is kept");
     assertEquals(c.locks.held.size, 0, "the publish lock was released");
   });
 });

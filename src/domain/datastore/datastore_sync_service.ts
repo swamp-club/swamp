@@ -878,8 +878,9 @@ export class ModelLockLostError extends UserError {
  * run was unlocked (swamp-club#3934). The run numbered its versions from
  * this host's cache, so publishing them would overwrite the other clone's.
  * Those data names were discarded from this host, which then holds the
- * datastore's copy, and the run's other versions were published. When the
- * datastore's copy could not all be read back (`restored` false), nothing
+ * datastore's copy, and the run's other versions were published. When
+ * this host could not be brought back to the datastore's copy (`restored`
+ * false: a read or write failed, or a mark could not be dropped), nothing
  * was published, and the message says how to fetch it before this host
  * pushes again.
  *
@@ -902,8 +903,8 @@ export class DataVersionConflictError extends UserError {
       ? `published: it was discarded from this host, which now holds the ` +
         `datastore's copy. Run the method again to write and publish it.`
       : `published, and nothing else from this run was: it was discarded ` +
-        `from this host, but the datastore's copy could not all be read ` +
-        `back. Run 'swamp datastore sync --pull' to fetch it before ` +
+        `from this host, but this host could not be brought back to the ` +
+        `datastore's copy. Run 'swamp datastore sync --pull' to fetch it before ` +
         `anything else in this repository pushes, then run the method ` +
         `again to write and publish it.`;
     super(

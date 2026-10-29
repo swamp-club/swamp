@@ -3200,9 +3200,10 @@ interface FetchedMarker {
  * every mark, so the refusal warns once, naming the data names, that a
  * later push can delete or overwrite the other run's versions there.
  *
- * Returns whether every removed file and marker the datastore holds was put
- * back. A push may follow only a complete restore: a file left removed is
- * still marked dirty, and the push would delete the datastore's copy
+ * Returns whether no refused data name is left marked: every removed file
+ * and marker the datastore holds was put back and every mark under those
+ * names was dropped. A push may follow only then: it walks a marked
+ * directory, so it would delete or roll back the datastore's copy
  * (swamp-club#3934).
  */
 async function discardRefusedVersions(
@@ -3389,7 +3390,8 @@ async function discardRefusedVersions(
   }
 
   const clearDirty = syncService.clearDirty;
-  if (!clearDirty || !discarded) return complete;
+  if (failed.size > 0) complete = false;
+  if (!clearDirty || !discarded) return complete && marked.size === 0;
   const cleared: string[] = [];
   for (const [nameDir, rels] of marked) {
     if (failed.has(nameDir)) continue;
@@ -3401,6 +3403,7 @@ async function discardRefusedVersions(
   } catch (error) {
     logger
       .debug`Clearing the marks a refused push left failed: ${error}`;
+    return false;
   }
   return complete;
 }
