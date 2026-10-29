@@ -136,7 +136,9 @@ a `UserError` with a plain message. They name the server's `error` field when
 there is one and never echo a raw response body. `markInboxRead` removes
 duplicate ids, sends them in batches of 100, and returns only the requested ids
 the server confirmed. If a later batch fails, the earlier ones have already been
-applied; marking read is idempotent, so retrying the whole call is safe.
+applied; marking read is idempotent, so retrying the whole call is safe. An
+optional callback is given each batch's confirmed ids as the server answers, so
+a caller still knows them when a later batch fails.
 
 ## How the CLI uses it
 
@@ -278,7 +280,9 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   happens in the background: the row's marker clears at once, and the request
   goes out in order after any before it. If the request fails, or Swamp Club
   does not confirm an id, the marker comes back and the bottom line reads
-  `Could not mark 1 message read: <reason>` until the next key. Typing and
+  `Could not mark 1 message read: <reason>` until the next key. A request that
+  fails after earlier batches were applied keeps the markers of the ids Swamp
+  Club confirmed cleared, and puts back only the rest. Typing and
   scrolling never wait on the network. When the highlight reaches the last row
   and the page has another after it, the next page loads and is appended, with
   a `loading older messages…` row meanwhile. A failed load says so on the
@@ -286,8 +290,14 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   empty or names the same cursor again ends paging. On quit the inbox waits for the
   marks still in flight, for at most 5 seconds, aborting any left and any page
   still loading, then prints one line only when something happened, from the
-  counts Swamp Club confirmed: `Read 2 messages and marked 3 read.` Entries
-  that older pages left out are reported on stderr after it. Nothing else is
+  counts Swamp Club confirmed, including the confirmed part of a request that
+  later failed: `Read 2 messages and marked 3 read.` Messages whose mark
+  failed or was cut off at quit, and that no later mark confirmed, are
+  reported on stderr after it: `1 message could not be marked read.` An id
+  Swamp Club answered without confirming (unknown, or not the caller's) is not
+  counted there. Entries that older pages left out are reported on stderr
+  after that. Quitting waits at most 5 seconds for marks and 5 more for the
+  cache refresh. Nothing else is
   left in the scrollback. The inbox never runs a message's suggested command.
 - **Body links show where they lead.** A message body is markdown that Swamp
   Club wrote. Rendered for the terminal, every link in it, autolinks, reference
@@ -345,7 +355,8 @@ applied; marking read is idempotent, so retrying the whole call is safe.
 - **Marking read updates the cache.** Every path that marks messages read
   (Enter, Ctrl-r, Ctrl-a and `swamp inbox read`) sends only those ids. Then
   `swamp inbox read` asks `/api/inbox/summary` once, and the interactive inbox
-  asks once at quit when Swamp Club confirmed any id. The call has no `ETag`,
+  asks once at quit when any mark request was sent, since one that failed or
+  was cut off may still have been applied. The call has no `ETag`,
   and its answer is applied to the key's cache for the server it asked, as a
   poll, so the notice stops at once.
   The cache is saved only when the process owns the config directory. The

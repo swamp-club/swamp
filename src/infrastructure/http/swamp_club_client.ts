@@ -1398,12 +1398,14 @@ export class SwampClubClient {
    * requested ids swamp-club confirmed, in request order; ids that are unknown
    * or not the caller's are left out. A throw may follow batches that were
    * already applied; marking read is idempotent, so retrying the whole call
-   * is safe.
+   * is safe. `onConfirmed` is given each batch's confirmed ids as it is
+   * answered, so a caller still knows them when a later batch throws.
    */
   async markInboxRead(
     apiKey: string,
     ids: readonly string[],
     signal?: AbortSignal,
+    onConfirmed?: (ids: string[]) => void,
   ): Promise<string[]> {
     // ULIDs are case-insensitive and the schema reports them upper case,
     // so ids are deduplicated and matched without regard to case.
@@ -1441,7 +1443,9 @@ export class SwampClubClient {
           "Swamp Club returned a malformed answer to marking messages read.",
         );
       }
-      for (const id of read) confirmed.add(id.toUpperCase());
+      const answered = new Set(read.map((id) => id.toUpperCase()));
+      for (const id of answered) confirmed.add(id);
+      onConfirmed?.(batch.filter((id) => answered.has(id.toUpperCase())));
     }
     return unique.filter((id) => confirmed.has(id.toUpperCase()));
   }
