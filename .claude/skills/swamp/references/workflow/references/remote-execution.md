@@ -99,7 +99,8 @@ steps in that scope to the same worker. The first step dispatched via normal
 label/platform matching picks the worker; every subsequent step in the group is
 bound to that worker. The pin does not replace a step's own placement: a later
 step whose `target`, `labels` or `platform` the pinned worker does not meet
-fails with an `AffinityPlacementMismatchError` and is never sent elsewhere.
+fails with an `AffinityPlacementMismatchError` and is never sent elsewhere. As
+in scheduling, a step's `target` stands in for its labels and platform.
 
 ```yaml
 jobs:

@@ -2059,6 +2059,8 @@ Deno.test("executeRemote: a pinned step runs when the pinned worker meets its pl
       { labels: { pool: "worker" } },
       { target: "w2" },
       { target: "uuid-w2" },
+      // A target stands in for labels it also inherits, as in scheduling.
+      { target: "w2", labels: { pool: "build" } },
       { platform: "linux/x86_64" },
     ]
   ) {

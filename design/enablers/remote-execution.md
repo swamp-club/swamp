@@ -1426,7 +1426,8 @@ forms its own group when the workflow sets no affinity.
 The pin narrows where a step may run but does not replace the step's own
 placement. A later step whose own `target`, `labels` or `platform` the pinned
 worker does not meet fails with an `AffinityPlacementMismatchError` naming the
-unmet requirement. It is never sent to another worker, which would break
+unmet requirement. As in scheduling, a step's `target` stands in for its labels
+and platform. It is never sent to another worker, which would break
 co-location, and never run on a worker it does not match. Which step dispatches
 first can vary between runs, so validation warns when the placed steps of one
 group declare different placement.

@@ -504,13 +504,11 @@ export class DispatchService {
       // which is never sent elsewhere, since that would break co-location.
       const assertPinHeld = () => {
         if (!affinityKey || !pinnedWorker) return;
-        if (this.#pinnedWorkerLost(pinnedWorker)) {
+        const worker = this.#gateway!.worker(pinnedWorker);
+        if (worker === null || this.#pinnedWorkerLost(worker)) {
           throw new WorkerAffinityLostError(pinnedWorker, affinityKey);
         }
-        const unmet = unmetPlacement(
-          request.placement,
-          this.#gateway!.worker(pinnedWorker)!,
-        );
+        const unmet = unmetPlacement(request.placement, worker);
         if (unmet !== null) {
           throw new AffinityPlacementMismatchError(
             pinnedWorker,
@@ -1264,14 +1262,13 @@ export class DispatchService {
   }
 
   /**
-   * Whether an affinity group's pinned worker can no longer take its steps:
-   * gone from the pool, disconnected, or draining. Read from the gateway
-   * directly — the reservation overlay reports a full draining worker as busy.
+   * Whether an affinity group's pinned worker, still in the pool, can no
+   * longer take its steps: disconnected or draining. Pass the gateway's own
+   * snapshot — the reservation overlay reports a full draining worker as
+   * busy.
    */
-  #pinnedWorkerLost(workerName: string): boolean {
-    const worker = this.#gateway!.worker(workerName);
-    return worker === null || !worker.connected ||
-      worker.status === "draining";
+  #pinnedWorkerLost(worker: WorkerSnapshot): boolean {
+    return !worker.connected || worker.status === "draining";
   }
 
   /**

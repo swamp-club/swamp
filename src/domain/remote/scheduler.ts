@@ -146,22 +146,23 @@ export function eligibleWorkers(
 }
 
 /**
- * The first of a placement's own requirements a worker does not meet —
- * its target, then each label, then its platform — or null when the
- * worker meets them all. Ignores connection and status, which decide
+ * The first of a placement's own requirements a worker does not meet, or
+ * null when the worker meets them all. As in {@link eligibleWorkers}, a
+ * target stands in for labels and platform; otherwise each label, then the
+ * platform, is checked. Ignores connection and status, which decide
  * whether the worker can take a dispatch now, not whether it may.
  */
 export function unmetPlacement(
   placement: StepPlacement,
   worker: SchedulableWorker,
 ): string | null {
-  if (
-    placement.target !== undefined &&
-    worker.name !== placement.target &&
-    worker.instanceUuid !== placement.target
-  ) {
-    return `target '${placement.target}'`;
+  if (placement.target !== undefined) {
+    return worker.name === placement.target ||
+        worker.instanceUuid === placement.target
+      ? null
+      : `target '${placement.target}'`;
   }
+  // Not matchesLabels: the message names the first label that fails.
   for (const [key, value] of Object.entries(placement.labels ?? {})) {
     if (worker.labels[key] !== value) {
       return `label ${key}=${value}`;

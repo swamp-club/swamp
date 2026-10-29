@@ -342,6 +342,19 @@ Deno.test("unmetPlacement: names the target the worker is not", () => {
   assertEquals(unmetPlacement({ target: "w2" }, w), "target 'w2'");
 });
 
+Deno.test("unmetPlacement: a target stands in for labels and platform, as in eligibleWorkers", () => {
+  const w = worker({ name: "special", labels: {}, platform: "linux" });
+  const placement = {
+    target: "special",
+    labels: { pool: "build" },
+    platform: "windows",
+  };
+  assertEquals(unmetPlacement(placement, w), null);
+  assertEquals(eligibleWorkers(placement, [w]).map((x) => x.name), [
+    "special",
+  ]);
+});
+
 Deno.test("unmetPlacement: names the first label the worker lacks", () => {
   const w = worker({ name: "b", labels: { pool: "worker", slot: "b" } });
   assertEquals(

@@ -2627,6 +2627,49 @@ Deno.test("validate: no mixed placement warning when an affinity group agrees on
   );
 });
 
+Deno.test("validate: no mixed placement warning when steps share a target and differ only in labels it stands in for (swamp-club#4122)", async () => {
+  const workflow = Workflow.create({
+    name: "affinity-shared-target",
+    jobs: [
+      Job.create({
+        name: "main",
+        affinity: true,
+        labels: { pool: "build" },
+        steps: [
+          placedStep("a", { target: "special-host" }),
+          placedStep("b", { target: "special-host", labels: { gpu: "true" } }),
+        ],
+      }),
+    ],
+  });
+
+  assertEquals(
+    mixedPlacementWarnings(await service.validate(workflow)).length,
+    0,
+  );
+});
+
+Deno.test("validate: warns on mixed placement whose labels would read the same as text (swamp-club#4122)", async () => {
+  const workflow = Workflow.create({
+    name: "affinity-label-text",
+    jobs: [
+      Job.create({
+        name: "main",
+        affinity: true,
+        steps: [
+          placedStep("joined", { labels: { a: "1,b=2" } }),
+          placedStep("split", { labels: { a: "1", b: "2" } }),
+        ],
+      }),
+    ],
+  });
+
+  assertEquals(
+    mixedPlacementWarnings(await service.validate(workflow)).length,
+    1,
+  );
+});
+
 Deno.test("validate: no mixed placement warning when an affinity group's placement holds an expression (swamp-club#4122)", async () => {
   const workflow = Workflow.create({
     name: "affinity-expression",

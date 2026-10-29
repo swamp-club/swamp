@@ -23,6 +23,7 @@ import { workflowDeclaresInputs, WorkflowSchema } from "./workflow.ts";
 import { WorkflowSchemaError } from "./workflow_schema_error.ts";
 import type { WorkflowRepository } from "./repositories.ts";
 import { mergePlacementFields, resolvePlacement } from "./placement.ts";
+import { describePlacement } from "../remote/scheduler.ts";
 import { createWorkflowId } from "./workflow_id.ts";
 import { schemaExpressions } from "./signal_wait.ts";
 import {
@@ -675,16 +676,17 @@ export class DefaultWorkflowValidationService
 
   /**
    * The placed steps of an affinity group grouped by their effective
-   * target, labels and platform, or null when they all agree. A group
-   * whose placement holds an expression is not compared, since its value
-   * is only known at run time.
+   * placement, or null when they all agree. A target stands in for labels
+   * and platform, as it does in scheduling. A group whose placement holds
+   * an expression is not compared, since its value is only known at run
+   * time.
    */
   private mixedAffinityPlacement(
     workflow: Workflow,
     jobs: readonly Job[],
     qualifyStepNames: boolean,
   ): string | null {
-    const stepsByPlacement = new Map<string, string[]>();
+    const groups = new Map<string, { description: string; names: string[] }>();
     for (const job of jobs) {
       const jobFields = mergePlacementFields(
         workflow.placementFields,
@@ -695,37 +697,37 @@ export class DefaultWorkflowValidationService
           mergePlacementFields(jobFields, step.placementFields),
         );
         if (placement === undefined) continue;
-        const labels = Object.entries(placement.labels ?? {}).sort(
-          ([a], [b]) => a.localeCompare(b),
-        );
+        const effective = placement.target !== undefined
+          ? { target: placement.target }
+          : {
+            labels: Object.fromEntries(
+              Object.entries(placement.labels ?? {}).sort(([a], [b]) =>
+                a.localeCompare(b)
+              ),
+            ),
+            platform: placement.platform,
+          };
         const values = [
-          placement.target,
-          placement.platform,
-          ...labels.flat(),
+          effective.target,
+          effective.platform,
+          ...Object.entries(effective.labels ?? {}).flat(),
         ].filter((value) => value !== undefined);
         if (values.some((value) => containsExpression(value))) return null;
-        const description = [
-          placement.target !== undefined
-            ? `target '${placement.target}'`
-            : null,
-          labels.length > 0
-            ? `labels ${labels.map(([k, v]) => `${k}=${v}`).join(",")}`
-            : null,
-          placement.platform !== undefined
-            ? `platform '${placement.platform}'`
-            : null,
-        ].filter((part) => part !== null).join(" and ");
-        const name = qualifyStepNames
-          ? `'${job.name}/${step.name}'`
-          : `'${step.name}'`;
-        stepsByPlacement.set(description, [
-          ...(stepsByPlacement.get(description) ?? []),
-          name,
+        const key = JSON.stringify([
+          effective.target,
+          effective.platform,
+          effective.labels,
         ]);
+        const group = groups.get(key) ??
+          { description: describePlacement(effective), names: [] };
+        group.names.push(
+          qualifyStepNames ? `'${job.name}/${step.name}'` : `'${step.name}'`,
+        );
+        groups.set(key, group);
       }
     }
-    if (stepsByPlacement.size <= 1) return null;
-    return [...stepsByPlacement].map(([description, names]) =>
+    if (groups.size <= 1) return null;
+    return [...groups.values()].map(({ description, names }) =>
       `${names.join(", ")} (${description})`
     ).join("; ");
   }
