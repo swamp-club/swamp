@@ -915,6 +915,9 @@ const BROKEN_IMPLEMENTATIONS: BrokenImplementation[] = [
       const { service } = fixture.first;
       return withFirst(fixture, {
         ...service,
+        // Caught because a bulk mark makes the next push a walk that
+        // deletes nothing (the fake's default bulkDisablesDeletes), so the
+        // recorded delete never reaches the remote.
         repairUnpushedFiles: async (options) => {
           const summary = await service.repairUnpushedFiles!(options);
           if (!options?.dryRun) await service.markDirty();

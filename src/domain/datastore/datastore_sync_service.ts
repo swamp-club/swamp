@@ -558,11 +558,11 @@ export interface DatastoreSyncService {
    *    an earlier upload of ours, indexed and counted as uploaded; other is
    *    `alreadyPresent`, and the remote object is left as it is.
    * 8. **Pending work is untouched.** Delete nothing, locally or remotely.
-   *    Never read, set or clear dirty state, so never reuse an upload
-   *    helper that marks the cache dirty. Never advance the sync
-   *    fingerprint (commit sequence, index ETag, last-verified time). Merge
-   *    the uploaded entries into the on-disk last-synced index.
-   *    `pendingChanges` reports whether dirty state is pending.
+   *    Never set or clear dirty state, so never reuse an upload helper that
+   *    marks the cache dirty; read it only to report `pendingChanges`.
+   *    Never advance the sync fingerprint (commit sequence, index ETag,
+   *    last-verified time). Merge the uploaded entries into the on-disk
+   *    last-synced index.
    * 9. **Failures.** With no last-synced index, reject rather than guess.
    *    Any other failure rejects, honoring `options.signal`; batches already
    *    committed stay committed.

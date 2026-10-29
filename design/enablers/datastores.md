@@ -1582,11 +1582,11 @@ files itself, shaped like `repairNamespaceContamination`.
 7. **Refused creates are settled in the same run.** An object at the key whose
    sha256 matches the local file is an earlier upload of ours, and is indexed.
    Any other object is `alreadyPresent`, and the remote is left as it is.
-8. **Pending work is untouched.** Nothing is deleted. Dirty state is never
-   read, set or cleared, so an upload helper that marks the cache dirty is not
-   reused. The sync fingerprint (commit sequence, index ETag, last-verified
-   time) never advances. The uploaded entries are merged into the on-disk
-   last-synced index. `pendingChanges` says whether dirty state is pending.
+8. **Pending work is untouched.** Nothing is deleted. Dirty state is never set
+   or cleared, so an upload helper that marks the cache dirty is not reused; it
+   is read only to report `pendingChanges`. The sync fingerprint (commit
+   sequence, index ETag, last-verified time) never advances. The uploaded
+   entries are merged into the on-disk last-synced index.
 9. **Failures.** Without a last-synced index, reject rather than guess.
    Batches already committed stay committed.
 
