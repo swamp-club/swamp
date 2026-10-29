@@ -181,7 +181,7 @@ export class LeaderLink {
       return notLeaderResponse(new ServeNotLeaderError(leader), nameLeader);
     }
     const url = new URL(req.url);
-    const target = new URL(url.pathname + url.search, address);
+    const target = leaderTarget(address, url.pathname, url.search);
     const headers = forwardedHeaders(
       req.headers,
       options.clientIp,
@@ -243,7 +243,8 @@ export class LeaderLink {
     ) {
       return undefined;
     }
-    const url = new URL(pathAndQuery, address);
+    const parsed = new URL(pathAndQuery, "http://path.invalid");
+    const url = leaderTarget(address, parsed.pathname, parsed.search);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     const client = this.client(address);
     const socket = new WebSocket(url, {
@@ -265,6 +266,26 @@ export class LeaderLink {
     }
     this.#clients.clear();
   }
+}
+
+/**
+ * The leader's URL for a caller's path and query. Only the path and query
+ * are the caller's: the origin is always the leader's, so a request target
+ * such as `//internal-host/x`, which URL resolution would read as another
+ * host, never sends the caller's credential anywhere but the leader.
+ */
+export function leaderTarget(
+  address: string,
+  pathname: string,
+  search: string,
+): URL {
+  const target = new URL(address);
+  target.pathname = pathname;
+  target.search = search;
+  if (target.origin !== new URL(address).origin) {
+    throw new Error("Internal error: a forward left the leader's origin");
+  }
+  return target;
 }
 
 // One client per leader address, so every forward to it shares one

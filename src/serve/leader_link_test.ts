@@ -23,6 +23,7 @@ import {
   forwardedHeaders,
   forwardNeverSent,
   LeaderLink,
+  leaderTarget,
 } from "./leader_link.ts";
 
 const LEADER: ServeLeader = {
@@ -190,4 +191,26 @@ Deno.test("LeaderLink.forward: refuses once closed", async () => {
     new Request("http://lb.example/x", { method: "POST" }),
   );
   assertEquals(reply.status, 503);
+});
+
+Deno.test("leaderTarget: a caller's path never leaves the leader's origin", () => {
+  assertEquals(
+    leaderTarget("https://node-a.internal:9090", "//10.0.0.7:8080/admin", "")
+      .origin,
+    "https://node-a.internal:9090",
+  );
+});
+
+Deno.test("LeaderLink.forward: a request target starting with // still goes to the leader", async () => {
+  let seen = "";
+  await link((input) => {
+    seen = String(input);
+    return Promise.resolve(new Response(null, { status: 204 }));
+  }).forward(
+    new Request("http://lb.example//evil.example/data/x?y=1", {
+      method: "POST",
+    }),
+  );
+  assertEquals(new URL(seen).origin, "https://node-a.internal:9090");
+  assertEquals(new URL(seen).pathname, "//evil.example/data/x");
 });

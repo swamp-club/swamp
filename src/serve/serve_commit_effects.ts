@@ -73,6 +73,7 @@ export class ServeCommitEffects {
   #cursor: number;
   #running: Promise<void> | undefined;
   #again = false;
+  #replaced = false;
   #off: (() => void) | undefined;
 
   constructor(deps: ServeCommitEffectsDeps) {
@@ -81,7 +82,12 @@ export class ServeCommitEffects {
   }
 
   start(): void {
-    this.#off ??= this.#deps.source.onMoved(() => this.#schedule());
+    this.#off ??= this.#deps.source.onMoved((replaced) => {
+      // A replaced copy may have rewritten rows already read: their
+      // effects are not seen one by one, so everything is refreshed.
+      if (replaced) this.#replaced = true;
+      this.#schedule();
+    });
   }
 
   /** Stops watching, and waits for a pass in flight. */
@@ -125,6 +131,10 @@ export class ServeCommitEffects {
   async #pass(): Promise<void> {
     const store = this.#deps.source.datastore.commitStore;
     const effects = new Set<CommitEffect>();
+    if (this.#replaced) {
+      this.#replaced = false;
+      for (const effect of EVERY_EFFECT) effects.add(effect);
+    }
     for (;;) {
       const head = store.highWaterMark().cursor;
       if (head < this.#cursor) {

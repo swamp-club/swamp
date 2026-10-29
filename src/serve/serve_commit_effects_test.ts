@@ -37,7 +37,7 @@ const ID = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
 function fakeSource() {
   const rows: { cursor: number; partition: PartitionKey }[] = [];
   let compactedTo = 0;
-  const listeners = new Set<() => void>();
+  const listeners = new Set<(replaced: boolean) => void>();
   const source = {
     datastore: {
       commitStore: {
@@ -57,7 +57,7 @@ function fakeSource() {
         },
       },
     },
-    onMoved: (listener: () => void) => {
+    onMoved: (listener: (replaced: boolean) => void) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
@@ -66,7 +66,11 @@ function fakeSource() {
     source,
     land(partition: PartitionKey) {
       this.landQuietly(partition);
-      for (const listener of listeners) listener();
+      for (const listener of listeners) listener(false);
+    },
+    /** A restore that replaced the copy, head at or above what was read. */
+    restored() {
+      for (const listener of listeners) listener(true);
     },
     /** As another process lands a commit: no head moves here. */
     landQuietly(partition: PartitionKey) {
@@ -78,7 +82,7 @@ function fakeSource() {
     replace(cursor: number) {
       rows.length = 0;
       compactedTo = cursor;
-      for (const listener of listeners) listener();
+      for (const listener of listeners) listener(true);
     },
   };
 }
@@ -188,6 +192,22 @@ Deno.test("ServeCommitEffects.poke: finds commits another process landed in a sh
     assertEquals(calls.config, 0);
     effects.poke();
     await waitFor(() => calls.config === 1, "the config check");
+  } finally {
+    await effects.stop();
+  }
+});
+
+Deno.test("ServeCommitEffects: a replaced copy refreshes everything, even with its head at or past what was read", async () => {
+  const { store, calls, effects } = setup();
+  try {
+    store.land(partitionOf({ kind: "run", workflowId: ID, runId: ID }));
+    await waitFor(() => calls.catalog === 1, "the first pass");
+    await effects.settled();
+    store.restored();
+    await waitFor(
+      () => calls.policy === 1 && calls.config === 1,
+      "a full refresh",
+    );
   } finally {
     await effects.stop();
   }

@@ -112,6 +112,17 @@ export async function handleCommitsSubscribe(
   try {
     let lastSent = 0;
     while (!signal.aborted && socket.readyState === WebSocket.OPEN) {
+      // Fail-secure audit refuses reads it cannot record, as GET changes
+      // does, for a subscription already running too.
+      if (auditUnavailable(ctx)) {
+        sendError(
+          socket,
+          requestId,
+          "audit_unavailable",
+          "Request rejected: audit subsystem cannot durably record events (fail-secure mode)",
+        );
+        return;
+      }
       if (socket.bufferedAmount > COMMIT_FEED_MAX_BUFFERED_BYTES) {
         sendError(
           socket,
@@ -191,6 +202,13 @@ export async function handleCommitsSubscribe(
     off();
     subscriptions.set(socket, (subscriptions.get(socket) ?? 1) - 1);
   }
+}
+
+function auditUnavailable(ctx: ConnectionContext): boolean {
+  return ctx.auditEmitter !== undefined && ctx.auditFailOpen === false &&
+    (ctx.auditWal?.isFull === true ||
+      ctx.auditWal?.hasDroppedEvents === true ||
+      ctx.auditEmitter.durableStalled);
 }
 
 function sendFeedUnavailable(socket: WebSocket, requestId: string): void {

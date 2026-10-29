@@ -679,7 +679,7 @@ export class SqliteCommitStore implements CommitStore {
   /** Append transactions committed; see {@link appendTransactions}. */
   #appendTransactions = 0;
   /** {@link onHeadMoved}'s listeners. */
-  readonly #headListeners = new Set<() => void>();
+  readonly #headListeners = new Set<(replaced: boolean) => void>();
   /** The leader's cursor {@link appendFromLeader} inserts its commit at. */
   #leaderCursor: number | undefined;
   #queue: Promise<unknown> = Promise.resolve();
@@ -1132,20 +1132,21 @@ export class SqliteCommitStore implements CommitStore {
   /**
    * Calls `listener` whenever the store's rows may have moved: after a
    * commit lands (once its transaction committed, so a reader finds it),
-   * and after compaction or an install replaced what the store holds. The
+   * and after compaction or an install replaced what the store holds, with
+   * `replaced` true then: rows already read may have changed. The
    * commit feed waits on it rather than polling (swamp-club#4120). The
    * listener reads the store itself; a throwing listener is ignored.
    * Returns the call that removes it.
    */
-  onHeadMoved(listener: () => void): () => void {
+  onHeadMoved(listener: (replaced: boolean) => void): () => void {
     this.#headListeners.add(listener);
     return () => this.#headListeners.delete(listener);
   }
 
-  #notifyHeadMoved(): void {
+  #notifyHeadMoved(replaced = false): void {
     for (const listener of [...this.#headListeners]) {
       try {
-        listener();
+        listener(replaced);
       } catch {
         // A listener's failure is its own.
       }
@@ -1951,7 +1952,7 @@ export class SqliteCommitStore implements CommitStore {
   ): Promise<CompactionReport> {
     if (this.#closed) return Promise.reject(closedError());
     return this.#enqueue(() => this.#compact(through, options)).finally(() =>
-      this.#notifyHeadMoved()
+      this.#notifyHeadMoved(true)
     );
   }
 
@@ -2458,7 +2459,7 @@ export class SqliteCommitStore implements CommitStore {
   replaceContentFrom(path: string): Promise<void> {
     if (this.#closed) return Promise.reject(closedError());
     return this.#enqueue(() => this.#replaceContent(path)).finally(() =>
-      this.#notifyHeadMoved()
+      this.#notifyHeadMoved(true)
     );
   }
 
@@ -2517,7 +2518,7 @@ export class SqliteCommitStore implements CommitStore {
         owner: this.#db.prepare("SELECT * FROM datastore_owner").all(),
       });
       this.#replaceContent(staging.path);
-    }).finally(() => this.#notifyHeadMoved());
+    }).finally(() => this.#notifyHeadMoved(true));
   }
 
   #replaceContent(path: string): void {

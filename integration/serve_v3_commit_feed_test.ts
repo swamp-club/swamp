@@ -257,6 +257,39 @@ Deno.test({
 
 Deno.test({
   name:
+    "commit feed: a subscription already running ends once fail-secure audit cannot record",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      await withFeedSocket(server, async (wsUrl) => {
+        const sub = await subscribe(wsUrl, "alice-token", 0);
+        try {
+          await waitFor(() => sub.frames.length > 0, "the first frame");
+          const ctx = server.ctx as ConnectionContext;
+          Object.assign(ctx, {
+            auditFailOpen: false,
+            auditEmitter: { durableStalled: true },
+          });
+          // Checked again at the next frame, a heartbeat at the latest.
+          await waitFor(
+            () => sub.frames.some((frame) => frame.type === "error"),
+            "the refusal",
+          );
+          assertEquals(
+            sub.frames.find((frame) => frame.type === "error")?.error?.code,
+            "audit_unavailable",
+          );
+        } finally {
+          sub.socket.close();
+        }
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
     "commit feed: a team peer reads the whole feed, and is refused any other request",
   sanitizeOps: false,
   sanitizeResources: false,

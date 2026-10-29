@@ -2291,7 +2291,7 @@ export interface V3CommitFeedSource {
    * Calls `listener` when the copy's rows or the published mark moved.
    * Returns the call that removes it.
    */
-  onMoved(listener: () => void): () => void;
+  onMoved(listener: (replaced: boolean) => void): () => void;
 }
 
 /** The commit feed's view of the v3 datastore `config` names. */
@@ -2320,10 +2320,11 @@ export function v3CommitFeedSource(
         listeners = new Set();
         publishListeners.set(key, listeners);
       }
-      listeners.add(listener);
+      const published = () => listener(false);
+      listeners.add(published);
       return () => {
         offHead();
-        publishListeners.get(key)?.delete(listener);
+        publishListeners.get(key)?.delete(published);
       };
     },
   };
