@@ -3952,21 +3952,53 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * The highest promoted version of `dataName` that can be read
-   * (swamp-club#3955), or null when none can. A pending deferred write is
-   * not promoted, so it is never chosen.
+   * The highest version of `dataName` that was published (swamp-club#3955):
+   * the highest of its non-pending catalog rows and the version the latest
+   * marker names, or undefined when neither names one. A save that crashed
+   * before it was published is the newest version allocated, so it is
+   * always above this ceiling.
+   */
+  private async publishedCeiling(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<number | undefined> {
+    const published = this.catalogStore.versionKeys(this.namespace, {
+      typeNormalized: type.normalized,
+      modelId,
+      dataName,
+    }).map((row) => row.version);
+    const marker = await this.latestMarkerState(type, modelId, dataName);
+    if (marker.kind === "version" && marker.version > 0) {
+      published.push(marker.version);
+    }
+    return maxOf(published);
+  }
+
+  /**
+   * The highest promoted version of `dataName` that can be read, at or
+   * below the highest version that was published (swamp-club#3955), or
+   * null when none can. A pending deferred write is not promoted, and a
+   * save that crashed before it was published is above the ceiling, so
+   * neither is ever chosen. `ceiling` defaults to the published ceiling
+   * now; a rollback passes the one it measured before it removed anything.
    */
   async highestReadableVersion(
     type: ModelType,
     modelId: string,
     dataName: string,
+    ceiling?: number,
   ): Promise<number | null> {
+    const limit = ceiling ??
+      await this.publishedCeiling(type, modelId, dataName);
+    if (limit === undefined) return null;
     const { promoted } = await this.listPromotedVersions(
       type,
       modelId,
       dataName,
     );
-    for (const version of [...promoted].sort((a, b) => b - a)) {
+    const candidates = promoted.filter((v) => v <= limit);
+    for (const version of candidates.sort((a, b) => b - a)) {
       const { reason } = await this.inspectVersion(
         type,
         modelId,
@@ -3979,19 +4011,27 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Points the latest marker of `dataName` at its highest readable promoted
-   * version, for `swamp doctor datastores --repair` on a marker that names
-   * no version (swamp-club#3955). Returns that version, or null when none
-   * can be read, and the marker is left as it is. Run under the model's
-   * lock. The marker is written durably when the datastore's `durable`
-   * setting is on, as every marker write is.
+   * Points the latest marker of `dataName` at its highest readable version
+   * at or below `ceiling` (see {@link highestReadableVersion}), for `swamp
+   * doctor datastores --repair` (swamp-club#3955), and gives that version a
+   * catalog row when it has none, so the catalog and the marker agree.
+   * Returns the version, or null when none can be read, and the marker is
+   * left as it is. Run under the model's lock. The marker is written
+   * durably when the datastore's `durable` setting is on, as every marker
+   * write is.
    */
   async resetLatestMarkerToReadable(
     type: ModelType,
     modelId: string,
     dataName: string,
+    ceiling?: number,
   ): Promise<number | null> {
-    const version = await this.highestReadableVersion(type, modelId, dataName);
+    const version = await this.highestReadableVersion(
+      type,
+      modelId,
+      dataName,
+      ceiling,
+    );
     if (version === null) return null;
     await this.staged(
       {
@@ -4000,6 +4040,16 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       },
       () => this.updateLatestMarker(type, modelId, dataName, version),
     );
+    const hasRow = this.catalogStore.versionKeys(this.namespace, {
+      typeNormalized: type.normalized,
+      modelId,
+      dataName,
+    }).some((row) => row.version === version);
+    if (!hasRow) {
+      // A rename marker is never a row; its forward stays as it is.
+      const data = await this.findByName(type, modelId, dataName, version);
+      if (data && !data.isRenamed) this.catalogUpsert(type, modelId, data);
+    }
     return version;
   }
 
@@ -4013,9 +4063,11 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
    * `delete` makes the highest version left on disk latest and writes a
    * catalog row for it. That can be a save that crashed before it was
    * published (metadata written, no raw, no row), so any row the deletes
-   * added is dropped again and the latest flags recomputed: the catalog
-   * and the marker then agree on the readable version. When only such
-   * unpublished versions are left, the marker is pointed at
+   * added is dropped again and the latest flags recomputed. The new
+   * latest is chosen at or below the highest version that was published
+   * before the rollback, so a complete crashed save is never chosen
+   * either; the catalog and the marker then agree on the readable version.
+   * When only unpublished versions are left, the marker is pointed at
    * NO_PROMOTED_VERSION, so the name reads as absent, as `delete` leaves a
    * name with only in-flight writes. With no `unreadable` versions this
    * only resets the marker.
@@ -4035,6 +4087,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         row.version
       ),
     );
+    // Measured before anything is removed: the deletes move the marker.
+    const ceiling = await this.publishedCeiling(type, modelId, dataName);
     for (const version of [...unreadable].sort((a, b) => b - a)) {
       await this.delete(type, modelId, dataName, version);
     }
@@ -4052,11 +4106,14 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       );
       this.catalogStore.recordLocalWrite();
     }
-    const latest = await this.resetLatestMarkerToReadable(
-      type,
-      modelId,
-      dataName,
-    );
+    const latest = ceiling === undefined
+      ? null
+      : await this.resetLatestMarkerToReadable(
+        type,
+        modelId,
+        dataName,
+        ceiling,
+      );
     const left = await this.listVersions(type, modelId, dataName);
     if (latest === null && unreadable.length > 0 && left.length > 0) {
       await this.staged(

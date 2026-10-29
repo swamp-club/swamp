@@ -57,6 +57,9 @@ const PINNED = [
   "src/cli/commands/data_delete.ts :: dataDeleteCommand",
   "src/cli/commands/data_rename.ts :: dataRenameCommand",
   "src/cli/commands/datastore_config_migrate.ts :: datastoreConfigMigrateCommand",
+  // doctor datastores --repair -y on v2: rolls unreadable data versions back
+  // (swamp-club#3955); opened only when there are findings to repair.
+  "src/cli/commands/doctor_datastores.ts :: createUnreadableVersionsRepairDeps",
   "src/cli/commands/model_cancel.ts :: createModelCancelCommand",
   "src/cli/commands/model_create.ts :: createModelCreateCommand",
   "src/cli/commands/model_delete.ts :: createModelDeleteCommand",

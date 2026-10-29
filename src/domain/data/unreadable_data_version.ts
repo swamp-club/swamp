@@ -74,9 +74,10 @@ export interface UnreadableDataVersion {
    */
   latest: boolean;
   /**
-   * The highest promoted version of the data name that can be read, which
-   * a repair leaves as latest; null when none can, and the repair removes
-   * the record.
+   * The highest promoted version of the data name that can be read, at or
+   * below the highest version that was published (so a save that crashed
+   * before it was published is never chosen), which a repair leaves as
+   * latest; null when none can.
    */
   readableVersion: number | null;
 }

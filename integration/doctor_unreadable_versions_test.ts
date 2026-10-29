@@ -104,14 +104,15 @@ async function truncate(versionDir: string): Promise<void> {
 }
 
 /**
- * Leaves version `version` of a data name as a save killed after its
- * metadata.yaml landed: metadata copied from version `from` and renumbered,
- * no raw, no catalog row, and the marker left where it was.
+ * Leaves version `version` of a data name as a save killed before it was
+ * published: metadata copied from version `from` and renumbered, no raw
+ * unless `complete`, no catalog row, and the marker left where it was.
  */
 async function writeCrashedSave(
   nameDir: string,
   from: number,
   version: number,
+  { complete = false }: { complete?: boolean } = {},
 ): Promise<void> {
   const metadata = parseYaml(
     await Deno.readTextFile(join(nameDir, String(from), "metadata.yaml")),
@@ -121,6 +122,13 @@ async function writeCrashedSave(
     join(nameDir, String(version), "metadata.yaml"),
     stringifyYaml({ ...metadata, version, id: crypto.randomUUID() }),
   );
+  // Killed after both files landed, before the marker moved.
+  if (complete) {
+    await Deno.copyFile(
+      join(nameDir, String(from), "raw"),
+      join(nameDir, String(version), "raw"),
+    );
+  }
 }
 
 /** The libswamp repair over the real repository and catalog. */
@@ -326,4 +334,49 @@ Deno.test("doctor unreadable versions: a record left with only a crashed save re
       [],
     );
   });
+});
+
+Deno.test("doctor unreadable versions: a complete crashed save above the published versions never becomes latest (swamp-club#3955)", async () => {
+  for (const damage of ["version", "marker"] as const) {
+    await withRepo(async (r) => {
+      await r.write("state", 3);
+      if (damage === "version") {
+        await truncate(join(r.nameDir("state"), "1"));
+      } else {
+        await Deno.writeFile(
+          join(r.nameDir("state"), "latest"),
+          new Uint8Array(),
+        );
+      }
+      await writeCrashedSave(r.nameDir("state"), 3, 4, { complete: true });
+
+      const found = await scanUnreadableVersions(
+        r.repo,
+        r.catalog,
+        SOLO_NAMESPACE,
+      );
+      assertEquals(found.map((f) => f.readableVersion), [3]);
+
+      const events = await repair(r);
+      assert(
+        events.some((e) => e.kind === "completed"),
+        JSON.stringify(events),
+      );
+      assertEquals(
+        await Deno.readTextFile(join(r.nameDir("state"), "latest")),
+        "3",
+        damage,
+      );
+      assertEquals(
+        r.catalog.versionKeys(SOLO_NAMESPACE)
+          .filter((k) => k.is_latest === 1)
+          .map((k) => k.version),
+        [3],
+      );
+      assertEquals(
+        (await r.repo.findByName(type, r.modelId, "state"))?.version,
+        3,
+      );
+    });
+  }
 });

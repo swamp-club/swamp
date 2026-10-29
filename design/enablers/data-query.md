@@ -824,7 +824,10 @@ pending deferred write, is not published, so it is never unreadable.
   marker to the highest version left on disk. That version can be a save that
   crashed before it was published, and `delete` writes a catalog row for it, so
   any row the deletes added is dropped again and the flags recomputed. The
-  marker is then pointed at the highest readable promoted version. A record
+  marker is then pointed at the highest readable promoted version at or below
+  the highest version published before the rollback (the highest non-pending
+  row, or the marker's version), so a complete crashed save is never chosen;
+  that version gets a catalog row if it has none. A record
   with no version left on disk is removed. One left with only unpublished
   versions has its marker set to `NO_PROMOTED_VERSION` and reads as absent. A
   version that became readable again before the locks were taken is kept.
