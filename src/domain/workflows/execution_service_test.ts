@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { SENSITIVE_FORMAT_VERSION } from "../secrets/persisted_sensitive_form.ts";
+import type { RunWriteFence } from "./run_write_fence.ts";
 import { runProgressSnapshots } from "../remote/run_progress.ts";
 import {
   type ObservationOutcome,
@@ -23210,5 +23211,139 @@ Deno.test("resume: refuses a run record written in a newer sensitive-value forma
     assertStringIncludes(error.message, "newer swamp");
     assertStringIncludes(error.message, "not resumed");
     assertEquals(executor.executedSteps.length, executedBefore);
+  });
+});
+
+/** A fence a test closes by hand, from inside a step. */
+class ManualRunWriteFence implements RunWriteFence {
+  readonly closed = new Set<string>();
+  isClosed(runId: string): boolean {
+    return this.closed.has(runId);
+  }
+  track(_runId: string, write: Promise<void>): Promise<void> {
+    return write;
+  }
+}
+
+Deno.test("WorkflowExecutionService: an aborted run whose fence another owner closed saves nothing more, checkpoints included (swamp-club#4101)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "fenced-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("build"),
+            modelStep("deploy", onStep("build", TriggerCondition.succeeded())),
+            modelStep("verify", onStep("deploy", TriggerCondition.succeeded())),
+          ],
+        }),
+      ],
+    });
+    const fence = new ManualRunWriteFence();
+    const runRepo = new SpyWorkflowRunRepository();
+    let savesAtClose: number | undefined;
+    // The step answers after the abort, as a remote dispatch did, and the
+    // shutdown takes the run over at that moment.
+    class TakenOverExecutor extends AbortingStepExecutor {
+      override async execute(
+        step: Step,
+        ctx: StepExecutionContext,
+      ): Promise<unknown> {
+        const result = await super.execute(step, ctx);
+        if (ctx.stepName === "build") {
+          fence.closed.add(ctx.workflowRunId);
+          savesAtClose = runRepo.saves;
+        }
+        return result;
+      }
+    }
+    const executor = new TakenOverExecutor("build", "succeed");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+      runRepo,
+    );
+    service.runWriteFence = fence;
+    let checkpointsAfterClose = 0;
+    service.runCheckpointer = {
+      checkpoint: () => {
+        if (savesAtClose !== undefined) checkpointsAfterClose++;
+        return Promise.resolve();
+      },
+    };
+
+    await finishedRun(
+      service.run(workflow.name, { signal: executor.controller.signal }),
+    );
+
+    assert(savesAtClose !== undefined);
+    assertEquals(runRepo.saves, savesAtClose);
+    assertEquals(checkpointsAfterClose, 0);
+    assertEquals(runRepo.saved.at(-1)?.status, "running");
+  });
+});
+
+Deno.test("WorkflowExecutionService: a nested child run inherits the run write fence (swamp-club#4101)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new SpyWorkflowRunRepository();
+    const childWorkflow = Workflow.create({
+      name: "fenced-child",
+      jobs: [Job.create({
+        name: "job1",
+        steps: [Step.create({
+          name: "child-step",
+          task: StepTask.modelMethod("some-model", "run", {}),
+        })],
+      })],
+    });
+    await workflowRepo.save(childWorkflow);
+    const parentWorkflow = Workflow.create({
+      name: "fenced-parent",
+      jobs: [Job.create({
+        name: "job1",
+        steps: [Step.create({
+          name: "call-child",
+          task: StepTask.workflow("fenced-child", {}),
+        })],
+      })],
+    });
+    await workflowRepo.save(parentWorkflow);
+    const fence = new ManualRunWriteFence();
+    let childRunId: string | undefined;
+    class ClosingChildExecutor extends MockStepExecutor {
+      override execute(step: Step, ctx: StepExecutionContext) {
+        if (ctx.stepName === "child-step") {
+          childRunId = ctx.workflowRunId;
+          fence.closed.add(ctx.workflowRunId);
+        }
+        return super.execute(step, ctx);
+      }
+    }
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new ClosingChildExecutor(),
+      undefined,
+      catalogStore,
+    );
+    service.runWriteFence = fence;
+
+    const { run } = await finishedRun(service.run(parentWorkflow.name));
+
+    assert(childRunId !== undefined);
+    const childSaves = runRepo.saved.filter((r) => r.id === childRunId);
+    // The child's record stops where the fence closed: running.
+    assertEquals(childSaves.at(-1)?.status, "running");
+    // The parent, whose fence stays open, saves to the end.
+    assertEquals(
+      runRepo.saved.filter((r) => r.id === run.id).at(-1)?.status,
+      "succeeded",
+    );
   });
 });

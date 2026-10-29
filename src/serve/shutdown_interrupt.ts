@@ -27,7 +27,11 @@
  * The push is bounded by one short deadline, so it can miss. Each run's
  * tracker row is settled whatever happens, so the next boot's reaper does
  * not skip the run as still running, and the runs not pushed are reported
- * and recorded for the next start (swamp-club#3958).
+ * and recorded for the next start (swamp-club#3958). The runs' write fence is
+ * closed first, so their executors save nothing over the interrupt
+ * (swamp-club#4101). A push that resolves
+ * having sent no files counts as not pushed: the interrupted records changed,
+ * so it sent nothing it had to (swamp-club#4101).
  */
 
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
@@ -40,6 +44,7 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { ActiveRun } from "./active_run_registry.ts";
 import { type SyncGate, withSharedSyncGate } from "./sync_gate.ts";
 import { recordUnpushedInterrupts } from "./unpushed_interrupts.ts";
+import type { ServeRunWriteFence } from "./run_write_fence.ts";
 import { keepActiveRunRecords } from "./active_run_tracker.ts";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import {
@@ -57,6 +62,9 @@ const logger = getSwampLogger(["serve", "shutdown"]);
  */
 export const SHUTDOWN_PUSH_TIMEOUT_MS = 5_000;
 
+/** The push error a shutdown push that sent no files is reported with. */
+export const SHUTDOWN_PUSH_SENT_NOTHING = "the push sent no files";
+
 export interface ShutdownInterruptDeps {
   readonly repoContext:
     & Pick<RepositoryContext, "markDirty">
@@ -66,6 +74,12 @@ export interface ShutdownInterruptDeps {
         "findGlobalByStatus" | "save"
       >;
     };
+  /**
+   * Serve's run write fence. Closed for the runs about to be interrupted
+   * before they are loaded, so an executor that outlived the abort grace
+   * cannot save its running copy over the interrupt (swamp-club#4101).
+   */
+  readonly runWriteFence?: Pick<ServeRunWriteFence, "close">;
   /** The datastore sync service; absent on a filesystem datastore. */
   readonly syncService?: Pick<DatastoreSyncService, "pushChanged">;
   readonly namespace?: string;
@@ -88,13 +102,16 @@ export interface ShutdownInterruptDeps {
 
 export interface ShutdownInterruptResult {
   readonly interrupted: readonly string[];
-  /** Why the push of the interrupted runs failed, when it did. */
+  /**
+   * Why the push of the interrupted runs failed, when it did, or
+   * {@link SHUTDOWN_PUSH_SENT_NOTHING} when it resolved having sent no files.
+   */
   readonly pushError?: string;
   /**
    * The aborted workflow runs whose interrupted record is not known to have
-   * reached the datastore: every interrupted run when the push failed, and
-   * each run that could not be loaded or saved. Set only on a synced
-   * datastore, and only when not empty.
+   * reached the datastore: every interrupted run when the push failed or
+   * sent no files, and each run that could not be loaded or saved. Set only
+   * on a synced datastore, and only when not empty.
    */
   readonly unpushed?: readonly string[];
 }
@@ -117,6 +134,7 @@ export async function interruptShutdownRuns(
   );
   if (workflowRuns.length === 0) return { interrupted };
   const { repoContext, syncService } = deps;
+  await deps.runWriteFence?.close(workflowRuns.map((r) => r.runId));
   const settleTrackerRow = (runId: string) => {
     try {
       deps.runTracker?.complete(runId, "interrupted", "server_shutdown");
@@ -185,7 +203,7 @@ export async function interruptShutdownRuns(
             // shutdown has moved on to tearing down.
             async () => {
               if (controller.signal.aborted) return;
-              await pushNamespaceCounted(
+              return await pushNamespaceCounted(
                 syncService,
                 deps.namespace,
                 controller.signal,
@@ -196,7 +214,10 @@ export async function interruptShutdownRuns(
           // rejects unhandled.
           push.catch(() => {});
           try {
-            await Promise.race([push, deadline]);
+            // A count of 0 is a push that sent nothing, though the records
+            // changed; one that reports no count is taken at its word.
+            const pushed = await Promise.race([push, deadline]);
+            if (pushed === 0) throw new Error(SHUTDOWN_PUSH_SENT_NOTHING);
           } catch (err) {
             pushError = err instanceof Error ? err.message : String(err);
             logger.warn(

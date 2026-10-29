@@ -62,6 +62,16 @@ import {
 import { reapOrphanedWorkflowRuns } from "../src/domain/workflows/orphaned_run_reaper.ts";
 import { runInRootUnitOfWork } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import {
+  type StepExecutionContext,
+  type StepExecutor,
+  WorkflowExecutionService,
+} from "../src/domain/workflows/execution_service.ts";
+import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
+import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
+import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
+import { ServeRunWriteFence } from "../src/serve/run_write_fence.ts";
+import { createWorkflowId } from "../src/domain/workflows/workflow_id.ts";
 
 await initializeLogging({});
 
@@ -570,3 +580,114 @@ Deno.test("shutdown with an unpushed interrupt: a peer settles a run whose own e
     }
   });
 });
+
+/**
+ * A step that answers only once `release` resolves: a remote dispatch that
+ * returns after serve's shutdown has interrupted the run.
+ */
+class LateStepExecutor implements StepExecutor {
+  readonly started = Promise.withResolvers<string>();
+  readonly release = Promise.withResolvers<void>();
+
+  async execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
+    if (step.name === "build") {
+      this.started.resolve(ctx.workflowRunId);
+      await this.release.promise;
+    }
+    return { executed: step.name };
+  }
+}
+
+Deno.test(
+  "shutdown interrupting a run whose executor outlives the abort: the write fence keeps the interrupted record (swamp-club#4101)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const wf = Workflow.create({
+        name: `late-${crypto.randomUUID()}`,
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "build",
+                task: StepTask.model("m", "run"),
+              }),
+              Step.create({
+                name: "deploy",
+                task: StepTask.model("m", "run"),
+                dependsOn: [{
+                  step: "build",
+                  condition: TriggerCondition.succeeded(),
+                }],
+              }),
+            ],
+          }),
+        ],
+      });
+      await new YamlWorkflowRepository(dir).save(wf);
+      const runs = new YamlWorkflowRunRepository(dir);
+      const fence = new ServeRunWriteFence();
+      const executor = new LateStepExecutor();
+      const catalogStore = new CatalogStore(join(dir, "_catalog.db"));
+      try {
+        const service = new WorkflowExecutionService(
+          new YamlWorkflowRepository(dir),
+          runs,
+          dir,
+          executor,
+          undefined,
+          catalogStore,
+        );
+        service.runWriteFence = fence;
+        const controller = new AbortController();
+        const drained = (async () => {
+          for await (
+            const _ of service.run(wf.name, { signal: controller.signal })
+          ) {
+            // Drained to the end, as serve's run loop does.
+          }
+        })();
+
+        const runId = await executor.started.promise;
+        // The drain aborts the run, its grace passes, and shutdown takes it
+        // over while the step is still out.
+        controller.abort(new Error("server shutdown"));
+        const pushed: string[] = [];
+        const result = await interruptShutdownRuns(
+          [{ runId, kind: "workflow-run", startedAt: new Date() }],
+          {
+            repoContext: {
+              markDirty: () => Promise.resolve(),
+              workflowRunRepo: runs,
+            },
+            runWriteFence: fence,
+            syncService: {
+              pushChanged: async () => {
+                const record = await runs.findById(
+                  createWorkflowId(wf.id),
+                  runId as WorkflowRunId,
+                );
+                pushed.push(record?.status ?? "missing");
+                return 1;
+              },
+            },
+          },
+        );
+        assertEquals(result.interrupted, [runId]);
+        assertEquals(pushed, ["interrupted"]);
+
+        // The step answers; the executor goes on and saves what it holds.
+        executor.release.resolve();
+        await drained;
+
+        const record = await runs.findById(
+          createWorkflowId(wf.id),
+          runId as WorkflowRunId,
+        );
+        assertEquals(record?.status, "interrupted");
+      } finally {
+        catalogStore.close();
+      }
+    });
+  },
+);

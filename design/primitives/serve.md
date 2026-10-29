@@ -1420,11 +1420,16 @@ aborted and gets 5 s more. It marks aborted API workflow runs
 `interrupted("server_shutdown")` in the run repository (aborted webhook and cron
 runs end `cancelled`) and, on a remote datastore, pushes those records under the
 shared sync gate (`interruptShutdownRuns` in `src/serve/shutdown_interrupt.ts`,
-swamp-club#3252). One 5 s deadline bounds the gate wait and the push together;
+swamp-club#3252). Before it loads them it closes their run write fence
+(`ServeRunWriteFence`, `src/serve/run_write_fence.ts`), waiting up to 2 s for a
+save already under way: an executor that outlived the abort grace, as one whose
+remote step answers after the abort does, then saves its `running` copy over
+the interrupt no more (swamp-club#4101). One 5 s deadline bounds the gate wait and the push together;
 a push that fails or misses it is logged as a warning, and the datastore keeps
 the run's last pushed status until a later write settles it. Shutdown completes
 those runs' tracker rows as `interrupted` (`server_shutdown`), so the next boot
-does not skip them as still running. When the push fails, the runs are recorded
+does not skip them as still running. When the push fails, or resolves having
+sent no files, the runs are recorded
 in `.swamp/serve-unpushed-interrupts.json` for the next start in this checkout
 to push, `--json` mode prints
 `{"status":"interrupt_push_failed","runIds":[…]}`, and the instance writes a

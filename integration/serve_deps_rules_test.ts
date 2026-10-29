@@ -445,6 +445,53 @@ Deno.test("every workflow run entry point passes the repo's defaultVault", async
   );
 });
 
+Deno.test("every serve workflow run entry point passes the run write fence", async () => {
+  const violations: string[] = [];
+  const counts = { runDeps: 0, triggered: 0 };
+  const serveCli = join(ROOT, "src", "cli", "commands", "serve.ts");
+
+  for await (
+    const entry of walk(join(ROOT, "src"), {
+      exts: [".ts"],
+      skip: [/_test\.ts$/],
+    })
+  ) {
+    if (!entry.path.startsWith(SERVE_DIR) && entry.path !== serveCli) continue;
+    const content = await Deno.readTextFile(entry.path);
+    const rel = normalise(relative(ROOT, entry.path));
+    const check = (args: string[], what: string) => {
+      for (const arg of args) {
+        if (!arg.includes("runWriteFence")) {
+          violations.push(`${rel}: ${what} without runWriteFence`);
+        }
+      }
+      return args.length;
+    };
+    counts.runDeps += check(
+      callArguments(content, /(?<!function )\bcreateWorkflowRunDeps\(/g),
+      "createWorkflowRunDeps(...)",
+    );
+    counts.triggered += check(
+      callArguments(content, /\b(?:executeWorkflowWithLocks|execute)\(/g)
+        .filter((args) => /triggerSource: "/.test(args)),
+      "a triggered executeWorkflowWithLocks(...)",
+    );
+  }
+
+  assertGreater(counts.runDeps, 0, "expected createWorkflowRunDeps calls");
+  assertGreater(counts.triggered, 0, "expected triggered serve runs");
+  assertEquals(
+    violations,
+    [],
+    "Serve's shutdown closes the run write fence for the runs it interrupts, " +
+      "so an executor that outlived the abort grace cannot save its running " +
+      "copy over the interrupt (swamp-club#4101). An executor built without " +
+      "the fence keeps saving. Pass serve's fence (ctx.runWriteFence, or the " +
+      "one serve.ts creates) to every entry point.\n\nViolations:\n" +
+      violations.join("\n"),
+  );
+});
+
 // A CLI workflow run's steps share one sync service, so their syncs need the
 // same in-process gate a serve process's runs take: without it a sibling
 // step's commit clears the marks of a lock's last publish attempt

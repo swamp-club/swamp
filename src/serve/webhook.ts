@@ -29,6 +29,7 @@ import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_se
 import type { WebhookPayload } from "../domain/expressions/model_resolver.ts";
 import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
 import { executeWorkflowWithLocks } from "./deps.ts";
+import type { RunWriteFence } from "../domain/workflows/run_write_fence.ts";
 import { withoutVaultAccess } from "../domain/vaults/run_vault_access.ts";
 import type { ServeRunVaultScope } from "./run_vault_access_policy.ts";
 import type { SyncGate } from "./sync_gate.ts";
@@ -511,6 +512,8 @@ export interface WebhookServiceDeps {
   initiatedBy?: string;
   /** The repo's `defaultVault`, forwarded to each run (swamp-club#3680). */
   defaultVault?: string;
+  /** Serve's run write fence, forwarded to each run (swamp-club#4101). */
+  runWriteFence?: RunWriteFence;
   /**
    * Authorizes each run at execution time, so queued and replayed runs are
    * both checked against the current policy. When absent every run proceeds.
@@ -1393,6 +1396,7 @@ export class WebhookService {
           initiatedBy: this.deps.initiatedBy,
           vaultAccess: this.deps.createVaultAccess?.(),
           defaultVault: this.deps.defaultVault,
+          runWriteFence: this.deps.runWriteFence,
         },
       );
 

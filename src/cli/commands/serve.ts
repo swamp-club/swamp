@@ -364,6 +364,7 @@ import {
   interruptShutdownRuns,
   stopHeartbeatAtShutdown,
 } from "../../serve/shutdown_interrupt.ts";
+import { ServeRunWriteFence } from "../../serve/run_write_fence.ts";
 import {
   markedRunsStillRunning,
   pushSettledAtBoot,
@@ -4806,6 +4807,9 @@ export const serveCommand = new Command()
       maxPerPrincipal: maxRunsPerPrincipal,
       maxRunDurationMs,
     });
+    // Closed by shutdown for the runs it interrupts, so an executor that
+    // outlived the abort grace cannot save over them (swamp-club#4101).
+    const runWriteFence = new ServeRunWriteFence();
 
     if (detachRuns) {
       logger.warn(
@@ -5288,6 +5292,7 @@ export const serveCommand = new Command()
         datastoreResolver,
         syncService,
         syncGate,
+        runWriteFence,
         ...(confirmReplicated !== undefined && { confirmReplicated }),
         ...(replicationMark !== undefined && { replicationMark }),
         // A v3 datastore commits when a request's root ends: its replies
@@ -5937,6 +5942,7 @@ export const serveCommand = new Command()
                 SCHEDULER_PRINCIPAL,
               ),
               defaultVault: repoMarker?.defaultVault,
+              runWriteFence,
             },
           ),
         pendingRunHook: {
@@ -6397,6 +6403,7 @@ export const serveCommand = new Command()
         controlPlaneStore,
         initiatedBy: principalToString(WEBHOOK_PRINCIPAL),
         defaultVault: repoMarker?.defaultVault,
+        runWriteFence,
         authorizeRun: createWebhookRunAuthorizer(
           triggerAuthorizer,
           connectionCtx,
@@ -7714,6 +7721,7 @@ export const serveCommand = new Command()
         syncService,
         namespace: serveNamespace,
         syncGate,
+        runWriteFence,
         runTracker,
         unpushedMarkerPath,
         onInterrupted: (runId) => {
