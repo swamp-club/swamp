@@ -642,6 +642,7 @@ Deno.test({
           (await loadRun(f, parent, parentSummary.id)).status === "succeeded",
         "the parent continued after its child",
       );
+      await idle(a);
       assertEquals(
         (await loadRun(f, child, childSummary.id)).status,
         "succeeded",
