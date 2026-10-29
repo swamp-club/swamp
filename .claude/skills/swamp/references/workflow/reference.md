@@ -680,6 +680,9 @@ jobs:
 **Key points:**
 
 - Workflow-level affinity scopes to the entire run; job-level scopes to the job
+- A job sets `affinity: false` to opt out of workflow-level affinity: its steps
+  are placed independently. A job's `affinity: true` under workflow-level
+  affinity keeps the run-wide pin
 - If the pinned worker disconnects or starts draining mid-group, steps fail with
   a `WorkerAffinityLostError` instead of silently re-dispatching — preserving
   the co-location guarantee

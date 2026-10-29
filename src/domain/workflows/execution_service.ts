@@ -21,7 +21,11 @@ import type { Workflow } from "./workflow.ts";
 import type { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { escapeControlCharacters } from "../control_characters.ts";
-import { mergePlacementFields, resolvePlacement } from "./placement.ts";
+import {
+  mergePlacementFields,
+  resolveAffinityKey,
+  resolvePlacement,
+} from "./placement.ts";
 import { StepTask } from "./step_task.ts";
 import type { AssertSeverity } from "./step_task.ts";
 import { gateTimeoutSeconds } from "./approval_timeout.ts";
@@ -5935,10 +5939,11 @@ export class WorkflowExecutionService {
       stepWaits.clear();
       for (const entry of progress.values()) removeRunProgress(entry);
       const job = workflow.getJob(jobName);
-      if (job?.affinity && !workflow.affinity) {
-        getRemoteStepDispatcher()?.releaseAffinity(
-          `${run.id}:${jobName}`,
-        );
+      const affinityKey = job &&
+        resolveAffinityKey(workflow.affinity, job.affinity, run.id, jobName);
+      // The run-wide pin is released when the run ends, not the job.
+      if (affinityKey && affinityKey !== run.id) {
+        getRemoteStepDispatcher()?.releaseAffinity(affinityKey);
       }
       jobSpan.end();
     }
@@ -6908,11 +6913,12 @@ export class WorkflowExecutionService {
             (options.stepProvenance ?? StepProvenanceOverlay.authored())
               .forStep(step).raw,
           ),
-          affinityKey: workflow.affinity
-            ? run.id
-            : job.affinity
-            ? `${run.id}:${job.name}`
-            : undefined,
+          affinityKey: resolveAffinityKey(
+            workflow.affinity,
+            job.affinity,
+            run.id,
+            job.name,
+          ),
           declaredWrites: step.writes ?? job.writes ?? workflow.writes,
         };
         return this.executeMethod(step, ctx, options);

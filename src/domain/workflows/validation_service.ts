@@ -592,8 +592,11 @@ export class DefaultWorkflowValidationService
   ): WorkflowValidationResult[] {
     const results: WorkflowValidationResult[] = [];
 
+    // A job with affinity: false opts out, so workflow affinity never pins
+    // its steps.
+    const pinnedJobs = workflow.jobs.filter((job) => job.affinity !== false);
     if (workflow.affinity) {
-      const hasAnyPlacement = workflow.jobs.some((job) => {
+      const hasAnyPlacement = pinnedJobs.some((job) => {
         const wfFields = mergePlacementFields(
           workflow.placementFields,
           job.placementFields,
@@ -610,8 +613,8 @@ export class DefaultWorkflowValidationService
         results.push(
           WorkflowValidationResult.warning(
             `affinity without placement at workflow level`,
-            `Workflow has 'affinity: true' but no steps resolve to remote placement — ` +
-              `affinity only applies to remote-execution steps with placement requirements`,
+            `Workflow has 'affinity: true' but none of the steps it pins resolve to remote placement — ` +
+              `jobs that set 'affinity: false' are not pinned, and affinity only applies to remote-execution steps with placement requirements`,
           ),
         );
       }
@@ -643,9 +646,10 @@ export class DefaultWorkflowValidationService
     }
 
     // The runtime keys workflow affinity on the whole run, so job affinity
-    // only forms its own group when the workflow sets none.
+    // only forms its own group when the workflow sets none. A job with
+    // affinity: false is in no group.
     const scopes = workflow.affinity
-      ? [{ where: "at workflow level", jobs: workflow.jobs }]
+      ? [{ where: "at workflow level", jobs: pinnedJobs }]
       : workflow.jobs.filter((job) => job.affinity).map((job) => ({
         where: `in job '${job.name}'`,
         jobs: [job],
