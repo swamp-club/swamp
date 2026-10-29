@@ -51,31 +51,35 @@ async function runRecorded(
   build: (modelName: string) => Workflow,
 ): Promise<{ runId: string; recorded: Recorded }> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-affinity-key-" });
-  const repo = createRepositoryContext({ repoDir: dir });
-  const type = ModelType.create(`test/affinity-${crypto.randomUUID()}`);
-  modelRegistry.register({
-    type,
-    version: "2026.10.29.1",
-    methods: {
-      run: {
-        description: "No-op; the step is dispatched remotely",
-        arguments: z.object({}),
-        execute: () => Promise.resolve({ dataHandles: [] }),
-      },
-    },
-  });
-  const recorded: Recorded = { keys: new Map(), released: [] };
   const original = getRemoteStepDispatcher();
-  setRemoteStepDispatcher({
-    executeRemote: (request: RemoteStepRequest) => {
-      recorded.keys.set(request.stepName ?? "", request.placement.affinityKey);
-      return Promise.resolve({ outputs: [], logs: [], durationMs: 0 });
-    },
-    releaseAffinity: (key) => {
-      recorded.released.push(key);
-    },
-  });
+  let repo: ReturnType<typeof createRepositoryContext> | undefined;
   try {
+    repo = createRepositoryContext({ repoDir: dir });
+    const type = ModelType.create(`test/affinity-${crypto.randomUUID()}`);
+    modelRegistry.register({
+      type,
+      version: "2026.10.29.1",
+      methods: {
+        run: {
+          description: "No-op; the step is dispatched remotely",
+          arguments: z.object({}),
+          execute: () => Promise.resolve({ dataHandles: [] }),
+        },
+      },
+    });
+    const recorded: Recorded = { keys: new Map(), released: [] };
+    setRemoteStepDispatcher({
+      executeRemote: (request: RemoteStepRequest) => {
+        recorded.keys.set(
+          request.stepName ?? "",
+          request.placement.affinityKey,
+        );
+        return Promise.resolve({ outputs: [], logs: [], durationMs: 0 });
+      },
+      releaseAffinity: (key) => {
+        recorded.released.push(key);
+      },
+    });
     await repo.definitionRepo.save(type, Definition.create({ name: "target" }));
     const workflow = build("target");
     await repo.workflowRepo.save(workflow);
@@ -94,7 +98,7 @@ async function runRecorded(
     return { runId: run.id, recorded };
   } finally {
     setRemoteStepDispatcher(original);
-    repo.catalogStore.close();
+    repo?.catalogStore.close();
     if (Deno.build.os === "windows") {
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
