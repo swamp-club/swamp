@@ -271,9 +271,10 @@ export class DispatchService {
   /**
    * In-flight affinity resolution: when the first step for a key is
    * being scheduled, concurrent steps with the same key await this
-   * promise to learn which worker was pinned.
+   * promise to learn which worker was pinned. It resolves undefined when
+   * the first step ended without binding the group.
    */
-  readonly #affinityInflight = new Map<string, Promise<string>>();
+  readonly #affinityInflight = new Map<string, Promise<string | undefined>>();
   constructor(options: DispatchServiceOptions) {
     this.#options = options;
     this.#queueTimeoutMs = options.queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS;
@@ -452,8 +453,13 @@ export class DispatchService {
     const onAbort = () => endQueue("cancel");
     request.signal?.addEventListener("abort", onAbort, { once: true });
 
-    let affinityResolve: ((name: string) => void) | null = null;
+    let affinityResolve: ((name: string | undefined) => void) | null = null;
     let affinityReject: ((err: Error) => void) | null = null;
+    // The worker of the attempt in progress, cleared when the attempt ends
+    // and the step tries again: a failure that ends the step there names
+    // the worker a first affinity step binds its group to.
+    let attemptWorker: string | undefined;
+    let failure: unknown;
     try {
       const affinityKey = request.placement.affinityKey;
       let effectivePlacement = request.placement;
@@ -461,8 +467,11 @@ export class DispatchService {
       let pinnedWorker: string | undefined;
 
       if (affinityKey) {
-        pinnedWorker = this.#affinityPins.get(affinityKey);
-        if (!pinnedWorker) {
+        // A first step that ends without binding the group hands its place
+        // to the next waiting step (swamp-club#4113).
+        while (!pinnedWorker && !affinityResolve) {
+          pinnedWorker = this.#affinityPins.get(affinityKey);
+          if (pinnedWorker) break;
           const inflight = this.#affinityInflight.get(affinityKey);
           if (inflight) {
             pinnedWorker = await observeExecutionWork(
@@ -472,7 +481,7 @@ export class DispatchService {
             );
           } else {
             const { promise, resolve, reject } = Promise.withResolvers<
-              string
+              string | undefined
             >();
             promise.catch(() => {});
             this.#affinityInflight.set(affinityKey, promise);
@@ -539,6 +548,7 @@ export class DispatchService {
               ),
           )
           : effectivePlacement.target!;
+        attemptWorker = workerName;
         // One per attempt: every pass of this loop takes its own
         // reservation. An unscheduled attempt took none.
         let reservationHeld = scheduled;
@@ -609,6 +619,7 @@ export class DispatchService {
             endQueue("mark_dispatched", {
               dispatchId: error.dispatchId ?? "unknown",
             });
+            attemptWorker = undefined;
             continue;
           }
           // The attempt never ran: the gateway refused to send it, or the
@@ -622,6 +633,7 @@ export class DispatchService {
             ? error.code
             : null;
           if (refusal !== null) {
+            attemptWorker = undefined;
             assertPinHeld();
             if (
               refusal === "not_in_pool" || refusal === "disconnected" ||
@@ -671,6 +683,7 @@ export class DispatchService {
         }
       }
     } catch (error) {
+      failure = error;
       if (currentQueueId !== null) {
         if (
           error instanceof Error &&
@@ -683,14 +696,22 @@ export class DispatchService {
       }
       throw error;
     } finally {
-      if (affinityReject && request.placement.affinityKey) {
-        this.#affinityInflight.delete(request.placement.affinityKey);
-        affinityReject(
-          new WorkerAffinityLostError(
-            "unknown",
-            request.placement.affinityKey,
-          ),
-        );
+      // A first affinity step that failed settles the steps waiting on it
+      // (swamp-club#4113). Only a lost worker fails them, with an error of
+      // their own naming that worker. A step that failed on a worker still
+      // able to take the group binds them to it, and one that ended before
+      // an attempt of its own failed leaves the group unbound.
+      const key = request.placement.affinityKey;
+      if (affinityResolve && affinityReject && key) {
+        this.#affinityInflight.delete(key);
+        if (failure instanceof WorkerAffinityLostError) {
+          affinityReject(new WorkerAffinityLostError(failure.workerName, key));
+        } else if (attemptWorker && !this.#pinnedWorkerLost(attemptWorker)) {
+          this.#affinityPins.set(key, attemptWorker);
+          affinityResolve(attemptWorker);
+        } else {
+          affinityResolve(undefined);
+        }
       }
       request.signal?.removeEventListener("abort", onAbort);
     }

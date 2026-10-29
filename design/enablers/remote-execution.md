@@ -1436,6 +1436,15 @@ of the group has run anywhere, so a first step that loses its worker without
 having written re-dispatches like an unpinned step, and the group pins to the
 worker that completes it.
 
+A first step that fails for any other reason does not fail the rest of its
+group (swamp-club#4113). One that failed on its worker, whether the method threw
+or its arguments were refused, still binds the group to that worker, so steps
+waiting on it, later steps and retries run there. One that ended before an
+attempt of its own failed (a queue timeout, cancellation, or a worker that
+refused it) leaves the group unbound, and the next step of the group picks a
+worker in its place. Only a lost worker fails the waiting steps, with a
+`WorkerAffinityLostError` naming that worker.
+
 The dispatch service keeps pins in an in-memory `affinityKey → worker` map,
 keyed by `runId` (workflow-level) or `runId:jobName` (job-level). Pins are
 released when the group completes.

@@ -1711,6 +1711,199 @@ Deno.test("executeRemote: a refused affinity step fails when its pinned worker h
   );
 });
 
+// A first affinity step that fails settles the steps waiting on it by why it
+// failed, never as a lost worker named 'unknown' (swamp-club#4113). w2 has
+// more free capacity, so an unbound step picks it; a step bound to the first
+// step's worker goes to w1.
+function affinityFailureHarness(options?: { w1ProtocolVersion?: number }) {
+  return createHarness({
+    workers: [
+      snapshot({
+        name: "w1",
+        protocolVersion: options?.w1ProtocolVersion ?? REMOTE_PROTOCOL_VERSION,
+      }),
+      snapshot({ name: "w2", capacity: 2 }),
+    ],
+    queueTimeoutMs: 60_000,
+  });
+}
+
+const VALIDATION_FAILED: DispatchResult = {
+  ...OK_RESULT,
+  status: "error",
+  error: "Method arguments validation failed: Too small",
+};
+
+Deno.test("executeRemote: a waiting affinity step runs on the worker its first step failed on (swamp-club#4113)", async () => {
+  const h = affinityFailureHarness();
+  const affinityKey = `run-${crypto.randomUUID()}:job-j`;
+  const firstHeld = Promise.withResolvers<void>();
+  h.setBehavior(async (name) => {
+    if (h.dispatchCalls.length === 1) {
+      await firstHeld.promise;
+      return VALIDATION_FAILED;
+    }
+    assertEquals(name, "w1");
+    return OK_RESULT;
+  });
+
+  const bad = h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey, target: "w1" },
+    stepName: "bad",
+  }));
+  const good = h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey },
+    stepName: "good",
+  }));
+  await waitFor(() => h.dispatchCalls.length === 1, "the first step sent");
+  firstHeld.resolve();
+
+  const error = await assertRejects(() => bad, Error);
+  assertStringIncludes(error.message, "Method arguments validation failed");
+  const result = await good;
+  assertEquals(result.workerName, "w1");
+  assertEquals(h.dispatchCalls.map((c) => c.name), ["w1", "w1"]);
+});
+
+Deno.test("executeRemote: a version 5 first affinity step refused in its frame binds its waiting step to the chosen worker (swamp-club#4113)", async () => {
+  const h = affinityFailureHarness({ w1ProtocolVersion: 5 });
+  const affinityKey = `run-${crypto.randomUUID()}:job-j`;
+  const frameHeld = Promise.withResolvers<void>();
+  let framesBuilt = 0;
+
+  const bad = h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey, target: "w1" },
+    stepName: "bad",
+    legacyDelivery: async () => {
+      framesBuilt++;
+      await frameHeld.promise;
+      throw new Error("Method arguments validation failed: Too small");
+    },
+  }));
+  const good = h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey },
+    stepName: "good",
+  }));
+  await waitFor(() => framesBuilt === 1, "the first step's frame building");
+  frameHeld.resolve();
+
+  await assertRejects(() => bad, Error, "Method arguments validation failed");
+  const result = await good;
+  assertEquals(result.workerName, "w1");
+  assertEquals(h.dispatchCalls.map((c) => c.name), ["w1"]);
+});
+
+Deno.test("executeRemote: a later affinity step runs on the worker a failed first step bound (swamp-club#4113)", async () => {
+  const h = affinityFailureHarness();
+  const affinityKey = `run-${crypto.randomUUID()}:job-j`;
+  h.setBehavior(() => Promise.resolve(VALIDATION_FAILED));
+  await assertRejects(() =>
+    h.service.executeRemote(stepRequest({
+      placement: { labels: {}, platform: "linux", affinityKey, target: "w1" },
+      stepName: "bad",
+    }))
+  );
+
+  h.setBehavior(() => Promise.resolve(OK_RESULT));
+  const result = await h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey },
+    stepName: "after",
+  }));
+  assertEquals(result.workerName, "w1");
+});
+
+Deno.test("executeRemote: a waiting affinity step takes the place of a first step cancelled while queued (swamp-club#4113)", async () => {
+  const h = createHarness({ workers: [], queueTimeoutMs: 60_000 });
+  const affinityKey = `run-${crypto.randomUUID()}:job-j`;
+  const cancel = new AbortController();
+  const queued: string[] = [];
+  const request = (stepName: string, signal?: AbortSignal) =>
+    stepRequest({
+      placement: { labels: {}, platform: "linux", affinityKey },
+      stepName,
+      signal,
+      onEvent: (event) => {
+        if (event.kind === "queued") queued.push(stepName);
+      },
+    });
+
+  const first = h.service.executeRemote(request("first", cancel.signal));
+  const waiting = h.service.executeRemote(request("waiting"));
+  await waitFor(() => queued.includes("first"), "the first step queued");
+  assertEquals(queued, ["first"]);
+  cancel.abort();
+  await assertRejects(() => first);
+  await waitFor(() => queued.includes("waiting"), "the waiting step queued");
+
+  const worker = snapshot({ name: "w1" });
+  h.pool.set("w1", worker);
+  h.service.notifyWorkerEnrolled(worker);
+  const result = await waiting;
+  assertEquals(result.workerName, "w1");
+});
+
+Deno.test("executeRemote: a worker that refused a first affinity step does not bind its waiting step (swamp-club#4113)", async () => {
+  const h = affinityFailureHarness();
+  const affinityKey = `run-${crypto.randomUUID()}:job-j`;
+  const cancel = new AbortController();
+  let refusals = 0;
+  h.setBehavior((name) => {
+    if (name === "w1") {
+      refusals++;
+      return Promise.reject(
+        new RpcError({ code: "worker_busy", message: "at capacity" }),
+      );
+    }
+    return Promise.resolve(OK_RESULT);
+  });
+
+  const first = h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey, target: "w1" },
+    stepName: "first",
+    signal: cancel.signal,
+  }));
+  const waiting = h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey },
+    stepName: "waiting",
+  }));
+  await waitFor(() => refusals === 1, "w1 refused the first step");
+  cancel.abort();
+  await assertRejects(() => first);
+
+  const result = await waiting;
+  assertEquals(result.workerName, "w2");
+  assertEquals(refusals, 1);
+});
+
+Deno.test("executeRemote: a first affinity step that loses its worker after writing fails its waiting step naming that worker (swamp-club#4113)", async () => {
+  const h = affinityFailureHarness();
+  const affinityKey = `run-${crypto.randomUUID()}:job-j`;
+  const firstHeld = Promise.withResolvers<void>();
+  h.setBehavior(async (name) => {
+    await firstHeld.promise;
+    h.pool.delete(name);
+    throw new ChannelClosedError("socket dropped");
+  });
+
+  const first = h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey, target: "w1" },
+    stepName: "first",
+    declaredWrites: true,
+  }));
+  const waiting = h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey },
+    stepName: "waiting",
+  }));
+  await waitFor(() => h.dispatchCalls.length === 1, "the first step sent");
+  firstHeld.resolve();
+
+  await assertRejects(() => first, WorkerAffinityLostError);
+  const error = await assertRejects(() => waiting, WorkerAffinityLostError);
+  assertEquals(error.workerName, "w1");
+  assertEquals(error.affinityKey, affinityKey);
+  assertEquals(h.dispatchCalls.length, 1);
+});
+
 Deno.test("executeRemote: an unbound first affinity step queues when the only worker is draining", async () => {
   const h = createHarness({
     workers: [snapshot({ name: "w1", status: "draining" })],
