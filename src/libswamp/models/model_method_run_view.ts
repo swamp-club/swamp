@@ -59,6 +59,19 @@ export interface ModelReportView {
 }
 
 /**
+ * A data version a read or list run wrote that its publish left on this
+ * host only (swamp-club#3934). `conflict`: another swamp process wrote the
+ * same version first; the datastore keeps that copy and this host now holds
+ * it, so an artifact naming this version names data that no longer exists.
+ * `unauthorized`: the datastore refused the credentials, as read-only ones.
+ */
+export interface UnpublishedVersionView {
+  dataName: string;
+  version: number;
+  reason: "conflict" | "unauthorized";
+}
+
+/**
  * Read-model projection of a completed model method run.
  * Presentation-oriented view with computed fields (duration, artifacts).
  */
@@ -76,4 +89,6 @@ export interface ModelMethodRunView {
   globalArguments?: Record<string, unknown>;
   methodArguments?: Record<string, unknown>;
   initiatedBy?: string;
+  /** Present only when the run's publish left versions unpublished. */
+  unpublishedVersions?: UnpublishedVersionView[];
 }

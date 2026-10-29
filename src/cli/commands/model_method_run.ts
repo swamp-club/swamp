@@ -52,7 +52,15 @@ import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
-import { runFileSink } from "../../infrastructure/logging/logger.ts";
+import {
+  getSwampLogger,
+  runFileSink,
+} from "../../infrastructure/logging/logger.ts";
+import { isDatastoreAuthorizationError } from "../../infrastructure/persistence/sync_error_diagnostic.ts";
+import type {
+  ModelMethodRunView,
+  UnpublishedVersionView,
+} from "../../libswamp/models/model_method_run_view.ts";
 import { GIT_SHA } from "./version.ts";
 import {
   deepMerge,
@@ -132,6 +140,13 @@ type AnyOptions = any;
  * is identical: `swamp model method run` and `swamp behavior run` are two
  * spellings of one invocation, not two commands (swamp-club#3265).
  */
+/**
+ * Where the publish of a run's data and its locks report: the run's own
+ * category reaches only its log file unless `--log` is passed, and the
+ * publish runs after the method has finished writing it (swamp-club#3934).
+ */
+const publishLogger = getSwampLogger(["datastore", "lock"]);
+
 export interface RunCommandSyntax {
   /** Renders `swamp … <model> <method>` for a named definition. */
   readonly invocation: (model: string, method: string) => string;
@@ -625,11 +640,17 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           // What each run wrote, for the locks' push to publish
           // (swamp-club#3146).
           const written: WrittenVersion[] = [];
+          // What each input set's run wrote, for its held JSON result.
+          const writtenByRun: WrittenVersion[][] = inputSets.map(() => []);
+          let runIndex = 0;
           let methodFailed = false;
           const runDeps: typeof deps = {
             ...deps,
             onWrittenVersions: (versions, outcome) => {
-              for (const version of versions) written.push(version);
+              for (const version of versions) {
+                written.push(version);
+                writtenByRun[runIndex]?.push(version);
+              }
               if (outcome === "failed") methodFailed = true;
             },
           };
@@ -645,7 +666,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               ) {
                 throw error;
               }
-              ctx.logger.error("{message}", { message: error.message });
+              publishLogger.error("{message}", { message: error.message });
             }
           };
           const locks = modelLocks;
@@ -656,6 +677,40 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           // Set once every input set ran and succeeded: only then does a
           // failed publish fail the command; otherwise it is logged.
           let runSucceeded = false;
+          // The versions a read or list run's publish left on this host,
+          // which do not fail the run (swamp-club#3934).
+          const unpublished: {
+            written: WrittenVersion;
+            reason: UnpublishedVersionView["reason"];
+          }[] = [];
+          // In JSON mode a read or list run's result waits for its publish,
+          // so it can name the versions left unpublished (swamp-club#3934).
+          const holdResults = ctx.outputMode === "json" &&
+            publishTo !== undefined;
+          const heldResults: {
+            render: (run: ModelMethodRunView) => void | Promise<void>;
+            run: ModelMethodRunView;
+            runIndex: number;
+          }[] = [];
+          const versionKey = (w: WrittenVersion) =>
+            JSON.stringify([w.modelType, w.modelId, w.dataName, w.version]);
+          const renderHeldResults = async () => {
+            for (const held of heldResults.splice(0)) {
+              const own = new Set(writtenByRun[held.runIndex].map(versionKey));
+              const versions: UnpublishedVersionView[] = unpublished
+                .filter((u) => own.has(versionKey(u.written)))
+                .map((u) => ({
+                  dataName: u.written.dataName,
+                  version: u.written.version,
+                  reason: u.reason,
+                }));
+              await held.render(
+                versions.length > 0
+                  ? { ...held.run, unpublishedVersions: versions }
+                  : held.run,
+              );
+            }
+          };
           const finished = await runCommandInRootUnit(
             repoContext,
             {
@@ -679,7 +734,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                       { repoContext },
                     );
                     if (publishLocks === undefined) {
-                      ctx.logger.info(
+                      publishLogger.info(
                         "Behavior {model} is locked by another run, so this run's data will be published by the next run that locks it on this host",
                         {
                           model: `${publishTo.modelType}/${publishTo.modelId}`,
@@ -693,7 +748,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                       try {
                         await publishLocks.release();
                       } catch (releaseError) {
-                        ctx.logger.warn("Failed to release locks: {error}", {
+                        publishLogger.warn("Failed to release locks: {error}", {
                           error: releaseError instanceof Error
                             ? releaseError.message
                             : String(releaseError),
@@ -708,7 +763,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                     // write a version, so failing would fail any read that
                     // overlaps another clone's run (swamp-club#3934).
                     if (error instanceof DataVersionConflictError) {
-                      ctx.logger.warn(
+                      publishLogger.warn(
                         "Another swamp process wrote {versions} of behavior {model} while this run was running: the datastore keeps that copy, and this host now holds it in place of this run's",
                         {
                           versions: error.versions.map((v) =>
@@ -717,6 +772,40 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                           model: `${publishTo.modelType}/${publishTo.modelId}`,
                         },
                       );
+                      for (const version of error.versions) {
+                        unpublished.push({
+                          written: version,
+                          reason: "conflict",
+                        });
+                      }
+                      return;
+                    }
+                    // Credentials that cannot write, such as read-only ones,
+                    // never stopped a read before its data was published
+                    // (swamp-club#3934): the data stays on this host, and
+                    // nothing is recorded for a later lock, which the same
+                    // credentials would be refused again. Only a refusal
+                    // degrades; an unreachable datastore still fails.
+                    if (isDatastoreAuthorizationError(error)) {
+                      publishLogger.warn(
+                        "The datastore refused this host's credentials, so this run's data was not published to it and stays on this host only; a read or list run publishes its data, so it needs credentials that can write: {error}",
+                        {
+                          error: error instanceof Error
+                            ? error.message
+                            : String(error),
+                        },
+                      );
+                      for (const version of written) {
+                        if (
+                          version.modelType === publishTo.modelType &&
+                          version.modelId === publishTo.modelId
+                        ) {
+                          unpublished.push({
+                            written: version,
+                            reason: "unauthorized",
+                          });
+                        }
+                      }
                       return;
                     }
                     publishFailure = { error };
@@ -729,7 +818,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                 if (releaseError === publishFailure?.error) {
                   // A run that succeeded fails below instead.
                   if (runSucceeded) return;
-                  ctx.logger.error(
+                  publishLogger.error(
                     "This run's data was not published to the datastore: {error}",
                     {
                       error: releaseError instanceof Error
@@ -739,7 +828,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                   );
                   return;
                 }
-                ctx.logger.warn(
+                publishLogger.warn(
                   "Failed to release locks during cleanup: {error}",
                   {
                     error: releaseError instanceof Error
@@ -752,6 +841,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
             async () => {
               try {
                 for (let i = 0; i < inputSets.length; i++) {
+                  runIndex = i;
                   if (inputSets.length > 1) {
                     ctx.logger
                       .info`Running method ${methodName} [${
@@ -770,6 +860,8 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                     },
                   );
 
+                  const handlers = holdFromOutcome(renderer.handlers());
+                  let heldFailed = false;
                   await runUnderModelLocks(modelLocks, () =>
                     consumeStream(
                       modelMethodRun(libCtx, runDeps, {
@@ -813,7 +905,20 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                         ),
                         initiatedBy,
                       }),
-                      holdFromOutcome(renderer.handlers()),
+                      holdResults
+                        ? {
+                          ...handlers,
+                          completed: (e) => {
+                            if (e.run.status === "failed") heldFailed = true;
+                            heldResults.push({
+                              render: (run) =>
+                                handlers.completed({ ...e, run }),
+                              run: e.run,
+                              runIndex: i,
+                            });
+                          },
+                        }
+                        : handlers,
                     ));
 
                   if (abort.signal.aborted) {
@@ -821,7 +926,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                     return false;
                   }
 
-                  if (renderer.runFailed()) {
+                  if (renderer.runFailed() || heldFailed) {
                     Deno.exitCode = 1;
                     return false;
                   }
@@ -846,14 +951,16 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
             throw error instanceof CommitUnreachableError
               ? error.afterStepsRan()
               : error;
-          });
+          })
+            // A held JSON result names what the publish left unpublished.
+            .finally(renderHeldResults);
           if (!finished) return;
           if (publishFailure !== undefined) {
             const { error } = publishFailure;
             // A typed error (a lock timeout, an unpublished version) keeps
             // its own code and exit status, as on a mutating run's push.
             if (error instanceof UserError) {
-              ctx.logger.error(
+              publishLogger.error(
                 "This run's data was not published to the datastore",
               );
               throw error;

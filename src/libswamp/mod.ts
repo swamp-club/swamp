@@ -276,6 +276,7 @@ export {
   type ModelMethodRunView,
   type ModelReportView,
   type ReportResultView,
+  type UnpublishedVersionView,
 } from "./models/model_method_run_view.ts";
 
 // Report operations (top-level)

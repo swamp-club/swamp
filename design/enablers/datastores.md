@@ -8043,6 +8043,21 @@ refreshes its resource does. `methodRunLockMode`
   behavior. The CLI logs it at warn and exits with the method's own status;
   serve, which has answered its client before it publishes, logs it at warn
   too.
+- The CLI logs the publish and its locks under the `datastore.lock`
+  category, not the run's own: without `--log` the run's category reaches
+  only the run log file, and the publish runs after the method has finished
+  writing it. In JSON mode, where no log reaches the console, a read or list
+  run's result waits for its publish and lists what it left on this host
+  in `unpublishedVersions` (`dataName`, `version`, and `reason`: `conflict`
+  or `unauthorized`); the field is absent when nothing was left.
+- A refusal of the credentials (HTTP 401 or 403, an access-denied code,
+  read by `isDatastoreAuthorizationError`), whether taking the publish lock
+  or pushing, does not fail a read or list run either: read-only
+  credentials never stopped a read before reads published. The CLI warns
+  that the data stays on this host only, and records nothing for a later
+  lock, which the same credentials would be refused again. Any other
+  failure, such as an unreachable datastore, still fails the run, and a
+  mutating run whose credentials are refused fails as before.
 - Every push made under a behavior's lock with a repository context also
   publishes the versions earlier runs deferred for it, with the same
   data-id check, and removes their records once the datastore confirms
@@ -8054,8 +8069,8 @@ refreshes its resource does. `methodRunLockMode`
   longer on this host is dropped, and a record naming another behavior's
   versions too waits for a lock that holds them all.
 - A run that wrote no data version takes no publish lock. When the CLI
-  publish fails other than by a conflict or a busy lock (an unreachable
-  remote), a run that succeeded fails with that error, or with
+  publish fails other than by a conflict, a refusal of the credentials or a
+  busy lock (an unreachable remote), a run that succeeded fails with that error, or with
   `datastore_publish_failed` for an untyped one; a run that failed keeps its
   own error and logs that its data was not published.
 

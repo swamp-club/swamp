@@ -34,6 +34,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { Command } from "@cliffy/command";
+import { configure, type LogRecord } from "@logtape/logtape";
 import { hostname } from "node:os";
 import { walk } from "@std/fs";
 import { dirname, join } from "@std/path";
@@ -177,6 +178,8 @@ class LockTable {
   failInspect = false;
   /** The host a held lock names; this host when unset. */
   holderHost: string | undefined;
+  /** While set, taking any lock fails with it, as credentials that cannot write. */
+  refuseAcquire: Error | undefined;
   #waiters = new Map<string, Array<() => void>>();
 
   lockFor = (options?: LockOptions): DistributedLock => {
@@ -185,6 +188,7 @@ class LockTable {
     }`;
     let holding = false;
     const acquire = async () => {
+      if (this.refuseAcquire !== undefined) throw this.refuseAcquire;
       const started = Date.now();
       const maxWaitMs = options?.maxWaitMs ?? Number.POSITIVE_INFINITY;
       while (this.held.has(key)) {
@@ -470,6 +474,73 @@ async function localValue(
     if (error instanceof Deno.errors.NotFound) return undefined;
     throw error;
   }
+}
+
+/** An S3 refusal of credentials that may not write, as the extension throws it. */
+function accessDenied(): Error {
+  return Object.assign(
+    new Error("S3 putObject failed HTTP 403 AccessDenied — Access Denied."),
+    { httpStatusCode: 403, code: "AccessDenied" },
+  );
+}
+
+/** The JSON documents `fn` writes to stdout. */
+async function jsonResults(
+  fn: () => Promise<void>,
+): Promise<Array<Record<string, unknown>>> {
+  const docs: Array<Record<string, unknown>> = [];
+  const original = console.log;
+  console.log = (...args: unknown[]) => {
+    for (const arg of args) {
+      if (typeof arg === "string" && arg.startsWith("{")) {
+        docs.push(JSON.parse(arg));
+      }
+    }
+  };
+  try {
+    await fn();
+  } finally {
+    console.log = original;
+  }
+  return docs;
+}
+
+/**
+ * The records `fn` logs where the CLI's console would show them: as the CLI
+ * routes it without `--log`, the run's own category reaches only its log
+ * file.
+ */
+async function consoleRecords(fn: () => Promise<void>): Promise<LogRecord[]> {
+  const captured: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => captured.push(record) },
+    loggers: [
+      { category: [], lowestLevel: "info", sinks: ["capture"] },
+      {
+        category: ["model", "method", "run"],
+        lowestLevel: "info",
+        sinks: [],
+        parentSinks: "override",
+      },
+      {
+        category: ["logtape", "meta"],
+        lowestLevel: "warning",
+        sinks: [],
+        parentSinks: "override",
+      },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await initializeLogging({ _reset: true });
+  }
+  return captured;
+}
+
+function messageOf(record: LogRecord): string {
+  return record.message.map((part) => String(part)).join("");
 }
 
 /** How many deferred publishes `repoDir`'s cache has left. */
@@ -1298,4 +1369,124 @@ Deno.test("model method run: on a lazy cache without fetchContent a conflicting 
     assertEquals(await localValue(c.repoA, c, 1), "from-b");
     assertEquals(await pendingRecords(c.repoA), 0);
   }, { lazy: true });
+});
+
+/** `dataName/version/reason` of each version a result names unpublished. */
+function unpublishedOf(result: Record<string, unknown> | undefined): string[] {
+  const versions = result?.unpublishedVersions as
+    | Array<{ dataName: string; version: number; reason: string }>
+    | undefined;
+  return (versions ?? []).map((v) => `${v.dataName}/${v.version}/${v.reason}`)
+    .sort();
+}
+
+Deno.test("model method run: a read's version conflict is a warning the console shows, and its JSON result names the unpublished versions (swamp-club#3934)", async () => {
+  await withClones(async (c) => {
+    let started!: () => void;
+    const aStarted = new Promise<void>((resolve) => started = resolve);
+    let resume!: () => void;
+    const bDone = new Promise<void>((resolve) => resume = resolve);
+    hooks = {
+      beforeWrite: async () => {
+        started();
+        await bDone;
+      },
+    };
+    let docs: Array<Record<string, unknown>> = [];
+    const records = await consoleRecords(async () => {
+      docs = await jsonResults(async () => {
+        const aRun = runMethod(c.repoA, "observe", "from-a");
+        await aStarted;
+        await runMethod(c.repoB, "write", "from-b");
+        resume();
+        await aRun;
+      });
+    });
+
+    const warning = records.find((r) =>
+      r.level === "warning" &&
+      messageOf(r).includes("Another swamp process wrote")
+    );
+    assert(warning, "the conflict warning reaches the console");
+    assertStringIncludes(messageOf(warning), "main version 1");
+    const result = docs.find((d) => d.methodName === "observe");
+    assertEquals(result?.status, "succeeded");
+    assertEquals(unpublishedOf(result), [
+      "main/1/conflict",
+      "report-swamp-method-summary-json/1/conflict",
+      "report-swamp-method-summary/1/conflict",
+    ]);
+    assertEquals(
+      docs.find((d) => d.methodName === "write")?.unpublishedVersions,
+      undefined,
+      "a run whose publish left nothing behind has no such field",
+    );
+  });
+});
+
+Deno.test("model method run: a read whose publish lock is refused for its credentials succeeds, warns, and keeps its data on this host with no record (swamp-club#3934)", async () => {
+  await withClones(async (c) => {
+    c.locks.refuseAcquire = accessDenied();
+    let docs: Array<Record<string, unknown>> = [];
+    const records = await consoleRecords(async () => {
+      docs = await jsonResults(() => runMethod(c.repoA, "observe", "from-a"));
+    });
+    c.locks.refuseAcquire = undefined;
+
+    assert(
+      records.some((r) =>
+        r.level === "warning" &&
+        messageOf(r).includes("refused this host's credentials")
+      ),
+      "the refusal warning reaches the console",
+    );
+    const result = docs.find((d) => d.methodName === "observe");
+    assertEquals(result?.status, "succeeded");
+    assertEquals(unpublishedOf(result), [
+      "main/1/unauthorized",
+      "report-swamp-method-summary-json/1/unauthorized",
+      "report-swamp-method-summary/1/unauthorized",
+    ]);
+    assertEquals(remoteValue(c, 1), undefined, "nothing was published");
+    assertEquals(await localValue(c.repoA, c, 1), "from-a");
+    // The same credentials would be refused again by every later lock.
+    assertEquals(await pendingRecords(c.repoA), 0);
+  });
+});
+
+Deno.test("model method run: a read whose push is refused for its credentials succeeds and keeps its data on this host (swamp-club#3934)", async () => {
+  await withClones(async (c) => {
+    hooks = {
+      afterWrite: () => {
+        // The test datastore pushes in two phases; the first uploads.
+        c.remote.failNext("prepare", accessDenied());
+        return Promise.resolve();
+      },
+    };
+    const docs = await jsonResults(() =>
+      runMethod(c.repoA, "observe", "from-a")
+    );
+
+    const result = docs.find((d) => d.methodName === "observe");
+    assertEquals(result?.status, "succeeded");
+    assertStringIncludes(
+      unpublishedOf(result).join(","),
+      "main/1/unauthorized",
+    );
+    assertEquals(remoteValue(c, 1), undefined, "nothing was published");
+    assertEquals(await pendingRecords(c.repoA), 0);
+    assertEquals(c.locks.held.size, 0, "the publish lock was released");
+  });
+});
+
+Deno.test("model method run: a mutating run whose lock is refused for its credentials still fails (swamp-club#3934)", async () => {
+  await withClones(async (c) => {
+    c.locks.refuseAcquire = accessDenied();
+    try {
+      await assertRejects(() => runMethod(c.repoA, "write", "from-a"));
+    } finally {
+      c.locks.refuseAcquire = undefined;
+    }
+    assertEquals(remoteValue(c, 1), undefined);
+  });
 });

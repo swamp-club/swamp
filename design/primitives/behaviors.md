@@ -751,8 +751,11 @@ it wrote, so a `get` that refreshes its resource reaches the datastore
 holds the lock it leaves its data for the next run that locks the behavior on
 the same host to publish. When another clone wrote the same data version
 during the run, the datastore keeps that clone's copy and the run logs a
-warning rather than failing (`DataVersionConflictError`). See "Lock
-Lifecycle" in `design/enablers/datastores.md`.
+warning rather than failing (`DataVersionConflictError`); so does a run
+whose credentials the datastore refuses, such as read-only ones, which
+keeps its data on this host. In JSON mode the result names such versions
+in `unpublishedVersions`. See "Lock Lifecycle" in
+`design/enablers/datastores.md`.
 
 ### Labels and appliesTo
 

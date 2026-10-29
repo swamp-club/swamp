@@ -132,3 +132,55 @@ export function summarizeSyncError(
   const summary = `${label} ${operation} failed${details}${trailer}`;
   return { summary, fields };
 }
+
+/** Error codes a datastore answers with when it refuses the credentials. */
+const AUTHORIZATION_CODES = new Set([
+  "AccessDenied",
+  "Forbidden",
+  "InvalidAccessKeyId",
+  "SignatureDoesNotMatch",
+  "Unauthorized",
+]);
+
+/** How many `cause` links {@link isDatastoreAuthorizationError} follows. */
+const CAUSE_DEPTH = 5;
+
+/**
+ * True when a datastore refused an operation because the credentials may
+ * not perform it (HTTP 401 or 403, an access-denied code), as with read-only
+ * credentials, rather than failing to answer at all (swamp-club#3934).
+ *
+ * Duck-typed like {@link summarizeSyncError}, since extensions throw their
+ * own error classes: reads `.httpStatusCode`, `.$metadata.httpStatusCode`, a
+ * numeric `.code` or `.status`, and `.Code` / `.code` / `.name`, through up
+ * to five `.cause` links. Core rewraps some errors by message alone, so a
+ * message naming HTTP 401 or 403, or rejected credentials, counts too.
+ */
+export function isDatastoreAuthorizationError(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth <= CAUSE_DEPTH; depth++) {
+    if (current === null || current === undefined) return false;
+    const status = coerceNumber(readProp(current, "httpStatusCode")) ??
+      coerceNumber(
+        readProp(readProp(current, "$metadata"), "httpStatusCode"),
+      ) ??
+      coerceNumber(readProp(current, "status")) ??
+      coerceNumber(readProp(current, "code"));
+    if (status === 401 || status === 403) return true;
+    for (const key of ["Code", "code", "name"]) {
+      const code = coerceString(readProp(current, key));
+      if (code !== undefined && AUTHORIZATION_CODES.has(code)) return true;
+    }
+    const message = coerceString(readProp(current, "message")) ??
+      (typeof current === "string" ? current : undefined);
+    if (
+      message !== undefined &&
+      (/\bHTTP 40[13]\b/.test(message) ||
+        /credentials rejected/i.test(message))
+    ) {
+      return true;
+    }
+    current = readProp(current, "cause");
+  }
+  return false;
+}
