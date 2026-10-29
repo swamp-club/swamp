@@ -81,6 +81,11 @@ export interface VaultEditData {
    * `updated` when the edit was saved, `unchanged` when the editor closed
    * with nothing to save.
    */
+  /**
+   * With `unchanged`: where the copy was kept, because the editor is not
+   * known to wait and may have returned before the person saved.
+   */
+  keptPath?: string;
   status: "updated" | "unchanged";
   name: string;
   type: string;

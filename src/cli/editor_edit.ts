@@ -83,14 +83,17 @@ function retryHint(
  */
 export function warnIfCopyKept(
   edit: Extract<EditorSessionResult, { status: "unchanged" }>,
-  retry: string,
+  hints: EditedCopyHints,
   logger: Logger,
 ): void {
   if (edit.keptPath === undefined) return;
+  const next = hints.retry !== undefined
+    ? `then run: ${hints.retry} < ${edit.keptPath}`
+    : `then, with the copy at ${edit.keptPath}: ${hints.manual ?? ""}`;
   logger.warn(
     "{editor} returned without changes. If it opened the file in another " +
-      "window, save there, then run: {command}. To have swamp wait, set " +
-      "EDITOR to an editor that waits for the file to close.",
-    { editor: edit.editor, command: `${retry} < ${edit.keptPath}` },
+      "window, save there, {next}. To have swamp wait, set EDITOR to an " +
+      "editor that waits for the file to close.",
+    { editor: edit.editor, next },
   );
 }

@@ -63,6 +63,7 @@ function makeDeps(
     fileExists: () => Promise.resolve(true),
     prepareEditor: prepareEditor("VS Code"),
     saveRepaired: () => Promise.resolve(),
+    writePathFor: () => "/fake/path/workflow.yaml",
     updateFromStdin: () =>
       Promise.resolve(
         {
@@ -923,6 +924,7 @@ function brokenAt(path: string) {
   return {
     findByName: () => Promise.resolve(null),
     getPath: () => path,
+    writePathFor: () => path,
     findBrokenWorkflow: () =>
       Promise.resolve({
         file: path,
@@ -1043,4 +1045,79 @@ Deno.test("workflowEdit: an editor repair of a file repaired meanwhile writes no
   >;
   assertStringIncludes(last.error.message, "was repaired while this edit ran");
   assertEquals(repaired, []);
+});
+
+Deno.test("workflowEdit: an editor repair never replaces another workflow's file (swamp-club#4107)", async () => {
+  const brokenPath = "/repo/workflows/workflow-1.yaml";
+  const { deps, repaired } = makeEditorSaveDeps({
+    ...brokenAt(brokenPath),
+    // Another broken workflow's file already sits where the save would write.
+    writePathFor: () => "/repo/workflows/workflow-foo.yaml",
+    fileExists: (path) =>
+      Promise.resolve(
+        path === brokenPath || path === "/repo/workflows/workflow-foo.yaml",
+      ),
+  });
+
+  const events = await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: "my-workflow",
+      stdinContent: EDITED_YAML.replace("name: my-workflow", "name: foo"),
+      source: "editor",
+    }),
+  );
+
+  const last = events[events.length - 1] as Extract<
+    WorkflowEditEvent,
+    { kind: "error" }
+  >;
+  assertStringIncludes(
+    last.error.message,
+    "another workflow file already uses that name",
+  );
+  assertEquals(repaired, []);
+});
+
+Deno.test("workflowEdit: an editor repair whose name check fails is refused", async () => {
+  const { deps, repaired } = makeEditorSaveDeps({
+    ...brokenAt("/repo/workflows/workflow-1.yaml"),
+    findByName: () => Promise.reject(new Error("Unknown key 'ependssss'")),
+  });
+
+  const events = await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: EDITED_ID,
+      stdinContent: EDITED_YAML,
+      source: "editor",
+    }),
+  );
+
+  const last = events[events.length - 1] as Extract<
+    WorkflowEditEvent,
+    { kind: "error" }
+  >;
+  assertStringIncludes(
+    last.error.message,
+    "could not check that the name is free",
+  );
+  assertEquals(repaired, []);
+});
+
+Deno.test("workflowEdit: an editor repair may write over its own file", async () => {
+  const brokenPath = "/repo/workflows/workflow-1.yaml";
+  const { deps, repaired } = makeEditorSaveDeps({
+    ...brokenAt(brokenPath),
+    writePathFor: () => brokenPath,
+    fileExists: (path) => Promise.resolve(path === brokenPath),
+  });
+
+  await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: "my-workflow",
+      stdinContent: EDITED_YAML,
+      source: "editor",
+    }),
+  );
+
+  assertEquals(repaired.length, 1);
 });

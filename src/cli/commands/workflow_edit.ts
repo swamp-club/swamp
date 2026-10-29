@@ -222,11 +222,19 @@ export const workflowEditCommand = withRemoteOptions(
             status: "unchanged",
             name: name ?? id,
             id,
+            ...(edit.keptPath ? { keptPath: edit.keptPath } : {}),
           },
         });
+        // A piped edit cannot replace a broken file.
         warnIfCopyKept(
           edit,
-          `swamp workflow edit ${name ?? id} --allow-rename`,
+          file.kind === "workflow"
+            ? { retry: `swamp workflow edit ${name} --allow-rename` }
+            : {
+              manual: `run 'swamp workflow edit ${
+                name ?? id
+              }' again and paste the kept copy into the editor.`,
+            },
           cliCtx.logger,
         );
         return;
@@ -243,7 +251,7 @@ export const workflowEditCommand = withRemoteOptions(
           : {
             manual: `Run 'swamp workflow edit ${
               name ?? id
-            }' again and paste it into the editor.`,
+            }' again and paste the kept copy into the editor.`,
           },
         async () => {
           if (name !== null) {

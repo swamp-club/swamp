@@ -133,14 +133,14 @@ Deno.test("warnIfCopyKept: warns with the kept copy only when one was kept", () 
 
   warnIfCopyKept(
     { status: "unchanged", editor: "Fake" },
-    "swamp model edit web",
+    { retry: "swamp model edit web" },
     logger,
   );
   assertEquals(warnings, []);
 
   warnIfCopyKept(
     { status: "unchanged", editor: "Fake", keptPath: "/tmp/x/web.yaml" },
-    "swamp model edit web",
+    { retry: "swamp model edit web" },
     logger,
   );
   assertEquals(warnings.length, 1);
@@ -148,4 +148,23 @@ Deno.test("warnIfCopyKept: warns with the kept copy only when one was kept", () 
     JSON.stringify(warnings[0]),
     "swamp model edit web < /tmp/x/web.yaml",
   );
+});
+
+Deno.test("warnIfCopyKept: without a piped retry, says what to do with the kept copy", () => {
+  const warnings: unknown[] = [];
+  const logger = {
+    ...getLogger(["test"]),
+    warn: (...args: unknown[]) => warnings.push(args),
+  } as unknown as Parameters<typeof warnIfCopyKept>[2];
+
+  warnIfCopyKept(
+    { status: "unchanged", editor: "Fake", keptPath: "/tmp/x/wf.yaml" },
+    { manual: "paste the kept copy into the editor." },
+    logger,
+  );
+
+  const text = JSON.stringify(warnings[0]);
+  assertStringIncludes(text, "with the copy at /tmp/x/wf.yaml");
+  assertStringIncludes(text, "paste the kept copy");
+  assertEquals(text.includes(" < "), false);
 });

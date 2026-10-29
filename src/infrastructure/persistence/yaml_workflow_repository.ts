@@ -692,6 +692,10 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     return this.idToActualPath.get(id) ?? this.getLegacyPath(id);
   }
 
+  getWritePath(workflow: Workflow): string {
+    return this.resolveWritePath(workflow);
+  }
+
   private resolveWritePath(workflow: Workflow): string {
     if (isFilenameSafeName(workflow.name)) {
       return this.getNamePath(workflow.name);

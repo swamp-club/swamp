@@ -59,6 +59,12 @@ class LogWorkflowEditRenderer implements Renderer<WorkflowEditEvent> {
             "Saved workflow from {editor}: {name} at {path}",
             { editor: data.editor, name: data.name, path: data.path },
           );
+          if (data.repaired) {
+            logger.info(
+              "Repaired workflow {name}: its previous file did not parse",
+              { name: data.name },
+            );
+          }
         } else {
           logger.info(
             "Updated workflow from stdin: {name} at {path}",

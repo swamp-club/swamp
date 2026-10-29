@@ -182,7 +182,9 @@ Deno.test("EditorService.prepareOpenFile: the wait is confirmed only for editors
     ["code --wait", true],
     ["open -W -n", true],
     ["/usr/local/bin/my-editor.sh", false],
-    ["emacsclient", false],
+    ["emacsclient", true],
+    ["emacsclient -c", true],
+    ["emacsclient -n", false],
   ];
   for (const [editor, confirmed] of cases) {
     const launch = await serviceWithEditor(editor).prepareOpenFile("/f.yaml", {

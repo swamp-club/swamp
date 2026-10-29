@@ -259,11 +259,12 @@ export function createModelEditCommand(syntax: CommandSyntax) {
               name,
               type: file.type.normalized,
               editType: "definition",
+              ...(edit.keptPath ? { keptPath: edit.keptPath } : {}),
             },
           });
           warnIfCopyKept(
             edit,
-            `${syntax.invocation} ${name} --allow-rename`,
+            { retry: `${syntax.invocation} ${name} --allow-rename` },
             cliCtx.logger,
           );
           return;

@@ -60,6 +60,11 @@ export interface WorkflowEditData {
    * with nothing to save, `opened` when a file that is not a stored workflow
    * was edited in place.
    */
+  /**
+   * With `unchanged`: where the copy was kept, because the editor is not
+   * known to wait and may have returned before the person saved.
+   */
+  keptPath?: string;
   status: "opened" | "updated" | "unchanged";
   name: string;
   id: string;
@@ -162,6 +167,8 @@ export interface WorkflowEditDeps {
   prepareEditor: (path: string) => Promise<EditorLaunch>;
   /** Saves a workflow whose stored file did not parse. */
   saveRepaired: (workflow: Workflow) => Promise<void>;
+  /** The file a save of `workflow` writes. */
+  writePathFor: (workflow: Workflow) => string;
   /**
    * Parses the new YAML and saves it. `beforeSave` runs after parsing; when it
    * returns false nothing is written and the call resolves to null.
@@ -206,6 +213,9 @@ export function createWorkflowEditDeps(
     prepareEditor: (path) =>
       editorService.prepareOpenFile(path, { requireWait: true }),
     saveRepaired: (workflow) => workflowRepo.save(workflow),
+    writePathFor: (workflow) =>
+      workflowRepo.getWritePath?.(workflow) ??
+        workflowRepo.getPath(workflow.id),
     updateFromStdin: async (workflow, content, beforeSave) => {
       const yamlData = parseYaml(content) as WorkflowData;
       yamlData.id = workflow.id;
@@ -533,12 +543,40 @@ async function* repairBrokenWorkflow(
     };
     return;
   }
-  const holder = await deps.findByName(repaired.name).catch(() => null);
+  // A lookup that fails may be another broken file holding the name, so it
+  // refuses rather than counting as free.
+  let holder: Workflow | null;
+  try {
+    holder = await deps.findByName(repaired.name);
+  } catch (error) {
+    yield {
+      kind: "error",
+      error: validationFailed(
+        `Cannot name the repaired workflow '${repaired.name}': could not check that the name is free: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ),
+    };
+    return;
+  }
   if (holder && holder.id !== repaired.id) {
     yield {
       kind: "error",
       error: validationFailed(
         `Cannot name the repaired workflow '${repaired.name}': another workflow already has that name.`,
+      ),
+    };
+    return;
+  }
+  // The save writes a file named after the workflow; one already there that
+  // is not the file being repaired belongs to another workflow, broken or
+  // not, and must not be replaced.
+  const target = deps.writePathFor(repaired);
+  if (target !== file.path && await deps.fileExists(target)) {
+    yield {
+      kind: "error",
+      error: validationFailed(
+        `Cannot name the repaired workflow '${repaired.name}': another workflow file already uses that name.`,
       ),
     };
     return;

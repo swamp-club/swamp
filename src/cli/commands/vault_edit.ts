@@ -229,13 +229,16 @@ value for them other than the server's defaults, and stores those defaults.`,
           status: "unchanged",
           name,
           type: file.config.type,
+          ...(edit.keptPath ? { keptPath: edit.keptPath } : {}),
         },
       });
       warnIfCopyKept(
         edit,
-        `swamp vault edit ${name}${
-          file.broken ? ` --type ${file.config.type}` : ""
-        }`,
+        {
+          retry: `swamp vault edit ${name}${
+            file.broken ? ` --type ${file.config.type}` : ""
+          }`,
+        },
         cliCtx.logger,
       );
       return;

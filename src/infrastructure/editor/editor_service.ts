@@ -215,7 +215,10 @@ export class EditorService {
           )) ||
         (commandName(editorParts[0]) === "open" && !isNonWaitingLauncher(
           editorParts,
-        )));
+        )) ||
+        // emacsclient waits for the buffer to be finished unless told not to.
+        (commandName(editorParts[0]) === "emacsclient" &&
+          !editorParts.some((part) => part === "-n" || part === "--no-wait")));
     return {
       editor: this.getEditorDisplayName(editor),
       waitsForExit: shouldWait,

@@ -59,6 +59,13 @@ export interface WorkflowRepository {
   findAllListings?(): Promise<WorkflowListing[]>;
 
   /**
+   * The file {@link save} would write `workflow` to. Optional: a repository
+   * that writes files implements it, so a caller can tell whether a save
+   * would replace a file it did not mean to (swamp-club#4107).
+   */
+  getWritePath?(workflow: Workflow): string;
+
+  /**
    * A view of this repository for one short-lived reader, such as a serve
    * request, whose lookups may be answered from what the view already read
    * instead of reading again (swamp-club#3779). It promises reuse only, not
