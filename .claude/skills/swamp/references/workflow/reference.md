@@ -218,7 +218,9 @@ then edit directly with the Edit tool, then validate with
 
 **Alternative methods:**
 
-- Interactive: `swamp workflow edit my-workflow` (opens in system editor)
+- Interactive: `swamp workflow edit my-workflow` (opens a copy in the system
+  editor and saves it when the editor closes, like a stdin update; if the save
+  is refused, the error names the kept copy to retry from)
 - Stdin: `cat updated.yaml | swamp workflow edit my-workflow --json`
 
 A stdin update whose `name` differs from the workflow being edited is refused.
@@ -685,6 +687,13 @@ jobs:
   loses its worker without writing re-dispatches to another worker
 - Validation warns when `affinity: true` is set without any placement (a no-op
   since there are no remote steps to co-locate)
+- The pin does not replace a step's own placement: a later step whose `target`,
+  `labels` or `platform` the pinned worker does not meet fails with an
+  `AffinityPlacementMismatchError` and is not sent elsewhere (a step's `target`
+  stands in for its labels and platform, as in scheduling). Give every step in
+  the group placement one worker can meet, usually at the workflow or job level
+- Validation warns when placed steps in one affinity group declare different
+  placement, since which step dispatches first (and so picks the worker) varies
 - Requires `swamp serve` (same as all placement features)
 
 ## Write-Bearing Declaration

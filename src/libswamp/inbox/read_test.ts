@@ -1000,6 +1000,7 @@ Deno.test("createInboxMarkSession: a failed request is a result, and later marks
   assertEquals(await session.mark([UNREAD_ID]), {
     kind: "failed",
     reason: "Swamp Club is unavailable.",
+    ids: [],
   });
   assertEquals(await session.mark([UNREAD_ID]), {
     kind: "confirmed",
@@ -1009,14 +1010,46 @@ Deno.test("createInboxMarkSession: a failed request is a result, and later marks
   assertEquals(rec.summaries, 1);
 });
 
-Deno.test("createInboxMarkSession: nothing confirmed means no refresh", async () => {
+Deno.test("createInboxMarkSession: a request sent with nothing confirmed still refreshes", async () => {
   const { deps, rec } = makeDeps({ markInboxRead: () => Promise.resolve([]) });
   const session = createInboxMarkSession(createLibSwampContext(), deps);
 
   assertEquals(await session.mark([UNREAD_ID]), { kind: "confirmed", ids: [] });
   await session.finish();
 
-  assertEquals(rec.summaries, 0);
+  assertEquals(rec.summaries, 1);
+});
+
+Deno.test("createInboxMarkSession: a failed request keeps the ids confirmed before it failed, and refreshes", async () => {
+  const { deps, rec } = makeDeps({
+    markInboxRead: (_url, _key, ids, _signal, onConfirmed) => {
+      onConfirmed?.([ids[0]]);
+      return Promise.reject(new UserError("Swamp Club is unavailable."));
+    },
+  });
+  const session = createInboxMarkSession(createLibSwampContext(), deps);
+
+  assertEquals(await session.mark([UNREAD_ID, READ_ID]), {
+    kind: "failed",
+    reason: "Swamp Club is unavailable.",
+    ids: [UNREAD_ID],
+  });
+  await session.finish();
+
+  assertEquals(rec.summaries, 1);
+});
+
+Deno.test("createInboxMarkSession: a request that failed with nothing confirmed still refreshes", async () => {
+  const { deps, rec } = makeDeps({
+    markInboxRead: () =>
+      Promise.reject(new UserError("Swamp Club is unavailable.")),
+  });
+  const session = createInboxMarkSession(createLibSwampContext(), deps);
+
+  assertEquals((await session.mark([UNREAD_ID])).kind, "failed");
+  await session.finish();
+
+  assertEquals(rec.summaries, 1);
 });
 
 Deno.test("createInboxMarkSession: finish with no marks loads no credentials", async () => {
@@ -1053,7 +1086,34 @@ Deno.test("createInboxMarkSession: finish aborts a request still running at the 
   await session.finish();
 
   assertEquals(aborted, true);
-  assertEquals(await pending, { kind: "failed", reason: "cancelled" });
+  assertEquals(await pending, { kind: "failed", reason: "cancelled", ids: [] });
+  // The request may have been applied before the abort.
+  assertEquals(rec.summaries, 1);
+});
+
+Deno.test("createInboxMarkSession: a mark that starts only after finish aborted is not sent and makes no refresh", async () => {
+  let release: (() => void) | undefined;
+  const { deps, rec } = makeDeps({
+    loadCredentials: () =>
+      new Promise((resolve) => release = () => resolve(credentials)),
+    markInboxRead: (_url, _key, ids, signal) => {
+      signal.throwIfAborted();
+      rec.marked.push([...ids]);
+      return Promise.resolve([...ids]);
+    },
+  });
+  const session = createInboxMarkSession(createLibSwampContext(), deps, {
+    finishTimeoutMs: 0,
+  });
+
+  const pending = session.mark([UNREAD_ID]);
+  const finished = session.finish();
+  // Same delay, created after finish's own timer, so it fires after the abort.
+  setTimeout(() => release?.(), 0);
+  await finished;
+
+  assertEquals(await pending, { kind: "failed", reason: "cancelled", ids: [] });
+  assertEquals(rec.marked, []);
   assertEquals(rec.summaries, 0);
 });
 
@@ -1070,4 +1130,5 @@ Deno.test("createInboxMarkSession: not signed in fails the mark with the sign-in
   );
   assertEquals(rec.marked, []);
   await session.finish();
+  assertEquals(rec.summaries, 0);
 });

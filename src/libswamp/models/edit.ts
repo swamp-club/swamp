@@ -52,7 +52,17 @@ import {
 export interface ModelEditData {
   path: string;
   editor?: string;
-  status: "opened" | "updated";
+  /**
+   * `updated` when the edit was saved, `unchanged` when the editor closed
+   * with nothing to save, `opened` when a file that is not a stored
+   * definition was edited in place.
+   */
+  status: "opened" | "updated" | "unchanged";
+  /**
+   * With `unchanged`: where the copy was kept, because the editor is not
+   * known to wait and may have returned before the person saved.
+   */
+  keptPath?: string;
   name: string;
   type: string;
   editType: "definition";
@@ -111,7 +121,21 @@ function editTarget(
 /** Input for the model edit operation. */
 export interface ModelEditInput {
   modelIdOrName: string;
+  /**
+   * The new YAML. Without it, only a file that is not a stored definition
+   * (a legacy `models/<name>/definition.yaml` link) is opened in place; a
+   * stored definition is edited through {@link resolveModelEditFile} and a
+   * copy, then saved with this set (swamp-club#4107).
+   */
   stdinContent?: string | null;
+  /**
+   * Where `stdinContent` came from: the default `stdin`, or `editor` for a
+   * copy edited in the user's editor. An editor edit whose content is the
+   * stored definition saves nothing and completes as `unchanged`.
+   */
+  source?: "stdin" | "editor";
+  /** The editor that produced `stdinContent`, reported on completion. */
+  editor?: string;
   /**
    * Treat `modelIdOrName` as a definition id already resolved by the caller,
    * and look it up by id only, so the edit acts on the model the caller
@@ -203,7 +227,8 @@ export function createModelEditDeps(
       }
     },
     getDefinitionPath: (type, id) => definitionRepo.getPath(type, id),
-    prepareEditor: (path) => editorService.prepareOpenFile(path),
+    prepareEditor: (path) =>
+      editorService.prepareOpenFile(path, { requireWait: true }),
     updateFromStdin: async (definition, type, content, beforeSave) => {
       const yamlData = parseYaml(content) as DefinitionData;
       yamlData.id = definition.id;
@@ -213,6 +238,59 @@ export function createModelEditDeps(
       return updated;
     },
   };
+}
+
+/**
+ * The file a model edit acts on: a stored definition, saved through the
+ * repository, or a file that is not one (a legacy link to a definition
+ * whose YAML is broken), which can only be edited in place.
+ */
+export type ModelEditFile =
+  | {
+    kind: "definition";
+    path: string;
+    definition: Definition;
+    type: ModelType;
+  }
+  | { kind: "file"; path: string };
+
+/** Resolves the file a model edit acts on, or null when there is none. */
+export async function resolveModelEditFile(
+  ctx: LibSwampContext,
+  deps: ModelEditDeps,
+  input: Pick<ModelEditInput, "modelIdOrName" | "byId" | "expectedName">,
+): Promise<ModelEditFile | null> {
+  const { modelIdOrName } = input;
+  ctx.logger.debug`Looking up model: ${modelIdOrName}`;
+  try {
+    const result = input.byId
+      ? await deps.lookupDefinitionById(modelIdOrName, input.expectedName)
+      : await deps.lookupDefinition(modelIdOrName);
+    if (result) {
+      return {
+        kind: "definition",
+        path: deps.getDefinitionPath(result.type, result.definition.id),
+        definition: result.definition,
+        type: result.type,
+      };
+    }
+  } catch (error) {
+    ctx.logger
+      .debug`Model lookup failed, will try symlink fallback: ${error}`;
+  }
+
+  // If normal lookup didn't find the model, try symlink fallback
+  const resolvedPath = await deps.resolveSymlink(modelIdOrName);
+  if (resolvedPath) {
+    ctx.logger
+      .debug`Using symlink fallback for broken model: ${resolvedPath}`;
+    return { kind: "file", path: resolvedPath };
+  }
+  return null;
+}
+
+function sameDefinition(a: Definition, b: Definition): boolean {
+  return JSON.stringify(a.toData()) === JSON.stringify(b.toData());
 }
 
 /** Edits a model definition via stdin update or editor. */
@@ -229,43 +307,22 @@ export async function* modelEdit(
         yield { kind: "resolving" };
 
         const { modelIdOrName, stdinContent } = input;
+        const fromEditor = input.source === "editor";
 
-        // Look up the model definition
-        let definition: Definition | null = null;
-        let modelType: ModelType | null = null;
-        let filePath: string | null = null;
-
-        ctx.logger.debug`Looking up model: ${modelIdOrName}`;
-        try {
-          const result = input.byId
-            ? await deps.lookupDefinitionById(modelIdOrName, input.expectedName)
-            : await deps.lookupDefinition(modelIdOrName);
-          if (result) {
-            definition = result.definition;
-            modelType = result.type;
-            filePath = deps.getDefinitionPath(modelType, definition.id);
-            setActiveSpanAttributes({
-              "model.name": definition.name,
-              "model.type": modelType.normalized,
-              "model.id": definition.id,
-            });
-          }
-        } catch (error) {
-          ctx.logger
-            .debug`Model lookup failed, will try symlink fallback: ${error}`;
+        const file = await resolveModelEditFile(ctx, deps, input);
+        if (!file) {
+          yield { kind: "error", error: behaviorNotFound(modelIdOrName) };
+          return;
         }
-
-        // If normal lookup didn't find the model, try symlink fallback
-        if (!filePath) {
-          const resolvedPath = await deps.resolveSymlink(modelIdOrName);
-          if (resolvedPath) {
-            ctx.logger
-              .debug`Using symlink fallback for broken model: ${resolvedPath}`;
-            filePath = resolvedPath;
-          } else {
-            yield { kind: "error", error: behaviorNotFound(modelIdOrName) };
-            return;
-          }
+        const filePath = file.path;
+        const definition = file.kind === "definition" ? file.definition : null;
+        const modelType = file.kind === "definition" ? file.type : null;
+        if (definition && modelType) {
+          setActiveSpanAttributes({
+            "model.name": definition.name,
+            "model.type": modelType.normalized,
+            "model.id": definition.id,
+          });
         }
 
         ctx.logger.debug`Using file path: ${filePath}`;
@@ -295,7 +352,13 @@ export async function* modelEdit(
             // Set when the rename guard, rather than an authorization hook,
             // is what stopped the save.
             let renameRefusal: SwampError | undefined;
+            // Set when an editor closed on content equal to the stored one.
+            let unchanged = false;
             const beforeSave = async (candidate: Definition) => {
+              if (fromEditor && sameDefinition(candidate, stored)) {
+                unchanged = true;
+                return false;
+              }
               if (candidate.name !== stored.name) {
                 if (!input.allowRename) {
                   renameRefusal = wordedSwampError(
@@ -331,6 +394,20 @@ export async function* modelEdit(
               beforeSave,
             );
             if (!updated) {
+              if (unchanged) {
+                yield {
+                  kind: "completed",
+                  data: {
+                    path: filePath,
+                    ...(input.editor ? { editor: input.editor } : {}),
+                    status: "unchanged",
+                    name: stored.name,
+                    type: type.normalized,
+                    editType: "definition",
+                  },
+                };
+                return;
+              }
               if (renameRefusal) {
                 yield { kind: "error", error: renameRefusal };
                 return;
@@ -356,6 +433,7 @@ export async function* modelEdit(
               kind: "completed",
               data: {
                 path: filePath,
+                ...(input.editor ? { editor: input.editor } : {}),
                 status: "updated",
                 name: updated.name,
                 type: modelType.normalized,
@@ -369,9 +447,9 @@ export async function* modelEdit(
               error: wordedSwampError(
                 "validation_failed",
                 wordedText((w) =>
-                  `Invalid ${w.noun} YAML from stdin: ${
-                    error instanceof Error ? error.message : String(error)
-                  }`
+                  `Invalid ${w.noun} YAML ${
+                    fromEditor ? "from the editor" : "from stdin"
+                  }: ${error instanceof Error ? error.message : String(error)}`
                 ),
               ),
             };
@@ -379,7 +457,22 @@ export async function* modelEdit(
           return;
         }
 
-        // Editor mode
+        // Editor mode: only a file that is not a stored definition opens in
+        // place. A stored definition edited in place would never be saved
+        // through the repository, so it would never be committed
+        // (swamp-club#4107).
+        if (file.kind === "definition") {
+          yield {
+            kind: "error",
+            error: wordedSwampError(
+              "validation_failed",
+              wordedText((w) =>
+                `Cannot open ${w.noun} '${file.definition.name}' in place: edit a copy and save it as the new content`
+              ),
+            ),
+          };
+          return;
+        }
         ctx.logger.debug`Opening file: ${filePath}`;
         const launch = await deps.prepareEditor(filePath);
         yield {

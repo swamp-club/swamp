@@ -42,6 +42,7 @@ import {
   inboxQuitLine,
   InboxTui,
   type InboxTuiBackend,
+  inboxUnmarkedLine,
   newestUnreadIndex,
 } from "./inbox_tui.tsx";
 
@@ -326,7 +327,11 @@ Deno.test({
       makeView(ROWS),
       fakeBackend({
         outcome: () =>
-          Promise.resolve({ kind: "failed", reason: "Swamp Club is down." }),
+          Promise.resolve({
+            kind: "failed",
+            reason: "Swamp Club is down.",
+            ids: [],
+          }),
       }),
     );
     await inbox.until((f) => f.includes("3 / 3"), "the rows to draw");
@@ -344,6 +349,35 @@ Deno.test({
       (f) => !f.includes("Could not mark") && f.includes("Enter open"),
       "the help bar again",
     );
+  },
+});
+
+Deno.test({
+  name:
+    "inbox: a partly applied mark keeps the confirmed dots cleared and puts back the rest",
+  ...inkTestOptions,
+  fn: async () => {
+    const inbox = openInbox(
+      makeView(ROWS),
+      fakeBackend({
+        // The announcement's batch landed before the request failed.
+        outcome: (ids) =>
+          Promise.resolve({
+            kind: "failed",
+            reason: "Swamp Club is down.",
+            ids: ids.filter((id) => id === ANNOUNCEMENT.id),
+          }),
+      }),
+    );
+    await inbox.until((f) => f.includes("3 / 3"), "the rows to draw");
+
+    inbox.stdin.write("\x01");
+    await inbox.until(
+      (f) => f.includes("Could not mark 1 message read: Swamp Club is down."),
+      "the status line",
+    );
+    assert(!inbox.row("2026-10-26").includes("●"));
+    assertStringIncludes(inbox.row("2026-10-25"), "●");
   },
 });
 
@@ -490,6 +524,12 @@ Deno.test("inboxQuitLine: the confirmed counts, or nothing", () => {
   assertEquals(inboxQuitLine(0, 0), undefined);
 });
 
+Deno.test("inboxUnmarkedLine: the messages left unread, or nothing", () => {
+  assertEquals(inboxUnmarkedLine(1), "1 message could not be marked read.");
+  assertEquals(inboxUnmarkedLine(3), "3 messages could not be marked read.");
+  assertEquals(inboxUnmarkedLine(0), undefined);
+});
+
 Deno.test("inbox renderer: an empty inbox prints the empty line and opens nothing", async () => {
   const out: string[] = [];
   const originalLog = console.log;
@@ -596,7 +636,11 @@ Deno.test("connectInboxTui: closing waits for marks in flight and counts what wa
   );
   const line = await connection.close();
 
-  assertEquals(line, { line: "Read 1 message and marked 1 read.", dropped: 0 });
+  assertEquals(line, {
+    line: "Read 1 message and marked 1 read.",
+    unmarked: 0,
+    dropped: 0,
+  });
   assertEquals((await opened).kind, "confirmed");
   assertEquals((await marked).kind, "confirmed");
   assertEquals(order.at(-1), "marked 1");
@@ -615,7 +659,7 @@ Deno.test("connectInboxTui: closing with nothing marked prints nothing", async (
     loadOlder: () => Promise.resolve(makeView([])),
   });
 
-  assertEquals(await connection.close(), { dropped: 0 });
+  assertEquals(await connection.close(), { unmarked: 0, dropped: 0 });
   assertEquals(finished, 1);
 });
 
@@ -657,7 +701,84 @@ Deno.test("connectInboxTui: closing counts entries older pages left out", async 
 
   await connection.backend.loadOlder(ISSUE.id);
 
-  assertEquals(await connection.close(), { dropped: 2 });
+  assertEquals(await connection.close(), { unmarked: 0, dropped: 2 });
+});
+
+Deno.test("connectInboxTui: a partly applied mark counts what was confirmed and reports the rest", async () => {
+  const connection = connectInboxTui({
+    markSession: {
+      mark: (ids) =>
+        Promise.resolve({
+          kind: "failed",
+          reason: "Swamp Club is down.",
+          ids: ids.filter((id) => id !== POINTS.id),
+        }),
+      finish: () => Promise.resolve(),
+    },
+    loadOlder: () => Promise.resolve(makeView([])),
+  });
+
+  await connection.backend.markRead([ANNOUNCEMENT.id, POINTS.id], "marked");
+
+  assertEquals(await connection.close(), {
+    line: "Marked 1 message read.",
+    unmarked: 1,
+    dropped: 0,
+  });
+});
+
+Deno.test("connectInboxTui: a mark cut off at quit is reported", async () => {
+  const connection = connectInboxTui({
+    markSession: {
+      mark: () =>
+        Promise.resolve({ kind: "failed", reason: "cancelled", ids: [] }),
+      finish: () => Promise.resolve(),
+    },
+    loadOlder: () => Promise.resolve(makeView([])),
+  });
+
+  await connection.backend.markRead([ISSUE.id], "read");
+
+  assertEquals(await connection.close(), { unmarked: 1, dropped: 0 });
+});
+
+Deno.test("connectInboxTui: a failed id that a later mark confirms is not reported", async () => {
+  let calls = 0;
+  const connection = connectInboxTui({
+    markSession: {
+      mark: (ids) =>
+        Promise.resolve(
+          ++calls === 1
+            ? { kind: "failed", reason: "Swamp Club is down.", ids: [] }
+            : { kind: "confirmed", ids: ids.map((id) => id.toLowerCase()) },
+        ),
+      finish: () => Promise.resolve(),
+    },
+    loadOlder: () => Promise.resolve(makeView([])),
+  });
+
+  await connection.backend.markRead([ISSUE.id], "read");
+  await connection.backend.markRead([ISSUE.id], "marked");
+
+  assertEquals(await connection.close(), {
+    line: "Marked 1 message read.",
+    unmarked: 0,
+    dropped: 0,
+  });
+});
+
+Deno.test("connectInboxTui: an id answered but not confirmed is not reported as unmarked", async () => {
+  const connection = connectInboxTui({
+    markSession: {
+      mark: () => Promise.resolve({ kind: "confirmed", ids: [] }),
+      finish: () => Promise.resolve(),
+    },
+    loadOlder: () => Promise.resolve(makeView([])),
+  });
+
+  await connection.backend.markRead([ISSUE.id], "read");
+
+  assertEquals(await connection.close(), { unmarked: 0, dropped: 0 });
 });
 
 Deno.test({

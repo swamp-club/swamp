@@ -67,12 +67,16 @@ export const INBOX_REFRESH_TIMEOUT_MS = 5_000;
 export interface InboxReadDeps {
   loadCredentials: () => Promise<AuthCredentials | null>;
   listMessages: InboxListDeps["listMessages"];
-  /** The requested ids swamp-club confirmed as read. */
+  /**
+   * The requested ids swamp-club confirmed as read. `onConfirmed` is given
+   * each batch's confirmed ids as it is answered, before any later throw.
+   */
   markInboxRead: (
     serverUrl: string,
     apiKey: string,
     ids: readonly string[],
     signal: AbortSignal,
+    onConfirmed?: (ids: string[]) => void,
   ) => Promise<string[]>;
   getInboxMessage: (
     serverUrl: string,
@@ -110,8 +114,8 @@ export function createInboxReadDeps(
     loadCredentials: () => auth.load(),
     listMessages: (serverUrl, apiKey, listOptions, signal) =>
       client(serverUrl).listInboxMessages(apiKey, listOptions, signal),
-    markInboxRead: (serverUrl, apiKey, ids, signal) =>
-      client(serverUrl).markInboxRead(apiKey, ids, signal),
+    markInboxRead: (serverUrl, apiKey, ids, signal, onConfirmed) =>
+      client(serverUrl).markInboxRead(apiKey, ids, signal, onConfirmed),
     getInboxMessage: (serverUrl, apiKey, id, signal) =>
       client(serverUrl).getInboxMessage(apiKey, id, signal),
     // No etag: a 304 would keep the unread count from before the marking.
@@ -491,10 +495,13 @@ export async function* inboxReadById(
   }
 }
 
-/** What one mark request came to. */
+/**
+ * What one mark request came to. A failed request may have been partly
+ * applied: `ids` are the ones swamp-club confirmed before it failed.
+ */
 export type InboxMarkOutcome =
   | { kind: "confirmed"; ids: string[] }
-  | { kind: "failed"; reason: string };
+  | { kind: "failed"; reason: string; ids: string[] };
 
 /**
  * Marks messages read while the inbox stays open. Requests reach Swamp Club
@@ -504,13 +511,14 @@ export type InboxMarkOutcome =
 export interface InboxMarkSession {
   /**
    * Marks exactly these ids read. Resolves to the ids swamp-club confirmed,
-   * or why the request failed; never rejects.
+   * or why the request failed and the ids it confirmed first; never rejects.
    */
   mark(ids: readonly string[]): Promise<InboxMarkOutcome>;
   /**
    * Waits for the requests still in flight, for at most `finishTimeoutMs`,
-   * aborts any left, then refreshes the inbox cache once if anything was
-   * confirmed. Never rejects.
+   * aborts any left, then refreshes the inbox cache once if any request was
+   * sent: one that failed or was aborted may still have been applied.
+   * Never rejects.
    */
   finish(): Promise<void>;
 }
@@ -529,7 +537,7 @@ class InboxMarkSessionImpl implements InboxMarkSession {
   private readonly requestCtx: LibSwampContext;
   private session: Promise<Session | SwampError> | undefined;
   private tail: Promise<unknown> = Promise.resolve();
-  private confirmedAny = false;
+  private sentAny = false;
 
   constructor(
     private readonly ctx: LibSwampContext,
@@ -555,7 +563,7 @@ class InboxMarkSessionImpl implements InboxMarkSession {
     // Whatever is still running is abandoned, and settles once aborted.
     this.controller.abort();
     await this.tail;
-    if (!this.confirmedAny || this.session === undefined) return;
+    if (!this.sentAny || this.session === undefined) return;
     const session = await this.session;
     if ("apiKey" in session) {
       await refreshInboxCache(this.ctx, this.deps, session);
@@ -578,23 +586,31 @@ class InboxMarkSessionImpl implements InboxMarkSession {
 
   private async send(ids: string[]): Promise<InboxMarkOutcome> {
     if (ids.length === 0) return { kind: "confirmed", ids: [] };
+    const confirmed: string[] = [];
     try {
       const session = await this.openOnce();
       if (!("apiKey" in session)) {
-        return { kind: "failed", reason: session.message };
+        return { kind: "failed", reason: session.message, ids: [] };
       }
-      const confirmed = await this.deps.markInboxRead(
-        session.serverUrl,
-        session.apiKey,
-        ids,
-        this.requestCtx.signal,
-      );
-      if (confirmed.length > 0) this.confirmedAny = true;
-      return { kind: "confirmed", ids: confirmed };
+      // A mark queued behind one finish() aborted is never sent.
+      if (!this.requestCtx.signal.aborted) this.sentAny = true;
+      return {
+        kind: "confirmed",
+        ids: await this.deps.markInboxRead(
+          session.serverUrl,
+          session.apiKey,
+          ids,
+          this.requestCtx.signal,
+          (batch) => {
+            for (const id of batch) confirmed.push(id);
+          },
+        ),
+      };
     } catch (error: unknown) {
       return {
         kind: "failed",
         reason: isAbort(error) ? "cancelled" : reasonOf(error),
+        ids: confirmed,
       };
     }
   }

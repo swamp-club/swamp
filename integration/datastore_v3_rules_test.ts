@@ -391,6 +391,7 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/commands/vault_remove.ts -> src/infrastructure/datastore_v3/config_edit_scope.ts",
   "src/cli/commands/workflow_delete.ts -> src/infrastructure/datastore_v3/config_edit_scope.ts",
   "src/cli/commands/workflow_edit.ts -> src/infrastructure/datastore_v3/config_edit_scope.ts",
+  "src/cli/editor_edit.ts -> src/domain/datastore_v3/config_edit_conflict.ts",
   "src/infrastructure/persistence/repo_unit_of_work.ts -> src/domain/datastore_v3/config_edit_conflict.ts",
   "src/infrastructure/persistence/repo_unit_of_work.ts -> src/domain/datastore_v3/op.ts",
   "src/infrastructure/persistence/repo_unit_of_work.ts -> src/domain/datastore_v3/partition_key.ts",

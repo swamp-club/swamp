@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { basename, dirname, join, resolve } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import {
   Workflow,
@@ -55,9 +55,21 @@ import { findWorkflowById } from "../../domain/workflows/workflow_lookup.ts";
 export interface WorkflowEditData {
   path: string;
   editor?: string;
-  status: "opened" | "updated";
+  /**
+   * `updated` when the edit was saved, `unchanged` when the editor closed
+   * with nothing to save, `opened` when a file that is not a stored workflow
+   * was edited in place.
+   */
+  status: "opened" | "updated" | "unchanged";
+  /**
+   * With `unchanged`: where the copy was kept, because the editor is not
+   * known to wait and may have returned before the person saved.
+   */
+  keptPath?: string;
   name: string;
   id: string;
+  /** Set when the edit replaced a workflow file that did not parse. */
+  repaired?: boolean;
 }
 
 export type WorkflowEditEvent =
@@ -78,7 +90,22 @@ export interface WorkflowEditTarget {
 /** Input for the workflow edit operation. */
 export interface WorkflowEditInput {
   workflowIdOrName: string;
+  /**
+   * The new YAML. Without it, only a file that is not a stored workflow (an
+   * extension's source, a legacy link) is opened in place; a stored workflow
+   * is edited through {@link resolveWorkflowEditFile} and a copy, then saved
+   * with this set (swamp-club#4107).
+   */
   stdinContent?: string | null;
+  /**
+   * Where `stdinContent` came from: the default `stdin`, or `editor` for a
+   * copy edited in the user's editor. An editor edit whose content is the
+   * stored workflow saves nothing and completes as `unchanged`, and only an
+   * editor edit may replace a stored workflow file that does not parse.
+   */
+  source?: "stdin" | "editor";
+  /** The editor that produced `stdinContent`, reported on completion. */
+  editor?: string;
   /**
    * Treat `workflowIdOrName` as a workflow id the caller already resolved,
    * and look it up by id only, so the edit acts on the workflow the caller
@@ -138,6 +165,17 @@ export interface WorkflowEditDeps {
   resolveSymlink: (name: string) => Promise<string | null>;
   fileExists: (path: string) => Promise<boolean>;
   prepareEditor: (path: string) => Promise<EditorLaunch>;
+  /** Saves a workflow whose stored file did not parse. */
+  saveRepaired: (workflow: Workflow) => Promise<void>;
+  /** The file a save of `workflow` writes. */
+  writePathFor: (workflow: Workflow) => string;
+  /**
+   * Every workflow that loads and declares `id`. Files that do not parse
+   * are skipped, so a broken file being repaired is never among them.
+   */
+  findAllById: (id: WorkflowId) => Promise<Workflow[]>;
+  /** Whether `path` is a workflow file in the repository's workflows dir. */
+  isStoredFile: (path: string) => boolean;
   /**
    * Parses the new YAML and saves it. `beforeSave` runs after parsing; when it
    * returns false nothing is written and the call resolves to null.
@@ -179,7 +217,19 @@ export function createWorkflowEditDeps(
         throw error;
       }
     },
-    prepareEditor: (path) => editorService.prepareOpenFile(path),
+    prepareEditor: (path) =>
+      editorService.prepareOpenFile(path, { requireWait: true }),
+    saveRepaired: (workflow) => workflowRepo.save(workflow),
+    findAllById: async (id) =>
+      workflowRepo.findAllById
+        ? await workflowRepo.findAllById(id)
+        : (await workflowRepo.findAll()).filter((w) => w.id === id),
+    isStoredFile: (path) =>
+      resolve(dirname(path)) === resolve(workflowsDir) &&
+      /^workflow-.*\.yaml$/.test(basename(path)),
+    writePathFor: (workflow) =>
+      workflowRepo.getWritePath?.(workflow) ??
+        workflowRepo.getPath(workflow.id),
     updateFromStdin: async (workflow, content, beforeSave) => {
       const yamlData = parseYaml(content) as WorkflowData;
       yamlData.id = workflow.id;
@@ -189,6 +239,101 @@ export function createWorkflowEditDeps(
       return updated;
     },
   };
+}
+
+/**
+ * The file a workflow edit acts on: a stored workflow, saved through the
+ * repository; a stored workflow file that does not parse, which an editor
+ * edit may replace; or a file that is not a stored workflow (an extension's
+ * source, a legacy link), which can only be edited in place.
+ */
+export type WorkflowEditFile =
+  | { kind: "workflow"; path: string; workflow: Workflow }
+  | { kind: "broken"; path: string; id: string | null; name: string | null }
+  | { kind: "file"; path: string };
+
+/** Resolves the file a workflow edit acts on, or null when there is none. */
+export async function resolveWorkflowEditFile(
+  ctx: LibSwampContext,
+  deps: WorkflowEditDeps,
+  input: Pick<WorkflowEditInput, "workflowIdOrName" | "byId" | "expectedName">,
+): Promise<WorkflowEditFile | null> {
+  const { workflowIdOrName } = input;
+  let workflow: Workflow | null = null;
+
+  // Name first, then exact id — or id only when the caller resolved it.
+  if (!input.byId) {
+    ctx.logger.debug`Looking up by name: ${workflowIdOrName}`;
+    try {
+      workflow = await deps.findByName(workflowIdOrName);
+    } catch (error) {
+      ctx.logger
+        .debug`Workflow lookup by name failed, will try symlink fallback: ${error}`;
+    }
+  }
+  if (!workflow && isUuid(workflowIdOrName)) {
+    ctx.logger.debug`Looking up by ID: ${workflowIdOrName}`;
+    try {
+      const id: WorkflowId = createWorkflowId(workflowIdOrName);
+      workflow = input.byId && input.expectedName !== undefined
+        ? await findWorkflowById(
+          deps,
+          workflowIdOrName,
+          input.expectedName,
+        )
+        : await deps.findById(id);
+    } catch (error) {
+      ctx.logger
+        .debug`Workflow lookup by ID failed, will try symlink fallback: ${error}`;
+    }
+  }
+
+  if (workflow) {
+    const path = deps.getPath(workflow.id);
+    if (await deps.fileExists(path)) {
+      return { kind: "workflow", path, workflow };
+    }
+    // The primary path does not exist, so it is an extension workflow:
+    // its source file is edited where it is.
+    const resolvedPath = await deps.resolveSymlink(workflow.name);
+    return { kind: "file", path: resolvedPath ?? path };
+  }
+
+  const resolvedPath = input.byId
+    ? null
+    : await deps.resolveSymlink(workflowIdOrName);
+  if (resolvedPath) {
+    ctx.logger
+      .debug`Using symlink fallback for broken workflow: ${resolvedPath}`;
+    return { kind: "file", path: resolvedPath };
+  }
+  const broken = await deps.findBrokenWorkflow(workflowIdOrName);
+  if (
+    broken &&
+    (!input.byId ||
+      (broken.id === workflowIdOrName &&
+        (input.expectedName === undefined ||
+          broken.name === input.expectedName)))
+  ) {
+    ctx.logger.debug`Found broken workflow, opening file: ${broken.file}`;
+    // A workflow file in the repository's workflows dir is a stored
+    // workflow, so its repair is saved through the repository; any other
+    // broken file is edited where it is.
+    if (deps.isStoredFile(broken.file)) {
+      return {
+        kind: "broken",
+        path: broken.file,
+        id: broken.id !== null && isUuid(broken.id) ? broken.id : null,
+        name: broken.name,
+      };
+    }
+    return { kind: "file", path: broken.file };
+  }
+  return null;
+}
+
+function sameWorkflow(a: Workflow, b: Workflow): boolean {
+  return JSON.stringify(a.toData()) === JSON.stringify(b.toData());
 }
 
 /** Edits a workflow file via stdin update or editor. */
@@ -205,83 +350,23 @@ export async function* workflowEdit(
         yield { kind: "resolving" };
 
         const { workflowIdOrName, stdinContent } = input;
+        const fromEditor = input.source === "editor";
 
-        let workflow: Workflow | null = null;
-        let filePath: string | null = null;
-
-        // Name first, then exact id — or id only when the caller resolved it.
-        if (!input.byId) {
-          ctx.logger.debug`Looking up by name: ${workflowIdOrName}`;
-          try {
-            workflow = await deps.findByName(workflowIdOrName);
-          } catch (error) {
-            ctx.logger
-              .debug`Workflow lookup by name failed, will try symlink fallback: ${error}`;
-          }
+        const file = await resolveWorkflowEditFile(ctx, deps, input);
+        if (!file) {
+          yield {
+            kind: "error",
+            error: notFound("Workflow", workflowIdOrName),
+          };
+          return;
         }
-        if (!workflow && isUuid(workflowIdOrName)) {
-          ctx.logger.debug`Looking up by ID: ${workflowIdOrName}`;
-          try {
-            const id: WorkflowId = createWorkflowId(workflowIdOrName);
-            workflow = input.byId && input.expectedName !== undefined
-              ? await findWorkflowById(
-                deps,
-                workflowIdOrName,
-                input.expectedName,
-              )
-              : await deps.findById(id);
-          } catch (error) {
-            ctx.logger
-              .debug`Workflow lookup by ID failed, will try symlink fallback: ${error}`;
-          }
-        }
-
+        const filePath = file.path;
+        const workflow = file.kind === "workflow" ? file.workflow : null;
         if (workflow) {
-          filePath = deps.getPath(workflow.id);
           setActiveSpanAttributes({
             "workflow.name": workflow.name,
             "workflow.id": workflow.id,
           });
-        } else {
-          const resolvedPath = input.byId
-            ? null
-            : await deps.resolveSymlink(workflowIdOrName);
-          if (resolvedPath) {
-            ctx.logger
-              .debug`Using symlink fallback for broken workflow: ${resolvedPath}`;
-            filePath = resolvedPath;
-          } else {
-            const broken = await deps.findBrokenWorkflow(workflowIdOrName);
-            if (
-              broken &&
-              (!input.byId ||
-                (broken.id === workflowIdOrName &&
-                  (input.expectedName === undefined ||
-                    broken.name === input.expectedName)))
-            ) {
-              ctx.logger
-                .debug`Found broken workflow, opening file: ${broken.file}`;
-              filePath = broken.file;
-            } else {
-              yield {
-                kind: "error",
-                error: notFound("Workflow", workflowIdOrName),
-              };
-              return;
-            }
-          }
-        }
-
-        // If the primary path doesn't exist but we found the workflow,
-        // it's an extension workflow — try to find its actual source file.
-        if (filePath && workflow) {
-          const exists = await deps.fileExists(filePath);
-          if (!exists) {
-            const resolvedPath = await deps.resolveSymlink(workflow.name);
-            if (resolvedPath) {
-              filePath = resolvedPath;
-            }
-          }
         }
 
         ctx.logger.debug`Using file path: ${filePath}`;
@@ -291,6 +376,10 @@ export async function* workflowEdit(
           ctx.logger.debug`Reading workflow content from stdin`;
 
           if (!workflow) {
+            if (fromEditor && file.kind === "broken") {
+              yield* repairBrokenWorkflow(deps, input, file, stdinContent);
+              return;
+            }
             yield {
               kind: "error",
               error: validationFailed(
@@ -307,7 +396,13 @@ export async function* workflowEdit(
             // Set when the rename guard, rather than an authorization hook,
             // is what stopped the save.
             let renameRefusal: SwampError | undefined;
+            // Set when an editor closed on content equal to the stored one.
+            let unchanged = false;
             const beforeSave = async (candidate: Workflow) => {
+              if (fromEditor && sameWorkflow(candidate, stored)) {
+                unchanged = true;
+                return false;
+              }
               if (candidate.name !== stored.name) {
                 if (!input.allowRename) {
                   renameRefusal = validationFailed(
@@ -336,6 +431,19 @@ export async function* workflowEdit(
               beforeSave,
             );
             if (!updated) {
+              if (unchanged) {
+                yield {
+                  kind: "completed",
+                  data: {
+                    path: filePath,
+                    ...(input.editor ? { editor: input.editor } : {}),
+                    status: "unchanged",
+                    name: stored.name,
+                    id: stored.id,
+                  },
+                };
+                return;
+              }
               if (renameRefusal) {
                 yield { kind: "error", error: renameRefusal };
                 return;
@@ -357,6 +465,7 @@ export async function* workflowEdit(
               kind: "completed",
               data: {
                 path: filePath,
+                ...(input.editor ? { editor: input.editor } : {}),
                 status: "updated",
                 name: updated.name,
                 id: updated.id,
@@ -366,16 +475,28 @@ export async function* workflowEdit(
             yield {
               kind: "error",
               error: validationFailed(
-                `Invalid workflow YAML from stdin: ${
-                  error instanceof Error ? error.message : String(error)
-                }`,
+                `Invalid workflow YAML ${
+                  fromEditor ? "from the editor" : "from stdin"
+                }: ${error instanceof Error ? error.message : String(error)}`,
               ),
             };
           }
           return;
         }
 
-        // Editor mode
+        // Editor mode: only a file that is not a stored workflow opens in
+        // place. A stored workflow edited in place would never be saved
+        // through the repository, so it would never be committed
+        // (swamp-club#4107).
+        if (file.kind !== "file") {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Cannot open workflow '${workflowIdOrName}' in place: edit a copy and save it as the new content`,
+            ),
+          };
+          return;
+        }
         ctx.logger.debug`Opening file: ${filePath}`;
         const launch = await deps.prepareEditor(filePath);
         yield {
@@ -400,4 +521,187 @@ export async function* workflowEdit(
         };
       })(),
     ));
+}
+
+/**
+ * Replaces a stored workflow file that does not parse with YAML edited in
+ * the editor (swamp-club#4107). The id comes from the broken file; the new
+ * YAML must parse, and must not take a name another workflow holds. Only a
+ * file that still does not parse is replaced.
+ */
+async function* repairBrokenWorkflow(
+  deps: WorkflowEditDeps,
+  input: WorkflowEditInput,
+  file: Extract<WorkflowEditFile, { kind: "broken" }>,
+  content: string,
+): AsyncIterable<WorkflowEditEvent> {
+  // A repair is a local editor action; a caller that authorizes edits
+  // cannot authorize a file whose name and tags cannot be read.
+  if (input.authorizeUpdate || input.authorizeContent) {
+    yield {
+      kind: "error",
+      error: forbidden(
+        `Not allowed to repair workflow '${file.id ?? basename(file.path)}'`,
+      ),
+    };
+    return;
+  }
+  let repaired: Workflow;
+  try {
+    const yamlData = parseYaml(content) as WorkflowData;
+    // The id comes from the broken file when it could be read there, and
+    // otherwise from the edited YAML.
+    if (file.id !== null) yamlData.id = file.id;
+    if (typeof yamlData?.id !== "string" || !isUuid(yamlData.id)) {
+      yield {
+        kind: "error",
+        error: validationFailed(
+          `Cannot repair the workflow at ${
+            basename(file.path)
+          }: its id could not be read, so the edited YAML must give one ('id: <uuid>').`,
+        ),
+      };
+      return;
+    }
+    repaired = Workflow.fromData(yamlData);
+  } catch (error) {
+    yield {
+      kind: "error",
+      error: validationFailed(
+        `Invalid workflow YAML from the editor: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ),
+    };
+    return;
+  }
+  // The save writes a file named after the workflow; one already there that
+  // is not the file being repaired belongs to another workflow, broken or
+  // not, and must not be replaced.
+  const target = deps.writePathFor(repaired);
+  if (target !== file.path && await deps.fileExists(target)) {
+    yield {
+      kind: "error",
+      error: validationFailed(
+        `Cannot name the repaired workflow '${repaired.name}': another workflow file already uses that name.`,
+      ),
+    };
+    return;
+  }
+  // A lookup that fails may be another broken file holding the name, so it
+  // refuses rather than counting as free, unless the save writes back to
+  // the file being repaired: that file is the one the lookup tripped on.
+  let holder: Workflow | null = null;
+  try {
+    holder = await deps.findByName(repaired.name);
+  } catch (error) {
+    if (target !== file.path) {
+      yield {
+        kind: "error",
+        error: validationFailed(
+          `Cannot name the repaired workflow '${repaired.name}': could not check that the name is free: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        ),
+      };
+      return;
+    }
+  }
+  if (holder && holder.id !== repaired.id) {
+    yield {
+      kind: "error",
+      error: validationFailed(
+        `Cannot name the repaired workflow '${repaired.name}': another workflow already has that name.`,
+      ),
+    };
+    return;
+  }
+  // The id must not belong to a workflow in another file (a broken copy of
+  // one keeps its id): two workflows would share it, and the save, which
+  // moves a workflow's file when its name changes, could remove the other.
+  let sharing: Workflow[];
+  try {
+    sharing = await deps.findAllById(repaired.id);
+  } catch (error) {
+    yield {
+      kind: "error",
+      error: validationFailed(
+        `Cannot repair the workflow at ${
+          basename(file.path)
+        }: could not check that its id ${repaired.id} is free: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ),
+    };
+    return;
+  }
+  if (sharing.length > 0) {
+    yield {
+      kind: "error",
+      error: validationFailed(
+        `Cannot repair the workflow at ${basename(file.path)}: workflow '${
+          sharing[0].name
+        }' already has its id ${repaired.id}. Give the repaired workflow a new id.`,
+      ),
+    };
+    return;
+  } // The save removes the legacy id-named file when it writes elsewhere.
+  // When that file is not the one being repaired it is another copy of
+  // this workflow, broken (findAllById skips it) or not, and must not go.
+  const legacy = deps.getPath(repaired.id);
+  if (
+    legacy !== file.path && legacy !== target && await deps.fileExists(legacy)
+  ) {
+    yield {
+      kind: "error",
+      error: validationFailed(
+        `Cannot repair the workflow at ${
+          basename(file.path)
+        }: another workflow file (${
+          basename(legacy)
+        }) already has its id ${repaired.id}. Give the repaired workflow a new id, or remove that file first.`,
+      ),
+    };
+    return;
+  }
+
+  // The save removes a legacy id-named file, but no other: a repair that
+  // writes elsewhere would leave the broken file behind as well.
+  if (target !== file.path && file.path !== deps.getPath(repaired.id)) {
+    yield {
+      kind: "error",
+      error: validationFailed(
+        `Cannot rename the workflow while repairing it: keep the name it is stored under (${
+          basename(file.path)
+        }), then rename it with a second edit.`,
+      ),
+    };
+    return;
+  }
+  // Looked up as the edit was, since a file whose id could not be read is
+  // not found by the id the edited YAML gives.
+  const stillBroken = await deps.findBrokenWorkflow(input.workflowIdOrName);
+  if (!stillBroken || stillBroken.file !== file.path) {
+    yield {
+      kind: "error",
+      error: validationFailed(
+        `Workflow '${repaired.id}' was repaired while this edit ran; nothing was written.`,
+      ),
+    };
+    return;
+  }
+  await deps.saveRepaired(repaired);
+  yield {
+    kind: "completed",
+    data: {
+      // The save writes the file named after the workflow and removes the
+      // broken one, so the repaired workflow lives at `target`.
+      path: target,
+      ...(input.editor ? { editor: input.editor } : {}),
+      status: "updated",
+      name: repaired.name,
+      id: repaired.id,
+      repaired: true,
+    },
+  };
 }

@@ -22,9 +22,15 @@ import { startConfigEdit } from "../../infrastructure/persistence/repo_unit_of_w
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createVaultEditDeps,
+  resolveVaultEditFile,
   vaultEdit,
   type VaultEditData,
 } from "../../libswamp/vaults/edit.ts";
+import {
+  createEditorSessionDeps,
+  editInEditor,
+} from "../../libswamp/editor_session.ts";
+import { saveEditedCopy, warnIfCopyKept } from "../editor_edit.ts";
 import {
   vaultSearch,
   type VaultSearchDeps,
@@ -163,48 +169,111 @@ value for them other than the server's defaults, and stores those defaults.`,
   }
   const stdinContent = await readStdin();
   const deps = createVaultEditDeps(repoDir);
-  // A stale stdin edit, a rename's included, is refused before it writes;
-  // opening the editor loads the vault (swamp-club#4097).
-  // By name, then by id, as the edit itself resolves it.
+  const renderer = createVaultEditRenderer(cliCtx.outputMode);
+  const editNameOrId = vaultNameOrId;
+  const runEdit = (content: string | null, editor?: string) =>
+    runAsUserConfigEdit(() =>
+      runManagedConfigMutation(
+        repoContext,
+        syncService,
+        datastoreConfig,
+        marker,
+        "vault edit",
+        () =>
+          consumeStream(
+            vaultEdit(libCtx, deps, {
+              vaultNameOrId: editNameOrId,
+              vaultType,
+              stdinContent: content,
+              ...(editor !== undefined
+                ? { source: "editor" as const, editor }
+                : {}),
+              // A local user can already write the vault file, so a config
+              // that no longer parses may be replaced.
+              authorizeRepair: () => true,
+              // A local user owns this host, so the vault may name its own key
+              // source; over --server the server keeps it (swamp-club#2690).
+              trustKeySource: true,
+            }),
+            renderer.handlers(),
+          ),
+      )
+    );
+
+  // A vault is edited on a copy and saved like a piped edit, so the edit is
+  // committed (swamp-club#4107). Opening the editor loads the vault
+  // (swamp-club#4097); a change another member lands while it is open
+  // refuses the save.
+  if (stdinContent === null) {
+    const file = await resolveVaultEditFile(libCtx, deps, {
+      vaultNameOrId,
+      vaultType,
+    });
+    if ("error" in file) {
+      throw new UserError(file.error.message, file.error.code);
+    }
+    const name = file.config.name;
+    if (!file.broken) {
+      await startConfigEdit(repoContext, "vault", name, true);
+    }
+    const edit = await editInEditor(createEditorSessionDeps(), {
+      content: await Deno.readTextFile(file.path),
+      fileName: name,
+      onLaunching: (data) =>
+        renderer.handlers().launching({ kind: "launching", data }),
+    });
+    if (edit.status === "unchanged") {
+      renderer.handlers().completed({
+        kind: "completed",
+        data: {
+          path: file.path,
+          editor: edit.editor,
+          status: "unchanged",
+          name,
+          type: file.config.type,
+          ...(edit.keptPath ? { keptPath: edit.keptPath } : {}),
+        },
+      });
+      warnIfCopyKept(
+        edit,
+        {
+          retry: `swamp vault edit ${name}${
+            file.broken ? ` --type ${file.config.type}` : ""
+          }`,
+        },
+        cliCtx.logger,
+      );
+      return;
+    }
+    const typeFlag = file.broken ? ` --type ${file.config.type}` : "";
+    await saveEditedCopy(
+      edit,
+      {
+        retry: `swamp vault edit ${name}${typeFlag}`,
+        reload: `swamp vault get ${name}`,
+      },
+      async () => {
+        if (!file.broken) {
+          await startConfigEdit(repoContext, "vault", name, false);
+        }
+        await runEdit(edit.content, edit.editor);
+      },
+    );
+    return;
+  }
+
+  // A stale stdin edit, a rename's included, is refused before it writes
+  // (swamp-club#4097). By name, then by id, as the edit itself resolves it.
   const target = await repoContext.vaultConfigRepo.findByName(vaultNameOrId)
     .catch(() => null) ??
     (await repoContext.vaultConfigRepo.findAll().catch(() => [])).find(
       (vault) => vault.id === vaultNameOrId,
     );
   if (target) {
-    await startConfigEdit(
-      repoContext,
-      "vault",
-      target.name,
-      stdinContent === null,
-    );
+    await startConfigEdit(repoContext, "vault", target.name, false);
   }
 
-  const renderer = createVaultEditRenderer(cliCtx.outputMode);
-  await runAsUserConfigEdit(() =>
-    runManagedConfigMutation(
-      repoContext,
-      syncService,
-      datastoreConfig,
-      marker,
-      "vault edit",
-      () =>
-        consumeStream(
-          vaultEdit(libCtx, deps, {
-            vaultNameOrId,
-            vaultType,
-            stdinContent,
-            // A local user can already write the vault file, so a config that no
-            // longer parses may be replaced from stdin.
-            authorizeRepair: () => true,
-            // A local user owns this host, so the vault may name its own key
-            // source; over --server the server keeps it (swamp-club#2690).
-            trustKeySource: true,
-          }),
-          renderer.handlers(),
-        ),
-    )
-  );
+  await runEdit(stdinContent);
 
   cliCtx.logger.debug("Vault edit command completed");
 });

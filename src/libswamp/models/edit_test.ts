@@ -24,7 +24,12 @@ import {
   withCapturedSpans,
 } from "../../infrastructure/tracing/span_test_helpers.ts";
 import { createLibSwampContext } from "../context.ts";
-import { modelEdit, type ModelEditDeps, type ModelEditEvent } from "./edit.ts";
+import {
+  modelEdit,
+  type ModelEditDeps,
+  type ModelEditEvent,
+  resolveModelEditFile,
+} from "./edit.ts";
 
 function prepareEditor(editor: string) {
   return (path: string) =>
@@ -80,53 +85,55 @@ Deno.test("modelEdit: yields error when model not found", async () => {
   assertEquals(last.error.code, "not_found");
 });
 
-Deno.test("modelEdit: opens editor when model found", async () => {
-  const deps = makeDeps({
-    lookupDefinition: () =>
-      Promise.resolve({
-        definition: testDefinition,
-        type: testModelType,
-      }),
-    getDefinitionPath: () => "/repo/models/my-model/definition.yaml",
-    prepareEditor: prepareEditor("Neovim"),
-  });
-
-  const events = await collect<ModelEditEvent>(
-    modelEdit(createLibSwampContext(), deps, {
-      modelIdOrName: "my-model",
-    }),
-  );
-
-  assertEquals(events, [
-    { kind: "resolving" },
-    {
-      kind: "launching",
-      data: {
-        editor: "Neovim",
-        path: "/repo/models/my-model/definition.yaml",
-        waitsForExit: false,
-      },
-    },
-    {
-      kind: "completed",
-      data: {
-        path: "/repo/models/my-model/definition.yaml",
-        editor: "Neovim",
-        status: "opened",
-        name: "my-model",
-        type: "aws/s3-bucket",
-        editType: "definition",
-      },
-    },
-  ]);
-});
-
-Deno.test("modelEdit: announces editor launch before opening", async () => {
-  let opened = false;
+Deno.test("resolveModelEditFile: a stored definition resolves to its repository file", async () => {
   const deps = makeDeps({
     lookupDefinition: () =>
       Promise.resolve({ definition: testDefinition, type: testModelType }),
-    getDefinitionPath: () => "/repo/models/my-model/definition.yaml",
+    getDefinitionPath: () => "/repo/.swamp/config/models/aws/web.yaml",
+  });
+
+  const file = await resolveModelEditFile(createLibSwampContext(), deps, {
+    modelIdOrName: "my-model",
+  });
+
+  assertEquals(file, {
+    kind: "definition",
+    path: "/repo/.swamp/config/models/aws/web.yaml",
+    definition: testDefinition,
+    type: testModelType,
+  });
+});
+
+Deno.test("modelEdit: without content refuses to open a stored definition in place (swamp-club#4107)", async () => {
+  let prepared = false;
+  const deps = makeDeps({
+    lookupDefinition: () =>
+      Promise.resolve({ definition: testDefinition, type: testModelType }),
+    prepareEditor: (path) => {
+      prepared = true;
+      return prepareEditor("Neovim")(path);
+    },
+  });
+
+  const events = await collect<ModelEditEvent>(
+    modelEdit(createLibSwampContext(), deps, { modelIdOrName: "my-model" }),
+  );
+
+  const last = events[events.length - 1] as Extract<
+    ModelEditEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.kind, "error");
+  assertStringIncludes(last.error.message, "edit a copy");
+  assertEquals(prepared, false);
+});
+
+Deno.test("modelEdit: announces editor launch before opening a file in place", async () => {
+  let opened = false;
+  const deps = makeDeps({
+    lookupDefinition: () => Promise.reject(new Error("Broken YAML")),
+    resolveSymlink: () =>
+      Promise.resolve("/repo/models/my-model/definition.yaml"),
     prepareEditor: (path) =>
       Promise.resolve({
         editor: "VS Code",
@@ -366,70 +373,98 @@ Deno.test("modelEdit: stdin write with no typeVersion carries no warning", async
   assertEquals(completedData(events).warnings, undefined);
 });
 
-Deno.test("modelEdit: re-reads after a blocking editor closes and reports a malformed typeVersion", async () => {
-  // The definition on disk is only malformed *after* the editor has run, so
-  // the check has to read it again rather than reuse the pre-edit lookup.
-  let reads = 0;
+Deno.test("modelEdit: an editor edit with a malformed typeVersion carries the warning", async () => {
   const deps = makeDeps({
-    lookupDefinition: () => {
-      reads += 1;
-      return Promise.resolve({
-        definition: reads === 1 ? testDefinition : definitionWith("1.0"),
-        type: testModelType,
-      });
-    },
-    prepareEditor: blockingEditor("Neovim"),
+    lookupDefinition: () =>
+      Promise.resolve({ definition: testDefinition, type: testModelType }),
+    updateFromStdin: () => Promise.resolve(definitionWith("1.0")),
   });
 
   const events = await collect<ModelEditEvent>(
-    modelEdit(createLibSwampContext(), deps, { modelIdOrName: "my-model" }),
+    modelEdit(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+      stdinContent: "name: my-model\n",
+      source: "editor",
+      editor: "Neovim",
+    }),
   );
 
-  assertEquals(reads, 2, "the file must be read again after the editor exits");
   const data = completedData(events);
-  assertEquals(data.status, "opened");
-  assertEquals(data.warnings?.length, 1);
+  assertEquals(data.status, "updated");
+  assertEquals(data.editor, "Neovim");
   assertStringIncludes(data.warnings![0], "1.0");
 });
 
-Deno.test("modelEdit: does not re-read for a non-blocking editor", async () => {
-  // open() resolves before the human has typed anything, so a check here would
-  // report on the pre-edit content.
-  let reads = 0;
+Deno.test("modelEdit: an editor edit equal to the stored definition saves nothing", async () => {
+  let saved = false;
+  // Two loads of the same YAML: separate objects with equal data.
+  const load = () =>
+    ({
+      ...(testDefinition as unknown as Record<string, unknown>),
+      toData: () => ({ name: "my-model", tags: { env: "prod" } }),
+    }) as unknown as TestDefinition;
   const deps = makeDeps({
-    lookupDefinition: () => {
-      reads += 1;
-      return Promise.resolve({
-        definition: definitionWith("1.0"),
-        type: testModelType,
-      });
+    lookupDefinition: () =>
+      Promise.resolve({ definition: load(), type: testModelType }),
+    updateFromStdin: async (_definition, _type, _content, beforeSave) => {
+      const candidate = load();
+      if (beforeSave && !(await beforeSave(candidate))) return null;
+      saved = true;
+      return candidate;
     },
-    prepareEditor: prepareEditor("VS Code"),
   });
 
   const events = await collect<ModelEditEvent>(
-    modelEdit(createLibSwampContext(), deps, { modelIdOrName: "my-model" }),
+    modelEdit(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+      stdinContent: "name: my-model\n",
+      source: "editor",
+      editor: "Neovim",
+    }),
   );
 
-  assertEquals(reads, 1, "no second read when the launch did not wait");
-  assertEquals(completedData(events).warnings, undefined);
+  assertEquals(saved, false);
+  assertEquals(completedData(events).status, "unchanged");
 });
 
-Deno.test("modelEdit: a failed re-read after the editor closes is not reported", async () => {
-  // The model may have been renamed in the editor, or left mid-edit. Neither
-  // is worth a warning about typeVersion.
+Deno.test("modelEdit: invalid YAML from the editor says so", async () => {
+  const deps = makeDeps({
+    lookupDefinition: () =>
+      Promise.resolve({ definition: testDefinition, type: testModelType }),
+    updateFromStdin: () => Promise.reject(new Error("bad indentation")),
+  });
+
+  const events = await collect<ModelEditEvent>(
+    modelEdit(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+      stdinContent: "name: [x\n",
+      source: "editor",
+    }),
+  );
+
+  const last = events[events.length - 1] as Extract<
+    ModelEditEvent,
+    { kind: "error" }
+  >;
+  assertStringIncludes(last.error.message, "YAML from the editor");
+});
+
+Deno.test("modelEdit: re-reads a file opened in place after a blocking editor closes", async () => {
+  // A legacy link to a broken definition: once fixed in the editor it
+  // loads, and a malformed typeVersion is reported.
   let reads = 0;
   const deps = makeDeps({
     lookupDefinition: () => {
       reads += 1;
-      if (reads === 1) {
-        return Promise.resolve({
-          definition: testDefinition,
+      return reads === 1
+        ? Promise.reject(new Error("Broken YAML"))
+        : Promise.resolve({
+          definition: definitionWith("1.0"),
           type: testModelType,
         });
-      }
-      return Promise.reject(new Error("unparseable YAML"));
     },
+    resolveSymlink: () =>
+      Promise.resolve("/repo/models/my-model/definition.yaml"),
     prepareEditor: blockingEditor("Neovim"),
   });
 
@@ -437,7 +472,10 @@ Deno.test("modelEdit: a failed re-read after the editor closes is not reported",
     modelEdit(createLibSwampContext(), deps, { modelIdOrName: "my-model" }),
   );
 
-  assertEquals(completedData(events).warnings, undefined);
+  assertEquals(reads, 2);
+  const data = completedData(events);
+  assertEquals(data.status, "opened");
+  assertStringIncludes(data.warnings![0], "1.0");
 });
 
 type TestDefinition =

@@ -27,6 +27,7 @@ import { waitFor } from "@swamp-club/swamp-testing";
 import { withCapturedSpans } from "../infrastructure/tracing/span_test_helpers.ts";
 import { z } from "zod";
 import {
+  AffinityPlacementMismatchError,
   BUILTIN_BUNDLE_PREFIX,
   type DispatchGateway,
   DispatchService,
@@ -1974,6 +1975,163 @@ Deno.test("executeRemote: an unbound first affinity step queues when the only wo
     "Timed out waiting for a worker",
   );
   assertEquals(h.dispatchCalls.length, 0);
+});
+
+/** Two workers that differ only by slot; a first step with slot=b pins w2. */
+function slotPool(): WorkerSnapshot[] {
+  return [
+    snapshot({ name: "w1", labels: { pool: "worker", slot: "a" } }),
+    snapshot({ name: "w2", labels: { pool: "worker", slot: "b" } }),
+  ];
+}
+
+async function pinToW2(
+  h: ReturnType<typeof createHarness>,
+  affinityKey: string,
+): Promise<void> {
+  const first = await h.service.executeRemote(stepRequest({
+    placement: { labels: { pool: "worker", slot: "b" }, affinityKey },
+    stepName: "pin",
+  }));
+  assertEquals(first.workerName, "w2");
+}
+
+Deno.test("executeRemote: a pinned step fails when the pinned worker lacks one of its labels (swamp-club#4122)", async () => {
+  const h = createHarness({ workers: slotPool() });
+  const affinityKey = "run-10:job-labels";
+  await pinToW2(h, affinityKey);
+
+  const error = await assertRejects(
+    () =>
+      h.service.executeRemote(stepRequest({
+        placement: { labels: { pool: "worker", slot: "a" }, affinityKey },
+        stepName: "bad",
+      })),
+    AffinityPlacementMismatchError,
+  );
+  assertStringIncludes(error.message, "'w2'");
+  assertStringIncludes(error.message, affinityKey);
+  assertStringIncludes(error.message, "label slot=a");
+  assertEquals(h.dispatchCalls.length, 1);
+});
+
+Deno.test("executeRemote: a pinned step fails when the pinned worker is not its platform (swamp-club#4122)", async () => {
+  const h = createHarness({ workers: slotPool() });
+  const affinityKey = "run-11:job-platform";
+  await pinToW2(h, affinityKey);
+
+  await assertRejects(
+    () =>
+      h.service.executeRemote(stepRequest({
+        placement: { platform: "windows", affinityKey },
+        stepName: "bad",
+      })),
+    AffinityPlacementMismatchError,
+    "platform 'windows'",
+  );
+  assertEquals(h.dispatchCalls.length, 1);
+});
+
+Deno.test("executeRemote: a pinned step fails when its own target names another worker (swamp-club#4122)", async () => {
+  const h = createHarness({ workers: slotPool() });
+  const affinityKey = "run-12:job-target";
+  await pinToW2(h, affinityKey);
+
+  await assertRejects(
+    () =>
+      h.service.executeRemote(stepRequest({
+        placement: { target: "w1", affinityKey },
+        stepName: "bad",
+      })),
+    AffinityPlacementMismatchError,
+    "target 'w1'",
+  );
+  assertEquals(h.dispatchCalls.length, 1);
+});
+
+Deno.test("executeRemote: a pinned step runs when the pinned worker meets its placement (swamp-club#4122)", async () => {
+  const h = createHarness({ workers: slotPool() });
+  const affinityKey = "run-13:job-match";
+  await pinToW2(h, affinityKey);
+
+  for (
+    const placement of [
+      { labels: { pool: "worker" } },
+      { target: "w2" },
+      { target: "uuid-w2" },
+      // A target stands in for labels it also inherits, as in scheduling.
+      { target: "w2", labels: { pool: "build" } },
+      { platform: "linux/x86_64" },
+    ]
+  ) {
+    const result = await h.service.executeRemote(stepRequest({
+      placement: { ...placement, affinityKey },
+    }));
+    assertEquals(result.workerName, "w2");
+  }
+});
+
+Deno.test("executeRemote: a step waiting on its group's first dispatch fails when that pins a worker it does not match, and the pin holds (swamp-club#4122)", async () => {
+  const h = createHarness({ workers: slotPool() });
+  const affinityKey = "run-14:job-race";
+  const release = Promise.withResolvers<void>();
+  h.setBehavior(async () => {
+    await release.promise;
+    return OK_RESULT;
+  });
+
+  // `good` dispatches first and pins w2; `bad` waits on the pin.
+  const good = h.service.executeRemote(stepRequest({
+    placement: { labels: { pool: "worker", slot: "b" }, affinityKey },
+    stepName: "good",
+  }));
+  await waitFor(() => h.dispatchCalls.length === 1, "good to dispatch");
+  const bad = h.service.executeRemote(stepRequest({
+    placement: { labels: { pool: "worker", slot: "a" }, affinityKey },
+    stepName: "bad",
+  }));
+  release.resolve();
+
+  assertEquals((await good).workerName, "w2");
+  await assertRejects(() => bad, AffinityPlacementMismatchError, "slot=a");
+  assertEquals(h.dispatchCalls.length, 1);
+
+  const later = await h.service.executeRemote(stepRequest({
+    placement: { labels: { pool: "worker" }, affinityKey },
+    stepName: "later",
+  }));
+  assertEquals(later.workerName, "w2");
+});
+
+Deno.test("executeRemote: a queued pinned step fails when its worker re-enrolls with labels it does not match (swamp-club#4122)", async () => {
+  const h = createHarness({ workers: slotPool(), queueTimeoutMs: 60_000 });
+  const affinityKey = "run-15:job-reenroll";
+  await pinToW2(h, affinityKey);
+  h.pool.set("w2", {
+    ...h.pool.get("w2")!,
+    status: "busy",
+    activeDispatchIds: ["other"],
+  });
+
+  let queued = false;
+  const step = h.service.executeRemote(stepRequest({
+    placement: { labels: { pool: "worker", slot: "b" }, affinityKey },
+    stepName: "step-2",
+    onEvent: (event) => {
+      if (event.kind === "queued") queued = true;
+    },
+  }));
+  await waitFor(() => queued, "step-2 queued behind its busy pinned worker");
+
+  const reenrolled = snapshot({
+    name: "w2",
+    labels: { pool: "worker", slot: "c" },
+  });
+  h.pool.set("w2", reenrolled);
+  h.service.notifyWorkerIdle(reenrolled);
+
+  await assertRejects(() => step, AffinityPlacementMismatchError, "slot=b");
+  assertEquals(h.dispatchCalls.length, 1);
 });
 
 Deno.test("DispatchService: a worker that leaves the pool between scheduling and dispatch re-queues the step (swamp-club#3156)", async () => {

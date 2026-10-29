@@ -34,6 +34,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { configEditConflictOf } from "../src/domain/datastore_v3/config_edit_conflict.ts";
 import { closeV3Datastores } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { useEditorSessionDepsForTesting } from "../src/libswamp/editor_session.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import {
@@ -424,11 +425,21 @@ async function editorModeOpens(kind: Kind): Promise<void> {
       kind,
       "deploy",
     );
-    // No stdin: the editor opens on B's caught-up file, A's version. The
-    // editor here exits at once, as a user who closes it unchanged.
+    // No stdin: the editor opens on a copy of B's caught-up file, A's
+    // version. The editor here closes at once, as a user who closes it
+    // unchanged.
+    const restore = useEditorSessionDepsForTesting({
+      prepareEditor: (path) =>
+        Promise.resolve({
+          editor: "Fake",
+          waitsForExit: true,
+          waitConfirmed: true,
+          open: () => Promise.resolve({ editor: "Fake", path, success: true }),
+        }),
+    });
     try {
       await withMockedEnv(
-        { ...UNSET_ENV, EDITOR: "true" },
+        UNSET_ENV,
         () =>
           withStdin(
             null,
@@ -439,6 +450,7 @@ async function editorModeOpens(kind: Kind): Promise<void> {
           ),
       );
     } finally {
+      restore();
       await closeV3Datastores();
     }
     // The edit succeeded and left A's version as it was.
