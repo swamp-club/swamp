@@ -88,6 +88,8 @@ const PINNED_STDOUT_WRITERS: readonly string[] = [
   "src/cli/commands/dashboard.ts",
   "src/presentation/renderers/components/search_picker.tsx",
   "src/presentation/renderers/data_query_tui.tsx",
+  // The inbox enters and leaves the alternate screen around its TUI.
+  "src/presentation/renderers/inbox_tui.tsx",
   "src/presentation/renderers/vault_read_secret.ts",
 
   // Group 2 — interaction still on stdout (swamp-club#2259).

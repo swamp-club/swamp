@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { cyan, yellow } from "@std/fmt/colors";
+import { cyan, dim, yellow } from "@std/fmt/colors";
 import { maxOf } from "../../domain/array_extrema.ts";
 import type {
   InboxListEvent,
@@ -59,14 +59,20 @@ function listLines(view: InboxListView): string[] {
   }
 
   const kindWidth = maxOf(view.messages.map((m) => m.kind.length)) ?? 0;
+  const titleWidth = maxOf(view.messages.map((m) => m.title.length)) ?? 0;
+  // The id comes last, so `swamp inbox read <id>` can take it from any row.
   const lines = view.messages.map((m) => {
     const marker = m.readAt === null ? cyan(UNREAD_MARKER) : " ";
     return `${marker}  ${localDate(m.createdAt)}  ${
       m.kind.padEnd(kindWidth)
-    }  ${m.title}`;
+    }  ${m.title.padEnd(titleWidth)}  ${dim(m.id)}`;
   });
   const unread = view.messages.filter((m) => m.readAt === null).length;
-  lines.push("", `${unread} unread of ${view.messages.length} shown.`);
+  lines.push(
+    "",
+    `${unread} unread of ${view.messages.length} shown.`,
+    `${yellow("To read one:")}  swamp inbox read <id>`,
+  );
   return lines;
 }
 

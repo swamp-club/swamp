@@ -38,6 +38,11 @@ export interface HelpBarProps {
   hasPreview: boolean;
   /** Optional domain-specific action keys. */
   actions?: ActionDef[];
+  /**
+   * The whole set of hints, in place of the navigate, scroll, action, select
+   * and cancel hints, for a component whose keys are not a picker's.
+   */
+  keys?: string[];
 }
 
 /**
@@ -45,7 +50,10 @@ export interface HelpBarProps {
  * action keys, and select/cancel hints. Reusable for any interactive Ink component.
  */
 export function HelpBar(props: HelpBarProps): React.ReactElement {
-  const { hasPreview, actions } = props;
+  const { hasPreview, actions, keys } = props;
+  if (keys !== undefined) {
+    return <Text dimColor wrap="truncate-end">{keys.join("  ")}</Text>;
+  }
 
   const parts: string[] = [
     "\u2191/\u2193 navigate",

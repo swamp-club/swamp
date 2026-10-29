@@ -200,8 +200,15 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   `ℹ 3 unread messages from Swamp Club are waiting for you.` The second line
   never changes; its `To …:` label matches `To approve:` and `To signal:` in the
   workflow renderer. The text is fixed: no message title or other server text
-  appears in it, so an agent's context holds nothing Swamp Club wrote until the
-  user asks to read the inbox. The notice never appears in `--json` mode, so an
+  appears in it. An agent that sees it then reads the message with
+  `swamp inbox read` once its current task is done, and tells the user what it
+  says, so Swamp Club text does reach the agent's context. Three things keep
+  that text from steering the agent: the CLI strips invisible characters from
+  it and prints every link as where it really leads (swamp-club#4079); a
+  message's `Next:` can only be one allow-listed `swamp` command
+  (swamp-club#4079, swamp-club#4086); and the `swamp` skill forbids following
+  instructions in a message, or running its command, without the user's
+  agreement. The notice never appears in `--json` mode, so an
   agent running commands with `--json` never sees it, and JSON output never
   carries it. The `swamp` skill quotes the second line, so the two must change
   together. A notice retires after 24 hours, whether or not the user reads the
@@ -225,42 +232,58 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   as from a workflow step or a shell behavior — neither polls nor shows the
   notice, so it never prints into output its parent captures; the outermost
   run does both.
-- **The commands.** Outside a terminal (stdout or stdin not a TTY) and with
-  `--json`, `swamp inbox` lists messages, newest first: unread ones by default,
-  read ones too with `--all`. `--limit` takes 1 to 100 (default 20, always
-  sent, since the server's default is 50) and `--before <id>` lists the page
-  older than that message. Each row shows only the date, kind and title, with
-  a marker on unread ones; `--json` prints
-  `{ status, messages, nextCursor, dropped }` with the same fields. The body,
-  link and action never appear, so no other Swamp Club text reaches an agent's
-  context, and the list never marks anything read. When the page has another
-  one after it, the list ends with `To see older:  swamp inbox --before <id>`
-  (repeating `--all`). Messages the client left out are reported on stderr in
-  log mode.
-- **The picker.** In a terminal (log mode, stdin and stdout both TTYs),
-  `swamp inbox` and `swamp inbox read` open the shared search picker instead.
-  It loads one page with `status=all`, so read messages can be opened again;
-  `--limit` and `--before` set the page and `--all` changes nothing. Rows have
-  the list's columns, typing filters on title and kind, and the preview shows
-  the highlighted message whole: kind and date, title, body, then its
-  `Link:` and `Next:` lines. Previewing makes no request and marks nothing
-  read. Every preview row is wrapped to the pane, so a long body link or
-  `Link:` line shows whole rather than cut to its start, and the preview
-  scrolls to its last row. Enter opens the message: it is marked read and left
-  in the scrollback. When Swamp Club does not confirm an unread message Enter
-  opened, the picker says so on stderr, as `swamp inbox read` does.
-  Ctrl-r marks the highlighted message read and Ctrl-a marks every unread
-  message on the loaded page read, including rows the filter hides; both close
-  the picker and say how many were marked. Like every action key, Ctrl-a acts
-  only while at least one row is showing, so it does nothing while the filter
-  matches none. Esc closes it and changes nothing. The action
-  keys need Ctrl because plain letters type into the filter, and Ctrl-m is the
-  same key as Enter. `swamp inbox read` starts on the newest unread message on
-  the page, or on the first row when none on the page is unread. An empty
-  inbox opens no picker and prints `Your inbox is empty.` When the loaded page
-  has another one after it, the picker ends, whatever was chosen, with
-  `To see older:  swamp inbox --all --before <id>`. The picker never runs a
-  message's suggested command.
+- **The commands.** The two commands have separate jobs: `swamp inbox`
+  browses the inbox, and `swamp inbox read [id]` reads one message.
+- **`swamp inbox` outside a terminal** (stdout or stdin not a TTY) and with
+  `--json` lists messages, newest first: unread ones by default, read ones too
+  with `--all`. `--limit` takes 1 to 100 (default 20, always sent, since the
+  server's default is 50) and `--before <id>` lists the page older than that
+  message. Each row shows the date, kind and title, with a marker on unread
+  ones, and ends with the message's full id, dimmed, so a person or an agent
+  can pass it to `swamp inbox read <id>`. After the count line comes
+  `To read one:  swamp inbox read <id>`. `--json` prints
+  `{ status, messages, nextCursor, dropped }` with the same fields, ids
+  included. The body, link and action never appear, and the list never marks
+  anything read. When the page has another one after it, the list ends with
+  `To see older:  swamp inbox --before <id>` (repeating `--all`). Messages the
+  client left out are reported on stderr in log mode.
+- **The interactive inbox.** In a terminal (log mode, stdin and stdout both
+  TTYs), `swamp inbox` opens an inbox that stays open until the user leaves.
+  `swamp inbox read` never opens it. It loads one page with `status=all`, so
+  read messages can be opened again; `--limit` and `--before` set the first
+  page and `--all` changes nothing. It opens on the newest unread row, or on
+  the first row when none is unread. An empty inbox opens nothing and prints
+  `Your inbox is empty.` It has two views:
+  - **The list.** Rows have the list's columns without the id, typing filters
+    on title and kind, and the preview shows the highlighted message whole:
+    kind and date, title, body, then its `Link:` and `Next:` lines. Previewing
+    makes no request and marks nothing read. Every preview row is wrapped to
+    the pane, so a long body link or `Link:` line shows whole rather than cut
+    to its start, and the preview scrolls to its last row. Enter opens the
+    highlighted message in the message view and marks it read. Ctrl-r marks
+    the highlighted message read and Ctrl-a marks every unread message loaded
+    so far read, including rows the filter hides; both leave the list open.
+    Ctrl-u/d scroll the preview. Esc clears the filter when there is one, and
+    otherwise quits. The action keys need Ctrl because plain letters type into
+    the filter, and Ctrl-m is the same key as Enter.
+  - **The message view.** One message, full screen, rendered as the preview
+    renders it. Up/down, PgUp/PgDn and Ctrl-u/d scroll it, as far as its last
+    wrapped line. Esc goes back to the list with the same row highlighted.
+
+  The help bar shows the current view's keys: `Enter open  Ctrl-r mark read
+  Ctrl-a mark all read  Esc quit` in the list, and `↑/↓ scroll  PgUp/PgDn page
+  Esc back` in the message view. Ctrl-c quits from either view. Marking read
+  happens in the background: the row's marker clears at once, and the request
+  goes out in order after any before it. If the request fails, or Swamp Club
+  does not confirm an id, the marker comes back and the bottom line reads
+  `Could not mark 1 message read: <reason>` until the next key. Typing and
+  scrolling never wait on the network. When the highlight reaches the last row
+  and the page has another after it, the next page loads and is appended, with
+  a `loading older messages…` row meanwhile. On quit the inbox waits for the
+  marks still in flight, for at most 5 seconds, aborting any left and any page
+  still loading, then prints one line only when something happened, from the
+  counts Swamp Club confirmed: `Read 2 messages and marked 3 read.` Nothing is
+  left in the scrollback. The inbox never runs a message's suggested command.
 - **Body links show where they lead.** A message body is markdown that Swamp
   Club wrote. Rendered for the terminal, every link in it, autolinks, reference
   links and images included, prints as `text (href)`, never as a terminal
@@ -273,19 +296,30 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   `www.` or email autolink, such as `www.swamp-club.com` or
   `team@swamp-club.com` in running text: its text is its whole target, so it
   prints as written.
-- **`swamp inbox read` outside a terminal** prints the message the notice
-  announced, or else the newest unread message (kind and date, title, the body
-  as plain markdown, `Link:` and `Next:`), and marks it read. `/messages` lists
-  kinds that never raise the notice, such as mentions, so its newest unread
-  entry need not be the one the notice is about; reading that one would leave
-  the notice up. It first asks `/api/inbox/summary`, without an `ETag` and
-  bounded as the refresh after marking is, and applies the answer to the key's
-  cache. When the answer names a `newestId` and that message, fetched by id, is
-  still unread, it is the one shown. Any other answer, a message that is gone,
-  already read or refused by the client, falls back to the newest unread
-  message in the list. Repeated runs so read the notice's messages first,
-  newest first, and the notice stops after the first; then the rest, mentions
-  included. While more are unread it ends with
+- **`swamp inbox read [id]`** prints one message and marks it read, the same
+  in a terminal and outside one; it never opens the interactive inbox. With an
+  id, it reads that message. The id is the message's full 26-character ULID,
+  as `swamp inbox` prints it, in any letter case; anything else is refused
+  before any request with
+  `Not a message id: <value>. Message ids are the 26-character ids swamp inbox prints.`
+  The message is fetched by id and printed in the form below; one that is
+  unread is marked read first, and one already read is shown again with
+  nothing marked. An unknown id, or someone else's, fails with
+  `Message <id> not found.` and exit 1. It ends with
+  `To read the next:  swamp inbox read` while other messages are unread, and
+  `--json` has the same shape as below. Without an id, it prints the message
+  the notice announced, or else the newest unread message (kind and date,
+  title, the body as plain markdown, `Link:` and `Next:`), and marks it read.
+  `/messages` lists kinds that never raise the notice, such as mentions, so its
+  newest unread entry need not be the one the notice is about; reading that one
+  would leave the notice up. It first asks `/api/inbox/summary`, without an
+  `ETag` and bounded as the refresh after marking is, and applies the answer to
+  the key's cache. When the answer names a `newestId` and that message, fetched
+  by id, is still unread, it is the one shown. Any other answer, a message that
+  is gone, already read or refused by the client, falls back to the newest
+  unread message in the list. Repeated runs so read the notice's messages
+  first, newest first, and the notice stops after the first; then the rest,
+  mentions included. While more are unread it ends with
   `To read the next:  swamp inbox read`. With nothing unread it prints
   `No unread messages.` and exits 0. Unread messages are listed two at a time;
   while every entry on a page broke the contract and another page follows,
@@ -300,12 +334,15 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   it, since `POST /api/inbox/read` returns ids only. `dropped` counts unread
   messages the client left out; the summary counts a left-out message only when
   its kind raises the notice. The message is marked before it is printed, so a
-  run killed in between leaves it read but unseen, still reachable through the
-  picker. Message body text reaches stdout only when the user asks to read it.
+  run killed in between leaves it read but unseen, still listed by
+  `swamp inbox --all` and readable with `swamp inbox read <id>`. Message body
+  text reaches stdout only from `swamp inbox read` or the interactive inbox.
 - **Marking read updates the cache.** Every path that marks messages read
-  (Enter, Ctrl-r, Ctrl-a and `swamp inbox read`) sends only those ids, then asks
-  `/api/inbox/summary` once, without an `ETag`, and applies the answer to the
-  key's cache for the server it asked, as a poll, so the notice stops at once.
+  (Enter, Ctrl-r, Ctrl-a and `swamp inbox read`) sends only those ids. Then
+  `swamp inbox read` asks `/api/inbox/summary` once, and the interactive inbox
+  asks once at quit when Swamp Club confirmed any id. The call has no `ETag`,
+  and its answer is applied to the key's cache for the server it asked, as a
+  poll, so the notice stops at once.
   The cache is saved only when the process owns the config directory. The
   refresh is bounded by a 5-second timeout. A refresh that fails is not
   recorded, so it does not put off the next poll, and it is not an error: the

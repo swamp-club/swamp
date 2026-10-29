@@ -29,22 +29,22 @@ import {
   createInboxListDeps,
   DEFAULT_INBOX_LIST_LIMIT,
   inboxBrowse,
+  type InboxBrowseView,
   inboxList,
   type InboxListInput,
   MAX_INBOX_LIST_LIMIT,
 } from "../../libswamp/inbox/list.ts";
 import {
+  createInboxMarkSession,
   createInboxReadDeps,
+  inboxReadById,
   inboxReadNext,
-  markRead,
 } from "../../libswamp/inbox/read.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
+import { userErrorFromSwampError } from "../../libswamp/errors.ts";
 import { createInboxListRenderer } from "../../presentation/renderers/inbox_list.ts";
-import { createInboxPickerRenderer } from "../../presentation/renderers/inbox_picker.tsx";
-import {
-  createInboxReadRenderer,
-  createMarkReadRenderer,
-} from "../../presentation/renderers/inbox_read.ts";
+import { createInboxTuiRenderer } from "../../presentation/renderers/inbox_tui.tsx";
+import { createInboxReadRenderer } from "../../presentation/renderers/inbox_read.ts";
 import type { OutputMode } from "../../presentation/output/output.ts";
 import { loadIdentity } from "../load_identity.ts";
 
@@ -52,10 +52,11 @@ import { loadIdentity } from "../load_identity.ts";
 type AnyOptions = any;
 
 /**
- * Whether the inbox opens its interactive picker: only in log mode with both
- * stdin and stdout on a terminal. `interactiveOutputMode` does not fit here:
- * it checks stdin alone and falls back to JSON, while piped `swamp inbox`
- * must keep printing its plain list.
+ * Whether `swamp inbox` opens the interactive inbox: only in log mode with
+ * both stdin and stdout on a terminal. `interactiveOutputMode` does not fit
+ * here: it checks stdin alone and falls back to JSON, while piped
+ * `swamp inbox` must keep printing its plain list. `swamp inbox read` never
+ * opens it.
  */
 export function inboxPickerApplies(
   outputMode: OutputMode,
@@ -66,78 +67,85 @@ export function inboxPickerApplies(
 }
 
 /**
- * Opens the picker over one page of messages, then marks read what the user
- * chose. Esc changes nothing.
+ * Opens the inbox over the first page of messages. It marks read in the
+ * background while open, loads older pages as the user reaches them, and
+ * once closed prints what was read and marked.
  */
-async function runInboxPicker(
+async function runInbox(
   logger: ReturnType<typeof createContext>["logger"],
   input: InboxListInput,
-  highlightNewestUnread: boolean,
 ): Promise<void> {
   const ctx = createLibSwampContext({ logger });
   const identity = await loadIdentity();
   const serverUrlOverride = Deno.env.get("SWAMP_CLUB_URL");
+  const listDeps = createInboxListDeps({ serverUrlOverride, identity });
 
-  const picker = createInboxPickerRenderer({ highlightNewestUnread });
-  await consumeStream(
-    inboxBrowse(
-      ctx,
-      createInboxListDeps({ serverUrlOverride, identity }),
-      input,
-    ),
-    picker.handlers(),
-  );
-
-  const selection = picker.selection();
-  if (selection.kind !== "cancelled") {
-    // Enter on an unread message marks it; one already read marks nothing,
-    // so there is nothing for Swamp Club to confirm.
-    const openedId = selection.kind === "open" ? selection.ids[0] : undefined;
+  const loadOlder = async (
+    cursor: string,
+    signal: AbortSignal,
+  ): Promise<InboxBrowseView> => {
+    let page: InboxBrowseView | undefined;
     await consumeStream(
-      markRead(
+      inboxBrowse(ctx.withSignal(signal), listDeps, {
+        ...input,
+        before: cursor,
+      }),
+      {
+        loading_credentials: () => {},
+        contacting_server: () => {},
+        completed: ({ view }) => {
+          page = view;
+        },
+        error: (e) => {
+          throw userErrorFromSwampError(e.error);
+        },
+      },
+    );
+    if (page === undefined) throw new Error("No page was loaded.");
+    return page;
+  };
+
+  await consumeStream(
+    inboxBrowse(ctx, listDeps, input),
+    createInboxTuiRenderer({
+      markSession: createInboxMarkSession(
         ctx,
         createInboxReadDeps({ serverUrlOverride, identity }),
-        selection.ids,
       ),
-      createMarkReadRenderer({
-        announce: selection.kind !== "open",
-        ...(openedId !== undefined ? { openedId } : {}),
-      }).handlers(),
-    );
-  }
-  picker.printOlderPageLine();
+      loadOlder,
+    }).handlers(),
+  );
 }
 
 const inboxReadCommand = new Command()
   .name("read")
   .description(
-    "Read your Swamp Club inbox. In a terminal, opens the inbox picker with " +
-      "the newest unread message highlighted. Otherwise prints the message " +
-      "the notice announced, or else the newest unread message, and marks " +
-      "it read.",
+    "Print one message and mark it read: the message with that id, or else " +
+      "the next one to read. Never interactive.",
   )
-  .example("Read the newest unread message", "swamp inbox read")
+  .arguments("[id:string]")
+  .example("Read the next message", "swamp inbox read")
+  .example(
+    "Read one message by its id",
+    "swamp inbox read 01JBX5Q8ZK0000000000000104",
+  )
   .example("Read it as JSON", "swamp inbox read --json")
-  .action(async function (options: AnyOptions) {
+  .action(async function (options: AnyOptions, id?: string) {
     const cliCtx = createContext(options as GlobalOptions, ["inbox", "read"]);
     cliCtx.logger.debug("Executing inbox read command");
 
-    if (inboxPickerApplies(cliCtx.outputMode, isStdinTty(), isStdoutTty())) {
-      await runInboxPicker(cliCtx.logger, {}, true);
-    } else {
-      const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const identity = await loadIdentity();
-      await consumeStream(
-        inboxReadNext(
-          ctx,
-          createInboxReadDeps({
-            serverUrlOverride: Deno.env.get("SWAMP_CLUB_URL"),
-            identity,
-          }),
-        ),
-        createInboxReadRenderer(cliCtx.outputMode).handlers(),
-      );
-    }
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const identity = await loadIdentity();
+    const deps = createInboxReadDeps({
+      serverUrlOverride: Deno.env.get("SWAMP_CLUB_URL"),
+      identity,
+    });
+    await consumeStream(
+      id === undefined
+        ? inboxReadNext(ctx, deps)
+        : inboxReadById(ctx, deps, id),
+      createInboxReadRenderer(cliCtx.outputMode).handlers(),
+    );
 
     cliCtx.logger.debug("Inbox read command completed");
   });
@@ -146,14 +154,12 @@ const inboxReadCommand = new Command()
 export const inboxCommand = new Command()
   .name("inbox")
   .description(
-    "Your Swamp Club inbox, newest first. In a terminal, opens a picker to " +
-      "browse, preview and open messages; opening one marks it read. " +
-      "Otherwise lists unread messages (all with --all) by date, kind and " +
-      "title, and marks nothing read.",
+    "Browse your Swamp Club inbox: an interactive inbox in a terminal; " +
+      "otherwise a list of messages with their ids. Marks nothing read.",
   )
   .option(
     "--all",
-    "Include messages you have already read; the terminal picker always includes them",
+    "Include messages you have already read; the interactive inbox always includes them",
   )
   .option(
     "--limit <n:integer>",
@@ -180,7 +186,7 @@ export const inboxCommand = new Command()
     };
 
     if (inboxPickerApplies(cliCtx.outputMode, isStdinTty(), isStdoutTty())) {
-      await runInboxPicker(cliCtx.logger, input, false);
+      await runInbox(cliCtx.logger, input);
     } else {
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
       const identity = await loadIdentity();

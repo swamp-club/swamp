@@ -318,5 +318,10 @@
     "query": "I have a new Swamp Club message, how do I read it?",
     "should_trigger": true,
     "note": "inbox — reading a Swamp Club message"
+  },
+  {
+    "query": "swamp said a new message from Swamp Club is waiting, what does it say?",
+    "should_trigger": true,
+    "note": "inbox — agent reads the announced message"
   }
 ]
