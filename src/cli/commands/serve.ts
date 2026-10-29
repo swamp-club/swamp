@@ -7072,7 +7072,11 @@ export const serveCommand = new Command()
           leaderLink !== undefined && isFollowing() &&
           leaderLink.address() !== undefined && isDataPlaneRequest(req)
         ) {
-          return await leaderLink.forward(req, { clientIp: clientAddress() });
+          // Not authenticated here: a refusal names no leader.
+          return await leaderLink.forward(req, {
+            clientIp: clientAddress(),
+            nameLeader: false,
+          });
         }
         const dataPlaneResponse = await dataPlane.handle(req, clientAddress());
         if (dataPlaneResponse) return dataPlaneResponse;

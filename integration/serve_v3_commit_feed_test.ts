@@ -225,6 +225,37 @@ Deno.test({
 });
 
 Deno.test({
+  name: "commit feed: one connection holds a bounded number of subscriptions",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      await withFeedSocket(server, async (wsUrl) => {
+        const first = await subscribe(wsUrl, "alice-token", 0);
+        try {
+          for (let i = 1; i <= 4; i++) {
+            first.socket.send(JSON.stringify({
+              type: "commits.subscribe",
+              id: `feed-${i}`,
+              payload: { cursor: 0 },
+            }));
+          }
+          await waitFor(
+            () => first.frames.some((frame) => frame.id === "feed-4"),
+            "the fifth subscription's reply",
+          );
+          const fifth = first.frames.find((frame) => frame.id === "feed-4");
+          assertEquals(fifth?.type, "error");
+          assertEquals(fifth?.error?.code, "subscription_limit");
+        } finally {
+          first.socket.close();
+        }
+      });
+    });
+  },
+});
+
+Deno.test({
   name:
     "commit feed: a team peer reads the whole feed, and is refused any other request",
   sanitizeOps: false,

@@ -150,7 +150,7 @@ export function isRpcFrame(raw: string): boolean {
 
 interface Upstream {
   readonly socket: WebSocket;
-  readonly queue: string[];
+  readonly queue: (string | ArrayBuffer | Blob)[];
   open: boolean;
 }
 
@@ -233,9 +233,9 @@ export class FollowerForwarder {
    * that id: a run executes on the leader, never on a follower.
    */
   cancel(raw: string): void {
-    if (this.#upstream === undefined && this.#link.address() === undefined) {
-      return;
-    }
+    // Opened for it when this connection forwarded nothing yet: a client
+    // that reconnected cancels a run it started on another connection.
+    if (this.#connect() === undefined) return;
     this.#send(raw);
   }
 
@@ -259,10 +259,6 @@ export class FollowerForwarder {
   relayFrame(data: string | ArrayBuffer | Blob): void {
     const upstream = this.#upstream;
     if (upstream === undefined) return;
-    if (typeof data !== "string") {
-      if (upstream.open) upstream.socket.send(data);
-      return;
-    }
     this.#send(data);
   }
 
@@ -310,7 +306,7 @@ export class FollowerForwarder {
     return upstream;
   }
 
-  #send(raw: string, entry?: Forwarded): void {
+  #send(raw: string | ArrayBuffer | Blob, entry?: Forwarded): void {
     const upstream = this.#upstream;
     if (upstream === undefined) return;
     if (upstream.open && upstream.socket.readyState === WebSocket.OPEN) {

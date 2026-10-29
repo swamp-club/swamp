@@ -54,6 +54,11 @@ export const COMMIT_FEED_PAGE = 500;
 /** How much a subscriber's socket may hold unsent before it is ended. */
 export const COMMIT_FEED_MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 
+/** The most commit feed subscriptions one connection may hold. */
+export const MAX_COMMIT_FEED_SUBSCRIPTIONS = 4;
+
+const subscriptions = new WeakMap<WebSocket, number>();
+
 /** `commits.head`. */
 export function handleCommitsHead(
   socket: WebSocket,
@@ -87,6 +92,17 @@ export async function handleCommitsSubscribe(
     sendFeedUnavailable(socket, requestId);
     return;
   }
+  const held = subscriptions.get(socket) ?? 0;
+  if (held >= MAX_COMMIT_FEED_SUBSCRIPTIONS) {
+    sendError(
+      socket,
+      requestId,
+      "subscription_limit",
+      `Maximum ${MAX_COMMIT_FEED_SUBSCRIPTIONS} commit feed subscriptions per connection`,
+    );
+    return;
+  }
+  subscriptions.set(socket, held + 1);
   const access = isPeerSocket(socket)
     ? "unrestricted" as const
     : accessCallerOf(socket, principal);
@@ -173,6 +189,7 @@ export async function handleCommitsSubscribe(
     }
   } finally {
     off();
+    subscriptions.set(socket, (subscriptions.get(socket) ?? 1) - 1);
   }
 }
 

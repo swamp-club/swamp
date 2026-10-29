@@ -216,6 +216,29 @@ Deno.test({
 
 Deno.test({
   name:
+    "team ws forwarding: a cancel on a connection that forwarded nothing yet still reaches the leader",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withLeader(() => {}, async (address, sockets) => {
+      await withFollower(address, async (connect) => {
+        const client = await connect();
+        client.send(JSON.stringify({ type: "cancel", id: "run-elsewhere" }));
+        await waitFor(
+          () => sockets[0]?.received.length === 1,
+          "the cancel at the leader",
+        );
+        assertEquals(JSON.parse(sockets[0].received[0]), {
+          type: "cancel",
+          id: "run-elsewhere",
+        });
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
     "team ws forwarding: a leader that drops with a request in flight gives the in-flight refusal, and nothing is sent again",
   sanitizeOps: false,
   sanitizeResources: false,

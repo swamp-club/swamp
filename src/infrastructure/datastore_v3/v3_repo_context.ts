@@ -807,7 +807,6 @@ const feedWatches: ServeFeedWatch[] = [];
  * version another machine wrote before it; {@link holdV3Writer}'s catch-up
  * ran before the lock was taken.
  */
-
 export async function catchUpV3HandlesAt(datastorePath: string): Promise<void> {
   const path = resolve(datastorePath);
   for (const handle of [...opened.values()]) {

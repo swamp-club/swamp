@@ -136,6 +136,8 @@ export class ServeLeadership {
   #refreshedAt: number | undefined;
   #recordedFence: number | undefined;
   #recordedProof: string | undefined;
+  /** The highest fence of a leader record this node trusted. */
+  #trustedFence: number | undefined;
   #timer: ReturnType<typeof setInterval> | undefined;
   #ticking: Promise<void> | undefined;
   /**
@@ -381,14 +383,22 @@ export class ServeLeadership {
     try {
       const data = await this.#deps.store.get(SERVE_LEADER_KEY);
       let leader = data === null ? undefined : parseServeLeader(data);
+      // A signed record of a leader older than one this node already
+      // trusted is a replay: its address is not forwarded to either.
+      const replayed = leader !== undefined &&
+        this.#trustedFence !== undefined && leader.fence < this.#trustedFence;
       if (
         leader?.address !== undefined && this.#deps.trust !== undefined &&
-        !(await this.#deps.trust(leader))
+        (replayed || !(await this.#deps.trust(leader)))
       ) {
         logger
           .warn`The serve leader record names ${leader.address} without the team's proof; nothing is forwarded to it`;
         const { address: _address, ...unproven } = leader;
         leader = unproven;
+      } else if (
+        leader?.address !== undefined && this.#deps.trust !== undefined
+      ) {
+        this.#trustedFence = Math.max(this.#trustedFence ?? 0, leader.fence);
       }
       // A record this node left from when it led names no leader now.
       this.#leader = leader?.instanceId === this.#deps.instanceId

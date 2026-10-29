@@ -494,3 +494,28 @@ Deno.test("ServeLeadership: a leader signs its record again once its proof chang
     await leadership.stop();
   }
 });
+
+Deno.test("ServeLeadership: a signed record of an older leader than one already trusted is a replay, and names no address", async () => {
+  const { store, leadership } = setup({
+    trust: () => Promise.resolve(true),
+  });
+  const record = (fence: number, address: string) =>
+    serializeServeLeader({
+      instanceId: `leader-${fence}`,
+      fence,
+      address,
+      since: new Date().toISOString(),
+      proof: "signed",
+    });
+  await store.put(SERVE_LEADER_KEY, record(4, "https://new.example"));
+  await leadership.start("follower");
+  try {
+    assertEquals(leadership.leader()?.address, "https://new.example");
+    await store.put(SERVE_LEADER_KEY, record(3, "https://old.example"));
+    await leadership.tick();
+    assertEquals(leadership.leader()?.instanceId, "leader-3");
+    assertEquals(leadership.leader()?.address, undefined);
+  } finally {
+    await leadership.stop();
+  }
+});
