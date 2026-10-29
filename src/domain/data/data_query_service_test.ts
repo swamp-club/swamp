@@ -803,6 +803,113 @@ Deno.test("DataQueryService: backfill preserves catalog rows the walk cannot see
   catalog.close();
 });
 
+/**
+ * Writes `my-data` versions under a fresh repo in `dir`: each version has
+ * metadata.yaml, and raw unless it is listed in `withoutRaw`. The latest
+ * marker names `marker` when given.
+ */
+function writeBackfillVersions(
+  dir: string,
+  versions: number[],
+  { marker, withoutRaw = [] }: { marker?: number; withoutRaw?: number[] },
+): void {
+  const dataNameDir = join(
+    dir,
+    ".swamp",
+    "data",
+    "test-model",
+    "model-001",
+    "my-data",
+  );
+  for (const version of versions) {
+    const versionDir = join(dataNameDir, String(version));
+    ensureDirSync(versionDir);
+    if (!withoutRaw.includes(version)) {
+      Deno.writeTextFileSync(
+        join(versionDir, "raw"),
+        JSON.stringify({ version }),
+      );
+    }
+    Deno.writeTextFileSync(
+      join(versionDir, "metadata.yaml"),
+      stringifyYaml({
+        name: "my-data",
+        id: "00000000-0000-1000-8000-000000000001",
+        version,
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "resource", specName: "result", modelName: "ingest" },
+        ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+  }
+  if (marker !== undefined) {
+    Deno.writeTextFileSync(join(dataNameDir, "latest"), String(marker));
+  }
+}
+
+/** The catalog's `my-data` rows as version:is_latest, in version order. */
+function backfilledRows(catalog: CatalogStore): string[] {
+  return [...catalog.iterate()]
+    .filter((row) => row.data_name === "my-data")
+    .sort((a, b) => a.version - b.version)
+    .map((row) => `${row.version}:${row.is_latest}`);
+}
+
+Deno.test("DataQueryService: backfill leaves out a version above the latest marker (swamp-club#4134)", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-backfill-crash-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  using _cleanup = cleanupOnDispose(catalog, dir);
+  // Version 4 is a save that died after metadata.yaml, before raw and the
+  // marker.
+  writeBackfillVersions(dir, [1, 2, 3, 4], { marker: 3, withoutRaw: [4] });
+
+  const service = new DataQueryService(
+    catalog,
+    new FileSystemUnifiedDataRepository(dir, undefined, catalog),
+  );
+  const results = await service.query('name == "my-data"') as DataRecord[];
+
+  assertEquals(results.map((r) => [r.version, r.isLatest]), [[3, true]]);
+  assertEquals(backfilledRows(catalog), ["1:0", "2:0", "3:1"]);
+});
+
+Deno.test("DataQueryService: sync backfill leaves out a version above the latest marker (swamp-club#4134)", () => {
+  const dir = Deno.makeTempDirSync({
+    prefix: "swamp-query-backfill-crash-sync-",
+  });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  using _cleanup = cleanupOnDispose(catalog, dir);
+  writeBackfillVersions(dir, [1, 2, 3, 4], { marker: 3, withoutRaw: [4] });
+
+  const service = new DataQueryService(
+    catalog,
+    new FileSystemUnifiedDataRepository(dir, undefined, catalog),
+  );
+  const results = service.querySync('name == "my-data"') as DataRecord[];
+
+  assertEquals(results.map((r) => [r.version, r.isLatest]), [[3, true]]);
+  assertEquals(backfilledRows(catalog), ["1:0", "2:0", "3:1"]);
+});
+
+Deno.test("DataQueryService: backfill without a latest marker indexes every version", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-backfill-nomark-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  using _cleanup = cleanupOnDispose(catalog, dir);
+  writeBackfillVersions(dir, [1, 2], {});
+
+  const service = new DataQueryService(
+    catalog,
+    new FileSystemUnifiedDataRepository(dir, undefined, catalog),
+  );
+  await service.query("true");
+
+  assertEquals(backfilledRows(catalog), ["1:0", "2:1"]);
+});
+
 Deno.test("DataQueryService: backfill stamps the repo namespace onto rebuilt rows", async () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-backfill-ns-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
