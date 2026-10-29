@@ -115,6 +115,7 @@ import {
   isUnpublishedDataError,
   type WrittenVersion,
 } from "../../domain/datastore/datastore_sync_service.ts";
+import { watchV3ServeFeeds } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 import {
   DEFAULT_STALE_TTL_MS,
   RunTrackerStore,
@@ -397,6 +398,9 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           outputMode: ctx.outputMode,
         });
 
+        // A run against a serve-mode checkout sees what other callers
+        // commit while it runs (swamp-club#4120).
+        watchV3ServeFeeds();
         const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
         try {
           runTracker.reapStaleRuns(DEFAULT_STALE_TTL_MS);

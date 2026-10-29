@@ -894,6 +894,12 @@ Serve runs three background pollers to fix this:
   on one instance was rejected by its peers until they restarted
   (swamp-club#2481).
 
+On a v3 datastore none of the three polls (swamp-club#4120): there is no
+sync service, so the access and runtime pollers never start, and the config
+poller runs no interval. Every commit a serve node sees, its own and, on a
+follower, the leader's commit feed, keeps it current instead ("Team mode:
+forwarding and the commit feed").
+
 None of them pulls `workflow-runs/`. A pull overwrites a local file that
 differs from the remote index, and a run saves its record between its pushes
 with no gate held, so a pull landing there would undo a save the next push
@@ -7319,7 +7325,10 @@ than dropped as `head-moved`.
   shares and whose edits are refused when stale (`config_edit_conflict`,
   swamp-club#4097); without it, teams sync `models/` to serve's checkout
   (git) first.
-- Per-file config and the live feed are `p5-config` and `p5-feed`.
+- Per-file config is `p5-config`. The live feed is `commits.subscribe`
+  ("Team mode: forwarding and the commit feed"): `workflow run` and
+  `model method run` on a serve-mode checkout watch it while they run, and
+  catch up through the changes feed when it brings commits.
 - `swamp datastore claim` and `release` follow in "Team mode: claiming a
   datastore".
 
@@ -7374,8 +7383,9 @@ recovered, marked or replicated by a follower.
   since) only names the leader to followers, so a stale record can name the
   wrong node but never lets a follower write. The node address is the
   listener's (`scheme://host:port`); a wildcard or loopback bind address
-  names nothing another host can reach, so the record leaves it out.
-  p5-feed's forwarding will need an advertised address.
+  names nothing another host can reach, so the record leaves it out unless
+  the node advertises one (`--advertise-address`, swamp-club#4120), which
+  the record names instead.
 - A node takes the lead in order: it records itself, does the leader's work
   (below), and only then changes its role, which opens its request gates, so
   what it settles and sweeps on taking the lead is never work it has just
@@ -7385,9 +7395,11 @@ recovered, marked or replicated by a follower.
   boots following has its gates closed from the first request, before its
   leadership exists.
 
-**What a follower refuses.** Writes are refused with `serve_not_leader`
-(`ServeNotLeaderError`, exit 75: nothing was taken, so a retry is safe), in
-one place per surface, so p5-feed can replace the refusal with forwarding:
+**What a follower refuses.** Since swamp-club#4120 a follower forwards
+each of these to the leader ("Team mode: forwarding and the commit feed")
+and refuses only when no leader can be reached. Writes it cannot forward
+are refused with `serve_not_leader` (`ServeNotLeaderError`, exit 75:
+nothing was taken, so a retry is safe), in one place per surface:
 
 - WebSocket requests: `followerRefusal` (`src/serve/follower_requests.ts`)
   before the handler runs, so no step's side effect happens first. Every
@@ -7492,11 +7504,10 @@ waits (`datastore_claimed`).
 - A step a remote worker runs for a leader that then loses the lead may
   finish on the worker; its result reaches the old leader, which cannot
   commit it, and the new leader settles the run `interrupted`. Forwarding
-  results is p5-feed's.
-- A follower restores its whole copy when the published head moved
-  (about 4.5 s per GB). Litestream follow mode as a warm standby is a later
-  step.
-- Writes are refused, not forwarded, until p5-feed.
+  results to the new leader is not done yet.
+- A follower whose commit feed is down restores its whole copy when the
+  published head moved (about 4.5 s per GB). Litestream follow mode as a
+  warm standby is a later step.
 - A serve that loses its lease exits 75, single-node too: one stalled past
   its lease's TTL, so that another writer such as a CLI command took the
   lease, stops rather than following. Run under a supervisor, it starts
@@ -7510,6 +7521,137 @@ waits (`datastore_claimed`).
 - The reconciliation tick and cron fires also check the live lease, so a
   leader whose lease was taken over and has not ticked since neither judges
   the new leader gone nor claims a fire.
+
+### Team mode: forwarding and the commit feed (datastore rework Phase 5)
+
+Before swamp-club#4120 a follower refused every write, so behind a load
+balancer about half of a two-node team's writes failed and were retried,
+and a follower's copy lagged the leader by up to a tick.
+
+**An advertised address.** `serve --advertise-address <url>`
+(`SWAMP_SERVE_ADVERTISE_ADDRESS`, `advertise-address:` in `serve.yaml`) is
+this node's own http(s) origin as the team's other nodes reach it
+(`normalizeAdvertiseAddress`: no path, query, credentials or wildcard host;
+an explicit loopback address is accepted for a team on one host). The
+leader record names it in place of the listener's address. A node that
+advertises itself also trusts the team's names for Origin and Host checks:
+the shared `--address`, which a forwarded browser session's Origin names,
+and its own advertised address, which a follower forwarding to it puts in
+Host. `serve --ca-cert` (`SWAMP_CA_CERT`, `tls.ca-cert`) adds the CA
+certificates a node trusts when it calls the leader, as clients' `--ca-cert`
+does.
+
+**Proxy, don't impersonate.** A follower passes each write to the leader
+with the caller's own credential, and the leader authenticates and
+authorises the caller itself. A follower never asserts who the caller is,
+so a compromised or misconfigured follower has no more access than its
+callers. The leader record carries a proof, an HMAC of its instance, fence,
+address and start under the team's peer key (below): a follower forwards
+only to the address of a record that holds it, so whoever can write the
+shared control plane, but not read the peer key, cannot redirect callers'
+credentials to an address of their own. A record without it names the
+leader but no address, and the follower refuses as before. `LeaderLink` (`src/serve/leader_link.ts`) holds one HTTP client
+per leader address, replaced when the record names another node; HTTP/2
+carries every forwarded HTTP request over one connection. One place per
+surface replaces the refusal:
+
+- WebSocket requests: at upgrade the follower keeps the caller's credential
+  (the bearer token, from whichever transport carried it, or the dashboard
+  session cookie with its Origin) as connection-private state
+  (`forwardCredentialOf`, read before the upgrade closes the request's
+  headers). `FollowerForwarder` (`src/serve/follower_forwarder.ts`) opens
+  one socket to the leader per client connection with it, on the first
+  request the follower does not answer, and relays frames by id both ways.
+  A cancel for a forwarded request, and one for a run id the follower does
+  not have, goes to the leader. `FOLLOWER_FORWARDED_REQUESTS` (formerly
+  `FOLLOWER_REFUSED_REQUESTS`) adds `run.attach`: runs execute only on the
+  leader. Gates that run first on the follower (request limits, restricted
+  commands) use its own fresh policy; the leader checks again, so they can
+  only refuse, never widen.
+- The datastore API, HTTP signal and cancel: after the follower
+  authenticated the caller, the request goes to the leader unchanged, with
+  the caller's address appended to `X-Forwarded-For`.
+- Webhooks: the follower passes the delivery on as it came, raw body and
+  headers, right after its size-limited read and before it verifies the
+  signature or runs any extension hook. The leader verifies it with its own
+  endpoint config, so the team's nodes need the same webhook config.
+- Workers: a worker's connection to a follower is relayed whole to the
+  leader from its first RPC frame (its enrollment), so it joins the
+  leader's pool. Its data-plane requests (`/data`, `/bundle`) are forwarded
+  too: its session credentials live in the leader's memory.
+
+**A takeover mid-request.** A forward that never reached the leader (no
+address, connect, DNS or TLS failure) gets today's refusal. One that failed
+after the request was sent gets the same code with `inFlight: true` and a
+message that it may already have run. The follower never retries either.
+The leader's own session closes (4003 revoked, 4002 expired) close the
+client's connection the same way.
+
+**`commits.subscribe`.** A WebSocket subscription on serve's commit log
+from a cursor (`src/serve/handlers/commit_feed_handlers.ts`). It reads the
+log with `changesSince`, then waits on the store's head-moved signal
+(`SqliteCommitStore.onHeadMoved`) and sends each batch as it lands,
+filtered per caller exactly as `GET changes` is: `CommitReadFilter`
+(`src/serve/commit_read_filter.ts`), the changes feed's filter taken out
+of the datastore API, built afresh per batch so a changed grant takes
+effect on the next one. A frame with no commits goes out at least every
+5 s, so a subscriber tells a quiet feed from a dead one. A cursor below the
+compaction point ends the stream with `commits_compacted` (load the base,
+as for the 410); a subscriber further behind than its socket can buffer is
+ended with a resumable `commits_lagged`. `commits.head` answers the last
+cursor the feed may send. A replicating leader sends only what it
+published (`v3CommitFeedSource`'s bound): a commit not yet replicated could
+be lost to a failover, and a node that applied it would hold a commit the
+next leader never had. Confirmed writes publish at once; background commits
+reach the feed with the next probe (at most 30 s), never later than the
+lineage restore would have brought them.
+
+**Followers follow the feed.** A follower subscribes to the leader with the
+team's peer key (`TeamPeerKey`, `src/serve/peer_auth.ts`): one random key
+per namespace in serve's encrypted control-plane vault, so a `token-secrets`
+key protects it as it protects token secrets. A peer socket may only read
+the feed and its head; it skips the per-caller grant filter but keeps the
+namespace one, cancels nothing but its own requests, and is refused
+everywhere else, HTTP included, where the key is an unknown token.
+`FollowerFeed` (`src/serve/follower_feed.ts`) applies each batch to the
+copy (`applyV3LeaderChanges`): on a replicating datastore it appends each
+commit at the leader's own cursor (`SqliteCommitStore.appendFromLeader`, so
+a cursor a client read from either node names the same commit), then
+catches the read model up; on one that does not replicate every node opens
+the same `commits.db`, so it only catches the read model up. Every frame
+marks the copy fresh (`ServeLeadership.markRefreshed`). While the feed is
+current for the leader the record names, a tick restores nothing. A new
+leader (another instance or fence), a disconnect, a gap, a divergent commit
+(`FeedDivergedError`) or a compacted cursor stops it: the next tick
+restores from the published lineage, which holds everything the feed sent,
+and follows again from there. The 30 s staleness bound stays. Before a
+forwarded write's last reply goes back, the follower waits (at most 5 s,
+and not at all while its feed is down) until its copy holds the leader's
+head, so the caller reads its own write from that node next.
+
+**Commit effects replace the pollers.** `ServeCommitEffects`
+(`src/serve/serve_commit_effects.ts`) watches every commit landing in a
+node's copy and classifies it by partition (`commitEffectOf`): a
+definition or runtime record rebuilds the catalog; a grant, group, token or
+worker reloads the access policy; the config or the extension lockfile runs
+the config check (`ConfigPoller.pollNow`). A copy replaced behind what was
+read refreshes everything. Before this, a follower loaded its policy once,
+at boot, so a grant revoked on the leader went on allowing access on a
+follower.
+
+**Serve-mode checkouts.** `workflow run` and `model method run` on a
+serve-mode checkout watch serve's feed while they run (`watchV3ServeFeeds`,
+stopped when the datastores close). The watch is a wake-up: when a frame
+brings commits, the checkout's own catch-up reads them through the changes
+feed, with its filtering, base loads and gaps. Short commands need nothing
+new; serve never watches.
+
+**Testing.** `integration/serve_v3_team_forwarding_test.ts` (a commit
+through a follower lands as the caller; the leader decides; an unreachable
+and a lost leader), `integration/serve_v3_team_ws_forwarding_test.ts`
+(streams, cancels, an in-flight drop, a revoked session, a worker relay),
+`integration/serve_v3_commit_feed_test.ts` (filtering, resume, compaction,
+peers, a follower applying the feed), and unit tests beside each module.
 
 ### Team mode: claiming a datastore (datastore rework Phase 5)
 

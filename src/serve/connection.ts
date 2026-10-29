@@ -243,6 +243,16 @@ export {
 } from "./handlers/shared.ts";
 import { redactingFor } from "./handlers/nested_run_redaction.ts";
 import { followerRefusal } from "./follower_requests.ts";
+import { isPeerSocket, PEER_REQUESTS } from "./peer_auth.ts";
+import {
+  handleCommitsHead,
+  handleCommitsSubscribe,
+} from "./handlers/commit_feed_handlers.ts";
+import {
+  existingForwarder,
+  forwarderFor,
+  isRpcFrame,
+} from "./follower_forwarder.ts";
 export type { ConnectionContext } from "./handlers/shared.ts";
 
 const MAX_ACTIVE_REQUESTS = 100;
@@ -567,6 +577,19 @@ const AuditSubscribeRequestSchema = z.object({
       .optional(),
     resourceKind: z.string().max(256).optional(),
   }).optional(),
+});
+
+const CommitsSubscribeRequestSchema = z.object({
+  type: z.literal("commits.subscribe"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    cursor: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  }),
+});
+
+const CommitsHeadRequestSchema = z.object({
+  type: z.literal("commits.head"),
+  id: z.string().min(1).max(256),
 });
 
 const AuditUnsubscribeRequestSchema = z.object({
@@ -1543,6 +1566,8 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   AuditVerifyRequestSchema,
   AuditSubscribeRequestSchema,
   AuditUnsubscribeRequestSchema,
+  CommitsSubscribeRequestSchema,
+  CommitsHeadRequestSchema,
   AuditExportRequestSchema,
   AuditRotateKeyRequestSchema,
   AuditAlertsRequestSchema,
@@ -1782,6 +1807,35 @@ export function handleConnection(
   socket.onmessage = (event) => {
     // Once the server has closed the session, nothing more is served on it.
     if (socket.readyState !== WebSocket.OPEN) return;
+    // A team peer's socket carries only the commit feed (swamp-club#4120):
+    // never a worker's frames, never a relay.
+    if (isPeerSocket(socket)) {
+      handleMessage(
+        socket,
+        ctx,
+        activeRequests,
+        event,
+        principal,
+        activeSubscriptions,
+        subscriptionTimers,
+      );
+      return;
+    }
+    // A worker's connection to a follower is relayed whole to the leader
+    // from its first RPC frame: the worker joins the leader's pool
+    // (swamp-club#4120).
+    const relayed = existingForwarder(socket);
+    if (relayed?.relaying) {
+      relayed.relayFrame(event.data);
+      return;
+    }
+    if (
+      typeof event.data === "string" &&
+      ctx.followerGate?.role === "follower" && isRpcFrame(event.data) &&
+      forwarderFor(socket, ctx.leaderLink)?.relay(event.data)
+    ) {
+      return;
+    }
     if (
       workerAttachment && typeof event.data === "string" &&
       workerAttachment.feed(event.data)
@@ -1881,14 +1935,39 @@ export function handleMessage(
 
   const request: ServerRequest = validated;
 
+  // A team peer authenticated by the peer key may read the commit feed and
+  // nothing else (swamp-club#4120): the key says the peer is a node of the
+  // team, never who any caller is.
+  if (
+    isPeerSocket(socket) && request.type !== "cancel" &&
+    !PEER_REQUESTS.has(request.type)
+  ) {
+    sendError(
+      socket,
+      request.id,
+      "forbidden",
+      "A team peer's connection reads only the commit feed",
+    );
+    return;
+  }
+
   if (request.type === "cancel") {
     const pendingController = activeRequests.get(request.id);
     if (pendingController) {
       pendingController.abort();
       return;
     }
+    // A peer cancels only its own feed requests, never a run.
+    if (isPeerSocket(socket)) return;
     const run = ctx.activeRunRegistry?.get(request.id);
-    if (!run) return;
+    if (!run) {
+      // A follower runs nothing: a cancel for a run passes on to the
+      // leader, where the run is (swamp-club#4120).
+      if (ctx.followerGate?.role === "follower") {
+        forwarderFor(socket, ctx.leaderLink)?.cancel(event.data as string);
+      }
+      return;
+    }
 
     const cancelController = new AbortController();
     activeRequests.set(request.id, cancelController);
@@ -1972,9 +2051,23 @@ export function handleMessage(
     }
   }
 
-  // A follower takes no write and runs nothing: refused before the handler
-  // runs, so no step's side effect happens first (swamp-club#4096).
+  // A follower takes no write and runs nothing: it passes the request on to
+  // the leader with the caller's own credential (swamp-club#4120), or
+  // refuses it when no leader can be reached; before the handler runs, so
+  // no step's side effect happens here first (swamp-club#4096).
   const notLeader = followerRefusal(request.type, ctx.followerGate);
+  if (
+    notLeader !== undefined && !notLeader.reads &&
+    forwarderFor(socket, ctx.leaderLink, ctx.feedBarrier)?.forward(
+      request.id,
+      request.type,
+      event.data as string,
+      controller.signal,
+      () => activeRequests.delete(request.id),
+    )
+  ) {
+    return;
+  }
   if (notLeader !== undefined) {
     const leader = notLeader.leader;
     sendError(
@@ -2611,6 +2704,21 @@ export function handleMessage(
         })(),
         auditOpts("admin", "access", "audit"),
       );
+      break;
+    case "commits.subscribe":
+      // Filtered per commit, as GET changes is: every caller may subscribe
+      // and sees only what it may read (swamp-club#4120).
+      task = handleCommitsSubscribe(
+        socket,
+        ctx,
+        request.id,
+        controller.signal,
+        principal,
+        request.payload,
+      );
+      break;
+    case "commits.head":
+      task = handleCommitsHead(socket, ctx, request.id);
       break;
     case "audit.subscribe":
       if (

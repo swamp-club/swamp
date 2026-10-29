@@ -21,7 +21,8 @@
  * Serve's leader in team mode (swamp-club#4096). Every serve node behind one
  * address shares a v3 datastore; the node holding the datastore's writer
  * lease leads and writes, and the others follow: they serve reads from
- * their own copy and refuse writes. The lease and its fence alone decide
+ * their own copy and forward writes to the leader (swamp-club#4120), or
+ * refuse them when no leader can be reached. The lease and its fence alone decide
  * who may commit. The leader record only names the leader to followers, so
  * a stale record can name the wrong node but never lets a follower write.
  *
@@ -46,6 +47,22 @@ export interface ServeLeader {
   readonly address?: string;
   /** When it took the lead, as an ISO 8601 timestamp. */
   readonly since: string;
+  /**
+   * The team's proof that a leader wrote this record (swamp-club#4120): a
+   * follower forwards callers' credentials to `address` only when it holds,
+   * so whoever can write the shared control plane cannot redirect them.
+   */
+  readonly proof?: string;
+}
+
+/** What a leader record's proof covers. */
+export function serveLeaderProofText(leader: ServeLeader): string {
+  return [
+    leader.instanceId,
+    String(leader.fence),
+    leader.address ?? "",
+    leader.since,
+  ].join("\n");
 }
 
 /** Serializes a leader record for the control plane. */
@@ -55,6 +72,7 @@ export function serializeServeLeader(leader: ServeLeader): Uint8Array {
     fence: leader.fence,
     ...(leader.address !== undefined ? { address: leader.address } : {}),
     since: leader.since,
+    ...(leader.proof !== undefined ? { proof: leader.proof } : {}),
   }));
 }
 
@@ -76,7 +94,8 @@ export function parseServeLeader(data: Uint8Array): ServeLeader | undefined {
     !Number.isSafeInteger(record.fence) || (record.fence as number) < 1 ||
     typeof record.since !== "string" ||
     Number.isNaN(Date.parse(record.since)) ||
-    (record.address !== undefined && typeof record.address !== "string")
+    (record.address !== undefined && typeof record.address !== "string") ||
+    (record.proof !== undefined && typeof record.proof !== "string")
   ) {
     return undefined;
   }
@@ -87,13 +106,49 @@ export function parseServeLeader(data: Uint8Array): ServeLeader | undefined {
       ? { address: record.address as string }
       : {}),
     since: record.since,
+    ...(record.proof !== undefined ? { proof: record.proof as string } : {}),
   };
 }
 
 /**
- * A write refused by a serve node that does not lead the datastore: retry
- * it, at the leader when it is named. Forwarding the write to the leader is
- * a later step of team mode (p5-feed); until then the client retries.
+ * Normalizes `--advertise-address`: this node's own address as its team's
+ * other nodes reach it, which the leader record names so followers can
+ * forward to it (swamp-club#4120). It is an http(s) origin with no path,
+ * query or credentials; a wildcard host names no node and is refused. An
+ * explicit loopback address is accepted, for a team on one host.
+ */
+export function normalizeAdvertiseAddress(address: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(address);
+  } catch {
+    throw new UserError(advertiseAddressMessage);
+  }
+  const bare = parsed.hostname.replace(/^\[|\]$/g, "");
+  if (
+    (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+    parsed.username !== "" || parsed.password !== "" ||
+    (parsed.pathname !== "/" && parsed.pathname !== "") ||
+    parsed.search !== "" || parsed.hash !== "" ||
+    bare === "0.0.0.0" || /^(0*:)+0*$/.test(bare) || bare === "::"
+  ) {
+    throw new UserError(advertiseAddressMessage);
+  }
+  return parsed.origin;
+}
+
+const advertiseAddressMessage =
+  "The advertise address must be this node's own http(s) origin, as the " +
+  "team's other serve nodes reach it, e.g. https://node-1.internal:9090: no " +
+  "path, query, credentials or wildcard host";
+
+/**
+ * A write a serve node that does not lead the datastore could not take or
+ * pass on: retry it, at the leader when it is named. A follower forwards
+ * writes to the leader (swamp-club#4120) and refuses only when no leader can
+ * be reached. When the leader changed or stopped answering after a forwarded
+ * request reached it, the refusal is `inFlight`: the request may already
+ * have run, so the follower never retries it and the caller checks first.
  */
 export class ServeNotLeaderError extends UserError {
   declare readonly code: typeof SERVE_NOT_LEADER_CODE;
@@ -101,19 +156,24 @@ export class ServeNotLeaderError extends UserError {
   constructor(
     readonly leader: ServeLeader | undefined,
     readonly reads = false,
+    readonly inFlight = false,
   ) {
     super(
-      (reads
-        ? "This swamp serve node does not lead the datastore and its copy " +
-          "is behind, so it did not answer. "
-        : "This swamp serve node does not lead the datastore, so it did " +
-          "not take the request. ") +
-        (leader === undefined
-          ? "The leader is not known yet; try again shortly."
-          : `The leader is serve instance ${leader.instanceId}` +
-            (leader.address !== undefined ? ` at ${leader.address}` : "") +
-            "; try again there, or here shortly.") +
-        " Nothing was changed.",
+      inFlight
+        ? "This swamp serve node forwarded the request to the leader, which " +
+          "changed or stopped answering before it replied. The request may " +
+          "already have run: check its outcome before retrying."
+        : (reads
+          ? "This swamp serve node does not lead the datastore and its copy " +
+            "is behind, so it did not answer. "
+          : "This swamp serve node does not lead the datastore, so it did " +
+            "not take the request. ") +
+          (leader === undefined
+            ? "The leader is not known yet; try again shortly."
+            : `The leader is serve instance ${leader.instanceId}` +
+              (leader.address !== undefined ? ` at ${leader.address}` : "") +
+              "; try again there, or here shortly.") +
+          " Nothing was changed.",
       SERVE_NOT_LEADER_CODE,
     );
     this.name = "ServeNotLeaderError";

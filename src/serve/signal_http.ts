@@ -61,7 +61,7 @@ import {
 } from "./signal_delivery.ts";
 import type { ServerTokenAuthResult } from "./token_auth.ts";
 import { readBodyWithLimit } from "./webhook.ts";
-import { followerHttpRefusal } from "./follower_requests.ts";
+import { followerHttpForward } from "./follower_requests.ts";
 
 /**
  * The most of a request body that is read. It only bounds the read: the
@@ -230,10 +230,13 @@ export async function handleSignalHttpRequest(
       503,
     );
   }
-  // A follower takes no signal: refused with a retryable 503, not a failed
-  // delivery, so the sender delivers it again (swamp-club#4096).
-  const notLeader = followerHttpRefusal(SIGNAL_REQUEST_TYPE, ctx.followerGate);
-  if (notLeader !== undefined) return notLeader;
+  // A follower passes the signal on to the leader with the caller's own
+  // credentials (swamp-club#4120), and refuses it with a retryable 503,
+  // not a failed delivery, when no leader can be reached (swamp-club#4096).
+  const forwarded = followerHttpForward(SIGNAL_REQUEST_TYPE, req, ctx, {
+    clientIp: sourceIp,
+  });
+  if (forwarded !== undefined) return await forwarded;
   const requestId = crypto.randomUUID();
   if (
     isRestrictedCommand(

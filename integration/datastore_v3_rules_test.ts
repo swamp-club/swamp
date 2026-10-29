@@ -316,6 +316,27 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/serve_datastore_client.ts",
   "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/upload_ledger.ts",
   "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/v3_datastore.ts",
+  // swamp-club#4120: followers forward writes to the leader and follow its
+  // commit feed; the feed is filtered per caller as GET changes is, and the
+  // commits serve sees keep its catalog, policy and extensions current.
+  "src/serve/leader_link.ts -> src/domain/datastore_v3/serve_leader.ts",
+  "src/serve/follower_forwarder.ts -> src/domain/datastore_v3/serve_leader.ts",
+  "src/serve/follower_feed.ts -> src/domain/datastore_v3/serve_leader.ts",
+  "src/serve/commit_read_filter.ts -> src/domain/datastore_v3/commit_authorization.ts",
+  "src/serve/commit_read_filter.ts -> src/domain/datastore_v3/commit_store.ts",
+  "src/serve/commit_read_filter.ts -> src/domain/datastore_v3/op.ts",
+  "src/serve/commit_read_filter.ts -> src/domain/datastore_v3/partition_key.ts",
+  "src/serve/commit_read_filter.ts -> src/infrastructure/datastore_v3/v3_datastore.ts",
+  "src/serve/handlers/commit_feed_handlers.ts -> src/domain/datastore_v3/commit_store.ts",
+  "src/serve/handlers/shared.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  "src/serve/serve_commit_effects.ts -> src/domain/datastore_v3/commit_effects.ts",
+  "src/serve/serve_commit_effects.ts -> src/domain/datastore_v3/commit_store.ts",
+  "src/serve/serve_commit_effects.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/serve_feed.ts",
+  // swamp-club#4120: a long-running command on a serve-mode checkout
+  // watches serve's commit feed while it runs.
+  "src/cli/commands/model_method_run.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  "src/cli/commands/workflow_run.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   // swamp-club#3922: serve checks a forwarded commit's content as its
   // handlers check the same write, and runs only the evaluations it wrote,
   // which the read model's writers tell; serve gives its repository context
@@ -424,7 +445,7 @@ const CHECKPOINT = /wal_(?:auto)?checkpoint/i;
 /** v3 files that mention a checkpoint pragma, as `file:line`. */
 const PINNED_V3_CHECKPOINTS: readonly string[] = [
   // Auto-checkpoint off on a copy Litestream replicates (swamp-club#3935).
-  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2482",
+  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2610",
 ];
 
 Deno.test("datastore v3: no v3 code forces or tunes a WAL checkpoint", async () => {
@@ -1010,6 +1031,9 @@ const PINNED_V3_DATASTORE_FOR_CALLERS: readonly string[] = [
   "src/cli/retention_teardown.ts",
   "src/infrastructure/datastore_v3/v3_config_adoption.ts",
   "src/infrastructure/datastore_v3/v3_repo_context.ts",
+  // swamp-club#4120: a follower applies its leader's feed to the copy its
+  // boot (followV3Datastore) or its last lineage restore made current.
+  "src/infrastructure/datastore_v3/serve_feed.ts",
   "src/serve/handlers/admin_handlers.ts",
 ];
 

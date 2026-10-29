@@ -678,6 +678,10 @@ export class SqliteCommitStore implements CommitStore {
   readonly #follower: boolean;
   /** Append transactions committed; see {@link appendTransactions}. */
   #appendTransactions = 0;
+  /** {@link onHeadMoved}'s listeners. */
+  readonly #headListeners = new Set<() => void>();
+  /** The leader's cursor {@link appendFromLeader} inserts its commit at. */
+  #leaderCursor: number | undefined;
   #queue: Promise<unknown> = Promise.resolve();
   /**
    * The appends queued since the last other queued work, not yet started:
@@ -1052,10 +1056,113 @@ export class SqliteCommitStore implements CommitStore {
     });
   }
 
+  /**
+   * Appends a commit a team follower received from its leader's commit feed
+   * (swamp-club#4120) at the leader's own `cursor`, so cursors mean the same
+   * commit on every node. The commit goes through the same rules as any
+   * append: the partition's next seq, and a fence no lower than the
+   * store's. A cursor this store already holds is a duplicate when it holds
+   * the same commit there (a resubscribe overlapped), else the copy has
+   * diverged from the leader: {@link FeedDivergedError}, and the follower
+   * restores from the lineage instead.
+   *
+   * @throws FeedDivergedError when the copy cannot take the commit in order
+   */
+  appendFromLeader(
+    change: CommitChange,
+  ): Promise<CommitStoreAppendResult> {
+    if (this.#closed) return Promise.reject(closedError());
+    if (this.#follower) {
+      return Promise.reject(
+        new Error(
+          "Internal error: a serve-mode checkout's copy takes serve's commits through append, not a leader's",
+        ),
+      );
+    }
+    const { cursor, commit } = change;
+    return this.#enqueue(async () => {
+      const held = this.#db.prepare(
+        "SELECT namespace, partition, txn_id FROM commits WHERE cursor = ?",
+      ).get(cursor) as
+        | { namespace: string; partition: string; txn_id: string }
+        | undefined;
+      if (held !== undefined) {
+        if (
+          held.namespace === commit.namespace &&
+          held.partition === commit.partition.toString() &&
+          held.txn_id === commit.txnId
+        ) {
+          return { kind: "duplicate" as const, seq: commit.seq };
+        }
+        throw new FeedDivergedError(
+          `this copy holds another commit at the leader's cursor ${cursor}`,
+        );
+      }
+      const top = this.highWaterMark().cursor;
+      if (cursor <= top) {
+        throw new FeedDivergedError(
+          `the leader's cursor ${cursor} is behind this copy's ${top}`,
+        );
+      }
+      this.#leaderCursor = cursor;
+      try {
+        const result = await this.#append(commit, false);
+        if (result.kind !== "appended") {
+          throw new FeedDivergedError(
+            `the leader's commit at cursor ${cursor} is already applied at another position`,
+          );
+        }
+        return result;
+      } catch (error) {
+        if (error instanceof FeedDivergedError) throw error;
+        throw new FeedDivergedError(
+          `the leader's commit at cursor ${cursor} did not apply: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      } finally {
+        this.#leaderCursor = undefined;
+      }
+    }).then((result) => {
+      this.#notifyHeadMoved();
+      return result;
+    });
+  }
+
+  /**
+   * Calls `listener` whenever the store's rows may have moved: after a
+   * commit lands (once its transaction committed, so a reader finds it),
+   * and after compaction or an install replaced what the store holds. The
+   * commit feed waits on it rather than polling (swamp-club#4120). The
+   * listener reads the store itself; a throwing listener is ignored.
+   * Returns the call that removes it.
+   */
+  onHeadMoved(listener: () => void): () => void {
+    this.#headListeners.add(listener);
+    return () => this.#headListeners.delete(listener);
+  }
+
+  #notifyHeadMoved(): void {
+    for (const listener of [...this.#headListeners]) {
+      try {
+        listener();
+      } catch {
+        // A listener's failure is its own.
+      }
+    }
+  }
+
   append(commit: Commit): Promise<CommitStoreAppendResult> {
     if (this.#closed) return Promise.reject(closedError());
     return new Promise<CommitStoreAppendResult>((resolve, reject) => {
-      const entry: PendingAppend = { commit, resolve, reject };
+      const entry: PendingAppend = {
+        commit,
+        resolve: (result) => {
+          resolve(result);
+          if (result.kind === "appended") this.#notifyHeadMoved();
+        },
+        reject,
+      };
       // Appends queued back to back, with nothing else queued between them,
       // share one transaction (swamp-club#3915).
       const open = this.#openGroup;
@@ -1426,15 +1533,32 @@ export class SqliteCommitStore implements CommitStore {
       }
       return { kind: "duplicate", seq: row.seq };
     }
-    this.#insertCommit.run(
-      namespace,
-      partitionKey,
-      commit.seq,
-      commit.txnId,
-      commit.fence ?? null,
-      commit.at,
-      JSON.stringify(commit.toJSON()),
-    );
+    if (this.#leaderCursor !== undefined) {
+      // A team follower keeps the leader's cursor, so a cursor a client
+      // read from either node means the same commit (swamp-club#4120).
+      this.#db.prepare(
+        "INSERT INTO commits (cursor, namespace, partition, seq, txn_id, fence, at, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(
+        this.#leaderCursor,
+        namespace,
+        partitionKey,
+        commit.seq,
+        commit.txnId,
+        commit.fence ?? null,
+        commit.at,
+        JSON.stringify(commit.toJSON()),
+      );
+    } else {
+      this.#insertCommit.run(
+        namespace,
+        partitionKey,
+        commit.seq,
+        commit.txnId,
+        commit.fence ?? null,
+        commit.at,
+        JSON.stringify(commit.toJSON()),
+      );
+    }
     // In the commit's own transaction, so a refused or rolled-back append
     // leaves no reference behind.
     for (const sha256 of commit.chunkRefs()) {
@@ -1826,7 +1950,9 @@ export class SqliteCommitStore implements CommitStore {
     options: SqliteCompactHistoryOptions = {},
   ): Promise<CompactionReport> {
     if (this.#closed) return Promise.reject(closedError());
-    return this.#enqueue(() => this.#compact(through, options));
+    return this.#enqueue(() => this.#compact(through, options)).finally(() =>
+      this.#notifyHeadMoved()
+    );
   }
 
   /**
@@ -2331,7 +2457,9 @@ export class SqliteCommitStore implements CommitStore {
    */
   replaceContentFrom(path: string): Promise<void> {
     if (this.#closed) return Promise.reject(closedError());
-    return this.#enqueue(() => this.#replaceContent(path));
+    return this.#enqueue(() => this.#replaceContent(path)).finally(() =>
+      this.#notifyHeadMoved()
+    );
   }
 
   /**
@@ -2389,7 +2517,7 @@ export class SqliteCommitStore implements CommitStore {
         owner: this.#db.prepare("SELECT * FROM datastore_owner").all(),
       });
       this.#replaceContent(staging.path);
-    });
+    }).finally(() => this.#notifyHeadMoved());
   }
 
   #replaceContent(path: string): void {
@@ -3538,4 +3666,17 @@ function nameKey(namespace: string, partition: string, name: string): string {
 
 function distinctChunks(blob: BlobRef | undefined): readonly string[] {
   return blob === undefined ? [] : [...new Set(blob.chunkHashes())];
+}
+
+/**
+ * A team follower's copy cannot take a commit from its leader's feed in
+ * order (swamp-club#4120): it holds another commit at that cursor, or the
+ * partition is not at the commit's previous seq. The follower stops the
+ * feed and restores from the published lineage.
+ */
+export class FeedDivergedError extends Error {
+  constructor(detail: string) {
+    super(`The commit feed diverged from this copy: ${detail}`);
+    this.name = "FeedDivergedError";
+  }
 }

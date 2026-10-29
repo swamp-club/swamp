@@ -131,6 +131,15 @@ export class ConfigPoller {
     await this.#pendingPull;
   }
 
+  /**
+   * Checks once now, outside the interval. On a v3 datastore serve runs no
+   * interval: the commits it sees, its own and the leader's feed, call this
+   * when the config or the extension lockfile changed (swamp-club#4120).
+   */
+  pollNow(): void {
+    this.#poll();
+  }
+
   #poll(): void {
     if (this.#pulling) return;
 

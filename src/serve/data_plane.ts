@@ -179,6 +179,16 @@ function handleToJson(handle: DataHandle): Record<string, unknown> {
  * The data plane handler. `handle()` returns null for requests outside its
  * routes so the caller can fall through to other endpoints on the listener.
  */
+/**
+ * Whether `req` is for the data plane (`/data/...` or `/bundle/...`). A
+ * follower passes such requests on to the leader (swamp-club#4120): a
+ * worker's session credentials live only in the leader's memory.
+ */
+export function isDataPlaneRequest(req: Request): boolean {
+  const root = new URL(req.url).pathname.split("/").find((s) => s.length > 0);
+  return root === "data" || root === "bundle";
+}
+
 export class DataPlane {
   readonly #options: DataPlaneOptions;
   readonly #writers = new Map<string, WriterSession>();
@@ -308,15 +318,10 @@ export class DataPlane {
     req: Request,
     sourceIp: string = UNKNOWN_SOURCE_IP,
   ): Promise<Response | null> {
+    if (!isDataPlaneRequest(req)) return null;
     const url = new URL(req.url);
     const segments = url.pathname.split("/").filter((s) => s.length > 0);
-    if (segments.length === 0) {
-      return null;
-    }
     const [root] = segments;
-    if (root !== "data" && root !== "bundle") {
-      return null;
-    }
 
     // The protected secret route authenticates the dispatch credential
     // itself, with no sole-dispatch fallback, and needs no unit of work.

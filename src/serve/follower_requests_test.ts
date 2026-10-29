@@ -20,10 +20,14 @@
 import { assertEquals, assertInstanceOf } from "@std/assert";
 import { ServeNotLeaderError } from "../domain/datastore_v3/serve_leader.ts";
 import {
+  FOLLOWER_FORWARDED_REQUESTS,
+  FOLLOWER_READ_REQUESTS,
   type FollowerGate,
+  followerHttpForward,
   followerHttpRefusal,
   followerRefusal,
 } from "./follower_requests.ts";
+import { LeaderLink } from "./leader_link.ts";
 
 const leader = {
   instanceId: "lead",
@@ -77,4 +81,61 @@ Deno.test("followerHttpRefusal: a retryable 503 naming the leader on a follower,
   const body = await refused.json();
   assertEquals(body.code, "serve_not_leader");
   assertEquals(body.leader, leader);
+});
+
+function forwardingLink(calls: string[]): LeaderLink {
+  return new LeaderLink({
+    leader: () => ({ ...leader, address: "http://10.0.0.2:9090" }),
+    createClient: () => undefined,
+    fetch: (input) => {
+      calls.push(String(input));
+      return Promise.resolve(new Response("from the leader", { status: 200 }));
+    },
+  });
+}
+
+Deno.test("followerHttpForward: a leader answers itself; a follower passes a write on to the leader", async () => {
+  const calls: string[] = [];
+  const req = () =>
+    new Request("http://lb.example/api/v1/cancel/workflow-run/r1", {
+      method: "POST",
+    });
+  assertEquals(
+    followerHttpForward("workflow.cancel", req(), {
+      followerGate: gate("leader"),
+      leaderLink: forwardingLink(calls),
+    }),
+    undefined,
+  );
+  const reply = await followerHttpForward("workflow.cancel", req(), {
+    followerGate: gate("follower"),
+    leaderLink: forwardingLink(calls),
+  });
+  assertEquals(reply?.status, 200);
+  assertEquals(await reply?.text(), "from the leader");
+  assertEquals(calls, ["http://10.0.0.2:9090/api/v1/cancel/workflow-run/r1"]);
+});
+
+Deno.test("followerHttpForward: without a route to the leader, or for a stale read, it refuses", async () => {
+  const calls: string[] = [];
+  const refused = await followerHttpForward(
+    "workflow.cancel",
+    new Request("http://lb.example/x", { method: "POST" }),
+    { followerGate: gate("follower") },
+  );
+  assertEquals(refused?.status, 503);
+  const stale = await followerHttpForward(
+    "data.get",
+    new Request("http://lb.example/x"),
+    { followerGate: gate("follower", true), leaderLink: forwardingLink(calls) },
+  );
+  assertEquals(stale?.status, 503);
+  assertEquals(calls, []);
+});
+
+Deno.test("follower requests: attaching to a run goes to the leader, the commit feed is answered here", () => {
+  assertEquals(FOLLOWER_FORWARDED_REQUESTS.has("run.attach"), true);
+  assertEquals(FOLLOWER_READ_REQUESTS.has("run.attach"), false);
+  assertEquals(FOLLOWER_READ_REQUESTS.has("commits.subscribe"), true);
+  assertEquals(FOLLOWER_READ_REQUESTS.has("commits.head"), true);
 });

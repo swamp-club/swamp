@@ -124,6 +124,7 @@ import {
 import { redactServerUrl } from "../../domain/auth/server_url.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
+import { watchV3ServeFeeds } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -385,6 +386,9 @@ export const workflowRunCommand = new Command()
 
     const repoDir = unlocked.repoDir;
     const repoContext = unlocked.repoContext;
+    // A run against a serve-mode checkout sees what other callers commit
+    // while it runs (swamp-club#4120).
+    watchV3ServeFeeds();
     // A run's evaluated snapshot, read from the datastore-resolved path
     // ExecutionService writes it to, settles a run this command cancels.
     const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(

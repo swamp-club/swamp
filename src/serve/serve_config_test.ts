@@ -3258,3 +3258,78 @@ Deno.test("loadServeConfig: reads address and refuses one that is not a string",
     assertThrows(() => loadServeConfig(undefined, dir));
   });
 });
+
+Deno.test("mergeServeOptions: advertise-address comes from the CLI flag, then SWAMP_SERVE_ADVERTISE_ADDRESS, then serve.yaml", () => {
+  const config: ServeConfigFile = {
+    "advertise-address": "https://from-config.internal:9090",
+  };
+  const env = (name: string) =>
+    name === "SWAMP_SERVE_ADVERTISE_ADDRESS"
+      ? "https://from-env.internal:9090"
+      : undefined;
+  assertEquals(
+    mergeServeOptions(
+      config,
+      { advertiseAddress: "https://from-cli.internal:9090" },
+      new Set(["advertise-address"]),
+      env,
+    ).advertiseAddress,
+    "https://from-cli.internal:9090",
+  );
+  assertEquals(
+    mergeServeOptions(config, {}, new Set<string>(), env).advertiseAddress,
+    "https://from-env.internal:9090",
+  );
+  assertEquals(
+    mergeServeOptions(config, {}, new Set<string>(), () => undefined)
+      .advertiseAddress,
+    "https://from-config.internal:9090",
+  );
+  assertEquals(
+    mergeServeOptions(null, {}, new Set<string>(), () => undefined)
+      .advertiseAddress,
+    undefined,
+  );
+});
+
+Deno.test("mergeServeOptions: ca-cert comes from the CLI flag, then SWAMP_CA_CERT, then tls.ca-cert, relative to the repository", () => {
+  withTempDir((dir) => {
+    const config: ServeConfigFile = { tls: { "ca-cert": "certs/team.pem" } };
+    const env = (name: string) =>
+      name === "SWAMP_CA_CERT" ? "/etc/swamp/env.pem" : undefined;
+    assertEquals(
+      mergeServeOptions(
+        config,
+        { caCert: "/etc/swamp/cli.pem" },
+        new Set(["ca-cert"]),
+        env,
+      ).caCert,
+      "/etc/swamp/cli.pem",
+    );
+    assertEquals(
+      mergeServeOptions(config, {}, new Set<string>(), env).caCert,
+      "/etc/swamp/env.pem",
+    );
+    const fromConfig = resolveServeTlsPaths(
+      dir,
+      mergeServeOptions(config, {}, new Set<string>(), () => undefined),
+    );
+    assertPathEquals(fromConfig.caCert!, join(dir, "certs", "team.pem"));
+  });
+});
+
+Deno.test("loadServeConfig: reads advertise-address and tls.ca-cert, and refuses them when not strings", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, {
+      "advertise-address": "https://node-1.internal:9090",
+      tls: { "ca-cert": "team.pem" },
+    });
+    const config = loadServeConfig(undefined, dir);
+    assertEquals(config?.["advertise-address"], "https://node-1.internal:9090");
+    assertEquals(config?.tls?.["ca-cert"], "team.pem");
+    writeConfig(dir, { "advertise-address": 9090 });
+    assertThrows(() => loadServeConfig(undefined, dir));
+    writeConfig(dir, { tls: { "ca-cert": true } });
+    assertThrows(() => loadServeConfig(undefined, dir));
+  });
+});

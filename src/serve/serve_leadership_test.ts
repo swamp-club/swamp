@@ -23,9 +23,14 @@ import {
   parseServeLeader,
   serializeServeLeader,
   SERVE_LEADER_KEY,
+  type ServeLeader,
 } from "../domain/datastore_v3/serve_leader.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
-import { type LeadershipLease, ServeLeadership } from "./serve_leadership.ts";
+import {
+  type FollowerCopyFeed,
+  type LeadershipLease,
+  ServeLeadership,
+} from "./serve_leadership.ts";
 
 await initializeLogging({});
 
@@ -65,7 +70,29 @@ class FakeLease implements LeadershipLease {
   };
 }
 
-function setup(options: { now?: () => number } = {}) {
+/** A commit feed the test switches between current and not. */
+class FakeFeed implements FollowerCopyFeed {
+  current_ = false;
+  followed: (string | undefined)[] = [];
+  stops = 0;
+  current = () => this.current_;
+  follow = (leader: { instanceId: string } | undefined) => {
+    this.followed.push(leader?.instanceId);
+  };
+  stop = () => {
+    this.stops++;
+    return Promise.resolve();
+  };
+}
+
+function setup(
+  options: {
+    now?: () => number;
+    feed?: FollowerCopyFeed;
+    trust?: (leader: ServeLeader) => Promise<boolean>;
+    prove?: (leader: ServeLeader) => Promise<string | undefined>;
+  } = {},
+) {
   const lease = new FakeLease();
   const store = memoryStore();
   const events: string[] = [];
@@ -89,6 +116,9 @@ function setup(options: { now?: () => number } = {}) {
     // Ticks are driven by hand.
     tickMs: 3_600_000,
     ...(options.now !== undefined ? { now: options.now } : {}),
+    ...(options.feed !== undefined ? { feed: options.feed } : {}),
+    ...(options.trust !== undefined ? { trust: options.trust } : {}),
+    ...(options.prove !== undefined ? { prove: options.prove } : {}),
   });
   return { lease, store, events, leadership };
 }
@@ -336,6 +366,104 @@ Deno.test("ServeLeadership: a node whose leader record cannot be written does no
     assertEquals(lease.takes, takesBefore);
     assertEquals(leadership.role, "leader");
     assertEquals(leads, ["lead"]);
+  } finally {
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership: a follower whose commit feed is current restores nothing; one whose feed stopped restores and follows again", async () => {
+  const feed = new FakeFeed();
+  const { store, events, leadership } = setup({ feed });
+  await store.put(
+    SERVE_LEADER_KEY,
+    serializeServeLeader({
+      instanceId: "other",
+      fence: 2,
+      address: "http://10.0.0.2:9090",
+      since: new Date().toISOString(),
+    }),
+  );
+  await leadership.start("follower");
+  try {
+    assertEquals(feed.followed, ["other"]);
+    feed.current_ = true;
+    await leadership.tick();
+    assertEquals(events, []);
+    feed.current_ = false;
+    await leadership.tick();
+    assertEquals(events, ["refresh"]);
+    assertEquals(feed.followed, ["other", "other"]);
+  } finally {
+    await leadership.stop();
+  }
+  assertEquals(feed.stops, 1);
+});
+
+Deno.test("ServeLeadership: taking the lead stops following the feed", async () => {
+  const feed = new FakeFeed();
+  const { lease, leadership } = setup({ feed });
+  await leadership.start("follower");
+  try {
+    lease.free = 4;
+    await leadership.tick();
+    assertEquals(leadership.role, "leader");
+    assertEquals(feed.stops, 1);
+  } finally {
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership.markRefreshed: keeps a follower fresh between ticks, and a leader is never stale", async () => {
+  let now = 0;
+  const { leadership } = setup({ now: () => now });
+  await leadership.start("follower");
+  try {
+    now = 25_000;
+    leadership.markRefreshed();
+    now = 50_000;
+    assertEquals(leadership.isStale(), false);
+    now = 56_000;
+    assertEquals(leadership.isStale(), true);
+  } finally {
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership: a leader record without the team's proof names the leader but not its address", async () => {
+  const { store, leadership } = setup({
+    trust: (leader) => Promise.resolve(leader.proof === "good"),
+  });
+  const record = {
+    instanceId: "other",
+    fence: 2,
+    address: "https://somewhere.example",
+    since: new Date().toISOString(),
+  };
+  await store.put(SERVE_LEADER_KEY, serializeServeLeader(record));
+  await leadership.start("follower");
+  try {
+    assertEquals(leadership.leader()?.instanceId, "other");
+    assertEquals(leadership.leader()?.address, undefined);
+    await store.put(
+      SERVE_LEADER_KEY,
+      serializeServeLeader({ ...record, proof: "good" }),
+    );
+    await leadership.tick();
+    assertEquals(leadership.leader()?.address, "https://somewhere.example");
+  } finally {
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership: a leader signs the record it writes", async () => {
+  const { lease, store, leadership } = setup({
+    prove: (leader) => Promise.resolve(`signed:${leader.fence}`),
+  });
+  lease.free = 5;
+  await leadership.start("follower");
+  try {
+    await leadership.tick();
+    assertEquals(recorded(store)?.proof, "signed:5");
   } finally {
     await leadership.stop();
   }

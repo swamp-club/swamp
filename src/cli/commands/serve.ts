@@ -229,6 +229,7 @@ import { BundleRegistry } from "../../serve/bundle_registry.ts";
 import {
   DataPlane,
   DISPATCH_WRITES_SETTLE_TIMEOUT_MS,
+  isDataPlaneRequest,
 } from "../../serve/data_plane.ts";
 import {
   setRemoteOnlyMode,
@@ -564,6 +565,7 @@ import {
   keepV3WriterMarkers,
   refreshV3FollowerCopy,
   startV3ReplicationUpkeep,
+  v3CommitFeedSource,
   v3CommitMark,
   v3DatastoreConfigOf,
   v3DatastoreFor,
@@ -590,10 +592,28 @@ import { takeRetentionCandidate } from "../retention_candidate.ts";
 import {
   setV3SyncDeadline,
 } from "../../infrastructure/datastore_v3/litestream/v3_replication.ts";
-import { followerHttpRefusal } from "../../serve/follower_requests.ts";
+import { followerHttpForward } from "../../serve/follower_requests.ts";
+import { LeaderLink } from "../../serve/leader_link.ts";
+import { FollowerFeed } from "../../serve/follower_feed.ts";
+import { ServeCommitEffects } from "../../serve/serve_commit_effects.ts";
 import {
+  applyV3LeaderChanges,
+  v3FollowerCopyCursor,
+} from "../../infrastructure/datastore_v3/serve_feed.ts";
+import {
+  forwardCredentialOf,
+  rememberForwardCredential,
+} from "../../serve/follower_forwarder.ts";
+import {
+  isPeerToken,
+  markPeerSocket,
+  TeamPeerKey,
+} from "../../serve/peer_auth.ts";
+import {
+  normalizeAdvertiseAddress,
   serializeServeLeader,
   SERVE_LEADER_KEY,
+  type ServeLeader,
 } from "../../domain/datastore_v3/serve_leader.ts";
 import {
   coLocatedTokenKeyWarning,
@@ -1263,6 +1283,33 @@ const CLUB_API_KEY_FILE_DESCRIPTION =
   "used for headless OAuth registration, username lookup, instance " +
   "registration and heartbeat; overrides SWAMP_API_KEY_FILE and SWAMP_API_KEY";
 
+/** Reads `--ca-cert`'s PEM file, naming it when it cannot be read. */
+async function readServeCaCert(path: string): Promise<string> {
+  try {
+    return await Deno.readTextFile(path);
+  } catch (error) {
+    throw markErrorPaths(
+      new UserError(
+        `Could not read the CA certificate file '${path}' given by --ca-cert: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ),
+      [path],
+    );
+  }
+}
+
+const ADVERTISE_ADDRESS_DESCRIPTION =
+  "This node's own http(s) address, as the other serve nodes sharing its " +
+  "v3 datastore reach it. Followers forward writes to the leader at this " +
+  "address; without it a node bound to a wildcard or loopback host cannot " +
+  "be forwarded to";
+
+const SERVE_CA_CERT_DESCRIPTION =
+  "PEM file of CA certificates to trust, besides the system store, when " +
+  "this node forwards to its team's leader (a relative path resolves " +
+  "against the repository)";
+
 export function collectServeExtraArgs(options: AnyOptions): string[] {
   const args: string[] = [];
   if (options.config) {
@@ -1276,6 +1323,12 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   }
   if (options.address) {
     args.push("--address", options.address as string);
+  }
+  if (options.advertiseAddress) {
+    args.push("--advertise-address", options.advertiseAddress as string);
+  }
+  if (options.caCert) {
+    args.push("--ca-cert", options.caCert as string);
   }
   if (options.grantsDir) {
     args.push("--grants-dir", options.grantsDir as string);
@@ -1694,6 +1747,11 @@ export interface ServeStartupSettings {
    * (swamp-club#4063).
    */
   ownerAddress?: string;
+  /**
+   * This node's own address, as its team's other nodes reach it, when given:
+   * the leader record names it so followers can forward (swamp-club#4120).
+   */
+  advertiseAddress?: string;
   tlsEnabled: boolean;
   wsIdleTimeoutSeconds?: number;
   queueTimeoutMs?: number;
@@ -1734,6 +1792,9 @@ export function resolveServeStartupSettings(
   const ownerAddress = merged.address === undefined
     ? undefined
     : normalizeOwnerAddress(merged.address);
+  const advertiseAddress = merged.advertiseAddress === undefined
+    ? undefined
+    : normalizeAdvertiseAddress(merged.advertiseAddress);
 
   const wsIdleTimeoutRaw = merged.wsIdleTimeout;
   let wsIdleTimeoutSeconds: number | undefined;
@@ -1867,6 +1928,7 @@ export function resolveServeStartupSettings(
     authConfig,
     tlsEnabled,
     ...(ownerAddress !== undefined ? { ownerAddress } : {}),
+    ...(advertiseAddress !== undefined ? { advertiseAddress } : {}),
     wsIdleTimeoutSeconds,
     queueTimeoutMs,
     heartbeatIntervalMs,
@@ -1912,6 +1974,8 @@ const daemonEnableCommand = new Command()
     "--address <url:string>",
     ADDRESS_DESCRIPTION,
   )
+  .option("--advertise-address <url:string>", ADVERTISE_ADDRESS_DESCRIPTION)
+  .option("--ca-cert <path:string>", SERVE_CA_CERT_DESCRIPTION)
   .option("--no-schedule", "Disable scheduled workflow execution")
   .option(
     "--cert-file <path:string>",
@@ -2720,6 +2784,14 @@ export const serveCommand = new Command()
     "--address <url:string>",
     `${ADDRESS_DESCRIPTION} (env: SWAMP_SERVE_ADDRESS)`,
   )
+  .option(
+    "--advertise-address <url:string>",
+    `${ADVERTISE_ADDRESS_DESCRIPTION} (env: SWAMP_SERVE_ADVERTISE_ADDRESS)`,
+  )
+  .option(
+    "--ca-cert <path:string>",
+    `${SERVE_CA_CERT_DESCRIPTION} (env: SWAMP_CA_CERT)`,
+  )
   .option("--no-schedule", "Disable scheduled workflow execution")
   .option(
     "--cert-file <path:string>",
@@ -3082,6 +3154,7 @@ export const serveCommand = new Command()
       maxRunDurationMs,
       grantReloadMode,
       ownerAddress,
+      advertiseAddress,
     } = resolveServeStartupSettings(merged);
     const heartbeatIntervalRaw = merged.heartbeatInterval;
     const staleTtlRaw = merged.staleTtl;
@@ -3168,11 +3241,24 @@ export const serveCommand = new Command()
     }
 
     const trustedHostsRaw = merged.trustedHosts;
-    const trustedHosts = trustedHostsRaw
+    const configuredTrustedHosts = trustedHostsRaw
       ? trustedHostsRaw.split(",").map((h) => h.trim()).filter((h) =>
         h.length > 0
       )
       : undefined;
+    // A node that advertises itself to a team trusts the team's own names
+    // too (swamp-club#4120): the address its clients use, which a forwarded
+    // browser session's Origin names, and its advertised address, which a
+    // follower forwarding to it puts in Host.
+    const teamHosts = advertiseAddress === undefined
+      ? []
+      : [ownerAddress, advertiseAddress]
+        .filter((address): address is string => address !== undefined)
+        .map((address) => new URL(address).host);
+    const trustedHosts = configuredTrustedHosts === undefined &&
+        teamHosts.length === 0
+      ? undefined
+      : [...(configuredTrustedHosts ?? []), ...teamHosts];
 
     const dispatchEnvAllow = parseDispatchEnvAllow(merged.dispatchEnvAllow);
     if (dispatchEnvAllow !== undefined) {
@@ -3311,6 +3397,7 @@ export const serveCommand = new Command()
       : undefined;
 
     let configPoller: ConfigPoller | null = null;
+    let serveCommitEffects: ServeCommitEffects | undefined;
     let accessDataPoller: AccessDataPoller | null = null;
     let runtimeDataPoller: RuntimeDataPoller | null = null;
     let repoMarker = null;
@@ -3872,7 +3959,9 @@ export const serveCommand = new Command()
         },
         namespace: serveNamespace,
       });
-      configPoller.start();
+      // On a v3 datastore no interval runs: the commits serve sees ask for
+      // the check when the config or the lockfile changed (swamp-club#4120).
+      if (v3Location === undefined) configPoller.start();
     }
 
     // Create the control-plane store AFTER namespace binding (which happens
@@ -3964,6 +4053,12 @@ export const serveCommand = new Command()
             }),
         },
       );
+
+    // The team's peer key (swamp-club#4120): followers present it to read
+    // the leader's whole commit feed, and nothing else.
+    const teamPeerKey = v3Location !== undefined
+      ? new TeamPeerKey(tokenSecretsProvider)
+      : undefined;
 
     const healthResult = await checkTokenHealth({
       tokenSecretsProvider,
@@ -4814,14 +4909,17 @@ export const serveCommand = new Command()
     }
 
     const instanceId = crypto.randomUUID();
-    // This node's address in the leader record: a wildcard or loopback bind
-    // address names nothing another host can reach, so it is left out, and
-    // an IPv6 literal is bracketed, as a URL needs it (swamp-club#4096).
-    const leaderAddress = isUnreachableBindHost(host)
-      ? undefined
-      : `${tlsEnabled ? "https" : "http"}://${
-        host.includes(":") && !host.startsWith("[") ? `[${host}]` : host
-      }:${port}`;
+    // This node's address in the leader record: the advertised address when
+    // given (swamp-club#4120); otherwise the listener's, except that a
+    // wildcard or loopback bind address names nothing another host can
+    // reach, so it is left out, and an IPv6 literal is bracketed, as a URL
+    // needs it (swamp-club#4096).
+    const leaderAddress = advertiseAddress ??
+      (isUnreachableBindHost(host)
+        ? undefined
+        : `${tlsEnabled ? "https" : "http"}://${
+          host.includes(":") && !host.startsWith("[") ? `[${host}]` : host
+        }:${port}`);
     // A node that took the lease at boot records itself as the leader before
     // it listens or settles anything: a stalled former leader judges its
     // peers by the record, and would otherwise count this node gone by the
@@ -4829,17 +4927,25 @@ export const serveCommand = new Command()
     if (v3Location !== undefined && !v3Follows) {
       const fence = v3WriterFence(v3Location.path);
       if (fence !== undefined) {
-        await controlPlaneStore.put(
-          SERVE_LEADER_KEY,
-          serializeServeLeader({
+        try {
+          const record: ServeLeader = {
             instanceId,
             fence,
             ...(leaderAddress !== undefined ? { address: leaderAddress } : {}),
             since: new Date().toISOString(),
-          }),
-        ).catch((error) => {
+          };
+          // Signed with the team's peer key, so followers forward to its
+          // address (swamp-club#4120).
+          const proof = await teamPeerKey?.prove(record);
+          await controlPlaneStore.put(
+            SERVE_LEADER_KEY,
+            serializeServeLeader(
+              proof === undefined ? record : { ...record, proof },
+            ),
+          );
+        } catch (error) {
           logger.warn`Recording this serve node as the leader failed: ${error}`;
-        });
+        }
       }
     }
     // A resume through this server takes its continuation claims as this
@@ -5276,6 +5382,14 @@ export const serveCommand = new Command()
     // type, and a new name used to walk every definition twice
     // (swamp-club#4037); only that lookup reads the index.
     repoContext.definitionRepo.useNameIndex(definitionIndex);
+    // A follower's route to its team's leader (swamp-club#4120): writes it
+    // takes pass on through it with the caller's own credentials.
+    const leaderLink = v3Location === undefined ? undefined : new LeaderLink({
+      leader: () => connectionCtx.followerGate?.leader(),
+      ...(merged.caCert
+        ? { caCerts: [await readServeCaCert(merged.caCert)] }
+        : {}),
+    });
     const connectionCtx: import("../../serve/connection.ts").ConnectionContext =
       {
         repoDir: resolvedRepoDir,
@@ -5317,6 +5431,7 @@ export const serveCommand = new Command()
         managedDefinitionsDir: repoMarker?.datastore?.managedConfig
           ? join(datastoreResolver.resolvePath("config"), "models")
           : undefined,
+        ...(leaderLink !== undefined ? { leaderLink } : {}),
         // A node that booted following refuses writes from the first request
         // it takes, before its leadership names the leader (swamp-club#4096).
         ...(v3Follows
@@ -6386,6 +6501,7 @@ export const serveCommand = new Command()
       const endpoints = webhookEndpoints;
       webhookService = new WebhookService({
         acceptsRuns: () => !isFollowing(),
+        ...(leaderLink !== undefined ? { leaderLink } : {}),
         repoDir: resolvedRepoDir,
         repoContext,
         datastoreConfig,
@@ -6725,6 +6841,33 @@ export const serveCommand = new Command()
             }
 
             const extracted = extractWebSocketToken(req);
+            // A team peer's feed socket (swamp-club#4120): the peer key, not a
+            // token, so it is checked here and gets no principal. It may only
+            // read the commit feed.
+            if (extracted !== null && isPeerToken(extracted.token)) {
+              if (
+                teamPeerKey === undefined ||
+                !(await teamPeerKey.verify(extracted.token))
+              ) {
+                logger.warn(
+                  "WebSocket peer auth rejected from {ip}",
+                  { ip: remoteAddr },
+                );
+                return new Response("Unauthorized: invalid peer key", {
+                  status: 401,
+                });
+              }
+              const { socket, response } = Deno.upgradeWebSocket(
+                req,
+                extracted.transport === "subprotocol"
+                  ? { ...wsUpgradeOpts, protocol: `bearer.${extracted.token}` }
+                  : wsUpgradeOpts,
+              );
+              markPeerSocket(socket);
+              setConnectionSourceIp(socket, remoteAddr);
+              handleConnection(socket, connectionCtx, null);
+              return response;
+            }
             const dashboardSessionId = extracted === null
               ? extractDashboardSessionId(req)
               : null;
@@ -6852,6 +6995,16 @@ export const serveCommand = new Command()
                 protocol: `bearer.${extracted!.token}`,
               }
               : wsUpgradeOpts;
+            // Read before the upgrade, which closes the request's headers.
+            const forwardCredential = leaderLink === undefined
+              ? undefined
+              : forwardCredentialOf(
+                req,
+                extracted
+                  ? { kind: "bearer", token: extracted.token }
+                  : { kind: "cookie" },
+                remoteAddr,
+              );
             const { socket, response } = Deno.upgradeWebSocket(
               req,
               upgradeOpts,
@@ -6874,9 +7027,17 @@ export const serveCommand = new Command()
               resolveConnectionCompression(req.url),
             );
             socket.addEventListener("close", () => removeConnection(socket));
+            // A follower reaches the leader as this caller, with the
+            // caller's own credential (swamp-club#4120).
+            if (forwardCredential !== undefined) {
+              rememberForwardCredential(socket, forwardCredential);
+            }
             handleConnection(socket, connectionCtx, principal);
             return response;
           }
+          const forwardCredential = leaderLink === undefined
+            ? undefined
+            : forwardCredentialOf(req, { kind: "none" }, remoteAddr);
           const { socket, response } = Deno.upgradeWebSocket(
             req,
             wsUpgradeOpts,
@@ -6886,11 +7047,22 @@ export const serveCommand = new Command()
             socket,
             resolveConnectionCompression(req.url),
           );
+          if (forwardCredential !== undefined) {
+            rememberForwardCredential(socket, forwardCredential);
+          }
           handleConnection(socket, connectionCtx, null);
           return response;
         }
 
-        // Remote-execution data plane (bearer-authenticated worker routes)
+        // Remote-execution data plane (bearer-authenticated worker routes).
+        // A follower passes it on to the leader, which holds the workers'
+        // session credentials and authenticates them (swamp-club#4120).
+        if (
+          leaderLink !== undefined && isFollowing() &&
+          leaderLink.address() !== undefined && isDataPlaneRequest(req)
+        ) {
+          return await leaderLink.forward(req, { clientIp: clientAddress() });
+        }
         const dataPlaneResponse = await dataPlane.handle(req, clientAddress());
         if (dataPlaneResponse) return dataPlaneResponse;
 
@@ -7069,14 +7241,18 @@ export const serveCommand = new Command()
                 message: "Content-Type must be application/json",
               }, { status: 415 });
             }
-            // A follower cancels nothing: refused once the caller is
-            // authenticated, with a retryable 503 (swamp-club#4096). Inside
-            // the cancel route only: any other POST is not this route's.
-            const cancelNotLeader = followerHttpRefusal(
+            // A follower passes a cancel on to the leader, where the run
+            // is, with the caller's own credentials (swamp-club#4120), once
+            // the caller is authenticated; refused with a retryable 503 when
+            // no leader can be reached (swamp-club#4096). Inside the cancel
+            // route only: any other POST is not this route's.
+            const cancelForwarded = followerHttpForward(
               "workflow.cancel",
-              connectionCtx.followerGate,
+              req,
+              connectionCtx,
+              { clientIp: cancelRemoteAddr },
             );
-            if (cancelNotLeader !== undefined) return cancelNotLeader;
+            if (cancelForwarded !== undefined) return await cancelForwarded;
           }
           if (cancelMatch) {
             const executionType = cancelMatch[1] as ExecutionType;
@@ -7753,6 +7929,8 @@ export const serveCommand = new Command()
       // mode stays on until the datastores close, so a follower still
       // commits nothing.
       await serveLeadership?.stop();
+      await serveCommitEffects?.stop();
+      leaderLink?.close();
       if (heartbeatService) {
         await stopHeartbeatAtShutdown(heartbeatService, {
           store: controlPlaneStore,
@@ -8058,9 +8236,49 @@ export const serveCommand = new Command()
           logger.warn`Taking the lead: ${what} failed: ${error}`;
         }
       };
+      // The serve-side commit feed (swamp-club#4120): what a subscriber
+      // reads, here and from this node's followers.
+      connectionCtx.commitFeed = v3CommitFeedSource(resolvedRepoDir, location);
+      // In place of v2's pollers, every commit this node sees, its own and
+      // the leader's feed, keeps the catalog, the access policy and the
+      // extensions current.
+      serveCommitEffects = new ServeCommitEffects({
+        source: connectionCtx.commitFeed,
+        catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+        reloadPolicy: () => policySnapshotLoader.load(),
+        checkConfig: () => configPoller?.pollNow(),
+        isFollower: () => connectionCtx.followerGate?.role === "follower",
+      });
+      serveCommitEffects.start();
+      // A follower follows the leader's commit feed, with the team's peer
+      // key, in place of restoring its copy on every tick.
+      let markRefreshed = (): void => {};
+      const followerFeed = leaderLink !== undefined && teamPeerKey !== undefined
+        ? new FollowerFeed({
+          link: leaderLink,
+          peerToken: () => teamPeerKey.token(),
+          copyCursor: () => v3FollowerCopyCursor(resolvedRepoDir, location),
+          apply: (changes) =>
+            applyV3LeaderChanges(resolvedRepoDir, location, changes),
+          onFresh: () => {
+            markRefreshed();
+            serveCommitEffects?.poke();
+          },
+        })
+        : undefined;
+      if (followerFeed !== undefined) {
+        connectionCtx.feedBarrier = () => followerFeed.barrier();
+      }
       const leadership = new ServeLeadership({
         instanceId,
         ...(leaderAddress !== undefined ? { address: leaderAddress } : {}),
+        ...(followerFeed !== undefined ? { feed: followerFeed } : {}),
+        ...(teamPeerKey !== undefined
+          ? {
+            prove: (leader: ServeLeader) => teamPeerKey.prove(leader),
+            trust: (leader: ServeLeader) => teamPeerKey.trusts(leader),
+          }
+          : {}),
         lease: {
           holdsCurrent: () => holdsCurrentV3WriterLease(location.path),
           fence: () => v3WriterFence(location.path),
@@ -8072,7 +8290,10 @@ export const serveCommand = new Command()
             }),
         },
         store: controlPlaneStore,
-        refreshCopy: () => refreshV3FollowerCopy(resolvedRepoDir, location),
+        refreshCopy: async () => {
+          await refreshV3FollowerCopy(resolvedRepoDir, location);
+          serveCommitEffects?.poke();
+        },
         onLead: async () => {
           if (bootLead) {
             bootLead = false;
@@ -8115,6 +8336,7 @@ export const serveCommand = new Command()
         },
       });
       serveLeadership = leadership;
+      markRefreshed = () => leadership.markRefreshed();
       connectionCtx.followerGate = leadership;
       enableV3ServeTeamMode(
         location.path,

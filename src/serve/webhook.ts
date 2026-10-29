@@ -488,6 +488,15 @@ export interface WebhookServiceDeps {
    * Absent, every node takes runs.
    */
   acceptsRuns?: () => boolean;
+  /**
+   * A follower's route to the leader (swamp-club#4120): a delivery a node
+   * that takes no runs receives is passed on to the leader with its raw
+   * body and headers, before this node verifies it or runs any hook, so the
+   * leader verifies the signature and nothing about the delivery is
+   * trusted from the follower. Absent, or with no leader address known,
+   * the delivery is verified here and refused as before.
+   */
+  leaderLink?: LeaderLink;
   repoDir: string;
   repoContext: RepositoryContext;
   datastoreConfig: DatastoreConfig;
@@ -547,6 +556,7 @@ export interface WebhookQueueStatus {
 
 import type { WebhookAdmissionSnapshot } from "../domain/remote/run_progress.ts";
 import { SERVE_NOT_LEADER_CODE } from "../domain/datastore_v3/serve_leader.ts";
+import type { LeaderLink } from "./leader_link.ts";
 
 interface QueuedWebhookRun {
   lastProgressAt: string;
@@ -848,6 +858,22 @@ export class WebhookService {
         { error: "Request body too large" },
         { status: 413 },
       );
+    }
+
+    // A follower passes the delivery on to the leader as it came, within
+    // the size limit, before verifying it or running any hook: the leader
+    // verifies the signature with its own endpoint config (swamp-club#4120).
+    // The reply names no leader, as the refusal below does not.
+    const link = this.deps.leaderLink;
+    if (
+      this.deps.acceptsRuns?.() === false && link !== undefined &&
+      link.address() !== undefined
+    ) {
+      return await link.forward(req, {
+        body,
+        ...(sourceIp !== undefined ? { clientIp: sourceIp } : {}),
+        nameLeader: false,
+      });
     }
 
     // Any verification failure (malformed value, stale timestamp, mismatch,

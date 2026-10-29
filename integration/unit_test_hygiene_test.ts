@@ -185,6 +185,9 @@ const PINNED_SUBPROCESS_SOCKET_TESTS: readonly string[] = [
   // datastore API receives, and a closed port a refused connection
   // (swamp-club#3985).
   "src/infrastructure/datastore_v3/serve_datastore_client_test.ts",
+  // The serve-mode checkout's commit feed watch: the WebSocket to serve is
+  // the boundary under test (swamp-club#4120).
+  "src/infrastructure/datastore_v3/serve_feed_client_test.ts",
   // HTTP adapter test: real localhost server is the boundary under test.
   "src/infrastructure/http/extension_api_client_test.ts",
   // HTTP adapter test: real localhost server is the boundary under test.

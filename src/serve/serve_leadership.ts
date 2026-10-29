@@ -70,6 +70,21 @@ export interface LeadershipLease {
   take(): Promise<"writer" | "follower">;
 }
 
+/**
+ * The leader's commit feed, as a follower follows it (swamp-club#4120):
+ * while it is current for the leader the record names, a tick restores
+ * nothing, and each batch it applies marks the copy fresh
+ * ({@link ServeLeadership.markRefreshed}).
+ */
+export interface FollowerCopyFeed {
+  /** Whether the feed keeps the copy current for `leader`. */
+  current(leader: ServeLeader | undefined): boolean;
+  /** Follows `leader`'s feed from the copy as it is now. */
+  follow(leader: ServeLeader | undefined): void;
+  /** Stops following. */
+  stop(): Promise<void>;
+}
+
 /** What {@link ServeLeadership} needs. */
 export interface ServeLeadershipDeps {
   readonly instanceId: string;
@@ -80,6 +95,23 @@ export interface ServeLeadershipDeps {
   readonly store: ControlPlaneStore;
   /** Brings this node's copy up to the leader's commits. */
   refreshCopy(): Promise<void>;
+  /**
+   * The leader's commit feed (swamp-club#4120): a follower applies it in
+   * place of restoring on every tick, and restores only when it is not
+   * current. Absent, every tick restores.
+   */
+  readonly feed?: FollowerCopyFeed;
+  /**
+   * Signs this node's leader record with the team's peer key
+   * (swamp-club#4120). Absent, the record carries no proof.
+   */
+  prove?(leader: ServeLeader): Promise<string | undefined>;
+  /**
+   * Whether a leader record holds the team's proof. A record that does not
+   * names the leader without its address, so nothing is forwarded to it.
+   * Absent, every record is taken as written.
+   */
+  trust?(leader: ServeLeader): Promise<boolean>;
   /** Starts the leader's work; called when this node takes the lead. */
   onLead(): Promise<void>;
   /**
@@ -135,6 +167,14 @@ export class ServeLeadership {
   }
 
   /**
+   * The copy was brought up to the leader's commits just now, by the
+   * leader's commit feed (swamp-club#4120).
+   */
+  markRefreshed(): void {
+    if (this.#role === "follower") this.#refreshedAt = this.#now();
+  }
+
+  /**
    * Whether this node's copy is too old to answer reads from: only a
    * follower's, once it went without a refresh for longer than the bound.
    */
@@ -162,14 +202,16 @@ export class ServeLeadership {
       this.#refreshedAt = this.#now();
       await this.#readLeader();
       const leader = this.#leader;
+      this.#deps.feed?.follow(leader);
       if (leader === undefined) {
         logger
           .info`Another serve node leads this datastore; this node follows it`;
+      } else if (leader.address === undefined) {
+        logger
+          .info`Serve instance ${leader.instanceId} leads this datastore; this node follows it`;
       } else {
         logger
-          .info`Serve instance ${leader.instanceId} leads this datastore${
-          leader.address !== undefined ? ` at ${leader.address}` : ""
-        }; this node follows it`;
+          .info`Serve instance ${leader.instanceId} leads this datastore at ${leader.address}; this node follows it`;
       }
     }
     // A tick never rejects, and stop() waits for the one in flight.
@@ -206,6 +248,7 @@ export class ServeLeadership {
     this.#stopped = true;
     if (this.#timer !== undefined) clearInterval(this.#timer);
     await this.#ticking;
+    await this.#deps.feed?.stop();
   }
 
   async #tickOnce(): Promise<void> {
@@ -237,12 +280,23 @@ export class ServeLeadership {
       : await lease.take();
     if (this.#stopped) return;
     if (taken === "writer") {
+      await this.#deps.feed?.stop();
       await this.#lead();
       return;
+    }
+    const feed = this.#deps.feed;
+    if (feed !== undefined) {
+      // The feed keeps the copy current while it follows the leader the
+      // record names. A new leader, or a feed that stopped, restores from
+      // the lineage first, so no commit an old leader never published
+      // stays in the copy (swamp-club#4120).
+      await this.#readLeader();
+      if (feed.current(this.#leader)) return;
     }
     await this.#deps.refreshCopy();
     this.#refreshedAt = this.#now();
     await this.#readLeader();
+    feed?.follow(this.#leader);
   }
 
   /**
@@ -275,9 +329,11 @@ export class ServeLeadership {
 
   /** Writes the leader record; false when it could not be written. */
   async #writeRecord(): Promise<boolean> {
-    const record = this.#ownRecord();
+    let record = this.#ownRecord();
     if (record === undefined) return false;
     try {
+      const proof = await this.#deps.prove?.(record);
+      if (proof !== undefined) record = { ...record, proof };
       await this.#deps.store.put(
         SERVE_LEADER_KEY,
         serializeServeLeader(record),
@@ -306,7 +362,16 @@ export class ServeLeadership {
   async #readLeader(): Promise<void> {
     try {
       const data = await this.#deps.store.get(SERVE_LEADER_KEY);
-      const leader = data === null ? undefined : parseServeLeader(data);
+      let leader = data === null ? undefined : parseServeLeader(data);
+      if (
+        leader?.address !== undefined && this.#deps.trust !== undefined &&
+        !(await this.#deps.trust(leader))
+      ) {
+        logger
+          .warn`The serve leader record names ${leader.address} without the team's proof; nothing is forwarded to it`;
+        const { address: _address, ...unproven } = leader;
+        leader = unproven;
+      }
       // A record this node left from when it led names no leader now.
       this.#leader = leader?.instanceId === this.#deps.instanceId
         ? undefined

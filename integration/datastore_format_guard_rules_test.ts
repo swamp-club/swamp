@@ -188,6 +188,11 @@ const GUARDED_PINNED = [
   "src/infrastructure/datastore_v3/v3_repo_context.ts:followV3Datastore",
   "src/infrastructure/datastore_v3/interrupted_writer_recovery.ts:lockHeldByLiveProcess",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:v3DatastoreFor",
+  // swamp-club#4120: serve's commit feed and a follower applying its
+  // leader's feed open the handle serve's start opened, after its guard.
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:v3CommitFeedSource",
+  "src/infrastructure/datastore_v3/serve_feed.ts:applyV3LeaderChanges",
+  "src/infrastructure/datastore_v3/serve_feed.ts:v3FollowerCopyCursor",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:v3RepositoryFactoryConfig",
   // swamp-club#3473: `doctor datastores --retention` reads the oldest
   // stored commit, after a read-only repository context opened the repo.
