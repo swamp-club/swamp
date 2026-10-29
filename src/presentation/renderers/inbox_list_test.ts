@@ -124,6 +124,24 @@ Deno.test("LogInboxListRenderer: the To read one line comes before To see older"
   );
 });
 
+Deno.test("LogInboxListRenderer: a long title does not push the other rows' ids out", () => {
+  const view = makeView();
+  view.messages[0] = { ...view.messages[0], title: "x".repeat(120) };
+
+  const rows = capture(view, "log").stdout.split("\n");
+
+  assertEquals(
+    rows[1],
+    `●  2026-10-25  issue_update  ${
+      "Your issue #3990 shipped".padEnd(48)
+    }  01JBX5Q8ZK00000000000000ZX`,
+  );
+  assertEquals(
+    rows[0].endsWith(`${"x".repeat(120)}  01JBX5Q8ZK0000000000000104`),
+    true,
+  );
+});
+
 Deno.test("LogInboxListRenderer: an empty list has no To read one line", () => {
   assertEquals(
     capture(makeView({ messages: [] }), "log").stdout.includes("To read one"),

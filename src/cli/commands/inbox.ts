@@ -123,14 +123,14 @@ const inboxReadCommand = new Command()
     "Print one message and mark it read: the message with that id, or else " +
       "the next one to read. Never interactive.",
   )
-  .arguments("[id:string]")
+  .arguments("[message_id:string]")
   .example("Read the next message", "swamp inbox read")
   .example(
     "Read one message by its id",
     "swamp inbox read 01JBX5Q8ZK0000000000000104",
   )
   .example("Read it as JSON", "swamp inbox read --json")
-  .action(async function (options: AnyOptions, id?: string) {
+  .action(async function (options: AnyOptions, messageId?: string) {
     const cliCtx = createContext(options as GlobalOptions, ["inbox", "read"]);
     cliCtx.logger.debug("Executing inbox read command");
 
@@ -141,9 +141,9 @@ const inboxReadCommand = new Command()
       identity,
     });
     await consumeStream(
-      id === undefined
+      messageId === undefined
         ? inboxReadNext(ctx, deps)
-        : inboxReadById(ctx, deps, id),
+        : inboxReadById(ctx, deps, messageId),
       createInboxReadRenderer(cliCtx.outputMode).handlers(),
     );
 
@@ -154,8 +154,9 @@ const inboxReadCommand = new Command()
 export const inboxCommand = new Command()
   .name("inbox")
   .description(
-    "Browse your Swamp Club inbox: an interactive inbox in a terminal; " +
-      "otherwise a list of messages with their ids. Marks nothing read.",
+    "Browse your Swamp Club inbox. In a terminal, an interactive inbox " +
+      "where opening a message marks it read. Otherwise a list of messages " +
+      "with their ids, which marks nothing read.",
   )
   .option(
     "--all",

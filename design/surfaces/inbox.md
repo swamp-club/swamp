@@ -270,19 +270,24 @@ applied; marking read is idempotent, so retrying the whole call is safe.
     renders it. Up/down, PgUp/PgDn and Ctrl-u/d scroll it, as far as its last
     wrapped line. Esc goes back to the list with the same row highlighted.
 
-  The help bar shows the current view's keys: `Enter open  Ctrl-r mark read
-  Ctrl-a mark all read  Esc quit` in the list, and `↑/↓ scroll  PgUp/PgDn page
-  Esc back` in the message view. Ctrl-c quits from either view. Marking read
+  The help bar shows the current view's keys:
+  `↑/↓ navigate  Ctrl-u/d scroll  Enter open  Ctrl-r mark read  Ctrl-a mark all read  Esc quit`
+  in the list (`Esc clear filter` while filtering, and no `Ctrl-u/d` when the
+  terminal is too small for a preview), and `↑/↓ scroll  PgUp/PgDn page  Esc back`
+  in the message view. Ctrl-c quits from either view. Marking read
   happens in the background: the row's marker clears at once, and the request
   goes out in order after any before it. If the request fails, or Swamp Club
   does not confirm an id, the marker comes back and the bottom line reads
   `Could not mark 1 message read: <reason>` until the next key. Typing and
   scrolling never wait on the network. When the highlight reaches the last row
   and the page has another after it, the next page loads and is appended, with
-  a `loading older messages…` row meanwhile. On quit the inbox waits for the
+  a `loading older messages…` row meanwhile. A failed load says so on the
+  bottom line and is retried by the next ↓ on the last row; a page that is
+  empty or names the same cursor again ends paging. On quit the inbox waits for the
   marks still in flight, for at most 5 seconds, aborting any left and any page
   still loading, then prints one line only when something happened, from the
-  counts Swamp Club confirmed: `Read 2 messages and marked 3 read.` Nothing is
+  counts Swamp Club confirmed: `Read 2 messages and marked 3 read.` Entries
+  that older pages left out are reported on stderr after it. Nothing else is
   left in the scrollback. The inbox never runs a message's suggested command.
 - **Body links show where they lead.** A message body is markdown that Swamp
   Club wrote. Rendered for the terminal, every link in it, autolinks, reference

@@ -47,7 +47,7 @@ Deno.test("inbox read: takes an optional id and says it is never interactive", (
 
   const args = read.getArguments();
   assertEquals(args.length, 1);
-  assertEquals(args[0].name, "id");
+  assertEquals(args[0].name, "message_id");
   assertEquals(args[0].optional, true);
   assertStringIncludes(read.getDescription(), "Never interactive.");
   assertEquals(read.getExamples().map((e) => e.description), [
@@ -73,10 +73,11 @@ Deno.test("inbox read: its action never opens the interactive inbox", async () =
   assert(!readCommand.includes("isStdoutTty"));
 });
 
-Deno.test("inbox: says it browses and marks nothing read", () => {
+Deno.test("inbox: says it browses, and when it marks messages read", () => {
   assertEquals(
     inboxCommand.getDescription(),
-    "Browse your Swamp Club inbox: an interactive inbox in a terminal; " +
-      "otherwise a list of messages with their ids. Marks nothing read.",
+    "Browse your Swamp Club inbox. In a terminal, an interactive inbox " +
+      "where opening a message marks it read. Otherwise a list of messages " +
+      "with their ids, which marks nothing read.",
   );
 });

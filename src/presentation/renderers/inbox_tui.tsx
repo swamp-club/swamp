@@ -198,6 +198,8 @@ export function InboxTui(props: InboxTuiProps): React.ReactElement {
   const [items, setItems] = useState(initial.messages);
   const [nextCursor, setNextCursor] = useState(initial.nextCursor);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  // A failed page load waits for the next key past the last row to retry.
+  const [loadFailed, setLoadFailed] = useState(false);
   // Read here, not yet confirmed or confirmed: what the dots show.
   const [readHere, setReadHere] = useState<ReadonlySet<string>>(new Set());
   const [query, setQuery] = useState("");
@@ -295,29 +297,39 @@ export function InboxTui(props: InboxTuiProps): React.ReactElement {
   // Reaching the last row loads the next page, once at a time.
   const lastRow = results.length > 0 && selectedIndex === results.length - 1;
   useEffect(() => {
-    if (!lastRow || nextCursor === null || loadingOlder || quitting.current) {
+    if (
+      !lastRow || nextCursor === null || loadingOlder || loadFailed ||
+      quitting.current
+    ) {
       return;
     }
+    const cursor = nextCursor;
     setLoadingOlder(true);
-    backend.loadOlder(nextCursor).then(
+    backend.loadOlder(cursor).then(
       (page) => {
         setItems((prev) => {
           const seen = new Set(prev.map((m) => m.id));
           return [...prev, ...page.messages.filter((m) => !seen.has(m.id))];
         });
-        setNextCursor(page.nextCursor);
+        // An empty page, or one that names the same cursor again, would
+        // load forever: paging stops there.
+        setNextCursor(
+          page.messages.length === 0 || page.nextCursor === cursor
+            ? null
+            : page.nextCursor,
+        );
         setLoadingOlder(false);
       },
       (error: unknown) => {
-        // Not retried on its own: the next key past the last row retries.
-        setNextCursor(null);
+        // The cursor is kept: the next key past the last row retries.
+        setLoadFailed(true);
         setLoadingOlder(false);
         if (!quitting.current) {
           setStatus(`Could not load older messages: ${errorReason(error)}`);
         }
       },
     );
-  }, [lastRow, nextCursor, loadingOlder, backend]);
+  }, [lastRow, nextCursor, loadingOlder, loadFailed, backend]);
 
   // The state this render draws. Ink re-binds the useInput handler in an
   // effect after the frame is written, so a key can reach the handler of an
@@ -396,6 +408,7 @@ export function InboxTui(props: InboxTuiProps): React.ReactElement {
       return;
     }
     if (key.downArrow) {
+      if (now.selectedIndex >= now.results.length - 1) setLoadFailed(false);
       setSelectedIndex((i) =>
         Math.min(Math.max(0, latest.current.results.length - 1), i + 1)
       );
@@ -605,6 +618,7 @@ class InkInboxTuiRenderer implements Renderer<InboxBrowseEvent> {
 
   private async run(view: InboxBrowseView): Promise<void> {
     const connection = connectInboxTui(this.options);
+    let closed: InboxTuiClosed = { dropped: 0 };
     const isTTY = Deno.stdout.isTerminal();
     // The alternate screen keeps the inbox out of the scrollback.
     if (isTTY) Deno.stdout.writeSync(new TextEncoder().encode("\x1b[?1049h"));
@@ -624,9 +638,12 @@ class InkInboxTuiRenderer implements Renderer<InboxBrowseEvent> {
       if (isTTY) {
         Deno.stdout.writeSync(new TextEncoder().encode("\x1b[?1049l"));
       }
+      // Even when the inbox failed, the marks it sent are waited for.
+      closed = await connection.close();
     }
-    const line = await connection.close();
-    if (line !== undefined) writeOutput(line);
+    if (closed.line !== undefined) writeOutput(closed.line);
+    const warning = droppedWarning(closed.dropped);
+    if (warning) console.error(yellow(warning));
   }
 }
 
@@ -635,9 +652,18 @@ export interface InboxTuiConnection {
   backend: InboxTuiBackend;
   /**
    * Stops page loads, waits for the marks still in flight (the session
-   * bounds the wait and refreshes the cache), and returns the quit line.
+   * bounds the wait and refreshes the cache), and returns the quit line and
+   * the entries older pages left out.
    */
-  close(): Promise<string | undefined>;
+  close(): Promise<InboxTuiClosed>;
+}
+
+/** What the inbox comes to once closed. */
+export interface InboxTuiClosed {
+  /** The quit line; undefined when nothing was read or marked. */
+  line?: string;
+  /** Entries Swamp Club sent on older pages that were left out. */
+  dropped: number;
 }
 
 /** Connects the inbox to Swamp Club, counting what Swamp Club confirms. */
@@ -652,7 +678,7 @@ export function connectInboxTui(
     pending.push(promise.then(() => {}, () => {}));
     return promise;
   };
-  const tally = { read: 0, marked: 0 };
+  const tally = { read: 0, marked: 0, dropped: 0 };
   return {
     backend: {
       markRead: (ids, reason) =>
@@ -664,13 +690,23 @@ export function connectInboxTui(
             return outcome;
           }),
         ),
-      loadOlder: (cursor) => track(loadOlder(cursor, loads.signal)),
+      loadOlder: (cursor) =>
+        track(
+          loadOlder(cursor, loads.signal).then((page) => {
+            tally.dropped += page.dropped;
+            return page;
+          }),
+        ),
     },
     close: async () => {
       loads.abort();
       await markSession.finish();
       await Promise.all(pending);
-      return inboxQuitLine(tally.read, tally.marked);
+      const line = inboxQuitLine(tally.read, tally.marked);
+      return {
+        ...(line !== undefined ? { line } : {}),
+        dropped: tally.dropped,
+      };
     },
   };
 }

@@ -596,7 +596,7 @@ Deno.test("connectInboxTui: closing waits for marks in flight and counts what wa
   );
   const line = await connection.close();
 
-  assertEquals(line, "Read 1 message and marked 1 read.");
+  assertEquals(line, { line: "Read 1 message and marked 1 read.", dropped: 0 });
   assertEquals((await opened).kind, "confirmed");
   assertEquals((await marked).kind, "confirmed");
   assertEquals(order.at(-1), "marked 1");
@@ -615,7 +615,7 @@ Deno.test("connectInboxTui: closing with nothing marked prints nothing", async (
     loadOlder: () => Promise.resolve(makeView([])),
   });
 
-  assertEquals(await connection.close(), undefined);
+  assertEquals(await connection.close(), { dropped: 0 });
   assertEquals(finished, 1);
 });
 
@@ -643,4 +643,68 @@ Deno.test("connectInboxTui: closing aborts a page load still running", async () 
     () => assert(false, "the load should have been aborted"),
     (error: unknown) => assert(error instanceof DOMException),
   );
+});
+
+Deno.test("connectInboxTui: closing counts entries older pages left out", async () => {
+  const connection = connectInboxTui({
+    markSession: {
+      mark: () => Promise.resolve({ kind: "confirmed", ids: [] }),
+      finish: () => Promise.resolve(),
+    },
+    loadOlder: () =>
+      Promise.resolve({ messages: [OLDER], nextCursor: null, dropped: 2 }),
+  });
+
+  await connection.backend.loadOlder(ISSUE.id);
+
+  assertEquals(await connection.close(), { dropped: 2 });
+});
+
+Deno.test({
+  name:
+    "inbox: a failed older-page load is retried by the next key past the last row",
+  ...inkTestOptions,
+  fn: async () => {
+    let calls = 0;
+    const backend = fakeBackend();
+    backend.loadOlder = (cursor) => {
+      backend.loads.push(cursor);
+      calls++;
+      return calls === 1
+        ? Promise.reject(new Error("Swamp Club is down."))
+        : Promise.resolve(makeView([OLDER], null));
+    };
+    const inbox = openInbox(makeView([ANNOUNCEMENT, ISSUE], ISSUE.id), backend);
+    await inbox.until((f) => f.includes("2 / 2"), "the rows to draw");
+
+    inbox.stdin.write("\x1b[B");
+    await inbox.until(
+      (f) => f.includes("Could not load older messages: Swamp Club is down."),
+      "the failed load",
+    );
+    inbox.stdin.write("\x1b[B");
+    await inbox.until((f) => f.includes("3 / 3"), "the retried page");
+
+    assertEquals(backend.loads, [ISSUE.id, ISSUE.id]);
+  },
+});
+
+Deno.test({
+  name: "inbox: a page naming the same cursor again stops paging",
+  ...inkTestOptions,
+  fn: async () => {
+    const backend = fakeBackend({ older: makeView([OLDER], ISSUE.id) });
+    const inbox = openInbox(makeView([ANNOUNCEMENT, ISSUE], ISSUE.id), backend);
+    await inbox.until((f) => f.includes("2 / 2"), "the rows to draw");
+
+    inbox.stdin.write("\x1b[B");
+    await inbox.until((f) => f.includes("3 / 3"), "the older page");
+    inbox.stdin.write("\x1b[B");
+    await inbox.until(
+      (f) => f.includes("Glad to have you."),
+      "the highlight on the new last row",
+    );
+
+    assertEquals(backend.loads, [ISSUE.id]);
+  },
 });
