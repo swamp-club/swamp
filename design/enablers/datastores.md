@@ -7465,7 +7465,9 @@ that write what serve reads (`access token mint`, `rotate`, `reveal`,
 store (`localServeControlPlane`). Records are created only where absent, so nodes upgrading
 together overwrite nothing. Token secrets now live in the bucket, as v2 HA's
 do: anyone who can read the bucket's control plane can read them unless
-serve.yaml names an external `token-secrets` key.
+serve.yaml names an external `token-secrets` key. Serve says so at every start on a v3
+datastore while the key is the co-located one (`coLocatedTokenKeyWarning`),
+and says nothing once a `token-secrets` block keeps it in a vault.
 
 **Judging other instances.** Only the leader runs work, so in team mode a
 run any other serve instance left `running` is dead whatever its heartbeat

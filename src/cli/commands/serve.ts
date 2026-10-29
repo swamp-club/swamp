@@ -595,6 +595,10 @@ import {
   serializeServeLeader,
   SERVE_LEADER_KEY,
 } from "../../domain/datastore_v3/serve_leader.ts";
+import {
+  coLocatedTokenKeyWarning,
+  TOKEN_SECRETS_KEY_RECORD,
+} from "../../serve/token_key_exposure.ts";
 
 /**
  * How long the push of the runs boot or reconciliation settled may take
@@ -3965,6 +3969,15 @@ export const serveCommand = new Command()
       tokenSecretsProvider,
       hasRemoteControlPlane,
     });
+
+    // Team mode keeps the token secrets in the datastore: with the default
+    // co-located key, read access to it decrypts every one (swamp-club#4096).
+    if (v3Location !== undefined) {
+      const warning = coLocatedTokenKeyWarning(
+        await controlPlaneStore.get(TOKEN_SECRETS_KEY_RECORD).catch(() => null),
+      );
+      if (warning !== undefined) logger.warn(warning);
+    }
 
     await sweepTokenConsistency({
       repoContext,
