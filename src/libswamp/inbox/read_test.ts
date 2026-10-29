@@ -28,9 +28,14 @@ import {
   keyFingerprint,
 } from "../../domain/auth/auth_credentials.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  noticeToShow,
+  recordNoticeShown,
+} from "../../domain/inbox/inbox_policy.ts";
 import { InboxCacheKey, InboxState } from "../../domain/inbox/inbox_state.ts";
 import {
   type InboxListOptions,
+  type InboxMessage,
   type InboxMessagePage,
   type InboxSummaryResult,
   parseInboxMessagePage,
@@ -62,6 +67,19 @@ const unreadPage: InboxMessagePage = {
   nextCursor: null,
   dropped: 0,
 };
+const webKindsPage: InboxMessagePage = parseInboxMessagePage(
+  fixture.webKindsPage,
+)!;
+const knownMessages: InboxMessage[] = [
+  ...fullPage.messages,
+  ...webKindsPage.messages,
+];
+
+function messageOf(kind: string): InboxMessage {
+  const found = knownMessages.find((m) => m.kind === kind);
+  assert(found !== undefined, kind);
+  return found;
+}
 
 const credentials: AuthCredentials = {
   serverUrl: "https://swamp-club.com",
@@ -71,6 +89,7 @@ const credentials: AuthCredentials = {
 };
 
 const NOW = Date.parse("2026-10-27T12:00:00.000Z");
+const NOW_ISO = new Date(NOW).toISOString();
 
 const okSummary: InboxSummaryResult = {
   kind: "ok",
@@ -83,19 +102,60 @@ const okSummary: InboxSummaryResult = {
   etag: '"v2"',
 };
 
+/** A summary that names no message: the read falls back to the list. */
+const quietSummary: InboxSummaryResult = {
+  kind: "ok",
+  summary: {
+    unread: 0,
+    newestId: null,
+    newestAt: null,
+    pollAfterSeconds: 900,
+  },
+  etag: '"v1"',
+};
+
+function announcing(id: string, unread = 1): InboxSummaryResult {
+  return {
+    kind: "ok",
+    summary: {
+      unread,
+      newestId: id,
+      newestAt: "2026-10-25T17:30:00.000Z",
+      pollAfterSeconds: 900,
+    },
+    etag: '"v3"',
+  };
+}
+
 interface Recorder {
   listed: InboxListOptions[];
   marked: string[][];
   summaries: number;
+  got: string[];
   saved: { key: InboxCacheKey; state: InboxState }[];
 }
 
+/**
+ * `summaries` answers the summary calls in order, the last repeating: in
+ * inboxReadNext the first finds the announced message and the second
+ * follows marking read. `summary` answers every call.
+ */
 function makeDeps(overrides: Partial<InboxReadDeps> & {
   page?: InboxMessagePage;
   summary?: InboxSummaryResult;
+  summaries?: InboxSummaryResult[];
   credentials?: AuthCredentials | null;
 } = {}): { deps: InboxReadDeps; rec: Recorder } {
-  const rec: Recorder = { listed: [], marked: [], summaries: 0, saved: [] };
+  const rec: Recorder = {
+    listed: [],
+    marked: [],
+    summaries: 0,
+    got: [],
+    saved: [],
+  };
+  const summaries = overrides.summary !== undefined
+    ? [overrides.summary]
+    : overrides.summaries ?? [quietSummary, okSummary];
   const deps: InboxReadDeps = {
     loadCredentials: () =>
       Promise.resolve(
@@ -111,9 +171,17 @@ function makeDeps(overrides: Partial<InboxReadDeps> & {
       rec.marked.push([...ids]);
       return Promise.resolve([...ids]);
     },
+    getInboxMessage: (_url, _key, id) => {
+      rec.got.push(id);
+      const found = knownMessages.find((m) => m.id === id);
+      return found
+        ? Promise.resolve(found)
+        : Promise.reject(new UserError(`Message ${id} not found.`));
+    },
     inboxSummary: () => {
+      const answer = summaries[Math.min(rec.summaries, summaries.length - 1)];
       rec.summaries++;
-      return Promise.resolve(overrides.summary ?? okSummary);
+      return Promise.resolve(answer);
     },
     loadInboxState: () => Promise.resolve(InboxState.empty()),
     saveInboxState: (key, state) => {
@@ -195,7 +263,9 @@ Deno.test("inboxReadNext: nothing unread marks nothing and reports dropped", asy
     dropped: 1,
   });
   assertEquals(rec.marked, []);
-  assertEquals(rec.summaries, 0);
+  // Only the summary that looks for the announced message: nothing was
+  // marked, so there is nothing to refresh.
+  assertEquals(rec.summaries, 1);
 });
 
 Deno.test("inboxReadNext: pages past entries that were all dropped", async () => {
@@ -275,16 +345,17 @@ Deno.test("inboxReadNext: the refreshed summary goes into the key's cache", asyn
     inboxReadNext(createLibSwampContext(), deps),
   );
 
-  assertEquals(rec.summaries, 1);
-  assertEquals(rec.saved.length, 1);
+  assertEquals(rec.summaries, 2);
+  assertEquals(rec.saved.length, 2);
+  const refreshed = rec.saved[1];
   assertEquals(
-    rec.saved[0].key,
+    refreshed.key,
     InboxCacheKey.of(
       credentials.serverUrl,
       await keyFingerprint(credentials.apiKey),
     ),
   );
-  assertEquals(rec.saved[0].state.snapshot, {
+  assertEquals(refreshed.state.snapshot, {
     unread: 1,
     newestId: "01JBX5Q8ZK00000000000000ZX",
     newestAt: "2026-10-25T17:30:00.000Z",
@@ -292,7 +363,7 @@ Deno.test("inboxReadNext: the refreshed summary goes into the key's cache", asyn
     etag: '"v2"',
     fetchedAt: NOW,
   });
-  assertEquals(rec.saved[0].state.schedule.lastPolledAt, NOW);
+  assertEquals(refreshed.state.schedule.lastPolledAt, NOW);
 });
 
 Deno.test("inboxReadNext: the refresh is kept under the server it asked, not the stored one", async () => {
@@ -304,8 +375,10 @@ Deno.test("inboxReadNext: the refresh is kept under the server it asked, not the
     inboxReadNext(createLibSwampContext(), deps),
   );
 
-  assertEquals(rec.saved.length, 1);
-  assertEquals(rec.saved[0].key.origin, "https://staging.swamp-club.com");
+  assertEquals(rec.saved.length, 2);
+  for (const { key } of rec.saved) {
+    assertEquals(key.origin, "https://staging.swamp-club.com");
+  }
 });
 
 Deno.test("inboxReadNext: a failed refresh leaves the cache and still succeeds", async () => {
@@ -347,7 +420,8 @@ Deno.test("inboxReadNext: a config dir this process does not own is left alone",
   );
 
   assertEquals(rec.marked.length, 1);
-  assertEquals(rec.summaries, 0);
+  // The announced message is still looked for; only the cache is left.
+  assertEquals(rec.summaries, 1);
   assertEquals(rec.saved, []);
 });
 
@@ -399,6 +473,218 @@ Deno.test("inboxReadNext: an abort is cancelled", async () => {
 
   assert(last.kind === "error");
   assertEquals(last.error.code, "cancelled");
+});
+
+Deno.test("inboxReadNext: reads the announced message ahead of a newer mention, and the notice stops", async () => {
+  const mention = messageOf("mention");
+  const announced = messageOf("issue_update");
+  assert(mention.id > announced.id);
+  // The notice is up for the issue_update.
+  let state = recordNoticeShown(
+    {
+      ...InboxState.empty(),
+      snapshot: {
+        unread: 1,
+        newestId: announced.id,
+        newestAt: announced.createdAt,
+        pollAfterSeconds: 900,
+        etag: '"v3"',
+        fetchedAt: NOW - 1_000,
+      },
+    },
+    NOW - 1_000,
+  );
+  assert(noticeToShow(state, NOW) !== null);
+  const { deps, rec } = makeDeps({
+    page: { messages: [mention, announced], nextCursor: null, dropped: 0 },
+    // A mention never counts: after the read nothing that raises the
+    // notice is unread.
+    summaries: [announcing(announced.id), quietSummary],
+    loadInboxState: () => Promise.resolve(state),
+    saveInboxState: (_key, next) => {
+      state = next;
+      return Promise.resolve();
+    },
+  });
+
+  const last = lastOf(
+    await collect<InboxReadNextEvent>(
+      inboxReadNext(createLibSwampContext(), deps),
+    ),
+  );
+
+  assert(last.kind === "completed");
+  assertEquals(last.view.message?.id, announced.id);
+  assertEquals(rec.got, [announced.id]);
+  assertEquals(rec.marked, [[announced.id]]);
+  // The mention is still waiting.
+  assertEquals(last.view.moreUnread, true);
+  assertEquals(noticeToShow(state, NOW), null);
+});
+
+Deno.test("inboxReadNext: the summary asked before reading goes into the key's cache", async () => {
+  const announced = messageOf("issue_update");
+  const { deps, rec } = makeDeps({
+    summaries: [announcing(announced.id), quietSummary],
+  });
+
+  await collect<InboxReadNextEvent>(
+    inboxReadNext(createLibSwampContext(), deps),
+  );
+
+  assertEquals(rec.saved.length, 2);
+  assertEquals(rec.saved[0].state.snapshot?.newestId, announced.id);
+  assertEquals(rec.saved[0].state.snapshot?.etag, '"v3"');
+});
+
+Deno.test("inboxReadNext: without an announced message to read, reads the newest unread", async () => {
+  const announced = messageOf("issue_update");
+  const unknownId = "01JBX5Q8ZK00000000000009ZZ";
+  const readCopy: InboxMessage = { ...announced, readAt: NOW_ISO };
+  const cases: {
+    name: string;
+    first: InboxSummaryResult;
+    get?: InboxReadDeps["getInboxMessage"];
+    gets: number;
+  }[] = [
+    { name: "failed", first: { kind: "failed", reason: "timeout" }, gets: 0 },
+    { name: "not_modified", first: { kind: "not_modified" }, gets: 0 },
+    { name: "unsupported", first: { kind: "unsupported" }, gets: 0 },
+    { name: "unavailable", first: { kind: "unavailable" }, gets: 0 },
+    { name: "rejected", first: { kind: "rejected" }, gets: 0 },
+    { name: "newestId null", first: quietSummary, gets: 0 },
+    { name: "a 404 from the get", first: announcing(unknownId), gets: 1 },
+    {
+      name: "a message the client refuses",
+      first: announcing(announced.id),
+      get: () =>
+        Promise.reject(
+          new UserError("Swamp Club returned a malformed answer."),
+        ),
+      gets: 1,
+    },
+    {
+      name: "a message already read",
+      first: announcing(announced.id),
+      get: () => Promise.resolve(readCopy),
+      gets: 1,
+    },
+  ];
+  for (const c of cases) {
+    let gets = 0;
+    const { deps, rec } = makeDeps({
+      summaries: [c.first, okSummary],
+      ...(c.get !== undefined
+        ? {
+          getInboxMessage: (...args) => {
+            gets++;
+            return c.get!(...args);
+          },
+        }
+        : {}),
+    });
+
+    const last = lastOf(
+      await collect<InboxReadNextEvent>(
+        inboxReadNext(createLibSwampContext(), deps),
+      ),
+    );
+
+    assert(last.kind === "completed", c.name);
+    assertEquals(
+      last.view.message?.id,
+      unreadPage.messages[0].id,
+      c.name,
+    );
+    assertEquals(rec.marked, [[unreadPage.messages[0].id]], c.name);
+    assertEquals(gets + rec.got.length, c.gets, c.name);
+  }
+});
+
+Deno.test("inboxReadNext: a summary call that throws falls back to the newest unread", async () => {
+  const { deps, rec } = makeDeps({
+    inboxSummary: () => Promise.reject(new Error("socket closed")),
+  });
+
+  const last = lastOf(
+    await collect<InboxReadNextEvent>(
+      inboxReadNext(createLibSwampContext(), deps),
+    ),
+  );
+
+  assert(last.kind === "completed");
+  assertEquals(last.view.message?.id, unreadPage.messages[0].id);
+  assertEquals(rec.got, []);
+});
+
+Deno.test("inboxReadNext: moreUnread counts unread messages other than the announced one", async () => {
+  const mention = messageOf("mention");
+  const announced = messageOf("issue_update");
+  const cases: [InboxMessagePage, boolean][] = [
+    [{ messages: [announced], nextCursor: null, dropped: 0 }, false],
+    [{ messages: [mention, announced], nextCursor: null, dropped: 0 }, true],
+    [{ messages: [mention], nextCursor: null, dropped: 0 }, true],
+    [{ messages: [announced], nextCursor: announced.id, dropped: 0 }, true],
+    [{ messages: [announced], nextCursor: null, dropped: 1 }, true],
+  ];
+  for (const [page, expected] of cases) {
+    const { deps } = makeDeps({
+      page,
+      summaries: [announcing(announced.id), quietSummary],
+    });
+
+    const last = lastOf(
+      await collect<InboxReadNextEvent>(
+        inboxReadNext(createLibSwampContext(), deps),
+      ),
+    );
+
+    assert(last.kind === "completed");
+    assertEquals(last.view.message?.id, announced.id);
+    assertEquals(last.view.moreUnread, expected);
+  }
+});
+
+Deno.test("inboxReadNext: with the announced message in hand, lists one page only", async () => {
+  const announced = messageOf("issue_update");
+  const { deps, rec } = makeDeps({
+    page: {
+      messages: [],
+      nextCursor: "01JBX5Q8ZK00000000000000Z1",
+      dropped: 2,
+    },
+    summaries: [announcing(announced.id), quietSummary],
+  });
+
+  const last = lastOf(
+    await collect<InboxReadNextEvent>(
+      inboxReadNext(createLibSwampContext(), deps),
+    ),
+  );
+
+  assert(last.kind === "completed");
+  assertEquals(last.view.message?.id, announced.id);
+  assertEquals(rec.listed.length, 1);
+  assertEquals(last.view.moreUnread, true);
+});
+
+Deno.test("inboxReadNext: an abort while fetching the announced message is cancelled", async () => {
+  const announced = messageOf("issue_update");
+  const { deps, rec } = makeDeps({
+    summaries: [announcing(announced.id)],
+    getInboxMessage: () =>
+      Promise.reject(new DOMException("aborted", "AbortError")),
+  });
+
+  const last = lastOf(
+    await collect<InboxReadNextEvent>(
+      inboxReadNext(createLibSwampContext(), deps),
+    ),
+  );
+
+  assert(last.kind === "error");
+  assertEquals(last.error.code, "cancelled");
+  assertEquals(rec.marked, []);
 });
 
 Deno.test("markRead: marks exactly the given ids and refreshes the cache", async () => {

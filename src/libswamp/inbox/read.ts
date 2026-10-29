@@ -27,7 +27,10 @@ import {
   type InboxState,
 } from "../../domain/inbox/inbox_state.ts";
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
-import type { InboxSummaryResult } from "../../infrastructure/http/inbox_schemas.ts";
+import type {
+  InboxMessage,
+  InboxSummaryResult,
+} from "../../infrastructure/http/inbox_schemas.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
 import { InboxCacheFileRepository } from "../../infrastructure/inbox/inbox_cache_file_repository.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
@@ -48,9 +51,9 @@ import { toPollOutcome } from "./poll_outcome.ts";
 export const MAX_INBOX_READ_PAGES = 5;
 
 /**
- * How long the summary call that follows marking read may take. The marking
- * already succeeded, so this only bounds how long the command waits to stop
- * the notice early.
+ * How long a summary call made while reading may take: the one that finds
+ * the message the notice announced, and the one that follows marking read.
+ * Either falls back when it runs out, so this only bounds the wait.
  */
 export const INBOX_REFRESH_TIMEOUT_MS = 5_000;
 
@@ -65,6 +68,12 @@ export interface InboxReadDeps {
     ids: readonly string[],
     signal: AbortSignal,
   ) => Promise<string[]>;
+  getInboxMessage: (
+    serverUrl: string,
+    apiKey: string,
+    id: string,
+    signal: AbortSignal,
+  ) => Promise<InboxMessage>;
   inboxSummary: (
     serverUrl: string,
     apiKey: string,
@@ -97,6 +106,8 @@ export function createInboxReadDeps(
       client(serverUrl).listInboxMessages(apiKey, listOptions, signal),
     markInboxRead: (serverUrl, apiKey, ids, signal) =>
       client(serverUrl).markInboxRead(apiKey, ids, signal),
+    getInboxMessage: (serverUrl, apiKey, id, signal) =>
+      client(serverUrl).getInboxMessage(apiKey, id, signal),
     // No etag: a 304 would keep the unread count from before the marking.
     inboxSummary: (serverUrl, apiKey, signal) =>
       client(serverUrl).inboxSummary(apiKey, null, signal),
@@ -115,7 +126,10 @@ export type MarkReadEvent =
   | { kind: "error"; error: SwampError };
 
 export interface InboxReadNextView {
-  /** The newest unread message, now read; null when nothing was unread. */
+  /**
+   * The message the notice announced, or else the newest unread message, now
+   * read; null when nothing was unread.
+   */
   message: InboxMessageView | null;
   /** Whether swamp-club confirmed the message as read. */
   marked: boolean;
@@ -162,17 +176,16 @@ function isAbort(error: unknown): error is DOMException {
 }
 
 /**
- * Asks for the unread count once more and stores it in the key's inbox
- * cache for the server it asked, so the notice stops now rather than at the
- * next poll. Never throws: the messages are already read, and the next poll
- * corrects the cache.
+ * Asks for the unread summary, with no ETag, and stores the answer in the
+ * key's inbox cache for the server it asked when this process owns the
+ * config dir. Never throws: null when no answer came, and a cache that
+ * cannot be written is left as it was.
  */
-async function refreshInboxCache(
+async function askSummary(
   ctx: LibSwampContext,
   deps: InboxReadDeps,
   session: Session,
-): Promise<void> {
-  if (!deps.ownsConfigDir()) return;
+): Promise<InboxSummaryResult | null> {
   try {
     const sentAt = deps.now();
     const result = await deps.inboxSummary(
@@ -180,23 +193,84 @@ async function refreshInboxCache(
       session.apiKey,
       ctx.withTimeout(INBOX_REFRESH_TIMEOUT_MS).signal,
     );
-    // A failed refresh is not a poll: recording it would put the next real
+    // A failed call is not a poll: recording it would put the next real
     // poll off, and leave the notice up for longer.
     if (result.kind === "failed") {
-      ctx.logger.debug`Inbox summary refresh failed: ${result.reason}`;
-      return;
+      ctx.logger.debug`Inbox summary failed: ${result.reason}`;
+      return result;
     }
-    const key = InboxCacheKey.of(
-      session.serverUrl,
-      await keyFingerprint(session.apiKey),
-    );
-    const state = await deps.loadInboxState(key);
-    await deps.saveInboxState(
-      key,
-      applyPollOutcome(state, toPollOutcome(result, sentAt), deps.now()),
-    );
+    if (deps.ownsConfigDir()) {
+      try {
+        const key = InboxCacheKey.of(
+          session.serverUrl,
+          await keyFingerprint(session.apiKey),
+        );
+        const state = await deps.loadInboxState(key);
+        await deps.saveInboxState(
+          key,
+          applyPollOutcome(state, toPollOutcome(result, sentAt), deps.now()),
+        );
+      } catch (error: unknown) {
+        ctx.logger.debug`Could not update the inbox cache: ${error}`;
+      }
+    }
+    return result;
   } catch (error: unknown) {
-    ctx.logger.debug`Could not refresh the inbox cache: ${error}`;
+    ctx.logger.debug`Could not ask for the inbox summary: ${error}`;
+    return null;
+  }
+}
+
+/**
+ * Asks for the unread count once more after marking read, so the notice
+ * stops now rather than at the next poll. Never throws: the messages are
+ * already read, and the next poll corrects the cache.
+ */
+async function refreshInboxCache(
+  ctx: LibSwampContext,
+  deps: InboxReadDeps,
+  session: Session,
+): Promise<void> {
+  if (!deps.ownsConfigDir()) return;
+  await askSummary(ctx, deps, session);
+}
+
+/** The id of the message the notice announced; null when the summary gave none. */
+async function announcedMessageId(
+  ctx: LibSwampContext,
+  deps: InboxReadDeps,
+  session: Session,
+): Promise<string | null> {
+  const result = await askSummary(ctx, deps, session);
+  return result?.kind === "ok" ? result.summary.newestId : null;
+}
+
+/**
+ * The message the notice announced, while it is still unread. Null when the
+ * summary named none, or the message is gone, read, or one this client
+ * refuses: the caller then reads the newest unread message instead. Only an
+ * abort propagates.
+ */
+async function announcedUnread(
+  ctx: LibSwampContext,
+  deps: InboxReadDeps,
+  session: Session,
+): Promise<InboxMessage | null> {
+  const id = await announcedMessageId(ctx, deps, session);
+  if (id === null) return null;
+  try {
+    const message = await deps.getInboxMessage(
+      session.serverUrl,
+      session.apiKey,
+      id,
+      ctx.signal,
+    );
+    return message.readAt === null ? message : null;
+  } catch (error: unknown) {
+    if (isAbort(error)) throw error;
+    ctx.logger
+      .debug`Could not fetch the announced inbox message ${id}: ${error}`;
+    return null;
   }
 }
 
@@ -245,9 +319,12 @@ export async function* markRead(
 }
 
 /**
- * Reads the newest unread message: fetches it and marks it read. The message
- * is marked before it is shown, so a run killed in between leaves it read but
- * unseen; `swamp inbox --all` and the picker still reach it.
+ * Reads the message the notice announced, or else the newest unread message:
+ * fetches it and marks it read. Reading the announced message first lets the
+ * notice stop at once, even when newer messages that never raise it, such as
+ * mentions, are waiting. The message is marked before it is shown, so a run
+ * killed in between leaves it read but unseen; `swamp inbox --all` and the
+ * picker still reach it.
  */
 export async function* inboxReadNext(
   ctx: LibSwampContext,
@@ -256,6 +333,7 @@ export async function* inboxReadNext(
   const session = yield* openSession(deps);
   if (!session) return;
   try {
+    const announced = await announcedUnread(ctx, deps, session);
     // Two, so the second tells whether more are waiting. A page whose
     // entries were all dropped says nothing about what lies behind it, so
     // listing goes on past it, a few pages at most.
@@ -266,9 +344,12 @@ export async function* inboxReadNext(
       ctx.signal,
     );
     let dropped = page.dropped;
+    // With the announced message in hand, the first page already says
+    // whether more are waiting.
     for (
       let pages = 1;
-      page.messages.length === 0 && page.nextCursor !== null &&
+      announced === null && page.messages.length === 0 &&
+      page.nextCursor !== null &&
       pages < MAX_INBOX_READ_PAGES;
       pages++
     ) {
@@ -280,8 +361,8 @@ export async function* inboxReadNext(
       );
       dropped += page.dropped;
     }
-    const [newest] = page.messages;
-    if (newest === undefined) {
+    const shown = announced ?? page.messages[0];
+    if (shown === undefined) {
       yield {
         kind: "completed",
         view: {
@@ -294,22 +375,21 @@ export async function* inboxReadNext(
       };
       return;
     }
-    const confirmed = await markAndRefresh(ctx, deps, session, [newest.id]);
-    const marked = confirmed.some((id) =>
-      id.toUpperCase() === newest.id.toUpperCase()
-    );
+    const shownId = shown.id.toUpperCase();
+    const confirmed = await markAndRefresh(ctx, deps, session, [shown.id]);
+    const marked = confirmed.some((id) => id.toUpperCase() === shownId);
     yield {
       kind: "completed",
       view: {
         // The read endpoint returns ids only, so readAt is this CLI's clock.
         message: {
-          ...toMessageView(newest),
+          ...toMessageView(shown),
           readAt: marked ? new Date(deps.now()).toISOString() : null,
         },
         marked,
         // A dropped entry is an unread message this CLI could not show.
-        moreUnread: page.messages.length > 1 || page.nextCursor !== null ||
-          dropped > 0,
+        moreUnread: page.messages.some((m) => m.id.toUpperCase() !== shownId) ||
+          page.nextCursor !== null || dropped > 0,
         dropped,
       },
     };
