@@ -19,11 +19,13 @@
 
 import {
   assertEquals,
+  assertFalse,
   assertInstanceOf,
   assertStringIncludes,
 } from "@std/assert";
 import { UserError } from "../errors.ts";
 import {
+  DataVersionConflictError,
   HydrateContractViolationError,
   isUnpublishedDataError,
   ModelLockLostError,
@@ -210,4 +212,27 @@ Deno.test("isUnpublishedDataError: matches the two push refusals and nothing els
   );
   assertEquals(isUnpublishedDataError(new UserError("other")), false);
   assertEquals(isUnpublishedDataError(undefined), false);
+});
+
+Deno.test("DataVersionConflictError: carries and names a failure publishing the run's other data (swamp-club#3934)", () => {
+  const version = {
+    modelType: "t/x",
+    modelId: "m-1",
+    dataName: "main",
+    version: 1,
+  };
+  const alone = new DataVersionConflictError([version]);
+  assertEquals(alone.publishFailure, undefined);
+  assertFalse(alone.message.includes("failed too"));
+
+  const failure = new Error("push failed");
+  const both = new DataVersionConflictError([version], {
+    publishFailure: failure,
+  });
+  assertEquals(both.publishFailure, failure);
+  assertStringIncludes(both.message, "t/x/m-1 main version 1");
+  assertStringIncludes(
+    both.message,
+    "Publishing the run's other data failed too: push failed",
+  );
 });

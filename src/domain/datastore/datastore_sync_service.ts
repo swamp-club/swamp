@@ -884,21 +884,38 @@ export class ModelLockLostError extends UserError {
  */
 export class DataVersionConflictError extends UserError {
   readonly versions: readonly WrittenVersion[];
+  /**
+   * Why publishing the run's other versions failed as well, when it did:
+   * then they are not on the datastore either, and the conflict alone does
+   * not describe the publish.
+   */
+  readonly publishFailure: unknown;
 
-  constructor(versions: readonly WrittenVersion[]) {
+  constructor(
+    versions: readonly WrittenVersion[],
+    options: { publishFailure?: unknown } = {},
+  ) {
     const names = versions.map((v) =>
       `${v.modelType}/${v.modelId} ${v.dataName} version ${v.version}`
     ).join(", ");
+    const failure = options.publishFailure === undefined
+      ? ""
+      : ` Publishing the run's other data failed too: ${
+        options.publishFailure instanceof Error
+          ? options.publishFailure.message
+          : String(options.publishFailure)
+      }`;
     super(
       `Another swamp process, most likely another clone of this ` +
         `repository, wrote ${names} while this run was running, so this ` +
         `run's data with the same version was not published: this host ` +
         `now holds the datastore's copy. Run the method again to write and ` +
-        `publish it.`,
+        `publish it.${failure}`,
       "datastore_data_version_conflict",
     );
     this.name = "DataVersionConflictError";
     this.versions = versions;
+    this.publishFailure = options.publishFailure;
   }
 }
 

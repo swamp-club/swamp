@@ -4466,7 +4466,14 @@ export async function acquireModelLocks(
       if (own.length > 0) conflict = new DataVersionConflictError(own);
     }
     if (toPublish.length === 0) {
-      await pushOnce();
+      try {
+        await pushOnce();
+      } catch (error) {
+        if (conflict === undefined) throw error;
+        throw new DataVersionConflictError(conflict.versions, {
+          publishFailure: error,
+        });
+      }
       await settleDeferred();
       if (conflict !== undefined) throw conflict;
       return;
@@ -4523,9 +4530,12 @@ export async function acquireModelLocks(
     }
     if (failure !== undefined) {
       if (conflict === undefined) throw failure;
-      // The refusal is the error to act on; what else failed is logged.
-      logger
-        .warn`Publishing the versions left after a refusal failed: ${failure}`;
+      // The refusal carries the failure: the versions it left were not all
+      // published either, so a caller that tolerates the refusal still
+      // fails on the rest (swamp-club#3934).
+      throw new DataVersionConflictError(conflict.versions, {
+        publishFailure: failure,
+      });
     }
     if (conflict !== undefined) throw conflict;
   };

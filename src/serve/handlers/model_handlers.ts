@@ -312,9 +312,11 @@ async function publishUnlockedRun(
   try {
     await publishLocks.pushWritten(written);
   } catch (error) {
+    let cause: unknown = error;
     if (error instanceof DataVersionConflictError) {
-      // The run's work is done and the rest of its data was published, as
-      // the CLI warns for a read or list run (swamp-club#3934).
+      // The run's work is done, as the CLI warns for a read or list run
+      // (swamp-club#3934); a failure publishing the rest is logged below.
+      cause = error.publishFailure;
       logger.warn(
         "Another swamp process wrote {versions} of behavior {model} while this run was running: the datastore keeps that copy, and this host now holds it in place of this run's",
         {
@@ -324,14 +326,17 @@ async function publishUnlockedRun(
           model: `${model.modelType}/${model.modelId}`,
         },
       );
-    } else if (isUnpublishedDataError(error)) {
-      pushFailure = { error };
+    }
+    if (cause === undefined) {
+      // Only the conflict: the rest of the run's data was published.
+    } else if (isUnpublishedDataError(cause)) {
+      pushFailure = { error: cause };
     } else {
       logger.error(
         "Failed to publish the data of {modelType}/{modelId}: {error}",
         {
           ...model,
-          error: error instanceof Error ? error.message : String(error),
+          error: cause instanceof Error ? cause.message : String(cause),
         },
       );
     }

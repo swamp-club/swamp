@@ -801,9 +801,16 @@ Deno.test("model method run: a read method finishes while a writer holds the mod
     );
     try {
       // The run neither waits for the writer nor fails (swamp-club#1992).
-      await runMethod(c.repoA, "observe", "from-a");
+      const docs = await jsonResults(() =>
+        runMethod(c.repoA, "observe", "from-a")
+      );
       assertEquals(remoteValue(c, 1), undefined, "nothing published yet");
       assertEquals(await pendingRecords(c.repoA), 1);
+      // Its JSON result says the data waits for the next lock.
+      assertStringIncludes(
+        unpublishedOf(docs.find((d) => d.methodName === "observe")).join(","),
+        "main/1/deferred",
+      );
     } finally {
       await writerLock.flush();
       await flushDatastoreSync();
@@ -1512,6 +1519,50 @@ Deno.test("model method run: a read whose pull under the publish lock is refused
     );
     assertEquals(remoteValue(c, 1), undefined, "nothing was published");
     assertEquals(await pendingRecords(c.repoA), 0);
+    assertEquals(c.locks.held.size, 0, "the publish lock was released");
+  });
+});
+
+Deno.test("model method run: a read whose publish finds a conflict and then fails to push the rest fails the command, and its JSON result still names the conflict (swamp-club#3934)", async () => {
+  await withClones(async (c) => {
+    // B writes only the state, so A's summary reports conflict with nothing
+    // and are left for the push, which fails.
+    let started!: () => void;
+    const aStarted = new Promise<void>((resolve) => started = resolve);
+    let resume!: () => void;
+    const bDone = new Promise<void>((resolve) => resume = resolve);
+    hooks = {
+      beforeWrite: async () => {
+        started();
+        await bDone;
+      },
+      // The test datastore pushes in two phases; the first uploads.
+      afterWrite: () => {
+        c.remote.failNext("prepare", new Error("injected push failure"));
+        return Promise.resolve();
+      },
+    };
+    let error: UserError | undefined;
+    const docs = await jsonResults(async () => {
+      const aRun = runMethod(c.repoA, "observe", "from-a");
+      await aStarted;
+      await runMethod(c.repoB, "write", "from-b", ["--skip-reports"]);
+      resume();
+      error = await assertRejects(() => aRun, UserError);
+    });
+
+    assertEquals(error?.code, "datastore_publish_failed");
+    assertStringIncludes(error?.message ?? "", "injected push failure");
+    assertEquals(
+      unpublishedOf(docs.find((d) => d.methodName === "observe")),
+      ["main/1/conflict"],
+    );
+    assertEquals(remoteValue(c, 1), "from-b", "B's version is kept");
+    assertEquals(
+      remoteFile(c, "/report-swamp-method-summary/1/metadata.yaml"),
+      undefined,
+      "the rest was not published",
+    );
     assertEquals(c.locks.held.size, 0, "the publish lock was released");
   });
 });

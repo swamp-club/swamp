@@ -8019,36 +8019,37 @@ refreshes its resource does. `methodRunLockMode`
   push walks), logs that the next run to lock the behavior on this host
   publishes them, and succeeds. A nested run whose parent holds the lock
   defers the same way, and the parent's push publishes its data.
-- With the lock, the publish pulls the behavior, as a mutating run's lock
-  does. The pull replaces with the datastore's copy every version another
-  clone wrote under the same number while the run was unlocked, so a
-  version whose local data id is no longer the one the run wrote was
-  another clone's: it is not pushed, and the rest are. On a lazy cache its
-  content is read back from the datastore over this host's copy, never
-  removed: the run's write left it marked, and a push deletes the remote
-  copy of a marked file missing here. If it cannot be read back, nothing is
-  pushed, and the run's own such versions are recorded beside the deferred
-  ones, so the next lock finds them replaced again and reads their content
-  back before it pushes; a pull alone would not, since their metadata is
-  already current. The push then throws `DataVersionConflictError`
-  (`datastore_data_version_conflict`), which says this host now holds the
-  datastore's copy. Because the cache holds what the datastore holds for the
-  behavior under its lock, a push that walks a marked directory deletes and
-  rolls back none of another clone's versions, whether or not the sync
-  service can clear its marks. The conflict does not fail the run: the
-  method's work is done and its other versions were published, and every
-  run writes a version of each built-in method-summary report, so failing
-  would fail any read that overlaps another clone's run of the same
-  behavior. The CLI logs it at warn and exits with the method's own status;
-  serve, which has answered its client before it publishes, logs it at warn
-  too.
-- The CLI logs the publish and its locks under the `datastore.lock`
-  category, not the run's own: without `--log` the run's category reaches
-  only the run log file, and the publish runs after the method has finished
-  writing it. In JSON mode, where no log reaches the console, a read or list
-  run's result waits for its publish and lists what it left on this host
-  in `unpublishedVersions` (`dataName`, `version`, and `reason`: `conflict`
-  or `unauthorized`); the field is absent when nothing was left.
+- With the lock, the publish pulls the behavior, as a mutating run's lock does.
+  The pull replaces with the datastore's copy every version another clone wrote
+  under the same number while the run was unlocked, so a version whose local
+  data id is no longer the one the run wrote was another clone's: it is not
+  pushed, and the rest are. On a lazy cache its content is read back from the
+  datastore over this host's copy, never removed: the run's write left it
+  marked, and a push deletes the remote copy of a marked file missing here. If
+  it cannot be read back, nothing is pushed, and the run's own such versions are
+  recorded beside the deferred ones, so the next lock finds them replaced again
+  and reads their content back before it pushes; a pull alone would not, since
+  their metadata is already current. The push then throws
+  `DataVersionConflictError` (`datastore_data_version_conflict`), which says
+  this host now holds the datastore's copy. Because the cache holds what the
+  datastore holds for the behavior under its lock, a push that walks a marked
+  directory deletes and rolls back none of another clone's versions, whether or
+  not the sync service can clear its marks. The conflict does not fail the run:
+  the method's work is done and its other versions were published, unless
+  publishing them failed too, which the conflict then carries and which decides
+  the run as it would without the conflict. Every run writes a version of each
+  built-in method-summary report, so failing would fail any read that overlaps
+  another clone's run of the same behavior. The CLI logs it at warn and exits
+  with the method's own status; serve, which has answered its client before it
+  publishes, logs it at warn too.
+- The CLI logs the publish and its locks under the `datastore.lock` category,
+  not the run's own: without `--log` the run's category reaches only the run log
+  file, and the publish runs after the method has finished writing it. In JSON
+  mode, where no log reaches the console, a read or list run's result waits for
+  its publish and lists what it left on this host in `unpublishedVersions`
+  (`dataName`, `version`, and `reason`: `conflict`, `unauthorized`, or
+  `deferred` while another run holds the lock); the field is absent when nothing
+  was left.
 - A refusal of the credentials (HTTP 401 or 403, an access-denied code, read by
   `isDatastoreAuthorizationError`), whether taking the publish lock, pulling
   under it or pushing, does not fail a read or list run either: read-only

@@ -654,6 +654,32 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               if (outcome === "failed") methodFailed = true;
             },
           };
+          // The versions a read or list run's publish left on this host,
+          // which do not fail the run (swamp-club#3934).
+          const unpublished: {
+            written: WrittenVersion;
+            reason: UnpublishedVersionView["reason"];
+          }[] = [];
+          const versionKey = (w: WrittenVersion) =>
+            JSON.stringify([w.modelType, w.modelId, w.dataName, w.version]);
+          /** Lists what `model`'s versions not yet listed were left as. */
+          const leaveUnpublished = (
+            model: { modelType: string; modelId: string },
+            reason: UnpublishedVersionView["reason"],
+          ) => {
+            const listed = new Set(
+              unpublished.map((u) => versionKey(u.written)),
+            );
+            for (const version of written) {
+              if (
+                version.modelType === model.modelType &&
+                version.modelId === model.modelId &&
+                !listed.has(versionKey(version))
+              ) {
+                unpublished.push({ written: version, reason });
+              }
+            }
+          };
           const pushWritten = async (locks: ModelLockResult) => {
             try {
               await locks.pushWritten(written);
@@ -666,6 +692,11 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               ) {
                 throw error;
               }
+              if (error instanceof DataVersionConflictError) {
+                for (const version of error.versions) {
+                  unpublished.push({ written: version, reason: "conflict" });
+                }
+              }
               publishLogger.error("{message}", { message: error.message });
             }
           };
@@ -677,12 +708,6 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           // Set once every input set ran and succeeded: only then does a
           // failed publish fail the command; otherwise it is logged.
           let runSucceeded = false;
-          // The versions a read or list run's publish left on this host,
-          // which do not fail the run (swamp-club#3934).
-          const unpublished: {
-            written: WrittenVersion;
-            reason: UnpublishedVersionView["reason"];
-          }[] = [];
           // In JSON mode a read or list run's result waits for its publish,
           // so it can name the versions left unpublished (swamp-club#3934).
           const holdResults = ctx.outputMode === "json" &&
@@ -692,8 +717,6 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
             run: ModelMethodRunView;
             runIndex: number;
           }[] = [];
-          const versionKey = (w: WrittenVersion) =>
-            JSON.stringify([w.modelType, w.modelId, w.dataName, w.version]);
           const renderHeldResults = async () => {
             for (const held of heldResults.splice(0)) {
               const own = new Set(writtenByRun[held.runIndex].map(versionKey));
@@ -740,6 +763,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                           model: `${publishTo.modelType}/${publishTo.modelId}`,
                         },
                       );
+                      leaveUnpublished(publishTo, "deferred");
                       return;
                     }
                     try {
@@ -757,11 +781,12 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                     }
                   } catch (error) {
                     // Another clone wrote the same version number while this
-                    // run was unlocked: the method's work is done and the
-                    // rest of its data was published, so a read or list run
-                    // does not fail over it. Every run's summary reports
-                    // write a version, so failing would fail any read that
-                    // overlaps another clone's run (swamp-club#3934).
+                    // run was unlocked: the method's work is done, so when the
+                    // rest of its data was published a read or list run does
+                    // not fail over it. Every run's summary reports write a
+                    // version, so failing would fail any read that overlaps
+                    // another clone's run (swamp-club#3934).
+                    let cause: unknown = error;
                     if (error instanceof DataVersionConflictError) {
                       publishLogger.warn(
                         "Another swamp process wrote {versions} of behavior {model} while this run was running: the datastore keeps that copy, and this host now holds it in place of this run's",
@@ -778,7 +803,10 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                           reason: "conflict",
                         });
                       }
-                      return;
+                      if (error.publishFailure === undefined) return;
+                      // The rest was not published either: that failure
+                      // decides the run, as it would without the conflict.
+                      cause = error.publishFailure;
                     }
                     // Credentials the datastore refuses, such as read-only
                     // ones, never stopped a read before its data was
@@ -788,30 +816,20 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                     // lock, which the same credentials would be refused
                     // again. Only a refusal degrades; an unreachable
                     // datastore still fails.
-                    if (isDatastoreAuthorizationError(error)) {
+                    if (isDatastoreAuthorizationError(cause)) {
                       publishLogger.warn(
                         "The datastore refused this host's credentials, so this run's data was not published to it and stays on this host only; a read or list run publishes what it writes, so its credentials must be able to read and write the behavior's data on the datastore: {error}",
                         {
-                          error: error instanceof Error
-                            ? error.message
-                            : String(error),
+                          error: cause instanceof Error
+                            ? cause.message
+                            : String(cause),
                         },
                       );
-                      for (const version of written) {
-                        if (
-                          version.modelType === publishTo.modelType &&
-                          version.modelId === publishTo.modelId
-                        ) {
-                          unpublished.push({
-                            written: version,
-                            reason: "unauthorized",
-                          });
-                        }
-                      }
+                      leaveUnpublished(publishTo, "unauthorized");
                       return;
                     }
-                    publishFailure = { error };
-                    throw error;
+                    publishFailure = { error: cause };
+                    throw cause;
                   }
                 }
                 : undefined,

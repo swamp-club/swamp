@@ -64,11 +64,13 @@ export interface ModelReportView {
  * same version first; the datastore keeps that copy and this host now holds
  * it, so an artifact naming this version names data that no longer exists.
  * `unauthorized`: the datastore refused the credentials, as read-only ones.
+ * `deferred`: another run held the behavior's lock; the next run that takes
+ * it on this host publishes the version.
  */
 export interface UnpublishedVersionView {
   dataName: string;
   version: number;
-  reason: "conflict" | "unauthorized";
+  reason: "conflict" | "unauthorized" | "deferred";
 }
 
 /**
