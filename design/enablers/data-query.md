@@ -783,6 +783,48 @@ rebuilds it from scratch. That rebuild also clears foreign-namespace rows
 fetched by `swamp datastore catalog pull`. Those rows describe data that is not
 on local disk, so a local walk cannot recreate them; re-pull to restore them.
 
+### Unreadable Versions
+
+An unclean shutdown of a v2 write that was not synced (the `durable` setting is
+off, see [datastores.md](datastores.md#filesystem)) can keep the rename, the
+`latest` marker and the catalog row but lose the bytes. The version is then
+published with an empty `metadata.yaml` and `raw`: a query returns its row with
+`content: {}`, and `data get` reports it not found (swamp-club#3955).
+
+A version is **published** when it has a catalog row that is not pending, or
+when the data name's `latest` marker names it. Directory order is not used. A
+published version is **unreadable** when its directory is gone, its
+`metadata.yaml` is missing, empty or does not parse, its `raw` is missing, or
+`raw` is shorter than the size `metadata.yaml` records. A save in flight, or a
+pending deferred write, is not published, so it is never unreadable.
+`src/domain/data/unreadable_data_version.ts` names these concepts.
+
+- **Reads warn.** On a v2 repository whose files are all local (no hydrate hook,
+  not v3), `FileSystemUnifiedDataRepository` warns once per version per process
+  when a read reaches a published unreadable version: `findByName` on an empty
+  `metadata.yaml`, `getContent`/`getContentSync` on a missing `raw` whose
+  metadata is there, or an empty `raw` whose catalog row records content, and
+  `isContentAcceptedSync` on a `raw` shorter than the row's size. The answer is
+  unchanged: the warning goes through LogTape, which `--json` mode silences.
+- **Doctor reports.** `swamp doctor datastores` on a format 2 filesystem
+  datastore runs the `unreadable_versions` check
+  (`scanUnreadableVersions` in `unreadable_data_versions.ts`). It walks every
+  data name on disk together with every non-pending catalog row of the repo's
+  namespace (`CatalogStore.versionKeys`), and inspects each published version.
+  An empty or unparseable marker is its own finding (`marker_unreadable`). The
+  check runs before the completeness check, and the versions it reports are not
+  warned about again when that walk reads them.
+- **Repair rolls back.** `swamp doctor datastores --repair` runs
+  `repairUnreadableVersions` before the catalog repair. The preview lists, per
+  record, the versions to remove and the version left as latest. With `-y` it
+  takes the affected models' locks, scans again under them, and removes each
+  unreadable version highest first through the repository's single-version
+  `delete`. That call drops the catalog row, recomputes `is_latest` and
+  `is_step_latest`, and moves the marker. The repair then points the marker at
+  the highest readable promoted version (`resetLatestMarkerToReadable`). A
+  record with no readable version left is removed. A version that became
+  readable again before the locks were taken is kept.
+
 ### Remote Datastores (S3)
 
 The catalog is local-only. It lives in the local cache directory and is

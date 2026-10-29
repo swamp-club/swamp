@@ -101,6 +101,11 @@ import {
 import { garbageCollectionToColumn } from "../../domain/data/data_metadata.ts";
 import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
 import { currentDiagnosticTally } from "../../domain/diagnostics/diagnostic_phase.ts";
+import {
+  describeUnreadableVersionReason,
+  type LatestMarkerState,
+  type UnreadableVersionReason,
+} from "../../domain/data/unreadable_data_version.ts";
 
 /**
  * The latest marker's value when a data name has versions on disk but none
@@ -118,6 +123,28 @@ export {
 };
 
 const logger = getSwampLogger(["data", "repository"]);
+
+/**
+ * Version directories this process has warned cannot be read
+ * (swamp-club#3955), so a command that reads one twice, or serve's repeated
+ * sweeps, warn about it once.
+ */
+const warnedUnreadableVersions = new Set<string>();
+
+/** A data name on disk: the key of one versioned record. */
+export interface DataNameKey {
+  type: ModelType;
+  modelId: string;
+  dataName: string;
+}
+
+/** What {@link FileSystemUnifiedDataRepository.inspectVersion} found. */
+export interface VersionInspection {
+  /** Why the version cannot be read; undefined when it can. */
+  reason?: UnreadableVersionReason;
+  /** The model name its metadata records, when it records one. */
+  modelName?: string;
+}
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -899,6 +926,56 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
+   * Every data name on disk, found by the same walk as
+   * {@link collectAllData} and in the same order, without reading any
+   * version. For `swamp doctor datastores`, which checks each name's
+   * published versions itself (swamp-club#3955).
+   */
+  iterateDataNames(): AsyncIterable<DataNameKey> {
+    return this.walkDataNames(this.getBaseDir(), []);
+  }
+
+  private async *walkDataNames(
+    currentDir: string,
+    pathSegments: string[],
+  ): AsyncIterable<DataNameKey> {
+    let entries: string[];
+    try {
+      entries = await listSubdirectories(currentDir);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return;
+      throw error;
+    }
+    for (const name of entries) {
+      const childPath = join(currentDir, name);
+      const childSegments = [...pathSegments, name];
+      if (
+        childSegments.length >= 2 && await this.isModelIdDirectory(childPath)
+      ) {
+        let type: ModelType;
+        try {
+          type = ModelType.create(pathSegments.join("/"));
+        } catch {
+          // Not a valid model type: the walk skips it, as collectAllData does.
+          continue;
+        }
+        let dataNames: string[];
+        try {
+          dataNames = await listSubdirectories(childPath);
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) continue;
+          throw error;
+        }
+        for (const dataName of dataNames) {
+          yield { type, modelId: name, dataName };
+        }
+      } else {
+        yield* this.walkDataNames(childPath, childSegments);
+      }
+    }
+  }
+
+  /**
    * Like `findAllForModel`, but only returns data items whose latest-version
    * `createdAt` is at or after the cutoff. Stats the metadata file first
    * (Stage A) so old data is skipped without parsing.
@@ -1041,6 +1118,14 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             `metadata.yaml of ${dataName} version ${versionToRead} is empty`,
           );
         }
+        // Reads as not found; a published version says so (swamp-club#3955).
+        this.warnUnreadableVersion(
+          type,
+          modelId,
+          dataName,
+          versionToRead,
+          "metadata_empty",
+        );
         return null;
       }
       const data = Data.fromData(metadata);
@@ -1668,10 +1753,15 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     await this.ensureContentFile(type, modelId, dataName, versionToRead);
     await this.assertModelReadPath(contentPath, type, modelId);
     try {
-      return await Deno.readFile(contentPath);
+      const bytes = await Deno.readFile(contentPath);
+      if (bytes.length === 0) {
+        this.warnEmptyContent(type, modelId, dataName, versionToRead);
+      }
+      return bytes;
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
         await this.throwIfUnreadable(contentPath);
+        this.warnMissingContent(type, modelId, dataName, versionToRead);
         return null;
       }
       throw error;
@@ -1734,7 +1824,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     version: number,
     size: number,
   ): boolean {
-    if (!this.hydrateFile) return true;
+    if (!this.hydrateFile) {
+      // Nothing could replace the file, so it is read as it is; a published
+      // version stored short says so (swamp-club#3955).
+      this.warnShortContent(type, modelId, dataName, version, size);
+      return true;
+    }
     const contentPath = this.getContentPath(type, modelId, dataName, version);
     const localSize = fileSizeSync(contentPath);
     if (localSize === null) return false;
@@ -2917,9 +3012,14 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       versionToRead,
     );
     try {
-      return Deno.readFileSync(contentPath);
+      const bytes = Deno.readFileSync(contentPath);
+      if (bytes.length === 0) {
+        this.warnEmptyContent(type, modelId, dataName, versionToRead);
+      }
+      return bytes;
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
+        this.warnMissingContent(type, modelId, dataName, versionToRead);
         return null;
       }
       throw error;
@@ -3759,6 +3859,321 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       // Not a symlink either
     }
     return null;
+  }
+
+  /**
+   * What the latest marker of `dataName` holds (swamp-club#3955): no
+   * marker, one that names no version (empty, or not a number), or the
+   * version it names. Read as {@link readLatestMarker} reads it, so it never
+   * falls back to the highest version directory, which could be a write in
+   * flight. NO_PROMOTED_VERSION reads as a version; it names none on disk.
+   */
+  async latestMarkerState(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<LatestMarkerState> {
+    try {
+      await Deno.lstat(
+        join(this.getDataNameDir(type, modelId, dataName), "latest"),
+      );
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return { kind: "absent" };
+      throw error;
+    }
+    const version = await this.readLatestMarker(type, modelId, dataName);
+    return version === null
+      ? { kind: "unreadable" }
+      : { kind: "version", version };
+  }
+
+  /**
+   * Whether a published version of `dataName` can be read, and the model
+   * name its metadata records (swamp-club#3955). A version cannot be read
+   * when its directory is gone, its `metadata.yaml` is missing, empty or
+   * does not parse as a data version's metadata, its `raw` is missing, or
+   * `raw` is shorter than the size the metadata records. Only for a version
+   * that is published: a write in flight looks the same.
+   */
+  async inspectVersion(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ): Promise<VersionInspection> {
+    try {
+      await Deno.stat(this.getPath(type, modelId, dataName, version));
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return { reason: "version_missing" };
+      }
+      throw error;
+    }
+    let text: string;
+    try {
+      text = await Deno.readTextFile(
+        this.getMetadataPath(type, modelId, dataName, version),
+      );
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return { reason: "metadata_missing" };
+      }
+      throw error;
+    }
+    if (text.trim() === "") return { reason: "metadata_empty" };
+    let data: Data;
+    try {
+      const metadata = parseYaml(text) as DataMetadata | null;
+      if (!metadata) return { reason: "metadata_empty" };
+      data = Data.fromData(metadata);
+    } catch {
+      return { reason: "metadata_unparseable" };
+    }
+    const modelName = data.tags["modelName"];
+    const found = modelName === undefined ? {} : { modelName };
+    const size = await this.contentFileSize(type, modelId, dataName, version);
+    if (size === null) return { ...found, reason: "content_missing" };
+    if (data.size !== undefined && size < data.size) {
+      return { ...found, reason: "content_short" };
+    }
+    return found;
+  }
+
+  /** The size of a version's content file, or null when it has none. */
+  private async contentFileSize(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ): Promise<number | null> {
+    return await fileSize(
+      this.getContentPath(type, modelId, dataName, version),
+    );
+  }
+
+  /**
+   * The highest promoted version of `dataName` that can be read
+   * (swamp-club#3955), or null when none can. A pending deferred write is
+   * not promoted, so it is never chosen.
+   */
+  async highestReadableVersion(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<number | null> {
+    const { promoted } = await this.listPromotedVersions(
+      type,
+      modelId,
+      dataName,
+    );
+    for (const version of [...promoted].sort((a, b) => b - a)) {
+      const { reason } = await this.inspectVersion(
+        type,
+        modelId,
+        dataName,
+        version,
+      );
+      if (reason === undefined) return version;
+    }
+    return null;
+  }
+
+  /**
+   * Points the latest marker of `dataName` at its highest readable promoted
+   * version, for `swamp doctor datastores --repair` on a marker that names
+   * no version (swamp-club#3955). Returns that version, or null when none
+   * can be read, and the marker is left as it is. Run under the model's
+   * lock. The marker is written durably when the datastore's `durable`
+   * setting is on, as every marker write is.
+   */
+  async resetLatestMarkerToReadable(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<number | null> {
+    const version = await this.highestReadableVersion(type, modelId, dataName);
+    if (version === null) return null;
+    await this.staged(
+      {
+        kind: "write",
+        path: join(this.getDataNameDir(type, modelId, dataName), "latest"),
+      },
+      () => this.updateLatestMarker(type, modelId, dataName, version),
+    );
+    return version;
+  }
+
+  /**
+   * Whether reads check for unreadable versions (swamp-club#3955): only on
+   * a v2 datastore whose files are all local. With a hydrate hook a missing
+   * or short file is downloaded, and a v3 checkout replays its records
+   * from the commit log and reports what it cannot.
+   */
+  private checksUnreadableVersions(): boolean {
+    return this.hydrateFile === undefined &&
+      this.unreadableContent === undefined &&
+      !typedStagingActive(this.markDirty);
+  }
+
+  /**
+   * Whether a version is published: it has a catalog row that is not
+   * pending, or the latest marker names it (no fallback to the highest
+   * version directory). A save in flight and a pending deferred write are
+   * not. The same definition the doctor scan uses (swamp-club#3955).
+   */
+  private isPublishedVersionSync(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ): boolean {
+    const rows = this.catalogStore.versionKeys(this.namespace, {
+      typeNormalized: type.normalized,
+      modelId,
+      dataName,
+    });
+    if (rows.some((row) => row.version === version)) return true;
+    try {
+      const marker = Deno.readTextFileSync(
+        join(this.getDataNameDir(type, modelId, dataName), "latest"),
+      );
+      return parseInt(marker.trim(), 10) === version;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Warns, once per version per process, that a read reached a published
+   * version that cannot be read and served it as empty or not found
+   * (swamp-club#3955). The read's answer is unchanged. A version that is
+   * not published (a write in flight) is passed over silently, and a check
+   * that fails is only logged at debug, so a read never fails over it.
+   */
+  private warnUnreadableVersion(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+    reason: UnreadableVersionReason,
+  ): void {
+    if (!this.checksUnreadableVersions()) return;
+    const key = this.getPath(type, modelId, dataName, version);
+    if (warnedUnreadableVersions.has(key)) return;
+    try {
+      if (!this.isPublishedVersionSync(type, modelId, dataName, version)) {
+        return;
+      }
+    } catch (error) {
+      logger
+        .debug`Could not check whether version ${version} of ${dataName} is published: ${error}`;
+      return;
+    }
+    warnedUnreadableVersions.add(key);
+    logger
+      .warn`Version ${version} of ${dataName} (behavior ${modelId}) cannot be read: ${
+      describeUnreadableVersionReason(reason)
+    }, so it reads as empty or not found. Run swamp doctor datastores --repair to preview rolling it back to its last readable version.`;
+  }
+
+  /**
+   * Warns when a read found no content file for a version whose metadata
+   * is there. A version whose metadata is missing too is not warned about:
+   * a first write in flight looks the same.
+   */
+  private warnMissingContent(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ): void {
+    if (!this.checksUnreadableVersions()) return;
+    if (
+      !hasVersionMetadataSync(this.getPath(type, modelId, dataName, version))
+    ) {
+      return;
+    }
+    this.warnUnreadableVersion(
+      type,
+      modelId,
+      dataName,
+      version,
+      "content_missing",
+    );
+  }
+
+  /**
+   * Warns when a read found a version's content file empty while its
+   * catalog row records content: the zero-byte file an unclean shutdown
+   * leaves. Only an empty read looks the row up, so other reads cost
+   * nothing; a short read the catalog's size reveals is warned about by
+   * {@link warnShortContent}.
+   */
+  private warnEmptyContent(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ): void {
+    if (!this.checksUnreadableVersions()) return;
+    let recorded: number | undefined;
+    try {
+      recorded = this.catalogStore.versionKeys(this.namespace, {
+        typeNormalized: type.normalized,
+        modelId,
+        dataName,
+      }).find((row) => row.version === version)?.size;
+    } catch (error) {
+      logger
+        .debug`Could not look up the recorded size of version ${version} of ${dataName}: ${error}`;
+      return;
+    }
+    if (recorded === undefined || recorded === 0) return;
+    this.warnUnreadableVersion(
+      type,
+      modelId,
+      dataName,
+      version,
+      "content_short",
+    );
+  }
+
+  /**
+   * Records that `swamp doctor datastores` reported a version as
+   * unreadable (swamp-club#3955), so a read later in the same process does
+   * not warn about it again.
+   */
+  noteUnreadableVersionReported(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ): void {
+    warnedUnreadableVersions.add(
+      this.getPath(type, modelId, dataName, version),
+    );
+  }
+
+  /** Warns when a version's local content is shorter than `size`. */
+  private warnShortContent(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+    size: number,
+  ): void {
+    if (!this.checksUnreadableVersions()) return;
+    const localSize = fileSizeSync(
+      this.getContentPath(type, modelId, dataName, version),
+    );
+    if (localSize === null || localSize >= size) return;
+    this.warnUnreadableVersion(
+      type,
+      modelId,
+      dataName,
+      version,
+      "content_short",
+    );
   }
 
   /**

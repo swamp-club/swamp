@@ -59,6 +59,7 @@ import {
   unitOptions,
 } from "../datastore_v3/commit_log_test_helpers.ts";
 import { MemoryStorage } from "../../domain/datastore_v3/v3_test_helpers.ts";
+import { captureUnreadableWarnings } from "./unreadable_records_test_helpers.ts";
 
 const testType = ModelType.create("test/model");
 
@@ -4347,4 +4348,246 @@ Deno.test("save: on v2, a failed file sync names the file it was writing", async
       }),
     },
   );
+});
+
+// --- swamp-club#3955: reads warn on published unreadable versions ---
+
+interface UnreadableFixture {
+  dir: string;
+  catalog: CatalogStore;
+  repo: FileSystemUnifiedDataRepository;
+  modelId: string;
+  versionDir: (version: number) => string;
+}
+
+/**
+ * A repo holding three versions of `state`, each with JSON content; `make`
+ * builds the repository read through, by default a plain v2 one.
+ */
+async function withUnreadableFixture(
+  fn: (f: UnreadableFixture) => Promise<void>,
+  make: (
+    dir: string,
+    catalog: CatalogStore,
+  ) => FileSystemUnifiedDataRepository = (dir, catalog) =>
+    new FileSystemUnifiedDataRepository(dir, undefined, catalog),
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-unreadable-read-" });
+  const catalog = new CatalogStore(join(dir, "_catalog.db"));
+  const modelId = crypto.randomUUID();
+  try {
+    const writer = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+    for (let i = 1; i <= 3; i++) {
+      await writer.save(
+        testType,
+        modelId,
+        makeJsonData("state"),
+        new TextEncoder().encode(JSON.stringify({ stageId: `s${i}` })),
+      );
+    }
+    await fn({
+      dir,
+      catalog,
+      repo: make(dir, catalog),
+      modelId,
+      versionDir: (version) =>
+        writer.getPath(testType, modelId, "state", version),
+    });
+  } finally {
+    catalog.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+const REPOSITORY_LOG = ["data", "repository"];
+
+Deno.test("findByName: an empty metadata.yaml on the published latest version warns once and still reads as not found (swamp-club#3955)", async () => {
+  await withUnreadableFixture(async (f) => {
+    await Deno.writeFile(
+      join(f.versionDir(3), "metadata.yaml"),
+      new Uint8Array(),
+    );
+    let found: unknown = "unset";
+    const warnings = await captureUnreadableWarnings(async () => {
+      found = await f.repo.findByName(testType, f.modelId, "state");
+      await f.repo.findByName(testType, f.modelId, "state");
+    }, REPOSITORY_LOG);
+    assertEquals(found, null);
+    assertEquals(warnings.length, 1, warnings.join("\n"));
+    assertStringIncludes(warnings[0], "Version 3");
+    assertStringIncludes(warnings[0], "metadata.yaml is empty");
+    assertStringIncludes(warnings[0], "swamp doctor datastores --repair");
+  });
+});
+
+Deno.test("isContentAcceptedSync: a published version stored short warns once and is still accepted (swamp-club#3955)", async () => {
+  await withUnreadableFixture(async (f) => {
+    await Deno.writeFile(join(f.versionDir(3), "raw"), new Uint8Array());
+    const accepted: boolean[] = [];
+    const warnings = await captureUnreadableWarnings(() => {
+      for (let i = 0; i < 2; i++) {
+        accepted.push(
+          f.repo.isContentAcceptedSync(testType, f.modelId, "state", 3, 15),
+        );
+      }
+      return Promise.resolve();
+    }, REPOSITORY_LOG);
+    assertEquals(accepted, [true, true]);
+    assertEquals(warnings.length, 1, warnings.join("\n"));
+    assertStringIncludes(warnings[0], "shorter than its metadata records");
+  });
+});
+
+Deno.test("getContent and getContentSync: a published version whose raw is missing warns, and still returns null (swamp-club#3955)", async () => {
+  await withUnreadableFixture(async (f) => {
+    await Deno.remove(join(f.versionDir(3), "raw"));
+    await Deno.remove(join(f.versionDir(2), "raw"));
+    const read: unknown[] = [];
+    const warnings = await captureUnreadableWarnings(async () => {
+      read.push(await f.repo.getContent(testType, f.modelId, "state", 3));
+      read.push(f.repo.getContentSync(testType, f.modelId, "state", 2));
+    }, REPOSITORY_LOG);
+    assertEquals(read, [null, null]);
+    assertEquals(warnings.length, 2, warnings.join("\n"));
+    assertStringIncludes(warnings[0], "Version 3");
+    assertStringIncludes(warnings[1], "Version 2");
+    assertStringIncludes(warnings[1], "raw content file is missing");
+  });
+});
+
+Deno.test("getContent: a zero-byte raw whose catalog row records content warns (swamp-club#3955)", async () => {
+  await withUnreadableFixture(async (f) => {
+    await Deno.writeFile(join(f.versionDir(3), "raw"), new Uint8Array());
+    let bytes: Uint8Array | null = null;
+    const warnings = await captureUnreadableWarnings(async () => {
+      bytes = await f.repo.getContent(testType, f.modelId, "state");
+    }, REPOSITORY_LOG);
+    assertEquals(bytes, new Uint8Array());
+    assertEquals(warnings.length, 1, warnings.join("\n"));
+  });
+});
+
+Deno.test("reads: a version that is not published, or whose metadata is missing too, is never warned about (swamp-club#3955)", async () => {
+  await withUnreadableFixture(async (f) => {
+    // A save in flight: metadata written, raw not yet, no catalog row, and
+    // the marker still names version 3.
+    await Deno.mkdir(f.versionDir(4));
+    await Deno.copyFile(
+      join(f.versionDir(3), "metadata.yaml"),
+      join(f.versionDir(4), "metadata.yaml"),
+    );
+    // A version whose metadata and raw are both gone.
+    await Deno.remove(join(f.versionDir(2), "metadata.yaml"));
+    await Deno.remove(join(f.versionDir(2), "raw"));
+    const warnings = await captureUnreadableWarnings(async () => {
+      assertEquals(
+        await f.repo.getContent(testType, f.modelId, "state", 4),
+        null,
+      );
+      assertEquals(
+        f.repo.getContentSync(testType, f.modelId, "state", 4),
+        null,
+      );
+      assertEquals(
+        await f.repo.findByName(testType, f.modelId, "state", 2),
+        null,
+      );
+    }, REPOSITORY_LOG);
+    assertEquals(warnings, []);
+  });
+});
+
+Deno.test("reads: a pending deferred write is never warned about (swamp-club#3955)", async () => {
+  await withUnreadableFixture(async (f) => {
+    const receipt = await f.repo.saveDeferred(
+      testType,
+      f.modelId,
+      makeJsonData("state"),
+      new TextEncoder().encode("{}"),
+    );
+    await Deno.remove(join(f.versionDir(receipt.version), "raw"));
+    const warnings = await captureUnreadableWarnings(async () => {
+      await f.repo.getContent(testType, f.modelId, "state", receipt.version);
+    }, REPOSITORY_LOG);
+    assertEquals(warnings, []);
+  });
+});
+
+Deno.test("reads: a repository with a hydrate hook, or a v3 one, does not check (swamp-club#3955)", async () => {
+  const makers: Array<
+    (dir: string, catalog: CatalogStore) => FileSystemUnifiedDataRepository
+  > = [
+    (dir, catalog) =>
+      new FileSystemUnifiedDataRepository(
+        dir,
+        undefined,
+        catalog,
+        undefined,
+        () => Promise.resolve(false),
+      ),
+    (dir, catalog) =>
+      new FileSystemUnifiedDataRepository(
+        dir,
+        undefined,
+        catalog,
+        undefined,
+        undefined,
+        SOLO_NAMESPACE,
+        false,
+        undefined,
+        undefined,
+        () => Promise.resolve(undefined),
+      ),
+  ];
+  for (const make of makers) {
+    await withUnreadableFixture(async (f) => {
+      await Deno.writeFile(
+        join(f.versionDir(3), "metadata.yaml"),
+        new Uint8Array(),
+      );
+      await Deno.remove(join(f.versionDir(2), "raw"));
+      const warnings = await captureUnreadableWarnings(async () => {
+        await f.repo.findByName(testType, f.modelId, "state");
+        await f.repo.getContent(testType, f.modelId, "state", 2);
+      }, REPOSITORY_LOG);
+      assertEquals(warnings, []);
+    }, make);
+  }
+});
+
+Deno.test("resetLatestMarkerToReadable: points an empty marker at the highest readable version, or leaves it when none is (swamp-club#3955)", async () => {
+  await withUnreadableFixture(async (f) => {
+    const marker = join(f.versionDir(1), "..", "latest");
+    await Deno.writeFile(marker, new Uint8Array());
+    await Deno.writeFile(
+      join(f.versionDir(3), "metadata.yaml"),
+      new Uint8Array(),
+    );
+    assertEquals(
+      await f.repo.latestMarkerState(testType, f.modelId, "state"),
+      { kind: "unreadable" },
+    );
+    assertEquals(
+      await f.repo.resetLatestMarkerToReadable(testType, f.modelId, "state"),
+      2,
+    );
+    assertEquals(await Deno.readTextFile(marker), "2");
+
+    for (const version of [1, 2]) {
+      await Deno.writeFile(
+        join(f.versionDir(version), "metadata.yaml"),
+        new Uint8Array(),
+      );
+    }
+    await Deno.writeFile(marker, new Uint8Array());
+    assertEquals(
+      await f.repo.resetLatestMarkerToReadable(testType, f.modelId, "state"),
+      null,
+    );
+    assertEquals(await Deno.readTextFile(marker), "");
+  });
 });

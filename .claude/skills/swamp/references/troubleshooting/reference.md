@@ -52,6 +52,7 @@ reach for it last.
 | `swamp-warning:` line on stderr                      | Tier 1 → `swamp doctor extensions`                        |
 | CI preflight needs to gate on integration health     | Tier 1 → either doctor with `--json`                      |
 | v3 record unreadable / marker lost after crash       | Tier 1 → `swamp doctor datastores`                        |
+| Record reads `content: {}` / not found after crash   | Tier 1 → `swamp doctor datastores --repair`               |
 | Run stuck in "running" / orphaned after crash        | Tier 1 → `swamp run doctor --fix`                         |
 | "Is anything running right now?"                     | Tier 1 → `swamp run history --active`                     |
 | Command errored — message is clear                   | Tier 2 → read it, fix the named issue                     |

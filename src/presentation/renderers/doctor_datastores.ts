@@ -27,8 +27,12 @@ import type {
   RepairDatastoresEvent,
   RepairPreV3RecordsEvent,
   RepairUnmigratedDataEvent,
+  RepairUnreadableVersionsEvent,
+  UnreadableRecordRepair,
+  UnreadableVersionsSummary,
   V3ContentSummary,
 } from "../../libswamp/datastores/doctor_datastores.ts";
+import { describeUnreadableVersionReason } from "../../domain/data/unreadable_data_version.ts";
 import type { EventHandlers } from "../../libswamp/stream.ts";
 import type { RetentionCheckSummary } from "../../libswamp/datastores/retention_check.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -172,6 +176,44 @@ export function v3ContentDetailLines(summary: V3ContentSummary): string[] {
   return lines;
 }
 
+/**
+ * The entries of a failed unreadable_versions check in log mode
+ * (swamp-club#3955).
+ */
+export function unreadableVersionsDetailLines(
+  summary: UnreadableVersionsSummary,
+): string[] {
+  const lines: string[] = [`\n${red("Unreadable data versions:")}`];
+  for (const finding of summary.findings) {
+    const record = `${
+      finding.modelName || finding.modelId
+    }/${finding.dataName}`;
+    const which = finding.version === null
+      ? "latest marker"
+      : `version ${finding.version}`;
+    lines.push(
+      `  ${bold(record)} ${which}${finding.latest ? red(" (latest)") : ""}: ${
+        describeUnreadableVersionReason(finding.reason)
+      }`,
+    );
+  }
+  if (summary.unreadableVersions > summary.findings.length) {
+    lines.push(
+      dim(
+        `    … and ${
+          summary.unreadableVersions - summary.findings.length
+        } more`,
+      ),
+    );
+  }
+  lines.push(
+    dim(
+      "\n  Run 'swamp doctor datastores --repair' to preview rolling each record back to its last readable version.",
+    ),
+  );
+  return lines;
+}
+
 export type DoctorDatastoresStatus = "pass" | "fail";
 
 export interface DoctorDatastoresRenderer {
@@ -244,6 +286,13 @@ class LogDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
           );
         }
 
+        if (data.unreadableVersionsFinding) {
+          writeOutput(
+            unreadableVersionsDetailLines(data.unreadableVersionsFinding)
+              .join("\n"),
+          );
+        }
+
         if (data.retentionFinding) {
           writeOutput(retentionDetailLines(data.retentionFinding).join("\n"));
         }
@@ -305,6 +354,8 @@ class JsonDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
               contaminationFinding: data.contaminationFinding ?? null,
               catalogCompletenessFinding: data.catalogCompletenessFinding ??
                 null,
+              unreadableVersionsFinding: data.unreadableVersionsFinding ??
+                null,
               retentionFinding: data.retentionFinding ?? null,
               v3ContentFinding: data.v3ContentFinding ?? null,
               v3KeptLineagesFinding: data.v3KeptLineagesFinding ?? null,
@@ -341,6 +392,7 @@ export function createDoctorDatastoresRenderer(
 /** A v2 repair stage's key in the `--repair --json` document. */
 export type DatastoreRepairStage =
   | "unmigrated"
+  | "unreadableVersions"
   | "catalog"
   | "duplicateLatest"
   | "contamination";
@@ -358,6 +410,7 @@ export class DatastoreRepairJsonReport {
     Record<string, unknown> | null
   > = {
     unmigrated: null,
+    unreadableVersions: null,
     catalog: null,
     duplicateLatest: null,
     contamination: null,
@@ -632,6 +685,166 @@ export function createUnmigratedDataRepairRenderer(
       return new JsonUnmigratedDataRepairRenderer(report);
     case "log":
       return new LogUnmigratedDataRepairRenderer();
+  }
+}
+
+// ============================================================================
+// Unreadable data versions repair renderer (swamp-club#3955)
+// ============================================================================
+
+export type UnreadableVersionsRepairStatus = "pass" | "fail" | "preview";
+
+export interface UnreadableVersionsRepairRenderer {
+  handlers(): EventHandlers<RepairUnreadableVersionsEvent>;
+  readonly overallStatus: UnreadableVersionsRepairStatus;
+}
+
+/** One record's line: what goes, and what is latest after. */
+function unreadableRecordLine(
+  record: UnreadableRecordRepair,
+  verb: { remove: string; reset: string },
+): string {
+  const name = bold(`${record.modelName || record.modelId}/${record.dataName}`);
+  const parts: string[] = [];
+  if (record.removeVersions.length > 0) {
+    parts.push(
+      `${verb.remove} version(s) ${record.removeVersions.join(", ")}`,
+    );
+  }
+  if (record.becomesLatest !== null) {
+    parts.push(`version ${record.becomesLatest} is latest`);
+  } else if (record.removeVersions.length > 0) {
+    parts.push("no readable version is left, so the record is removed");
+  } else {
+    parts.push("no readable version, so its marker is left as it is");
+  }
+  if (
+    record.markerUnreadable && record.removeVersions.length === 0 &&
+    record.becomesLatest !== null
+  ) {
+    parts.unshift(verb.reset);
+  }
+  return `  ${name}: ${parts.join("; ")}`;
+}
+
+class LogUnreadableVersionsRepairRenderer
+  implements UnreadableVersionsRepairRenderer {
+  overallStatus: UnreadableVersionsRepairStatus = "pass";
+
+  handlers(): EventHandlers<RepairUnreadableVersionsEvent> {
+    return {
+      scanning: () => {
+        writeOutput(dim("Scanning for unreadable data versions…"));
+      },
+      preview: (e) => {
+        this.overallStatus = "preview";
+        writeOutput(`\n${bold("Unreadable data versions rollback:")}`);
+        for (const record of e.records) {
+          writeOutput(
+            unreadableRecordLine(record, {
+              remove: "remove",
+              reset: "rewrite its latest marker",
+            }),
+          );
+        }
+        writeOutput(
+          dim(
+            "\n  Only versions whose content is already unreadable are removed.",
+          ),
+        );
+        writeOutput(dim("\n  Run with -y to proceed."));
+      },
+      step: (e) => {
+        writeOutput(`  ${e.description}`);
+      },
+      completed: (e) => {
+        this.overallStatus = "pass";
+        const { result } = e;
+        writeOutput(
+          `\n${green("✓")} ${bold("Unreadable data versions rolled back:")}`,
+        );
+        for (const record of result.records) {
+          writeOutput(
+            unreadableRecordLine(record, {
+              remove: "removed",
+              reset: "rewrote its latest marker",
+            }),
+          );
+        }
+        writeOutput(
+          `  Removed ${result.versionsRemoved} version(s); ${result.recordsRemoved} record(s) had no readable version left`,
+        );
+        if (result.versionsKept > 0) {
+          writeOutput(
+            dim(
+              `  Kept ${result.versionsKept} version(s) that were readable again by the time the repair ran`,
+            ),
+          );
+        }
+      },
+      not_needed: () => {
+        this.overallStatus = "pass";
+        writeOutput(dim("Every published data version is readable."));
+      },
+      error: (e) => {
+        this.overallStatus = "fail";
+        throw new UserError(e.error.message);
+      },
+    };
+  }
+}
+
+class JsonUnreadableVersionsRepairRenderer
+  implements UnreadableVersionsRepairRenderer {
+  overallStatus: UnreadableVersionsRepairStatus = "pass";
+
+  readonly #report: DatastoreRepairJsonReport;
+
+  constructor(report: DatastoreRepairJsonReport) {
+    this.#report = report;
+  }
+
+  handlers(): EventHandlers<RepairUnreadableVersionsEvent> {
+    return {
+      scanning: () => {},
+      preview: (e) => {
+        this.overallStatus = "preview";
+        this.#report.record("unreadableVersions", {
+          status: "unreadable_versions_preview",
+          records: e.records,
+        });
+      },
+      step: () => {},
+      completed: (e) => {
+        this.overallStatus = "pass";
+        this.#report.record("unreadableVersions", {
+          status: "unreadable_versions_completed",
+          result: e.result,
+        });
+      },
+      not_needed: () => {
+        this.overallStatus = "pass";
+        this.#report.record("unreadableVersions", {
+          status: "unreadable_versions_not_needed",
+        });
+      },
+      error: (e) => {
+        this.overallStatus = "fail";
+        throw new UserError(e.error.message);
+      },
+    };
+  }
+}
+
+export function createUnreadableVersionsRepairRenderer(
+  mode: OutputMode,
+  report: DatastoreRepairJsonReport,
+): UnreadableVersionsRepairRenderer {
+  switch (mode) {
+    case "json":
+      return new JsonUnreadableVersionsRepairRenderer(report);
+    case "log":
+      return new LogUnreadableVersionsRepairRenderer();
   }
 }
 

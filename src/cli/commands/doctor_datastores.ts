@@ -34,6 +34,8 @@ import {
   repairPreV3Records,
   repairUnmigratedData,
   type RepairUnmigratedDataDeps,
+  repairUnreadableVersions,
+  type RepairUnreadableVersionsDeps,
 } from "../../libswamp/datastores/doctor_datastores.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
@@ -48,6 +50,7 @@ import {
   createPreV3RecordsRepairRenderer,
   createRepairDatastoresRenderer,
   createUnmigratedDataRepairRenderer,
+  createUnreadableVersionsRepairRenderer,
   type DatastoreFormatMarkerRepairStatus,
   DatastoreRepairJsonReport,
   type PreV3RecordsRepairStatus,
@@ -59,9 +62,12 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import {
+  acquireModelLocks,
   requireInitializedRepoReadOnly,
+  requireInitializedRepoUnlocked,
   resolveDatastoreForRepo,
 } from "../repo_context.ts";
+import { runCommandInRootUnit } from "../command_root_unit.ts";
 import {
   retentionScanSourcesFor,
   scanRetention,
@@ -128,6 +134,9 @@ import type { CatalogStore } from "../../infrastructure/persistence/catalog_stor
 import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
 import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
 import type { Namespace } from "../../domain/data/namespace.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
+import type { UnreadableDataVersion } from "../../domain/data/unreadable_data_version.ts";
+import { scanUnreadableVersions } from "../../infrastructure/persistence/unreadable_data_versions.ts";
 import {
   SWAMP_SUBDIRS,
   swampPath,
@@ -267,6 +276,7 @@ async function createDoctorDatastoresDeps(
   repoDir: string,
   outputMode: OutputMode,
   engine: DatastoreEngine,
+  v2Filesystem: boolean,
 ): Promise<DoctorDatastoresDeps> {
   await datastoreTypeRegistry.ensureLoaded();
   return {
@@ -346,6 +356,12 @@ async function createDoctorDatastoresDeps(
       });
     },
     checkCatalogCompleteness: () => checkCatalogCompleteness(repoDir),
+    // Only where every file is local: lazy hydration leaves files missing
+    // on purpose, and a v3 checkout has its own content check
+    // (swamp-club#3955).
+    ...(v2Filesystem
+      ? { checkUnreadableVersions: () => scanRepoUnreadableVersions(repoDir) }
+      : {}),
     checkRetention: () => checkRetention(repoDir, outputMode),
     // Checkout-local state and chunk stats only (swamp-club#3617).
     ...(engine === "v3"
@@ -449,6 +465,117 @@ async function checkCatalogCompleteness(
     // refuses to delete a database that still has an open connection.
     catalogStore.close();
   }
+}
+
+/**
+ * Every published data version of the repo's datastore that cannot be read
+ * (swamp-club#3955), through its own catalog handle and data repository:
+ * read-only, no lock, no data query.
+ */
+async function scanRepoUnreadableVersions(
+  repoDir: string,
+): Promise<UnreadableDataVersion[]> {
+  const marker = await new RepoMarkerRepository().read(
+    RepoPath.create(repoDir),
+  );
+  const config = await resolveDatastoreConfig(marker, undefined, repoDir);
+  const datastoreResolver = new DefaultDatastorePathResolver(repoDir, config);
+  const catalogStore = createCatalogStore(repoDir, datastoreResolver);
+  try {
+    const namespace = namespaceFromResolver(datastoreResolver);
+    const dataRepo = createUnifiedDataRepository(
+      repoDir,
+      catalogStore,
+      catalogCompletenessDataDir(datastoreResolver),
+      undefined,
+      namespace,
+    );
+    return await scanUnreadableVersions(dataRepo, catalogStore, namespace);
+  } finally {
+    // Released before a later repair stage removes the catalog file, which
+    // Windows refuses while a connection is open.
+    catalogStore.close();
+  }
+}
+
+/**
+ * Unreadable-version repair deps (swamp-club#3955). The scan is the check's;
+ * the repair opens the repository to write, takes the affected models'
+ * locks as `swamp data delete` does, and runs in a root unit, which pushes
+ * and releases the locks when it ends, whether or not the repair failed.
+ */
+function createUnreadableVersionsRepairDeps(
+  repoDir: string,
+  cliCtx: CommandContext,
+): RepairUnreadableVersionsDeps {
+  return {
+    scan: () => scanRepoUnreadableVersions(repoDir),
+    underModelLocks: async (models, fn) => {
+      const {
+        repoDir: openedRepoDir,
+        repoContext,
+        datastoreConfig,
+        syncService,
+      } = await requireInitializedRepoUnlocked({
+        repoDir,
+        outputMode: cliCtx.outputMode,
+      });
+      try {
+        const lockResult = await acquireModelLocks(
+          datastoreConfig,
+          [...models],
+          openedRepoDir,
+          syncService,
+          repoContext.catalogStore,
+        );
+        if (lockResult.synced) repoContext.catalogStore.invalidate();
+        return await runCommandInRootUnit(
+          repoContext,
+          {
+            push: lockResult.push,
+            release: lockResult.release,
+            onCleanupError: (releaseError) => {
+              cliCtx.logger.warn(
+                "Failed to release locks during cleanup: {error}",
+                {
+                  error: releaseError instanceof Error
+                    ? releaseError.message
+                    : String(releaseError),
+                },
+              );
+            },
+          },
+          () => {
+            const dataRepo = repoContext.unifiedDataRepo;
+            return fn({
+              scan: () =>
+                scanUnreadableVersions(
+                  dataRepo,
+                  repoContext.catalogStore,
+                  dataRepo.namespace,
+                ),
+              removeVersion: (record, version) =>
+                dataRepo.delete(
+                  ModelType.create(record.modelType),
+                  record.modelId,
+                  record.dataName,
+                  version,
+                ),
+              resetLatestMarker: (record) =>
+                dataRepo.resetLatestMarkerToReadable(
+                  ModelType.create(record.modelType),
+                  record.modelId,
+                  record.dataName,
+                ),
+            });
+          },
+        );
+      } finally {
+        // Released before the catalog repair below may remove the file.
+        repoContext.catalogStore.close();
+      }
+    },
+  };
 }
 
 /**
@@ -651,6 +778,7 @@ async function runDatastoreRepairs(
   libCtx: LibSwampContext,
   report: DatastoreRepairJsonReport,
   confirm: boolean,
+  v2Filesystem: boolean,
 ): Promise<boolean> {
   let failed = false;
 
@@ -692,6 +820,27 @@ async function runDatastoreRepairs(
     );
 
     if (unmigratedRenderer.overallStatus === "fail") {
+      failed = true;
+    }
+  }
+
+  // Unreadable versions are rolled back before the catalog repair, so a
+  // rebuild it triggers indexes the repaired disk (swamp-club#3955). Only
+  // where every file is local, as the check.
+  if (v2Filesystem) {
+    const unreadableRenderer = createUnreadableVersionsRepairRenderer(
+      cliCtx.outputMode,
+      report,
+    );
+    await consumeStream(
+      repairUnreadableVersions(
+        libCtx,
+        createUnreadableVersionsRepairDeps(repoDir, cliCtx),
+        { confirm },
+      ),
+      unreadableRenderer.handlers(),
+    );
+    if (unreadableRenderer.overallStatus === "fail") {
       failed = true;
     }
   }
@@ -775,7 +924,7 @@ export const doctorDatastoresCommand = withRemoteOptions(
     )
     .option(
       "--repair",
-      "Preview and repair datastore issues: catalog index completeness, root-level unmigrated data, and foreign namespace contamination (add -y to execute).",
+      "Preview and repair datastore issues: unreadable data versions, catalog index completeness, root-level unmigrated data, and foreign namespace contamination (add -y to execute).",
     )
     .option(
       "-y, --yes",
@@ -843,8 +992,9 @@ export const doctorDatastoresCommand = withRemoteOptions(
   }
   const repoDir = resolveRepoDir(options.repoDir);
   let engine: DatastoreEngine;
+  let datastoreConfig: DatastoreConfig;
   try {
-    ({ engine } = await resolveDatastoreForRepo(repoDir));
+    ({ engine, datastoreConfig } = await resolveDatastoreForRepo(repoDir));
   } catch (error) {
     // A v3 datastore whose marker a crash lost is refused by the format
     // guard; --repair restores the marker (swamp-club#3617). A checkout
@@ -869,6 +1019,10 @@ export const doctorDatastoresCommand = withRemoteOptions(
     return;
   }
   const libCtx = createLibSwampContext();
+  // A format 2 filesystem datastore, whose data files are all local
+  // (swamp-club#3955).
+  const v2Filesystem = engine === "v2" &&
+    !isCustomDatastoreConfig(datastoreConfig);
 
   // The repairs are v2's: they rewrite datastore directories and the v2
   // catalog, which a v3 datastore does not have, and none takes the v3
@@ -897,6 +1051,7 @@ export const doctorDatastoresCommand = withRemoteOptions(
         libCtx,
         report,
         Boolean(options.yes),
+        v2Filesystem,
       );
     } finally {
       if (cliCtx.outputMode === "json") report.print();
@@ -910,6 +1065,7 @@ export const doctorDatastoresCommand = withRemoteOptions(
     repoDir,
     cliCtx.outputMode,
     engine,
+    v2Filesystem,
   );
   const renderer = createDoctorDatastoresRenderer(cliCtx.outputMode);
 

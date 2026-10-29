@@ -2393,3 +2393,46 @@ Deno.test("CatalogStore: a schema version change drops recorded forwards", () =>
   assertEquals(reopened.isPopulated(), false, "populated cleared for backfill");
   reopened.close();
 });
+
+Deno.test("CatalogStore.versionKeys: lists the published rows of one namespace, or of one group of it, never pending or foreign rows (swamp-club#3955)", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  try {
+    store.upsert(makeRow({ id: "a1", version: 1, is_latest: 0, size: 10 }));
+    store.upsert(makeRow({ id: "a2", version: 2, size: 20 }));
+    store.upsert(
+      makeRow({
+        id: "a3",
+        version: 3,
+        is_latest: 0,
+        is_pending: 1,
+        pending_pid: 1,
+        pending_host: "h",
+      }),
+    );
+    store.upsert(makeRow({ id: "b1", data_name: "other-data", size: 5 }));
+    store.upsert(makeRow({ id: "f1", namespace: "foreign", version: 7 }));
+
+    const keys = (rows: ReturnType<CatalogStore["versionKeys"]>) =>
+      rows.map((r) => `${r.data_name}@${r.version}:${r.is_latest}:${r.size}`);
+    assertEquals(keys(store.versionKeys("")), [
+      "my-data@1:0:10",
+      "my-data@2:1:20",
+      "other-data@1:1:5",
+    ]);
+    assertEquals(
+      keys(
+        store.versionKeys("", {
+          typeNormalized: "test-model",
+          modelId: "model-001",
+          dataName: "my-data",
+        }),
+      ),
+      ["my-data@1:0:10", "my-data@2:1:20"],
+    );
+    assertEquals(store.versionKeys("")[0].model_name, "test-model-name");
+    assertEquals(keys(store.versionKeys("foreign")), ["my-data@7:1:256"]);
+  } finally {
+    store.close();
+  }
+});

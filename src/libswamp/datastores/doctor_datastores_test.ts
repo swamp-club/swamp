@@ -36,8 +36,13 @@ import {
   repairUnmigratedData,
   type RepairUnmigratedDataDeps,
   type RepairUnmigratedDataEvent,
+  repairUnreadableVersions,
+  type RepairUnreadableVersionsDeps,
+  type RepairUnreadableVersionsEvent,
+  UNREADABLE_VERSIONS_LISTED,
   type V3ContentSummary,
 } from "./doctor_datastores.ts";
+import type { UnreadableDataVersion } from "../../domain/data/unreadable_data_version.ts";
 import {
   repairDatastoreFormatMarker,
   type RepairDatastoreFormatMarkerDeps,
@@ -1959,4 +1964,233 @@ Deno.test("doctorDatastores: a verified or not yet checked replica passes; none 
   );
   assertEquals(unreadable.health?.passed, false);
   assertStringIncludes(unreadable.health!.message, "permission denied");
+});
+
+// --- swamp-club#3955: unreadable data versions ---
+
+function unreadable(
+  overrides: Partial<UnreadableDataVersion> = {},
+): UnreadableDataVersion {
+  return {
+    modelType: "@test/spec",
+    modelId: "m-1",
+    modelName: "spec",
+    dataName: "state",
+    version: 3,
+    reason: "metadata_empty",
+    latest: true,
+    readableVersion: 2,
+    ...overrides,
+  };
+}
+
+async function unreadableCheck(
+  scan: () => Promise<UnreadableDataVersion[]>,
+) {
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), {
+      ...makeDeps(
+        filesystemConfig,
+        { healthy: true, message: "ok", latencyMs: 1 },
+        [],
+      ),
+      checkUnreadableVersions: scan,
+    }),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assert(completed?.kind === "completed");
+  return {
+    data: completed.data,
+    finding: completed.data.healthFindings.find((f) =>
+      f.check === "unreadable_versions"
+    )!,
+  };
+}
+
+Deno.test("doctorDatastores: the unreadable_versions check passes when every published version is readable (swamp-club#3955)", async () => {
+  const { data, finding } = await unreadableCheck(() => Promise.resolve([]));
+  assertEquals(finding.passed, true);
+  assertEquals(finding.message, "Every published data version is readable");
+  assertEquals(data.unreadableVersionsFinding, undefined);
+});
+
+Deno.test("doctorDatastores: the unreadable_versions check fails, names dark records and points at --repair (swamp-club#3955)", async () => {
+  const { data, finding } = await unreadableCheck(() =>
+    Promise.resolve([
+      unreadable(),
+      unreadable({ dataName: "journal", version: 1, latest: false }),
+    ])
+  );
+  assertEquals(finding.passed, false);
+  assertStringIncludes(
+    finding.message,
+    "2 published data version(s) in 2 record(s)",
+  );
+  assertStringIncludes(finding.message, "1 of them read as empty or not found");
+  assertStringIncludes(finding.message, "spec/state");
+  assertStringIncludes(finding.message, "swamp doctor datastores --repair");
+  assertEquals(data.unreadableVersionsFinding?.unreadableVersions, 2);
+  assertEquals(data.unreadableVersionsFinding?.darkRecords, 1);
+});
+
+Deno.test("doctorDatastores: the unreadable_versions finding lists a capped number of versions and counts them all (swamp-club#3955)", async () => {
+  const many = Array.from(
+    { length: UNREADABLE_VERSIONS_LISTED + 5 },
+    (_, i) => unreadable({ dataName: `d${i}` }),
+  );
+  const { data } = await unreadableCheck(() => Promise.resolve(many));
+  assertEquals(
+    data.unreadableVersionsFinding?.findings.length,
+    UNREADABLE_VERSIONS_LISTED,
+  );
+  assertEquals(
+    data.unreadableVersionsFinding?.unreadableVersions,
+    UNREADABLE_VERSIONS_LISTED + 5,
+  );
+});
+
+Deno.test("doctorDatastores: an unreadable_versions scan that throws fails the check alone (swamp-club#3955)", async () => {
+  const { data, finding } = await unreadableCheck(() =>
+    Promise.reject(new Error("permission denied"))
+  );
+  assertEquals(finding.passed, false);
+  assertStringIncludes(finding.message, "permission denied");
+  assertEquals(data.healthFindings[0].passed, true);
+});
+
+/** Fake repair deps: records what ran under the locks, and their release. */
+function fakeUnreadableRepairDeps(
+  first: UnreadableDataVersion[],
+  underLock: UnreadableDataVersion[] = first,
+  failRemove = false,
+) {
+  const calls: string[] = [];
+  let locked: ReadonlyArray<{ modelType: string; modelId: string }> = [];
+  const deps: RepairUnreadableVersionsDeps = {
+    scan: () => Promise.resolve(first),
+    underModelLocks: async (models, fn) => {
+      locked = models;
+      calls.push("lock");
+      try {
+        return await fn({
+          scan: () => Promise.resolve(underLock),
+          removeVersion: (record, version) => {
+            if (failRemove) return Promise.reject(new Error("disk full"));
+            calls.push(`remove ${record.dataName}@${version}`);
+            return Promise.resolve();
+          },
+          resetLatestMarker: (record) => {
+            calls.push(`reset ${record.dataName}`);
+            const left = underLock.find((f) => f.dataName === record.dataName);
+            return Promise.resolve(left?.readableVersion ?? null);
+          },
+        });
+      } finally {
+        calls.push("release");
+      }
+    },
+  };
+  return { deps, calls, locked: () => locked };
+}
+
+Deno.test("repairUnreadableVersions: nothing unreadable means nothing to repair, and no lock is taken (swamp-club#3955)", async () => {
+  const { deps, calls } = fakeUnreadableRepairDeps([]);
+  const events = await collect<RepairUnreadableVersionsEvent>(
+    repairUnreadableVersions(createLibSwampContext(), deps, { confirm: true }),
+  );
+  assertEquals(events.map((e) => e.kind), ["scanning", "not_needed"]);
+  assertEquals(calls, []);
+});
+
+Deno.test("repairUnreadableVersions: previews each record's removals and new latest without locking (swamp-club#3955)", async () => {
+  const { deps, calls } = fakeUnreadableRepairDeps([
+    unreadable({ version: 2 }),
+    unreadable({ version: 3 }),
+    unreadable({ dataName: "gone", readableVersion: null, version: 1 }),
+    unreadable({
+      dataName: "marker",
+      version: null,
+      reason: "marker_unreadable",
+    }),
+  ]);
+  const events = await collect<RepairUnreadableVersionsEvent>(
+    repairUnreadableVersions(createLibSwampContext(), deps, { confirm: false }),
+  );
+  const preview = events.find((e) => e.kind === "preview");
+  assert(preview?.kind === "preview");
+  assertEquals(
+    preview.records.map((
+      r,
+    ) => [r.dataName, r.removeVersions, r.markerUnreadable, r.becomesLatest]),
+    [
+      ["state", [3, 2], false, 2],
+      ["gone", [1], false, null],
+      ["marker", [], true, 2],
+    ],
+  );
+  assertEquals(calls, []);
+});
+
+Deno.test("repairUnreadableVersions: with confirm removes versions highest first under one lock per model, then resets the marker (swamp-club#3955)", async () => {
+  const findings = [
+    unreadable({ version: 2 }),
+    unreadable({ version: 3 }),
+    unreadable({ dataName: "gone", readableVersion: null, version: 1 }),
+    unreadable({ modelId: "m-2", dataName: "other" }),
+  ];
+  const { deps, calls, locked } = fakeUnreadableRepairDeps(findings);
+  const events = await collect<RepairUnreadableVersionsEvent>(
+    repairUnreadableVersions(createLibSwampContext(), deps, { confirm: true }),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assert(completed?.kind === "completed");
+  assertEquals(calls, [
+    "lock",
+    "remove state@3",
+    "remove state@2",
+    "reset state",
+    "remove gone@1",
+    "reset gone",
+    "remove other@3",
+    "reset other",
+    "release",
+  ]);
+  assertEquals(locked(), [
+    { modelType: "@test/spec", modelId: "m-1" },
+    { modelType: "@test/spec", modelId: "m-2" },
+  ]);
+  assertEquals(completed.result.versionsRemoved, 4);
+  assertEquals(completed.result.recordsRemoved, 1);
+  assertEquals(completed.result.versionsKept, 0);
+});
+
+Deno.test("repairUnreadableVersions: a version readable again under the lock is kept, and one found only then is left for the next run (swamp-club#3955)", async () => {
+  const { deps, calls } = fakeUnreadableRepairDeps(
+    [unreadable({ version: 2 }), unreadable({ version: 3 })],
+    [unreadable({ version: 3 }), unreadable({ dataName: "new", version: 1 })],
+  );
+  const events = await collect<RepairUnreadableVersionsEvent>(
+    repairUnreadableVersions(createLibSwampContext(), deps, { confirm: true }),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assert(completed?.kind === "completed");
+  assertEquals(calls, ["lock", "remove state@3", "reset state", "release"]);
+  assertEquals(completed.result.versionsRemoved, 1);
+  assertEquals(completed.result.versionsKept, 1);
+});
+
+Deno.test("repairUnreadableVersions: a delete that throws yields an error, and the locks are still released (swamp-club#3955)", async () => {
+  const { deps, calls } = fakeUnreadableRepairDeps(
+    [unreadable()],
+    [unreadable()],
+    true,
+  );
+  const events = await collect<RepairUnreadableVersionsEvent>(
+    repairUnreadableVersions(createLibSwampContext(), deps, { confirm: true }),
+  );
+  const error = events.find((e) => e.kind === "error");
+  assert(error?.kind === "error");
+  assertEquals(error.error.code, "unreadable_versions_repair_failed");
+  assertStringIncludes(error.error.message, "disk full");
+  assertEquals(calls, ["lock", "release"]);
 });
