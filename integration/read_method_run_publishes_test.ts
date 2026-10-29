@@ -250,7 +250,11 @@ interface Clones {
   definition: Definition;
 }
 
-async function initRepo(repoDir: string, typeName: string): Promise<void> {
+async function initRepo(
+  repoDir: string,
+  typeName: string,
+  lazy: boolean,
+): Promise<void> {
   await Deno.mkdir(repoDir, { recursive: true });
   const homeDir = join(repoDir, "test-home");
   await new RepoService(VERSION, {
@@ -258,10 +262,23 @@ async function initRepo(repoDir: string, typeName: string): Promise<void> {
     configDir: join(homeDir, ".config", "swamp"),
   }).init(RepoPath.create(repoDir), { tools: [] });
   await configureTestDatastore(repoDir, typeName);
+  if (lazy) {
+    const marker = join(repoDir, ".swamp.yaml");
+    await Deno.writeTextFile(
+      marker,
+      (await Deno.readTextFile(marker)).replace(
+        "datastore:\n",
+        "datastore:\n  hydrationStrategy: lazy\n",
+      ),
+    );
+  }
 }
 
 /** Two clones of one repo, holding one probe definition, on one remote. */
-async function withClones(fn: (clones: Clones) => Promise<void>) {
+async function withClones(
+  fn: (clones: Clones) => Promise<void>,
+  options: { lazy?: boolean } = {},
+) {
   const remote = createInMemoryRemote();
   const locks = new LockTable();
   const datastoreType = registerTestDatastoreType({
@@ -295,7 +312,7 @@ async function withClones(fn: (clones: Clones) => Promise<void>) {
     const repoA = join(dir, "a");
     const repoB = join(dir, "b");
     for (const repoDir of [repoA, repoB]) {
-      await initRepo(repoDir, datastoreType.typeName);
+      await initRepo(repoDir, datastoreType.typeName, options.lazy ?? false);
       const ctx = await requireInitializedRepoUnlocked({
         repoDir,
         outputMode: "json",
@@ -993,4 +1010,59 @@ Deno.test("model method run: a read run whose own version's metadata cannot be r
     assertEquals(error.code, "datastore_publish_failed");
     assertEquals(remoteValue(c, 1), undefined);
   });
+});
+
+Deno.test("model method run: on a lazy cache a conflicting read keeps the other clone's content on the datastore (swamp-club#3934)", async () => {
+  await withClones(async (c) => {
+    let started!: () => void;
+    const aStarted = new Promise<void>((resolve) => started = resolve);
+    let resume!: () => void;
+    const bDone = new Promise<void>((resolve) => resume = resolve);
+    hooks = {
+      beforeWrite: async () => {
+        started();
+        await bDone;
+      },
+    };
+    const aRun = runMethod(c.repoA, "observe", "from-a");
+    await aStarted;
+    await runMethod(c.repoB, "write", "from-b");
+    resume();
+
+    await assertRejects(() => aRun, DataVersionConflictError);
+    assertEquals(remoteValue(c, 1), "from-b", "B's content is not deleted");
+    assert(remoteFile(c, "/report-swamp-method-summary/1/raw"));
+    assertEquals(await localValue(c.repoA, c, 1), "from-b");
+  }, { lazy: true });
+});
+
+Deno.test("model method run: on a lazy cache a deferred version another clone also wrote keeps that clone's content on the datastore (swamp-club#3934)", async () => {
+  await withClones(async (c) => {
+    const holder = await requireInitializedRepoUnlocked({
+      repoDir: c.repoB,
+      outputMode: "json",
+    });
+    const writerLock = await acquireModelLocks(
+      holder.datastoreConfig,
+      [{ modelType: c.type.normalized, modelId: c.definition.id }],
+      c.repoB,
+      holder.syncService,
+      holder.repoContext.catalogStore,
+      undefined,
+      { repoContext: holder.repoContext },
+    );
+    try {
+      await runMethod(c.repoA, "observe", "from-a");
+    } finally {
+      await writerLock.flush();
+      await flushDatastoreSync();
+      holder.repoContext.catalogStore.close();
+    }
+    await runMethod(c.repoB, "write", "from-b");
+
+    await runMethod(c.repoA, "write", "from-a-write");
+    assertEquals(remoteValue(c, 1), "from-b", "B's content is not deleted");
+    assertEquals(remoteValue(c, 2), "from-a-write");
+    assertEquals(await pendingRecords(c.repoA), 0);
+  }, { lazy: true });
 });

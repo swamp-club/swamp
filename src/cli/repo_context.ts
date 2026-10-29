@@ -3413,6 +3413,45 @@ async function discardRefusedVersions(
 }
 
 /**
+ * Replaces the cache's copy of `absPath` with the datastore's (swamp-club#3934),
+ * through `hydrateFile` or else `fetchContent`. When the datastore has none,
+ * the local copy is removed: a push of the missing marked file then deletes
+ * nothing. Throws when neither read is available or the read fails, so the
+ * caller pushes nothing rather than this host's copy over the datastore's.
+ */
+async function rehydrateContent(
+  absPath: string,
+  syncService: DatastoreSyncService,
+  cachePath: string,
+  namespace: string | undefined,
+): Promise<void> {
+  const rel = cacheRelativePath(cachePath, absPath);
+  if (rel === undefined) return;
+  const options = () => ({
+    namespace,
+    signal: AbortSignal.timeout(PUBLISH_CHECK_FETCH_TIMEOUT_MS),
+  });
+  let present: boolean;
+  if (syncService.hydrateFile) {
+    present = await syncService.hydrateFile(rel, options());
+  } else if (syncService.fetchContent) {
+    const bytes = await syncService.fetchContent(rel, options());
+    present = bytes !== null;
+    if (bytes !== null) await atomicWriteFile(absPath, bytes);
+  } else {
+    throw new Error(
+      `Cannot read ${rel} back from the datastore, so the push is withheld`,
+    );
+  }
+  if (present) return;
+  try {
+    await Deno.remove(absPath);
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+}
+
+/**
  * Each of `versions` this host still holds, with the data id its metadata
  * names now (undefined when the metadata names none). A version whose
  * metadata is gone is left out, as is one whose metadata cannot be read or
@@ -4320,27 +4359,28 @@ export async function acquireModelLocks(
       .filter((w) => !replacedKeys.has(versionKey(w)));
     let conflict: DataVersionConflictError | undefined;
     if (replaced.length > 0) {
-      // A lazy pull fetched only the other clone's metadata, so the content
-      // beside it is still the one this host wrote. Remove it: the next read
-      // hydrates the other clone's, and a lazy cache's push deletes nothing
-      // that is missing here.
+      // On a lazy cache a metadata-only pull would have left the content
+      // this host wrote beside the other clone's metadata. Read the
+      // datastore's content over it, never remove it: the run's write left
+      // it marked, and a push deletes the remote copy of a marked file that
+      // is missing here (swamp-club#3934). Equal to the remote, the push
+      // sends nothing for it.
       if (custom.hydrationStrategy === "lazy") {
         for (const w of replaced) {
-          try {
-            await Deno.remove(
-              join(
-                publishContext.unifiedDataRepo.getPath(
-                  ModelType.create(w.modelType),
-                  w.modelId,
-                  w.dataName,
-                  w.version,
-                ),
-                "raw",
+          await rehydrateContent(
+            join(
+              publishContext.unifiedDataRepo.getPath(
+                ModelType.create(w.modelType),
+                w.modelId,
+                w.dataName,
+                w.version,
               ),
-            );
-          } catch (error) {
-            if (!(error instanceof Deno.errors.NotFound)) throw error;
-          }
+              "raw",
+            ),
+            syncService,
+            cachePath,
+            custom.namespace,
+          );
         }
       }
       catalogStore?.invalidate();

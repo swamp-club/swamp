@@ -8022,8 +8022,11 @@ refreshes its resource does. `methodRunLockMode`
   does. The pull replaces with the datastore's copy every version another
   clone wrote under the same number while the run was unlocked, so a
   version whose local data id is no longer the one the run wrote was
-  another clone's: it is not pushed (on a lazy cache its leftover content is
-  removed too), and the rest are. The push then fails with
+  another clone's: it is not pushed, and the rest are. On a lazy cache its
+  content is read back from the datastore over this host's copy, never
+  removed: the run's write left it marked, and a push deletes the remote
+  copy of a marked file missing here. If it cannot be read back, nothing is
+  pushed. The push then fails with
   `DataVersionConflictError` (`datastore_data_version_conflict`), which says
   this host now holds the datastore's copy. Because the cache holds what the
   datastore holds for the behavior under its lock, a push that walks a
