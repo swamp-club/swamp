@@ -3800,8 +3800,9 @@ export async function pullModelsUnlocked(
   // A read never waits on a structural command (swamp-club#1992): it runs
   // on this host's cache instead.
   let globalInfo: LockInfo | undefined;
+  let provider: DatastoreProvider;
   try {
-    const provider = await resolveCustomProvider(config);
+    provider = await resolveCustomProvider(config);
     globalInfo = await liveGlobalLockHolder(
       provider.createLock(config.datastorePath, {
         ...datastoreGlobalLockOptions(config),
@@ -3829,8 +3830,25 @@ export async function pullModelsUnlocked(
   }
   let synced = false;
   for (const { modelType, modelId } of models) {
-    write(dim(`Syncing behavior ${modelType}/${modelId} from datastore...`));
     try {
+      // A run on this host holding the behavior's lock writes into this
+      // cache, and a pull would overwrite its unpublished files with the
+      // datastore's older copies; its push publishes them. Use this host's
+      // data, as while the global lock is held. A holder elsewhere does not
+      // write here, so the pull goes ahead.
+      const holder = await provider.createLock(config.datastorePath, {
+        lockKey: modelLockKey(config.namespace, modelType, modelId),
+        maxWaitMs: resolveLockTimeoutMs(),
+      }).inspect();
+      if (holder?.hostname === hostname()) {
+        write(
+          dim(
+            `Behavior ${modelType}/${modelId} is locked by ${holder.holder} — running on this host's data without pulling`,
+          ),
+        );
+        continue;
+      }
+      write(dim(`Syncing behavior ${modelType}/${modelId} from datastore...`));
       const pulled = await wrapSync(
         () => pullModelData(syncService, config, caps, modelType, modelId),
         "pull",

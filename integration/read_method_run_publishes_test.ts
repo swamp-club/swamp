@@ -34,6 +34,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { Command } from "@cliffy/command";
+import { hostname } from "node:os";
 import { join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import { z } from "zod";
@@ -146,6 +147,8 @@ class LockTable {
   staleGlobal: LockInfo | undefined;
   /** While set, reading a lock fails, as with an unreachable bucket. */
   failInspect = false;
+  /** The host a held lock names; this host when unset. */
+  holderHost: string | undefined;
   #waiters = new Map<string, Array<() => void>>();
 
   lockFor = (options?: LockOptions): DistributedLock => {
@@ -204,7 +207,17 @@ class LockTable {
         this.failInspect
           ? Promise.reject(new Error("injected lock read failure"))
           : Promise.resolve(
-            key.endsWith(".datastore.lock") ? this.staleGlobal ?? null : null,
+            key.endsWith(".datastore.lock")
+              ? this.staleGlobal ?? null
+              : this.held.has(key)
+              ? {
+                holder: "writer",
+                hostname: this.holderHost ?? hostname(),
+                pid: Deno.pid,
+                acquiredAt: new Date().toISOString(),
+                ttlMs: 30_000,
+              }
+              : null,
           ),
       forceRelease: (nonce: string) => {
         if (
@@ -797,3 +810,66 @@ Deno.test("acquirePublishLocksOrDefer: a deferral records only the locked behavi
     }
   });
 });
+
+for (const elsewhere of [false, true]) {
+  Deno.test(
+    `model method run: a read ${
+      elsewhere
+        ? "pulls while a run on another host"
+        : "does not pull while a run on this host"
+    } holds the behavior's lock (swamp-club#3934)`,
+    async () => {
+      await withClones(async (c) => {
+        await runMethod(c.repoA, "write", "a1");
+        await runMethod(c.repoB, "write", "b2");
+        assertEquals(remoteLatest(c), "2");
+
+        c.locks.holderHost = elsewhere ? "elsewhere.example" : undefined;
+        const holder = await requireInitializedRepoUnlocked({
+          repoDir: c.repoA,
+          outputMode: "json",
+        });
+        // A writer holding the lock with an unpublished change in A's cache.
+        const writerLock = await acquireModelLocks(
+          holder.datastoreConfig,
+          [{ modelType: c.type.normalized, modelId: c.definition.id }],
+          c.repoA,
+          holder.syncService,
+          holder.repoContext.catalogStore,
+          undefined,
+          { repoContext: holder.repoContext, pull: false },
+        );
+        const latest = join(
+          c.repoA,
+          ".test-cache",
+          "data",
+          ...c.type.normalized.split("/"),
+          c.definition.id,
+          "main",
+          "latest",
+        );
+        await Deno.writeTextFile(latest, "9");
+        let seen: string | undefined;
+        hooks = {
+          beforeWrite: async () => {
+            seen = (await Deno.readTextFile(latest)).trim();
+          },
+        };
+        try {
+          await runMethod(c.repoA, "observe", "from-a");
+        } finally {
+          await writerLock.release();
+          await flushDatastoreSync();
+          holder.repoContext.catalogStore.close();
+        }
+        assertEquals(
+          seen,
+          elsewhere ? "2" : "9",
+          elsewhere
+            ? "the pull goes ahead"
+            : "the writer's in-flight marker is not rolled back",
+        );
+      });
+    },
+  );
+}

@@ -8002,8 +8002,12 @@ refreshes its resource does. `methodRunLockMode`
   first (`pullModelsUnlocked`), runs unlocked, and then tries to take the
   lock only to publish (`acquirePublishLocksOrDefer`). The pull never waits
   and never fails the run: while a structural command holds the global lock,
-  or when the pull fails (an unreachable remote), the run uses this host's
-  cache, and the publish check still refuses a version another clone wrote.
+  while a run on this host holds the behavior's lock (it writes into the
+  same cache, and a pull would overwrite its unpublished files with the
+  datastore's older copies), or when the pull fails (an unreachable remote),
+  the run uses this host's cache, and the publish check still refuses a
+  version another clone wrote. A holder on another host does not share the
+  cache, so the pull goes ahead.
   A global lock past its TTL is force-released, as a waiting run does, so a
   crashed structural command does not hold reads off.
 - The publish never waits on a writer. `acquireModelLocks` with `failIfBusy`
