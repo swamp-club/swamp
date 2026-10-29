@@ -51,7 +51,9 @@ interface PublishedVersion {
  * are checked (see `src/domain/data/unreadable_data_version.ts`), so a write
  * in flight is never reported. Read-only: neither the files nor the catalog
  * are changed, and no data query runs, so no catalog backfill hides what
- * the scan measures.
+ * the scan measures. The one state it touches is the process's record of
+ * read warnings: each version it reports is noted, so a read later in the
+ * same process does not warn about it again.
  *
  * For a repository whose files are all local (the filesystem datastore):
  * with lazy hydration a missing file is not damage.
