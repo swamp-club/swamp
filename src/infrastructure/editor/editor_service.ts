@@ -91,6 +91,9 @@ const TERMINAL_EDITORS = new Set([
   "micro",
   "helix",
   "hx",
+  "kak",
+  "vis",
+  "mg",
 ]);
 
 /**
@@ -125,7 +128,10 @@ function commandName(command: string): string {
 function isNonWaitingLauncher(editorParts: string[]): boolean {
   const base = commandName(editorParts[0]);
   if (base === "open") {
-    return !editorParts.includes("-W") && !editorParts.includes("--wait-apps");
+    // -W, alone or among combined short flags (-Wa), makes open wait.
+    return !editorParts.some((part) =>
+      part === "--wait-apps" || /^-[A-Za-z]*W[A-Za-z]*$/.test(part)
+    );
   }
   return NON_WAITING_LAUNCHERS.has(base);
 }

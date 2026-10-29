@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { basename, dirname, join, resolve } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import {
   Workflow,
@@ -169,6 +169,8 @@ export interface WorkflowEditDeps {
   saveRepaired: (workflow: Workflow) => Promise<void>;
   /** The file a save of `workflow` writes. */
   writePathFor: (workflow: Workflow) => string;
+  /** Whether `path` is a workflow file in the repository's workflows dir. */
+  isStoredFile: (path: string) => boolean;
   /**
    * Parses the new YAML and saves it. `beforeSave` runs after parsing; when it
    * returns false nothing is written and the call resolves to null.
@@ -213,6 +215,9 @@ export function createWorkflowEditDeps(
     prepareEditor: (path) =>
       editorService.prepareOpenFile(path, { requireWait: true }),
     saveRepaired: (workflow) => workflowRepo.save(workflow),
+    isStoredFile: (path) =>
+      resolve(dirname(path)) === resolve(workflowsDir) &&
+      /^workflow-.*\.yaml$/.test(basename(path)),
     writePathFor: (workflow) =>
       workflowRepo.getWritePath?.(workflow) ??
         workflowRepo.getPath(workflow.id),
@@ -235,7 +240,7 @@ export function createWorkflowEditDeps(
  */
 export type WorkflowEditFile =
   | { kind: "workflow"; path: string; workflow: Workflow }
-  | { kind: "broken"; path: string; id: string; name: string | null }
+  | { kind: "broken"; path: string; id: string | null; name: string | null }
   | { kind: "file"; path: string };
 
 /** Resolves the file a workflow edit acts on, or null when there is none. */
@@ -302,13 +307,16 @@ export async function resolveWorkflowEditFile(
           broken.name === input.expectedName)))
   ) {
     ctx.logger.debug`Found broken workflow, opening file: ${broken.file}`;
-    // Only the file the repository would write for its id is a stored
-    // workflow; any other broken file is edited where it is.
-    if (broken.id !== null && isUuid(broken.id)) {
-      const path = deps.getPath(createWorkflowId(broken.id));
-      if (path === broken.file) {
-        return { kind: "broken", path, id: broken.id, name: broken.name };
-      }
+    // A workflow file in the repository's workflows dir is a stored
+    // workflow, so its repair is saved through the repository; any other
+    // broken file is edited where it is.
+    if (deps.isStoredFile(broken.file)) {
+      return {
+        kind: "broken",
+        path: broken.file,
+        id: broken.id !== null && isUuid(broken.id) ? broken.id : null,
+        name: broken.name,
+      };
     }
     return { kind: "file", path: broken.file };
   }
@@ -523,14 +531,29 @@ async function* repairBrokenWorkflow(
   if (input.authorizeUpdate || input.authorizeContent) {
     yield {
       kind: "error",
-      error: forbidden(`Not allowed to repair workflow '${file.id}'`),
+      error: forbidden(
+        `Not allowed to repair workflow '${file.id ?? basename(file.path)}'`,
+      ),
     };
     return;
   }
   let repaired: Workflow;
   try {
     const yamlData = parseYaml(content) as WorkflowData;
-    yamlData.id = file.id;
+    // The id comes from the broken file when it could be read there, and
+    // otherwise from the edited YAML.
+    if (file.id !== null) yamlData.id = file.id;
+    if (typeof yamlData?.id !== "string" || !isUuid(yamlData.id)) {
+      yield {
+        kind: "error",
+        error: validationFailed(
+          `Cannot repair the workflow at ${
+            basename(file.path)
+          }: its id could not be read, so the edited YAML must give one ('id: <uuid>').`,
+        ),
+      };
+      return;
+    }
     repaired = Workflow.fromData(yamlData);
   } catch (error) {
     yield {
@@ -539,31 +562,6 @@ async function* repairBrokenWorkflow(
         `Invalid workflow YAML from the editor: ${
           error instanceof Error ? error.message : String(error)
         }`,
-      ),
-    };
-    return;
-  }
-  // A lookup that fails may be another broken file holding the name, so it
-  // refuses rather than counting as free.
-  let holder: Workflow | null;
-  try {
-    holder = await deps.findByName(repaired.name);
-  } catch (error) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        `Cannot name the repaired workflow '${repaired.name}': could not check that the name is free: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      ),
-    };
-    return;
-  }
-  if (holder && holder.id !== repaired.id) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        `Cannot name the repaired workflow '${repaired.name}': another workflow already has that name.`,
       ),
     };
     return;
@@ -581,12 +579,55 @@ async function* repairBrokenWorkflow(
     };
     return;
   }
-  const stillBroken = await deps.findBrokenWorkflow(file.id);
+  // A lookup that fails may be another broken file holding the name, so it
+  // refuses rather than counting as free, unless the save writes back to
+  // the file being repaired: that file is the one the lookup tripped on.
+  let holder: Workflow | null = null;
+  try {
+    holder = await deps.findByName(repaired.name);
+  } catch (error) {
+    if (target !== file.path) {
+      yield {
+        kind: "error",
+        error: validationFailed(
+          `Cannot name the repaired workflow '${repaired.name}': could not check that the name is free: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        ),
+      };
+      return;
+    }
+  }
+  if (holder && holder.id !== repaired.id) {
+    yield {
+      kind: "error",
+      error: validationFailed(
+        `Cannot name the repaired workflow '${repaired.name}': another workflow already has that name.`,
+      ),
+    };
+    return;
+  }
+  // The save removes a legacy id-named file, but no other: a repair that
+  // writes elsewhere would leave the broken file behind as well.
+  if (target !== file.path && file.path !== deps.getPath(repaired.id)) {
+    yield {
+      kind: "error",
+      error: validationFailed(
+        `Cannot rename the workflow while repairing it: keep the name it is stored under (${
+          basename(file.path)
+        }), then rename it with a second edit.`,
+      ),
+    };
+    return;
+  }
+  // Looked up as the edit was, since a file whose id could not be read is
+  // not found by the id the edited YAML gives.
+  const stillBroken = await deps.findBrokenWorkflow(input.workflowIdOrName);
   if (!stillBroken || stillBroken.file !== file.path) {
     yield {
       kind: "error",
       error: validationFailed(
-        `Workflow '${file.id}' was repaired while this edit ran; nothing was written.`,
+        `Workflow '${repaired.id}' was repaired while this edit ran; nothing was written.`,
       ),
     };
     return;

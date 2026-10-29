@@ -81,9 +81,10 @@ export type EditorSessionResult =
     status: "unchanged";
     editor: string;
     /**
-     * Set when the editor is not known to stay open until the file is
-     * closed: it may have returned before the person saved, so the copy is
-     * kept here rather than removed.
+     * Set only when the launch reports `waitConfirmed: false`: the editor is
+     * not known to stay open until the file is closed and may have returned
+     * before the person saved, so the copy is kept here rather than
+     * removed. A launch that does not report it is trusted to have waited.
      */
     keptPath?: string;
   }

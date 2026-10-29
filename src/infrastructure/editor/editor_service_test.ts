@@ -141,6 +141,9 @@ Deno.test("EditorService.prepareOpenFile: requireWait refuses launchers that ret
     assertEquals(error.code, "editor_cannot_wait", editor);
     assertStringIncludes(error.message, "pipe the YAML on stdin");
   }
+  await serviceWithEditor("open -Wa TextEdit").prepareOpenFile("/f.yaml", {
+    requireWait: true,
+  });
   const waiting = await serviceWithEditor("open -W -n").prepareOpenFile(
     "/f.yaml",
     { requireWait: true },
@@ -181,6 +184,8 @@ Deno.test("EditorService.prepareOpenFile: the wait is confirmed only for editors
     ["code", true],
     ["code --wait", true],
     ["open -W -n", true],
+    ["open -Wa TextEdit", true],
+    ["kak", true],
     ["/usr/local/bin/my-editor.sh", false],
     ["emacsclient", true],
     ["emacsclient -c", true],

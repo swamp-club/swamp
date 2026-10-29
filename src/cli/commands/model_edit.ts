@@ -206,6 +206,7 @@ export function createModelEditCommand(syntax: CommandSyntax) {
       }
 
       const stdinContent = await readStdin();
+      const editIdOrName = modelIdOrName;
       const deps = createModelEditDeps(repoDir);
       const renderer = createModelEditRenderer(cliCtx.outputMode);
       const runEdit = (
@@ -222,7 +223,7 @@ export function createModelEditCommand(syntax: CommandSyntax) {
             () =>
               consumeStream(
                 modelEdit(libCtx, deps, {
-                  modelIdOrName: modelIdOrName!,
+                  modelIdOrName: editIdOrName,
                   stdinContent: content,
                   ...(editor !== undefined
                     ? { source: "editor" as const, editor, allowRename: true }

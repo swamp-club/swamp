@@ -488,3 +488,59 @@ for (const kind of ["workflow", "model", "vault"] as const) {
     });
   });
 }
+
+Deno.test("editor edit: on v3, repairing a workflow file broken by hand is refused at commit, keeping the copy, and B keeps the stored version", async () => {
+  await withV3RowRepos({ managedConfig: true }, async (repos) => {
+    await create(repos.repoA, "workflow", "deploy");
+    const good = await loaded(repos.repoA, "workflow", "deploy");
+    await loaded(repos.repoB, "workflow", "deploy");
+    // A's file is broken by hand. A hand edit is not a commit, so the file
+    // is out of step with the store and the next save's precondition fails
+    // (a documented limit); the repair must say so, not drop the edit.
+    const path = join(
+      swampPath(repos.repoA, "config", "workflows"),
+      "workflow-deploy.yaml",
+    );
+    await Deno.writeTextFile(path, stringifyYaml({ ...good, ependssss: true }));
+
+    let copy: string | undefined;
+    const restore = useEditorSessionDepsForTesting({
+      prepareEditor: (path) =>
+        Promise.resolve({
+          editor: "Fake",
+          waitsForExit: true,
+          waitConfirmed: true,
+          open: async () => {
+            copy = path;
+            await Deno.writeTextFile(
+              path,
+              stringifyYaml(withEdit("workflow", good, "A")),
+            );
+            return { editor: "Fake", path, success: true };
+          },
+        }),
+    });
+    let error: unknown;
+    try {
+      error = await cliRejecting(
+        repos.repoA,
+        ["workflow", "edit", "deploy"],
+        {},
+      );
+    } finally {
+      restore();
+    }
+    try {
+      assert(error instanceof Error, `not an error: ${error}`);
+      assertStringIncludes(error.message, `Your edit is kept at ${copy}`);
+      assertEquals(
+        editedBy("workflow", await loaded(repos.repoB, "workflow", "deploy")),
+        undefined,
+      );
+    } finally {
+      if (copy !== undefined) {
+        await Deno.remove(dirname(copy), { recursive: true }).catch(() => {});
+      }
+    }
+  });
+});

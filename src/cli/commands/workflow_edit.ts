@@ -203,7 +203,10 @@ export const workflowEditCommand = withRemoteOptions(
       : null;
     if (file && file.kind !== "file") {
       const name = file.kind === "workflow" ? file.workflow.name : file.name;
-      const id = file.kind === "workflow" ? file.workflow.id : file.id;
+      // A broken file whose id could not be read is named as it was asked
+      // for.
+      const id = (file.kind === "workflow" ? file.workflow.id : file.id) ??
+        editIdOrName;
       if (name !== null) {
         await startConfigEdit(repoContext, "workflow", name, true);
       }

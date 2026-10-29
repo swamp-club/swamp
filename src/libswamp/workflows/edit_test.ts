@@ -64,6 +64,7 @@ function makeDeps(
     prepareEditor: prepareEditor("VS Code"),
     saveRepaired: () => Promise.resolve(),
     writePathFor: () => "/fake/path/workflow.yaml",
+    isStoredFile: () => false,
     updateFromStdin: () =>
       Promise.resolve(
         {
@@ -925,6 +926,7 @@ function brokenAt(path: string) {
     findByName: () => Promise.resolve(null),
     getPath: () => path,
     writePathFor: () => path,
+    isStoredFile: () => true,
     findBrokenWorkflow: () =>
       Promise.resolve({
         file: path,
@@ -1082,6 +1084,11 @@ Deno.test("workflowEdit: an editor repair whose name check fails is refused", as
   const { deps, repaired } = makeEditorSaveDeps({
     ...brokenAt("/repo/workflows/workflow-1.yaml"),
     findByName: () => Promise.reject(new Error("Unknown key 'ependssss'")),
+    // The save would write a file other than the one being repaired, so a
+    // name the lookup cannot clear may belong to another broken file.
+    writePathFor: () => "/repo/workflows/workflow-other.yaml",
+    fileExists: (path) =>
+      Promise.resolve(path === "/repo/workflows/workflow-1.yaml"),
   });
 
   const events = await collect<WorkflowEditEvent>(
@@ -1109,6 +1116,134 @@ Deno.test("workflowEdit: an editor repair may write over its own file", async ()
     ...brokenAt(brokenPath),
     writePathFor: () => brokenPath,
     fileExists: (path) => Promise.resolve(path === brokenPath),
+  });
+
+  await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: "my-workflow",
+      stdinContent: EDITED_YAML,
+      source: "editor",
+    }),
+  );
+
+  assertEquals(repaired.length, 1);
+});
+
+Deno.test("resolveWorkflowEditFile: a broken file stored under its name is a stored workflow to repair", async () => {
+  const { deps } = makeEditorSaveDeps({
+    ...brokenAt("/repo/workflows/workflow-my-workflow.yaml"),
+    // The repository's id path for an unloaded workflow is the legacy one.
+    getPath: () => `/repo/workflows/workflow-${EDITED_ID}.yaml`,
+  });
+
+  const file = await resolveWorkflowEditFile(createLibSwampContext(), deps, {
+    workflowIdOrName: "my-workflow",
+  });
+
+  assertEquals(file?.kind, "broken");
+  assertEquals(file?.path, "/repo/workflows/workflow-my-workflow.yaml");
+});
+
+Deno.test("workflowEdit: an editor repair of a broken file stored under its name saves it in place", async () => {
+  const path = "/repo/workflows/workflow-my-workflow.yaml";
+  const { deps, repaired } = makeEditorSaveDeps({
+    ...brokenAt(path),
+    getPath: () => `/repo/workflows/workflow-${EDITED_ID}.yaml`,
+  });
+
+  const events = await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: "my-workflow",
+      stdinContent: EDITED_YAML,
+      source: "editor",
+    }),
+  );
+
+  assertEquals(repaired.map((w) => w.name), ["my-workflow"]);
+  const last = events[events.length - 1] as Extract<
+    WorkflowEditEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(last.data.path, path);
+});
+
+Deno.test("workflowEdit: an editor repair takes the id from the edited YAML when the broken file's could not be read", async () => {
+  const path = "/repo/workflows/workflow-my-workflow.yaml";
+  const { deps, repaired } = makeEditorSaveDeps({
+    ...brokenAt(path),
+    findBrokenWorkflow: () =>
+      Promise.resolve({ file: path, name: null, id: null, error: "bad" }),
+  });
+
+  await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: "my-workflow",
+      stdinContent: EDITED_YAML,
+      source: "editor",
+    }),
+  );
+
+  assertEquals(repaired.map((w) => w.id), [EDITED_ID]);
+});
+
+Deno.test("workflowEdit: an editor repair with no readable id anywhere is refused", async () => {
+  const path = "/repo/workflows/workflow-my-workflow.yaml";
+  const { deps, repaired } = makeEditorSaveDeps({
+    ...brokenAt(path),
+    findBrokenWorkflow: () =>
+      Promise.resolve({ file: path, name: null, id: null, error: "bad" }),
+  });
+
+  const events = await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: "my-workflow",
+      stdinContent: EDITED_YAML.replace(`id: ${EDITED_ID}\n`, ""),
+      source: "editor",
+    }),
+  );
+
+  const last = events[events.length - 1] as Extract<
+    WorkflowEditEvent,
+    { kind: "error" }
+  >;
+  assertStringIncludes(last.error.message, "the edited YAML must give one");
+  assertEquals(repaired, []);
+});
+
+Deno.test("workflowEdit: an editor repair may not rename a broken file stored under its name", async () => {
+  const path = "/repo/workflows/workflow-my-workflow.yaml";
+  const { deps, repaired } = makeEditorSaveDeps({
+    ...brokenAt(path),
+    getPath: () => `/repo/workflows/workflow-${EDITED_ID}.yaml`,
+    writePathFor: (w) => `/repo/workflows/workflow-${w.name}.yaml`,
+    fileExists: (p) => Promise.resolve(p === path),
+  });
+
+  const events = await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: "my-workflow",
+      stdinContent: EDITED_YAML.replace("name: my-workflow", "name: other"),
+      source: "editor",
+    }),
+  );
+
+  const last = events[events.length - 1] as Extract<
+    WorkflowEditEvent,
+    { kind: "error" }
+  >;
+  assertStringIncludes(
+    last.error.message,
+    "Cannot rename the workflow while repairing it",
+  );
+  assertEquals(repaired, []);
+});
+
+Deno.test("workflowEdit: an editor repair of a legacy id-named file may take its name path", async () => {
+  const legacy = `/repo/workflows/workflow-${EDITED_ID}.yaml`;
+  const { deps, repaired } = makeEditorSaveDeps({
+    ...brokenAt(legacy),
+    writePathFor: (w) => `/repo/workflows/workflow-${w.name}.yaml`,
+    fileExists: (p) => Promise.resolve(p === legacy),
   });
 
   await collect<WorkflowEditEvent>(
