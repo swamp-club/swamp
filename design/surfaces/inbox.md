@@ -47,9 +47,10 @@ Message {
 `/messages` carries every message the user's web inbox does. `/summary` counts
 only the kinds that should interrupt a command: announcements, direct messages,
 points, system messages and issue status (`issue_shipped`, `issue_closed`,
-`issue_update`). A mention moves the ETag but not `unread` or `newestId`, so it
-is listed without raising the notice. Swamp Club decides which kinds count;
-the client needs no list of its own.
+`issue_update`). A mention, or any other kind that does not raise the notice,
+leaves the ETag alone as well as `unread` and `newestId`, so it is listed
+without raising the notice and never spends the client's `304`. Swamp Club
+decides which kinds count; the client needs no list of its own.
 
 Status codes that apply to every endpoint:
 
@@ -79,6 +80,11 @@ translate it into swamp's own values, so nothing past them sees raw server text:
   action's command is never stripped: a command holding any of these
   characters, anywhere in the text as sent, drops the action, since stripping
   could turn it into a command it only resembled.
+- **A blank title falls back to the kind.** A title left empty by stripping, or
+  holding only the zero-width joiners prose keeps, is replaced by the message's
+  cleaned `kind`, as Swamp Club does for an empty title. Dropping the message
+  instead would leave the summary counting one that `swamp inbox read` cannot
+  show. A message whose `kind` is empty once cleaned is still dropped.
 - **An action is always one allowed `swamp` command.** The command must be
   `swamp` followed by words made of letters, digits and the characters `@`, `%`,
   `+`, `,`, `.`, `/`, `:`, `=`, `_` and `-`. Quotes, `;`, `|`, `&`, `$`,
@@ -267,24 +273,35 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   `www.` or email autolink, such as `www.swamp-club.com` or
   `team@swamp-club.com` in running text: its text is its whole target, so it
   prints as written.
-- **`swamp inbox read` outside a terminal** prints the newest unread message
-  (kind and date, title, the body as plain markdown, `Link:` and `Next:`) and
-  marks it read. While more are unread it ends with
+- **`swamp inbox read` outside a terminal** prints the message the notice
+  announced, or else the newest unread message (kind and date, title, the body
+  as plain markdown, `Link:` and `Next:`), and marks it read. `/messages` lists
+  kinds that never raise the notice, such as mentions, so its newest unread
+  entry need not be the one the notice is about; reading that one would leave
+  the notice up. It first asks `/api/inbox/summary`, without an `ETag` and
+  bounded as the refresh after marking is, and applies the answer to the key's
+  cache. When the answer names a `newestId` and that message, fetched by id, is
+  still unread, it is the one shown. Any other answer, a message that is gone,
+  already read or refused by the client, falls back to the newest unread
+  message in the list. Repeated runs so read the notice's messages first,
+  newest first, and the notice stops after the first; then the rest, mentions
+  included. While more are unread it ends with
   `To read the next:  swamp inbox read`. With nothing unread it prints
   `No unread messages.` and exits 0. Unread messages are listed two at a time;
   while every entry on a page broke the contract and another page follows,
-  listing goes on, at most 5 pages. `moreUnread` is true when a second valid
-  message, a later page or a left-out entry exists. A left-out entry is an
+  listing goes on, at most 5 pages, unless the announced message is already in
+  hand. `moreUnread` is true when the page holds an unread message other than
+  the one shown, a later page or a left-out entry exists. A left-out entry is an
   unread message this swamp cannot show, so it can keep `moreUnread` true
   after the last message it can show: the next `swamp inbox read` then
   prints `No unread messages.` with the left-out warning. `--json` prints
   `{ message, moreUnread, dropped }`, with `message: null` when nothing is
   unread. The message's `readAt` is the CLI's own clock at the time it marked
   it, since `POST /api/inbox/read` returns ids only. `dropped` counts unread
-  messages the client left out, which the summary still counts. The message is
-  marked before it is printed, so a run killed in between leaves it read but
-  unseen, still reachable through the picker. Message body text reaches stdout
-  only when the user asks to read it.
+  messages the client left out; the summary counts a left-out message only when
+  its kind raises the notice. The message is marked before it is printed, so a
+  run killed in between leaves it read but unseen, still reachable through the
+  picker. Message body text reaches stdout only when the user asks to read it.
 - **Marking read updates the cache.** Every path that marks messages read
   (Enter, Ctrl-r, Ctrl-a and `swamp inbox read`) sends only those ids, then asks
   `/api/inbox/summary` once, without an `ETag`, and applies the answer to the

@@ -69,5 +69,36 @@
   },
   "inboxRequiresUser": {
     "error": "inbox_requires_user"
+  },
+  "webKindsPage": {
+    "messages": [
+      {
+        "id": "01JBX5Q8ZK0000000000000300",
+        "kind": "mention",
+        "title": "keeb mentioned you on #4078",
+        "body": "<b>@stack72</b> can you check http://example.com/build-log before we ship?",
+        "createdAt": "2026-10-28T10:00:00.000Z",
+        "link": "https://swamp-club.com/lab/4078",
+        "readAt": null
+      },
+      {
+        "id": "01JBX5Q8ZK00000000000002ZZ",
+        "kind": "issue_shipped",
+        "title": "Your issue #4079 shipped",
+        "body": "The fix for **#4079** shipped.",
+        "createdAt": "2026-10-28T09:00:00.000Z",
+        "link": "https://swamp-club.com/lab/4079",
+        "readAt": null
+      },
+      {
+        "id": "01JBX5Q8ZK00000000000002ZP",
+        "kind": "nurture_stalled",
+        "title": "Pick up where you left off",
+        "body": "Your workflow has not run in a week. See [the workflow guide](https://swamp-club.com/manual/reference/workflows).",
+        "createdAt": "2026-10-27T09:00:00.000Z",
+        "readAt": null
+      }
+    ],
+    "nextCursor": null
   }
 }

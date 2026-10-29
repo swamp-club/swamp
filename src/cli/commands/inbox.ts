@@ -112,8 +112,9 @@ const inboxReadCommand = new Command()
   .name("read")
   .description(
     "Read your Swamp Club inbox. In a terminal, opens the inbox picker with " +
-      "the newest unread message highlighted. Otherwise prints the newest " +
-      "unread message and marks it read.",
+      "the newest unread message highlighted. Otherwise prints the message " +
+      "the notice announced, or else the newest unread message, and marks " +
+      "it read.",
   )
   .example("Read the newest unread message", "swamp inbox read")
   .example("Read it as JSON", "swamp inbox read --json")

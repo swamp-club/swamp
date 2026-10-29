@@ -71,6 +71,24 @@ Deno.test("inbox fixture: the list page holds every kind in both read states", (
   assert(page.messages.some((m) => m.readAt !== null));
 });
 
+Deno.test("inbox fixture: the web kinds page keeps every entry and its kind as sent", () => {
+  const page = parseInboxMessagePage(fixture.webKindsPage);
+  assert(page);
+  assertEquals(page.dropped, 0);
+  assertEquals(
+    page.messages.map((m) => m.kind),
+    fixture.webKindsPage.messages.map((m: { kind: string }) => m.kind),
+  );
+  assertEquals(
+    new Set(page.messages.map((m) => m.kind)),
+    new Set(["mention", "issue_shipped", "nurture_stalled"]),
+  );
+  const shipped = page.messages.find((m) => m.kind === "issue_shipped");
+  assertEquals(shipped?.link, "https://swamp-club.com/lab/4079");
+  const nurture = page.messages.find((m) => m.kind === "nurture_stalled");
+  assertEquals(nurture?.action, undefined);
+});
+
 Deno.test("parseInboxMessage: keeps an unknown kind", () => {
   const raw = { ...message(), kind: "survey" };
   assertEquals(parseInboxMessage(raw)?.kind, "survey");
@@ -391,9 +409,27 @@ Deno.test("parseInboxMessage: truncates an over-long title", () => {
   assertEquals(parseInboxMessage(raw)?.title.length, MAX_INBOX_TITLE_LENGTH);
 });
 
-Deno.test("parseInboxMessage: drops a message whose title is empty once sanitized", () => {
+Deno.test("parseInboxMessage: a title empty once sanitized falls back to the kind", () => {
+  const parsed = parseInboxMessage({
+    ...message(),
+    kind: "issue_shipped",
+    title: "\x1b[0m ",
+  });
+  assertEquals(parsed?.title, "issue_shipped");
+});
+
+Deno.test("parseInboxMessage: a title of only zero-width characters falls back to the kind", () => {
+  const parsed = parseInboxMessage({
+    ...message(),
+    kind: "issue_closed",
+    title: "\u200b\u200c\u200d\u2060\ufeff",
+  });
+  assertEquals(parsed?.title, "issue_closed");
+});
+
+Deno.test("parseInboxMessage: drops a message whose kind and title are both empty once sanitized", () => {
   assertEquals(
-    parseInboxMessage({ ...message(), title: "\x1b[0m " }),
+    parseInboxMessage({ ...message(), kind: "\u200b", title: "\u200b" }),
     undefined,
   );
 });
