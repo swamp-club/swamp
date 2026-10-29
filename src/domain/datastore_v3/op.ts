@@ -26,7 +26,8 @@
  *   it was loaded from). `access` is the file access the writer's file had
  *   ({@link FileAccess}, swamp-club#3693); a plain file has none.
  * - `tombstone`: removes one record, by its exact key; there are no prefix
- *   tombstones. `expect: "present"` makes it conditional.
+ *   tombstones. `expect` makes it conditional: `"present"`, or `{ sha256 }`
+ *   (delete the version it was loaded from, swamp-club#4097).
  * - `data-version`: records a data version's metadata. The partition reads
  *   the name and version from the metadata, never from the key.
  * - `lease`: records the holder of a partition's lease and its fence
@@ -61,6 +62,12 @@ const MAX_HOLDER_LENGTH = 1024;
 /** A put's precondition: the record is absent, or has exactly this digest. */
 export type PutExpect = "absent" | { readonly sha256: string };
 
+/**
+ * A tombstone's precondition: the record is present, or has exactly this
+ * digest (swamp-club#4097).
+ */
+export type TombstoneExpect = "present" | { readonly sha256: string };
+
 /** The serialized form of a {@link PutOp}. */
 export interface PutOpJSON {
   readonly kind: "put";
@@ -77,7 +84,7 @@ export interface TombstoneOpJSON {
   readonly kind: "tombstone";
   readonly intent: Intent;
   readonly key: string;
-  readonly expect?: "present";
+  readonly expect?: TombstoneExpect;
 }
 
 /** The serialized form of a {@link DataVersionOp}. */
@@ -170,7 +177,7 @@ export class TombstoneOp {
   private constructor(
     readonly intent: Intent,
     readonly key: RecordKey,
-    readonly expect: "present" | undefined,
+    readonly expect: TombstoneExpect | undefined,
   ) {}
 
   /** @internal Only {@link tombstoneOp} can supply the token. */
@@ -178,7 +185,7 @@ export class TombstoneOp {
     token: typeof BUILD,
     intent: Intent,
     key: RecordKey,
-    expect: "present" | undefined,
+    expect: TombstoneExpect | undefined,
   ): TombstoneOp {
     if (token !== BUILD) {
       throw new Error("Use tombstoneOp() to build a tombstone");
@@ -306,18 +313,13 @@ export async function putOp(props: {
 export function tombstoneOp(props: {
   intent: Intent;
   key: RecordKey;
-  expect?: "present";
+  expect?: TombstoneExpect;
 }): TombstoneOp {
-  if (props.expect !== undefined && props.expect !== "present") {
-    throw new Error(
-      `A tombstone's expect must be 'present': ${String(props.expect)}`,
-    );
-  }
   return TombstoneOp.build(
     BUILD,
     createIntent(props.intent),
     requireKey(props.key),
-    props.expect,
+    readTombstoneExpect(props.expect),
   );
 }
 
@@ -401,7 +403,7 @@ export async function opFromJSON(value: unknown): Promise<Op> {
       return tombstoneOp({
         intent: json.intent as Intent,
         key: RecordKey.fromJSON(json.key),
-        expect: json.expect as "present" | undefined,
+        expect: json.expect as TombstoneExpect | undefined,
       });
     case "data-version":
       requireOnlyFields(json, ["kind", "key", "metadata"]);
@@ -437,6 +439,22 @@ function readPutExpect(expect: unknown): PutExpect | undefined {
   }
   throw new Error(
     "A put's expect must be 'absent' or { sha256 } with a lowercase hex digest",
+  );
+}
+
+function readTombstoneExpect(
+  expect: unknown,
+): TombstoneExpect | undefined {
+  if (expect === undefined || expect === "present") return expect;
+  if (typeof expect === "object" && expect !== null && !Array.isArray(expect)) {
+    const json = expect as Record<string, unknown>;
+    if (Object.keys(json).length === 1 && isSha256Hex(json.sha256)) {
+      return Object.freeze({ sha256: json.sha256 });
+    }
+  }
+  throw new Error(
+    "A tombstone's expect must be 'present' or { sha256 } with a lowercase " +
+      `hex digest: ${JSON.stringify(expect)}`,
   );
 }
 

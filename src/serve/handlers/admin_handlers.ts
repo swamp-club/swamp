@@ -353,6 +353,7 @@ function extensionLockfileTransaction(
         markDirty,
         lockfilePath,
         configBase: ctx.datastoreResolver.resolvePath("config"),
+        commitLog: ctx.repoContext.commitLog,
       }),
       pending: createRepoPendingLockfileStore(ctx.repoDir),
       publishFailure: "defer",

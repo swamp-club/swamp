@@ -506,6 +506,23 @@ Deno.test("Partition.append: tombstone expect 'present'", async () => {
   );
 });
 
+Deno.test("Partition.append: a tombstone expecting a digest removes only that version (swamp-club#4097)", async () => {
+  const partition = Partition.empty(modelPartition());
+  const a = { sha256: await sha256Of("a") };
+  const b = { sha256: await sha256Of("b") };
+  partition.append(modelCommit(1, [await savePut("vpc", 1, "a")]));
+  assertRejected(
+    () => partition.append(modelCommit(2, [deleteVersion("vpc", 1, b)])),
+    "expect-failed",
+  );
+  partition.append(modelCommit(2, [deleteVersion("vpc", 1, a)]));
+  assertEquals(partition.record(dataKey("vpc", 1)), undefined);
+  assertRejected(
+    () => partition.append(modelCommit(3, [deleteVersion("vpc", 1, a)])),
+    "expect-failed",
+  );
+});
+
 Deno.test("Partition.append: ops in one commit see each other's effects in order", async () => {
   const partition = Partition.empty(modelPartition());
   partition.append(

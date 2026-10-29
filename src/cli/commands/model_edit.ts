@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import { startConfigEdit } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import {
   type CommandSyntax,
   definitionArgument,
@@ -48,6 +50,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { runManagedConfigMutation } from "../managed_config_sync.ts";
+import { runAsUserConfigEdit } from "../../infrastructure/datastore_v3/config_edit_scope.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -198,23 +201,39 @@ export function createModelEditCommand(syntax: CommandSyntax) {
 
       const stdinContent = await readStdin();
       const deps = createModelEditDeps(repoDir);
+      // A stale stdin edit, a rename's included, is refused before it
+      // writes; opening the editor loads the definition (swamp-club#4097).
+      const target = await findDefinitionByIdOrName(
+        repoContext.definitionRepo,
+        modelIdOrName,
+      ).catch(() => null);
+      if (target) {
+        await startConfigEdit(
+          repoContext,
+          "model",
+          target.definition.name,
+          stdinContent === null,
+        );
+      }
 
       const renderer = createModelEditRenderer(cliCtx.outputMode);
-      await runManagedConfigMutation(
-        repoContext,
-        syncService,
-        datastoreConfig,
-        marker,
-        "model edit",
-        () =>
-          consumeStream(
-            modelEdit(libCtx, deps, {
-              modelIdOrName,
-              stdinContent,
-              allowRename: options.allowRename === true,
-            }),
-            renderer.handlers(),
-          ),
+      await runAsUserConfigEdit(() =>
+        runManagedConfigMutation(
+          repoContext,
+          syncService,
+          datastoreConfig,
+          marker,
+          "model edit",
+          () =>
+            consumeStream(
+              modelEdit(libCtx, deps, {
+                modelIdOrName,
+                stdinContent,
+                allowRename: options.allowRename === true,
+              }),
+              renderer.handlers(),
+            ),
+        )
       );
 
       cliCtx.logger.debug("Model edit command completed");

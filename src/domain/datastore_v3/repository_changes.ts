@@ -53,7 +53,12 @@ import type { ModelType } from "../models/model_type.ts";
 import type { ContentSource, TypedChange } from "./commit_log_unit_of_work.ts";
 import type { FileAccess } from "./file_access.ts";
 import { createIntent, type Intent, modelRef } from "./intent.ts";
-import { dataVersionOp, type PutExpect, tombstoneOp } from "./op.ts";
+import {
+  dataVersionOp,
+  type PutExpect,
+  type TombstoneExpect,
+  tombstoneOp,
+} from "./op.ts";
 import {
   type DefinitionKind,
   type PartitionKey,
@@ -390,10 +395,15 @@ export class ConfigChanges {
   }
 
   /**
-   * A removed file: a delete, the old key of a move (with the move's create
-   * or edit intent, expecting the file present), or an evaluated workflow.
+   * A removed file: a delete (expecting the bytes it removes,
+   * swamp-club#4097), the old key of a move (with the move's create or edit
+   * intent, expecting the file present), or an evaluated workflow.
    */
-  remove(why: ConfigRemoval, key: RecordKey, expect?: "present"): TypedChange {
+  remove(
+    why: ConfigRemoval,
+    key: RecordKey,
+    expect?: TombstoneExpect,
+  ): TypedChange {
     return {
       partition: this.partition,
       op: tombstoneOp({ intent: this.#intent({ kind: why }), key, expect }),
@@ -583,13 +593,21 @@ function isRemoval(
 export class LockfileChanges {
   readonly partition: PartitionKey = partitionOf({ kind: "lockfile" });
 
-  /** The lockfile as written. */
-  write(key: RecordKey, content: ContentSource): TypedChange {
+  /**
+   * The lockfile as written, expecting the version the change started from
+   * (swamp-club#4097) when given.
+   */
+  write(
+    key: RecordKey,
+    content: ContentSource,
+    expect?: PutExpect,
+  ): TypedChange {
     return putChange(
       this.partition,
       createIntent({ kind: "lockfile.write" }),
       key,
       content,
+      expect,
     );
   }
 }

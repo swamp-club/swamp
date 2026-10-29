@@ -29,6 +29,14 @@
  * the read model up when it opened, and the writer lock keeps every other
  * process from writing until this one ends.
  *
+ * The put expects the lockfile record as the transaction found it in the
+ * store (swamp-club#4097), not the checkout's file, which may be out of
+ * step. So a change another checkout landed meanwhile (a serve-mode
+ * checkout's forward, or a writer that took the lease after this context
+ * caught up) refuses the publish rather than being overwritten. The
+ * transaction then records the change as unpublished, and the next extension
+ * command replays it over the lockfile it catches up to.
+ *
  * @module
  */
 
@@ -38,8 +46,13 @@ import {
   LockfileChanges,
   recordKeyOf,
 } from "../../domain/datastore_v3/repository_changes.ts";
+import type { PutExpect } from "../../domain/datastore_v3/op.ts";
 import type { ManagedLockfileSyncPort } from "../../libswamp/extensions/managed_lockfile_transaction.ts";
-import { currentRootUnitOfWork } from "../persistence/repo_unit_of_work.ts";
+import { sha256Hex } from "../persistence/config_staging.ts";
+import {
+  type CommitLogEngine,
+  currentRootUnitOfWork,
+} from "../persistence/repo_unit_of_work.ts";
 import { stageTyped } from "../persistence/unit_of_work_scope.ts";
 
 /** Options for {@link createV3LockfileSync}. */
@@ -50,19 +63,33 @@ export interface V3LockfileSyncOptions {
   readonly lockfilePath: string;
   /** The config tier the lockfile lives in, whose key prefix is `config`. */
   readonly configBase: string;
+  /**
+   * The commit log the root commits through: the version of the lockfile
+   * record the checkout last caught up to, which the publish expects
+   * (swamp-club#4097). Without one the publish expects nothing.
+   */
+  readonly commitLog?: Pick<CommitLogEngine, "storedVersion">;
 }
 
 /** The sync port of a managed lockfile transaction on a v3 datastore. */
 export function createV3LockfileSync(
   options: V3LockfileSyncOptions,
 ): ManagedLockfileSyncPort {
-  const { markDirty, lockfilePath, configBase } = options;
+  const { markDirty, lockfilePath, configBase, commitLog } = options;
   const key = recordKeyOf([
     "config",
     ...relative(configBase, lockfilePath).split(SEPARATOR),
   ]);
+  // The version the next publish replaces: the lockfile record as the
+  // transaction found it, then each version this transaction published.
+  let replaces: PutExpect | undefined;
   return {
-    hydrate: () => Promise.resolve(),
+    hydrate: async () => {
+      replaces = await commitLog?.storedVersion?.(
+        new LockfileChanges().partition,
+        key.toString(),
+      );
+    },
     publish: async () => {
       const root = currentRootUnitOfWork(markDirty);
       if (root === undefined) {
@@ -73,9 +100,10 @@ export function createV3LockfileSync(
       const bytes = await Deno.readFile(lockfilePath);
       await stageTyped(
         markDirty,
-        () => [new LockfileChanges().write(key, bytes)],
+        () => [new LockfileChanges().write(key, bytes, replaces)],
       );
       await root.checkpoint();
+      replaces = { sha256: await sha256Hex(bytes) };
     },
   };
 }

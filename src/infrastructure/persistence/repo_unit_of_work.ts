@@ -44,6 +44,13 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import type { UnitOfWork } from "../../domain/datastore/unit_of_work.ts";
+import type { PutExpect } from "../../domain/datastore_v3/op.ts";
+import { ConfigEditConflictError } from "../../domain/datastore_v3/config_edit_conflict.ts";
+import {
+  type DefinitionKind,
+  type PartitionKey,
+  partitionOf,
+} from "../../domain/datastore_v3/partition_key.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import {
   createLegacyUnitOfWork,
@@ -83,6 +90,31 @@ export interface CommitLogEngine {
     options: CommitLogRootRunOptions<T>,
     fn: (root: CommitLogRootView) => Promise<T>,
   ): Promise<T>;
+  /**
+   * The version of record `key` of `partition` the commit log holds now
+   * (swamp-club#4097): its digest, or absent. A change that must not
+   * overwrite another writer's expects it.
+   */
+  storedVersion?(partition: PartitionKey, key: string): Promise<PutExpect>;
+  /**
+   * Notes that the user loaded the managed-config definition `partition`
+   * holds (swamp-club#4097): an edit of it now starts from the version the
+   * checkout holds.
+   */
+  configLoaded?(partition: PartitionKey): void;
+  /**
+   * The records of the managed-config definition `partition` holds whose
+   * version in the commit log is no longer the one a user's edit started
+   * from (swamp-club#4097), with who changed them and when.
+   */
+  staleConfigEdits?(partition: PartitionKey): Promise<StaleConfigRecord[]>;
+}
+
+/** A record {@link CommitLogEngine.staleConfigEdits} found changed. */
+export interface StaleConfigRecord {
+  readonly key: string;
+  readonly changedBy?: string;
+  readonly changedAt?: string;
 }
 
 /**
@@ -569,6 +601,86 @@ export async function checkpointOpenUnitOfWork(
   repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
 ): Promise<OpenUnitCheckpoint> {
   return await commitLogOf(repoContext)?.checkpointOpenUnit() ?? "no-unit";
+}
+
+/**
+ * Notes that the user loaded managed-config definition `name` of `kind`
+ * (swamp-club#4097), so an edit of it starts from the version the checkout
+ * holds now. Nothing on a v2 context. A failure is a warning: the load
+ * itself succeeded, and a later edit is at worst refused.
+ */
+export function markConfigLoaded(
+  repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
+  kind: DefinitionKind,
+  name: string,
+): void {
+  const commitLog = commitLogOf(repoContext);
+  if (commitLog?.configLoaded === undefined) return;
+  try {
+    commitLog.configLoaded(
+      partitionOf({ kind: "config", definitionKind: kind, name }),
+    );
+  } catch (error) {
+    logger.warn`Noting that ${kind} ${name} was loaded failed: ${error}`;
+  }
+}
+
+/**
+ * Refuses a user's edit or delete of managed-config definition `name` of
+ * `kind` before it changes anything, when another writer has changed the
+ * definition since the user loaded it (swamp-club#4097). A command whose
+ * use case writes other partitions before the definition's (a delete's
+ * outputs, data or runs) commits them on their own, so the refusal of the
+ * definition at commit would come too late. Nothing on a v2 context.
+ *
+ * @throws ConfigEditConflictError naming the definition, who changed it
+ *   and when
+ */
+export async function assertConfigEditCurrent(
+  repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
+  kind: DefinitionKind,
+  name: string,
+): Promise<void> {
+  const stale = await commitLogOf(repoContext)?.staleConfigEdits?.(
+    partitionOf({ kind: "config", definitionKind: kind, name }),
+  );
+  if (stale === undefined || stale.length === 0) return;
+  throw new ConfigEditConflictError(
+    stale.map((record) => ({
+      kind,
+      name,
+      key: record.key,
+      ...(record.changedBy === undefined
+        ? {}
+        : { changedBy: record.changedBy }),
+      ...(record.changedAt === undefined
+        ? {}
+        : { changedAt: record.changedAt }),
+    })),
+    undefined,
+  );
+}
+
+/**
+ * Before a user's edit of managed-config definition `name` of `kind` writes
+ * (swamp-club#4097). Content prepared before the command (stdin) was made
+ * from the version the user last loaded, so a stale one is refused
+ * ({@link assertConfigEditCurrent}). An editor opens on the checkout's
+ * current file, the version the catch-up wrote, so opening it is a load
+ * ({@link markConfigLoaded}): nothing the user writes there can lose
+ * another member's change.
+ */
+export async function startConfigEdit(
+  repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
+  kind: DefinitionKind,
+  name: string,
+  inEditor: boolean,
+): Promise<void> {
+  if (inEditor) {
+    markConfigLoaded(repoContext, kind, name);
+  } else {
+    await assertConfigEditCurrent(repoContext, kind, name);
+  }
 }
 
 /**

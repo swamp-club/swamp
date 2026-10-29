@@ -134,6 +134,17 @@ export interface PartitionRefusal {
   readonly reason: CommitRejection;
   readonly message: string;
   /**
+   * The record whose expectation did not hold, for reason `expect-failed`
+   * (swamp-club#4097); undefined otherwise.
+   */
+  readonly key?: string;
+  /**
+   * Who last changed {@link key} and when, as far as recent history tells
+   * (swamp-club#4097): the commit's principal, else its writer's host.
+   */
+  readonly changedBy?: string;
+  readonly changedAt?: string;
+  /**
    * The data versions the refused changes recorded (their `data-version`
    * ops), by data id: what a workflow run's steps name as data artifacts,
    * so a run can mark the steps that wrote them failed.

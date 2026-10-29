@@ -100,6 +100,7 @@ import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
 import { DatastoreOwner } from "../../domain/datastore_v3/datastore_owner.ts";
 import { UserError } from "../../domain/errors.ts";
 import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
+import type { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import type { ObservedBaseEntry } from "../../domain/datastore_v3/observed_base.ts";
 import { VersionRanges } from "../../domain/datastore_v3/version_ranges.ts";
 import {
@@ -445,6 +446,12 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     claimed_at_cursor INTEGER NOT NULL
   ) STRICT;
   `,
+  // 10 → 11: a tombstone may expect the digest of the version it removes
+  // (swamp-club#4097). No table changes; the version number is the point.
+  // A swamp at schema 10 or below refuses the new op field as a bad one and
+  // would call the store corrupt, so it must refuse the store as newer
+  // instead.
+  `SELECT 1;`,
 ];
 
 /** The owner row of `db` (swamp-club#4063), undefined when it holds none. */
@@ -983,6 +990,30 @@ export class SqliteCommitStore implements CommitStore {
         partition = await this.#partition(namespace, key);
       }
       return partition.highWater(name);
+    });
+  }
+
+  /**
+   * The digest of record `record` as `key`'s partition holds it now, from
+   * the file (swamp-club#4097); undefined when absent. A cached partition
+   * another connection has since written is rebuilt first.
+   */
+  recordSha256(
+    namespace: string,
+    key: PartitionKey,
+    record: RecordKey,
+  ): Promise<string | undefined> {
+    if (this.#closed) return Promise.reject(closedError());
+    return this.#enqueue(async () => {
+      let partition = await this.#partition(namespace, key);
+      const head = this.#selectHead.get(namespace, key.toString()) as
+        | { seq: number }
+        | undefined;
+      if ((head?.seq ?? 0) !== partition.seq) {
+        this.#cache.delete(cacheKeyOf(namespace, key.toString()));
+        partition = await this.#partition(namespace, key);
+      }
+      return partition.record(record)?.sha256;
     });
   }
 

@@ -33,6 +33,10 @@ import { gzipSync } from "node:zlib";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import type { GrantUsernameResolver } from "../../domain/access/grant_username_resolution.ts";
 import { repoUnitOfWorkFactory } from "../../infrastructure/persistence/repo_unit_of_work.ts";
+import {
+  CONFIG_EDIT_CONFLICT_CODE,
+  configEditConflictOf,
+} from "../../domain/datastore_v3/config_edit_conflict.ts";
 import { V3_REPLICATION_UNCONFIRMED_CODE } from "../../domain/datastore_v3/litestream_replication.ts";
 import {
   V3_STORAGE_UNREACHABLE_CODE,
@@ -2565,12 +2569,21 @@ export function withCommittedUnknownSteps(
  * The error reply for a write whose commit or replication failed: the
  * CLI's codes for an unconfirmed sync, a fenced lease, a commit that could
  * not reach the storage, a writer cut off from the storage before it wrote
- * and a writer lease another process holds, otherwise `fallbackCode`.
+ * and a writer lease another process holds, `config_edit_conflict` with
+ * who changed what for a managed-config edit another writer's change
+ * refused (swamp-club#4097), otherwise `fallbackCode`.
  */
 export function replicationErrorForClient(
   error: unknown,
   fallbackCode: string,
 ): { readonly code: string; readonly message: string } {
+  const conflict = configEditConflictOf(error);
+  if (conflict !== undefined) {
+    return {
+      code: CONFIG_EDIT_CONFLICT_CODE,
+      message: sanitizeErrorForClient(conflict),
+    };
+  }
   const message = sanitizeErrorForClient(error);
   if (
     error instanceof UserError &&

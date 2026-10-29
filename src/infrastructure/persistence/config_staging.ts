@@ -314,9 +314,13 @@ export function definitionSaveBatches(save: DefinitionSave): TypedChange[][] {
 
 /**
  * The batches a definition or workflow delete stages: per partition, a
- * tombstone of each removed file, without a precondition. A managed-config
- * file is deleted in the partition of the name it declared (else `name`);
- * a file whose name is unknown stages nothing.
+ * tombstone of each removed file, without a precondition: a local file out
+ * of step with the store (a hand or editor-mode edit) must stay deletable.
+ * A user's delete of a definition another checkout has since changed
+ * expects the version the user started from instead, which the commit-log
+ * unit sets (swamp-club#4097). A managed-config file is deleted in the
+ * partition of the name it declared (else `name`); a file whose name is
+ * unknown stages nothing.
  */
 export function definitionDeleteBatches(remove: {
   readonly kind: DefinitionKind;

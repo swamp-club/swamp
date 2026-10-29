@@ -623,6 +623,12 @@ export class Partition {
           ) {
             throw this.#expectFailed(op.key, "present");
           }
+          if (
+            !observed && typeof op.expect === "object" &&
+            current(key) !== op.expect.sha256
+          ) {
+            throw this.#expectFailed(op.key, `sha256 ${op.expect.sha256}`);
+          }
           records.set(key, null);
           const intent = op.intent;
           if (

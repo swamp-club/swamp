@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { assertConfigEditCurrent } from "../../infrastructure/persistence/repo_unit_of_work.ts";
+import { runAsUserConfigEdit } from "../../infrastructure/datastore_v3/config_edit_scope.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createVaultRemoveDeps,
@@ -132,6 +134,9 @@ To delete a single secret, use 'swamp vault delete <vault> <key>'.`,
       throw error;
     }
 
+    // Before anything is removed (swamp-club#4097).
+    await assertConfigEditCurrent(repoContext, "vault", preview.vaultName);
+
     if (cliCtx.outputMode === "log" && !options.yes) {
       renderVaultRemoveWarnings(preview, cliCtx.outputMode);
       const confirmed = await promptConfirmation(
@@ -151,24 +156,26 @@ To delete a single secret, use 'swamp vault delete <vault> <key>'.`,
     const publishes = syncService !== undefined &&
       marker?.datastore?.managedConfig === true;
     try {
-      await runCommandInRootUnit(
-        repoContext,
-        {
-          push: publishes
-            ? () => publishManagedConfigChanges(syncService, datastoreConfig)
-            : undefined,
-          pushWhen: "completed",
-        },
-        () =>
-          consumeStream(vaultRemove(ctx, deps, input), {
-            removing: () => {},
-            completed: (e) => {
-              outcome.removed = e.data;
-            },
-            error: (e) => {
-              throw userErrorFromSwampError(e.error);
-            },
-          }),
+      await runAsUserConfigEdit(() =>
+        runCommandInRootUnit(
+          repoContext,
+          {
+            push: publishes
+              ? () => publishManagedConfigChanges(syncService, datastoreConfig)
+              : undefined,
+            pushWhen: "completed",
+          },
+          () =>
+            consumeStream(vaultRemove(ctx, deps, input), {
+              removing: () => {},
+              completed: (e) => {
+                outcome.removed = e.data;
+              },
+              error: (e) => {
+                throw userErrorFromSwampError(e.error);
+              },
+            }),
+        )
       );
     } catch (error) {
       // The removal is saved locally but unpublished, so its secrets were

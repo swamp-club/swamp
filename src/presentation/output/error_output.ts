@@ -27,6 +27,10 @@ import { SignalRefusedUserError } from "../../domain/workflows/signal_refused_us
 import type { OutputMode } from "./output.ts";
 import type { CommandSurface } from "../command_surface.ts";
 import { messageFor } from "../../domain/behavior_wording.ts";
+import {
+  ConfigEditConflictError,
+  configEditConflictOf,
+} from "../../domain/datastore_v3/config_edit_conflict.ts";
 import { takeAuthGateWarning } from "../renderers/auth_gate_warning.ts";
 import { V3_REPLICATION_UNCONFIRMED_CODE } from "../../domain/datastore_v3/litestream_replication.ts";
 import {
@@ -70,6 +74,9 @@ const logger = getSwampLogger(["error"]);
  *   acknowledgeUnknown}`: the workflow runs left running, to pass to
  *   `swamp workflow recover`, and whether a run's recovery needs
  *   `--acknowledge-unknown` for a step it was cut in (swamp-club#3882).
+ * - {@link ConfigEditConflictError} adds `conflicts`, each `{kind, name?,
+ *   key, changedBy?, changedAt?}`: the managed config another writer
+ *   changed under a refused edit (swamp-club#4097).
  */
 export function buildErrorJson(
   err: Error,
@@ -100,6 +107,9 @@ export function buildErrorJson(
     // so scripts and agents can branch without parsing the message.
     data.reason = { ...err.reason };
     data.temporary = err.temporary;
+  }
+  if (err instanceof ConfigEditConflictError) {
+    data.conflicts = err.conflicts.map((conflict) => ({ ...conflict }));
   }
   if (err instanceof SignalRefusedUserError) {
     data.refusal = err.refusal;
@@ -296,7 +306,10 @@ export function renderError(
   outputMode?: OutputMode,
   surface: CommandSurface = "behavior",
 ): void {
-  const err = error instanceof Error ? error : new Error(String(error));
+  // A refused stale config edit is the user's to resolve, not a crash
+  // (swamp-club#4097).
+  const err = configEditConflictOf(error) ??
+    (error instanceof Error ? error : new Error(String(error)));
   const message = messageFor(err, surface);
   // A certificate-store failure is an environment problem the user can fix,
   // not a swamp bug, so it gets no stack trace even when it arrives raw.

@@ -46,6 +46,7 @@ import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
 import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
 import { StaleSeqError } from "./commit_log_unit_of_work.ts";
+import { recordLastChange } from "./record_last_change.ts";
 
 export { StaleSeqError };
 import type { V3Datastore } from "./v3_datastore.ts";
@@ -131,9 +132,6 @@ export class ChunksMissingError extends Error {
     this.name = "ChunksMissingError";
   }
 }
-
-/** How many commits back the newest change to a refused key is looked for. */
-const CHANGED_BY_SCAN = 200;
 
 /**
  * Commits `request` through `v3`'s writer and resolves with its seq.
@@ -266,8 +264,8 @@ async function missingChunks(
 }
 
 /**
- * The conflict reply of a failed precondition: the key, the head, and the
- * newest of the last {@link CHANGED_BY_SCAN} commits that touched the key.
+ * The conflict reply of a failed precondition: the key, the head, and who
+ * changed the key last, by {@link recordLastChange}.
  */
 async function preconditionConflict(
   v3: ForwardedCommitTarget,
@@ -276,28 +274,16 @@ async function preconditionConflict(
 ): Promise<Error> {
   const key = error.key?.toString();
   if (key === undefined) return error;
-  const head = await v3.commitStore.head(v3.namespace, partition);
-  let changedBy: string | undefined;
-  let changedAt: string | undefined;
-  try {
-    const recent = await v3.commitStore.readPartition(
-      v3.namespace,
-      partition,
-      Math.max(1, head.seq - CHANGED_BY_SCAN + 1),
-      CHANGED_BY_SCAN,
-    );
-    for (const { commit } of [...recent].reverse()) {
-      const touched = commit.ops.some((op) =>
-        (op.kind === "put" || op.kind === "tombstone") &&
-        op.key.toString() === key
-      );
-      if (!touched) continue;
-      changedBy = commit.principal ?? commit.writer.host;
-      changedAt = commit.at;
-      break;
-    }
-  } catch (readError) {
-    if (!(readError instanceof CommitsCompactedError)) throw readError;
-  }
-  return new PreconditionConflictError(key, head.seq, changedBy, changedAt);
+  const last = await recordLastChange(
+    v3.commitStore,
+    v3.namespace,
+    partition,
+    key,
+  );
+  return new PreconditionConflictError(
+    key,
+    last.seq,
+    last.changedBy,
+    last.changedAt,
+  );
 }

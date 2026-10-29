@@ -88,7 +88,11 @@ import {
   CommitsCompactedError,
   type CommitStore,
 } from "../../domain/datastore_v3/commit_store.ts";
-import { MAX_INLINE_BYTES, type PutOp } from "../../domain/datastore_v3/op.ts";
+import {
+  MAX_INLINE_BYTES,
+  type PutExpect,
+  type PutOp,
+} from "../../domain/datastore_v3/op.ts";
 import {
   decideFile,
   finalKeyStates,
@@ -370,6 +374,15 @@ export interface SqliteReadModelOptions {
     namespace: string,
     keys: readonly string[],
   ) => Promise<void>;
+  /**
+   * The writer instance of the process this read model serves
+   * (swamp-club#4097). When set, a commit of another writer that changes the
+   * bytes of a managed-config definition's file records, in the state, the
+   * digest the file held before: the base a user's later edit of it expects
+   * ({@link SqliteReadModel.configBase}). A file already holding the
+   * commit's bytes, such as the writer's own, records nothing.
+   */
+  readonly writerInstance?: string;
 }
 
 /** Where a guarded change comes from, for {@link CheckoutCopyAtRiskError}. */
@@ -406,10 +419,24 @@ export class SqliteReadModel implements ReadModel {
   readonly #netReplay: boolean;
   /** {@link SqliteReadModelOptions.follower}. */
   readonly #follower: boolean;
+  /** {@link SqliteReadModelOptions.writerInstance}. */
+  readonly #writerInstance: string | undefined;
   /** {@link SqliteReadModelOptions.recordsChanged}. */
   readonly #recordsChanged:
     | ((namespace: string, keys: readonly string[]) => Promise<void>)
     | undefined;
+  /**
+   * While a managed-config commit applies (swamp-club#4097), the digest
+   * of each file it is about to rewrite or remove, as the checkout held it
+   * (undefined when there was none).
+   */
+  #rewritten: Map<string, string | undefined> | undefined;
+  /**
+   * The managed-config records a commit of the catch-up in progress already
+   * changed (swamp-club#4097): only the first change in a catch-up can
+   * replace what the checkout held, so only it records a base.
+   */
+  #catchUpTouched: Set<string> | undefined;
   /** The keys the page in flight rewrote or removed, by namespace. */
   #pageChanges: Map<string, Set<string>> | undefined;
   readonly #checkout: ReadModelCheckout | undefined;
@@ -492,6 +519,7 @@ export class SqliteReadModel implements ReadModel {
     this.#netReplay = options.netReplay ?? true;
     this.#follower = options.follower === true;
     this.#recordsChanged = options.recordsChanged;
+    this.#writerInstance = options.writerInstance;
     this.#forcedFolding = options.spellingFolding;
   }
 
@@ -781,6 +809,15 @@ export class SqliteReadModel implements ReadModel {
   }
 
   async #catchUpFeedNow(signal: AbortSignal): Promise<CatchUpResult> {
+    this.#catchUpTouched = new Set();
+    try {
+      return await this.#catchUpFeedRun(signal);
+    } finally {
+      this.#catchUpTouched = undefined;
+    }
+  }
+
+  async #catchUpFeedRun(signal: AbortSignal): Promise<CatchUpResult> {
     let applied = 0;
     for (;;) {
       signal.throwIfAborted();
@@ -909,7 +946,14 @@ export class SqliteReadModel implements ReadModel {
       () =>
         this.#counted(
           "swamp.datastore.v3.readmodel.catchup_partition",
-          () => this.#catchUpPartition(namespace, partition, signal),
+          async () => {
+            this.#catchUpTouched = new Set();
+            try {
+              return await this.#catchUpPartition(namespace, partition, signal);
+            } finally {
+              this.#catchUpTouched = undefined;
+            }
+          },
         ),
       signal,
     );
@@ -969,6 +1013,40 @@ export class SqliteReadModel implements ReadModel {
     key: string,
   ): Promise<FileOwnership | undefined> {
     return this.#afterPage(() => this.#state.fileOwnership(namespace, key));
+  }
+
+  /**
+   * The version of managed-config record `key` the checkout held before
+   * another writer's commit replaced it, which a user's edit of it expects
+   * (swamp-club#4097); undefined when no commit replaced it since the user
+   * last loaded it or the checkout last committed it.
+   */
+  configBase(
+    namespace: string,
+    partition: PartitionKey,
+    key: string,
+  ): PutExpect | undefined {
+    return this.#state.configBase(namespace, partition.toString(), key);
+  }
+
+  /** Every base of `partition`'s records ({@link configBase}). */
+  configBases(
+    namespace: string,
+    partition: PartitionKey,
+  ): { readonly key: string; readonly base: PutExpect }[] {
+    return this.#state.configBases(namespace, partition.toString());
+  }
+
+  /**
+   * Forgets the bases of `partition` (of its `key` only, when given): the
+   * user loaded the definition, or the checkout committed it.
+   */
+  clearConfigBases(
+    namespace: string,
+    partition: PartitionKey,
+    key?: string,
+  ): void {
+    this.#state.clearConfigBases(namespace, partition.toString(), key);
   }
 
   /**
@@ -1505,6 +1583,16 @@ export class SqliteReadModel implements ReadModel {
     }
   }
 
+  /**
+   * While a managed-config commit applies, notes the digest of the file at
+   * `path` before the commit writes or removes it (swamp-club#4097).
+   */
+  async #noteRewriting(key: string, path: string): Promise<void> {
+    const rewritten = this.#rewritten;
+    if (rewritten === undefined || rewritten.has(key)) return;
+    rewritten.set(key, await fileDigest(path));
+  }
+
   /** Notes that the page in flight rewrote or removed `key`'s file. */
   #notePageChange(namespace: string, key: string): void {
     const changes = this.#pageChanges;
@@ -1567,21 +1655,50 @@ export class SqliteReadModel implements ReadModel {
       const touched = new Set<string>();
       const touchedFolded = new FoldedKeys();
       const unreadable = new Map<string, StoredUnreadableRecord>();
+      const isConfig = commit.partition.kind === "config";
+      const recordsBases = isConfig && this.#writerInstance !== undefined &&
+        commit.writer.instance !== this.#writerInstance;
       for (const keyChange of finalKeyStates(commit)) {
         signal.throwIfAborted();
         const key = keyChange.key.toString();
+        // Only the first change of a record's bytes in a catch-up replaces
+        // what the checkout held; a later one replaces a version the
+        // catch-up wrote. A commit that leaves the file's bytes as they are
+        // (the checkout's own, replayed) changes nothing.
+        const touchedId = JSON.stringify([namespace, partition, key]);
+        const rewritten = isConfig &&
+            this.#catchUpTouched?.has(touchedId) !== true
+          ? new Map<string, string | undefined>()
+          : undefined;
         records.set(key, appliedRecord(keyChange.put, commit.principal));
-        const file = await this.#materialise(
-          commit,
-          change.cursor,
-          keyChange,
-          signal,
-          batch,
-          touched,
-          touchedFolded,
-          unreadable,
-        );
+        this.#rewritten = rewritten;
+        let file: FileOwnership | undefined;
+        try {
+          file = await this.#materialise(
+            commit,
+            change.cursor,
+            keyChange,
+            signal,
+            batch,
+            touched,
+            touchedFolded,
+            unreadable,
+          );
+        } finally {
+          this.#rewritten = undefined;
+        }
         if (file !== undefined) files.set(key, file);
+        if (rewritten?.has(key) === true) {
+          const before = rewritten.get(key);
+          if (before !== keyChange.put?.sha256) {
+            this.#catchUpTouched?.add(touchedId);
+            // A record the checkout held no file for has no version a
+            // user's edit could have started from.
+            if (recordsBases && before !== undefined) {
+              this.#state.recordConfigBase(namespace, partition, key, before);
+            }
+          }
+        }
       }
       const projection: CatalogProjection = this.#timeSync("catalog", () => {
         const projection = projectCatalog(
@@ -2317,6 +2434,7 @@ export class SqliteReadModel implements ReadModel {
     signal: AbortSignal,
     source: ChangeSource,
   ): Promise<void> {
+    await this.#noteRewriting(key, path);
     await this.#guardExisting(
       namespace,
       key,
@@ -2374,8 +2492,11 @@ export class SqliteReadModel implements ReadModel {
     batch: DurableWriteBatch,
     source: ChangeSource,
   ): Promise<void> {
+    await this.#noteRewriting(key, path);
     const intended = "blob" in content ? content.blob : undefined;
     const keep = async () => {
+      // The file stays as it is: nothing under the checkout was replaced.
+      this.#rewritten?.delete(key);
       if (!batch.syncs) return;
       await this.#syncFile(path);
       batch.touch(dirname(path));
@@ -3697,6 +3818,24 @@ async function holdsExpected(
   } catch (error) {
     logger.warn`Cannot check ${path} after a restart: ${error}`;
     return false;
+  }
+}
+
+/**
+ * The sha256 of the regular file at `path`, or undefined when there is none
+ * or it cannot be read. Anything else there (a directory, a link, a FIFO,
+ * an unreadable file) is left to the guard the write runs next.
+ */
+async function fileDigest(path: string): Promise<string | undefined> {
+  try {
+    if (!(await Deno.lstat(path)).isFile) return undefined;
+    const hash = createHash("sha256");
+    // The readable closes the file when it ends or fails.
+    const handle = await Deno.open(path, { read: true });
+    for await (const piece of handle.readable) hash.update(piece);
+    return hash.digest("hex");
+  } catch {
+    return undefined;
   }
 }
 

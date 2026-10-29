@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { assertConfigEditCurrent } from "../../infrastructure/persistence/repo_unit_of_work.ts";
+import { runAsUserConfigEdit } from "../../infrastructure/datastore_v3/config_edit_scope.ts";
 import {
   type CommandSyntax,
   definitionArgument,
@@ -166,6 +168,12 @@ export function createModelDeleteCommand(syntax: CommandSyntax) {
           } not found: ${modelIdOrName}`,
         );
       }
+      // Before outputs or data are touched (swamp-club#4097).
+      await assertConfigEditCurrent(
+        repoContext,
+        "model",
+        preResult.definition.name,
+      );
 
       const marker = await new RepoMarkerRepository().read(
         RepoPath.create(repoDir),
@@ -185,125 +193,127 @@ export function createModelDeleteCommand(syntax: CommandSyntax) {
       if (lockResult.synced) repoContext.catalogStore.invalidate();
 
       let deleted = false;
-      await runCommandInRootUnit(
-        repoContext,
-        {
-          push: lockResult.push,
-          release: lockResult.release,
-          // After a completed delete the push is what publishes it, so a
-          // failure there throws; before that it must not mask the original
-          // error.
-          onCleanupError: (cleanupError) =>
-            reportManagedConfigCleanupError(
-              cleanupError,
-              deleted,
-              marker,
-              (releaseError) => {
-                cliCtx.logger.warn(
-                  "Failed to release locks during cleanup: {error}",
-                  {
-                    error: releaseError instanceof Error
-                      ? releaseError.message
-                      : String(releaseError),
-                  },
-                );
-              },
-            ),
-        },
-        async () => {
-          const ctx = libSwampContextForRepo(repoContext, {
-            logger: cliCtx.logger,
-          });
-          // The context's definition repo resolves auto-definitions in the
-          // datastore, where a configured datastore keeps them.
-          const deps = createModelDeleteDeps(
-            repoDir,
-            datastoreResolver,
-            undefined,
-            repoContext.markDirty,
-            repoContext.definitionRepo,
-          );
-          const force = !!options.force;
-
-          // Phase 1: Preview — gather what will be affected (under lock)
-          let preview;
-          try {
-            preview = await modelDeletePreview(ctx, deps, {
-              modelIdOrName,
-              force,
+      await runAsUserConfigEdit(() =>
+        runCommandInRootUnit(
+          repoContext,
+          {
+            push: lockResult.push,
+            release: lockResult.release,
+            // After a completed delete the push is what publishes it, so a
+            // failure there throws; before that it must not mask the original
+            // error.
+            onCleanupError: (cleanupError) =>
+              reportManagedConfigCleanupError(
+                cleanupError,
+                deleted,
+                marker,
+                (releaseError) => {
+                  cliCtx.logger.warn(
+                    "Failed to release locks during cleanup: {error}",
+                    {
+                      error: releaseError instanceof Error
+                        ? releaseError.message
+                        : String(releaseError),
+                    },
+                  );
+                },
+              ),
+          },
+          async () => {
+            const ctx = libSwampContextForRepo(repoContext, {
+              logger: cliCtx.logger,
             });
-          } catch (error) {
-            if ("code" in (error as Record<string, unknown>)) {
-              throw carryModelWording(
-                error,
-                new UserError((error as { message: string }).message),
+            // The context's definition repo resolves auto-definitions in the
+            // datastore, where a configured datastore keeps them.
+            const deps = createModelDeleteDeps(
+              repoDir,
+              datastoreResolver,
+              undefined,
+              repoContext.markDirty,
+              repoContext.definitionRepo,
+            );
+            const force = !!options.force;
+
+            // Phase 1: Preview — gather what will be affected (under lock)
+            let preview;
+            try {
+              preview = await modelDeletePreview(ctx, deps, {
+                modelIdOrName,
+                force,
+              });
+            } catch (error) {
+              if ("code" in (error as Record<string, unknown>)) {
+                throw carryModelWording(
+                  error,
+                  new UserError((error as { message: string }).message),
+                );
+              }
+              throw error;
+            }
+
+            // Block if referenced by workflows
+            if (preview.referencingWorkflows.length > 0) {
+              throw new UserError(
+                `${
+                  surfaceNounCapitalized(syntax.surface)
+                } '${preview.name}' is referenced by workflow(s): ${
+                  preview.referencingWorkflows.join(", ")
+                }. ` +
+                  `Remove the ${
+                    surfaceNoun(syntax.surface)
+                  } from these workflows before deleting.`,
               );
             }
-            throw error;
-          }
 
-          // Block if referenced by workflows
-          if (preview.referencingWorkflows.length > 0) {
-            throw new UserError(
-              `${
-                surfaceNounCapitalized(syntax.surface)
-              } '${preview.name}' is referenced by workflow(s): ${
-                preview.referencingWorkflows.join(", ")
-              }. ` +
-                `Remove the ${
-                  surfaceNoun(syntax.surface)
-                } from these workflows before deleting.`,
+            // Block if data artifacts exist and no --force
+            if (preview.dataArtifactCount > 0 && !force) {
+              throw new UserError(
+                `${
+                  surfaceNounCapitalized(syntax.surface)
+                } '${preview.name}' has ${preview.dataArtifactCount} associated data artifact(s). ` +
+                  `Delete the data first, or use --force to delete all.`,
+              );
+            }
+
+            // Phase 2: Prompt (CLI concern)
+            if (cliCtx.outputMode === "log" && !force && !options.yes) {
+              let deleteDetails = "";
+              if (preview.outputCount > 0) {
+                deleteDetails += ` ${preview.outputCount} output(s),`;
+              }
+              if (preview.dataArtifactCount > 0) {
+                deleteDetails +=
+                  ` ${preview.dataArtifactCount} data artifact(s),`;
+              }
+              if (deleteDetails) {
+                deleteDetails = ` This will also delete:${
+                  deleteDetails.slice(0, -1)
+                }.`;
+              }
+
+              const confirmed = await promptConfirmation(
+                `Delete ${syntax.surface} '${preview.name}' (${preview.id})?${deleteDetails}`,
+              );
+              if (!confirmed) {
+                renderModelDeleteCancelled(cliCtx.outputMode);
+                return;
+              }
+            }
+
+            // Phase 3: Execute mutation
+            const renderer = createModelDeleteRenderer(
+              cliCtx.outputMode,
+              syntax.surface,
             );
-          }
-
-          // Block if data artifacts exist and no --force
-          if (preview.dataArtifactCount > 0 && !force) {
-            throw new UserError(
-              `${
-                surfaceNounCapitalized(syntax.surface)
-              } '${preview.name}' has ${preview.dataArtifactCount} associated data artifact(s). ` +
-                `Delete the data first, or use --force to delete all.`,
+            await consumeStream(
+              modelDelete(ctx, deps, { modelIdOrName, force }),
+              renderer.handlers(),
             );
-          }
 
-          // Phase 2: Prompt (CLI concern)
-          if (cliCtx.outputMode === "log" && !force && !options.yes) {
-            let deleteDetails = "";
-            if (preview.outputCount > 0) {
-              deleteDetails += ` ${preview.outputCount} output(s),`;
-            }
-            if (preview.dataArtifactCount > 0) {
-              deleteDetails +=
-                ` ${preview.dataArtifactCount} data artifact(s),`;
-            }
-            if (deleteDetails) {
-              deleteDetails = ` This will also delete:${
-                deleteDetails.slice(0, -1)
-              }.`;
-            }
-
-            const confirmed = await promptConfirmation(
-              `Delete ${syntax.surface} '${preview.name}' (${preview.id})?${deleteDetails}`,
-            );
-            if (!confirmed) {
-              renderModelDeleteCancelled(cliCtx.outputMode);
-              return;
-            }
-          }
-
-          // Phase 3: Execute mutation
-          const renderer = createModelDeleteRenderer(
-            cliCtx.outputMode,
-            syntax.surface,
-          );
-          await consumeStream(
-            modelDelete(ctx, deps, { modelIdOrName, force }),
-            renderer.handlers(),
-          );
-
-          cliCtx.logger.debug("Model delete command completed");
-          deleted = true;
-        },
+            cliCtx.logger.debug("Model delete command completed");
+            deleted = true;
+          },
+        )
       );
     },
   );

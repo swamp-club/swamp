@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { markConfigLoaded } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import {
   type CommandSyntax,
   definitionArgument,
@@ -126,9 +127,17 @@ export function createModelGetCommand(syntax: CommandSyntax) {
         cliCtx.outputMode,
         syntax.surface,
       );
+      const handlers = renderer.handlers();
       await consumeStream(
         modelGet(ctx, deps, modelIdOrName),
-        renderer.handlers(),
+        {
+          ...handlers,
+          // An edit of it now starts from this version (swamp-club#4097).
+          completed: (e) => {
+            markConfigLoaded(repoContext, "model", e.data.name);
+            return handlers.completed(e);
+          },
+        },
       );
 
       cliCtx.logger.debug("Model get command completed");

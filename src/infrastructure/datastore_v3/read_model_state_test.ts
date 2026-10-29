@@ -40,6 +40,38 @@ async function withStatePath(
   }
 }
 
+Deno.test("ReadModelState.configBase: keeps the first base a commit recorded across reopens and resets, until the definition is loaded or committed (swamp-club#4097)", async () => {
+  const P = "config--workflow--deploy";
+  const K = "config/workflows/workflow-deploy.yaml";
+  await withStatePath((path) => {
+    const state = ReadModelState.open(path);
+    try {
+      assertEquals(state.configBase("", P, K), undefined);
+      state.recordConfigBase("", P, K, "a".repeat(64));
+      state.recordConfigBase("", P, K, "b".repeat(64));
+      assertEquals(state.configBase("", P, K), { sha256: "a".repeat(64) });
+      state.reset(3, true);
+    } finally {
+      state.close();
+    }
+    const reopened = ReadModelState.open(path);
+    try {
+      assertEquals(reopened.configBase("", P, K), { sha256: "a".repeat(64) });
+      assertEquals(reopened.configBase("team", P, K), undefined);
+      // The checkout committed it.
+      reopened.clearConfigBases("", P, K);
+      assertEquals(reopened.configBase("", P, K), undefined);
+      // A record the checkout never held, then the user loaded it.
+      reopened.recordConfigBase("", P, K, undefined);
+      assertEquals(reopened.configBase("", P, K), "absent");
+      reopened.clearConfigBases("", P);
+      assertEquals(reopened.configBase("", P, K), undefined);
+    } finally {
+      reopened.close();
+    }
+  });
+});
+
 Deno.test("ReadModelState.stampFilterInputs: stamps the first inputs, keeps them against later ones, and a reset never clears them (swamp-club#3691)", async () => {
   await withStatePath((path) => {
     const state = ReadModelState.open(path);
@@ -90,7 +122,7 @@ Deno.test("ReadModelState: a schema-5 state migrates to the checkout filter tabl
     } finally {
       check.close();
     }
-    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 8);
+    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 9);
   });
 });
 

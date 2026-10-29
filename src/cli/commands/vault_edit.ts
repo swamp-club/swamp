@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { startConfigEdit } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createVaultEditDeps,
@@ -40,6 +41,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { runManagedConfigMutation } from "../managed_config_sync.ts";
+import { runAsUserConfigEdit } from "../../infrastructure/datastore_v3/config_edit_scope.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -161,29 +163,47 @@ value for them other than the server's defaults, and stores those defaults.`,
   }
   const stdinContent = await readStdin();
   const deps = createVaultEditDeps(repoDir);
+  // A stale stdin edit, a rename's included, is refused before it writes;
+  // opening the editor loads the vault (swamp-club#4097).
+  // By name, then by id, as the edit itself resolves it.
+  const target = await repoContext.vaultConfigRepo.findByName(vaultNameOrId)
+    .catch(() => null) ??
+    (await repoContext.vaultConfigRepo.findAll().catch(() => [])).find(
+      (vault) => vault.id === vaultNameOrId,
+    );
+  if (target) {
+    await startConfigEdit(
+      repoContext,
+      "vault",
+      target.name,
+      stdinContent === null,
+    );
+  }
 
   const renderer = createVaultEditRenderer(cliCtx.outputMode);
-  await runManagedConfigMutation(
-    repoContext,
-    syncService,
-    datastoreConfig,
-    marker,
-    "vault edit",
-    () =>
-      consumeStream(
-        vaultEdit(libCtx, deps, {
-          vaultNameOrId,
-          vaultType,
-          stdinContent,
-          // A local user can already write the vault file, so a config that no
-          // longer parses may be replaced from stdin.
-          authorizeRepair: () => true,
-          // A local user owns this host, so the vault may name its own key
-          // source; over --server the server keeps it (swamp-club#2690).
-          trustKeySource: true,
-        }),
-        renderer.handlers(),
-      ),
+  await runAsUserConfigEdit(() =>
+    runManagedConfigMutation(
+      repoContext,
+      syncService,
+      datastoreConfig,
+      marker,
+      "vault edit",
+      () =>
+        consumeStream(
+          vaultEdit(libCtx, deps, {
+            vaultNameOrId,
+            vaultType,
+            stdinContent,
+            // A local user can already write the vault file, so a config that no
+            // longer parses may be replaced from stdin.
+            authorizeRepair: () => true,
+            // A local user owns this host, so the vault may name its own key
+            // source; over --server the server keeps it (swamp-club#2690).
+            trustKeySource: true,
+          }),
+          renderer.handlers(),
+        ),
+    )
   );
 
   cliCtx.logger.debug("Vault edit command completed");
