@@ -44,11 +44,11 @@ itself written synced, and writes the catalog row. A writer that creates
 directories syncs the parent of each one (`make_directories.ts`). The per-model
 lock creates a new model's directories before the repository writes under
 them, so on a filesystem datastore `createModelLock` has its `FileLock` create
-them the same way (`syncCreatedDirectories`). Every sync is a full one
+them the same way (`syncCreatedDirectories`). A sync is a full one
 (`FsFile.sync()`: fsync on Linux, `F_FULLFSYNC` on macOS, `FlushFileBuffers` on
-Windows, which cannot sync a directory). swamp-club#4032 tracks using the macOS
-ordering barrier for the default datastore instead, as v3 chunk storage does
-(below). On v3 the repository does not sync a version the unit commits: the
+Windows, which cannot sync a directory), except on macOS for the default
+datastore, which uses the ordering barrier (the v2 write-sync policy, below).
+On v3 the repository does not sync a version the unit commits: the
 commit is durable and replay rewrites the checkout. A version whose keys
 (`metadata.yaml`, `raw` or the name's `latest` marker) the checkout's
 `directories` or `exclude` keep local is dropped from the commit, so nothing
@@ -2840,6 +2840,41 @@ as `lastModified`. `assertStorageConformance` in `@swamp-club/swamp-testing`
 checks an implementation. `createInMemoryRemote({ storage: true })` provides a
 conforming in-memory one. The S3 and GCS implementations are a later
 swamp-extensions change.
+
+**The v2 write-sync policy** (swamp-club#4032). Durable v2 data writes
+(swamp-club#4017) use the same barrier where it is safe. A repository's sync
+policy is its `AtomicWriteSync` hooks (`ordered_sync.ts`): `fullWriteSync`
+(the defaults), or `orderedWriteSync`, which on macOS syncs a file or
+directory with `F_BARRIERFSYNC` when it is on the catalog database's device,
+and in full otherwise. A path on another device (a directory symlinked onto
+another volume) or one whose device cannot be looked up is synced in full. A
+volume that refuses the barrier is remembered for the process
+(`REFUSED_DEVICES`) and synced in full from then on; nothing falls back to no
+sync. Elsewhere `orderedWriteSync` is `fullWriteSync`. `createRepositoryContext`
+decides the policy once, from the datastore resolver
+(`selectDurableWriteSync`): ordered for the built-in filesystem datastore on
+the v2 engine with no namespace whose data directory is the repo's own
+`.swamp/data` (as the default datastore, or a filesystem datastore whose
+`directories` keep data local), and for a context with no resolver. Only
+there do the catalog (`catalogDbPath`) and the `latest` markers share the
+content's tree, with nothing replicating it, so a version's files and
+directory entries reach the disk no later than the marker and the catalog row
+written after them. Everything else syncs in full: a custom-path or
+namespaced filesystem datastore (its catalog stays in `.swamp/data`, possibly
+on another drive), an extension datastore's cache (a push could ship a
+version before the barrier puts it on disk, as `v3ChunksOrderedBefore`
+guards), v3 (its filter-local versions, swamp-club#4019), and a context given
+its own catalog store. The repository exposes its policy as `writeSync`.
+`allocateVersion` hands a streaming writer the policy's file sync
+(`syncContent`), so `DataWriter.writeStream` syncs its handle the same way.
+`WorkflowExecutionService` takes the context's `writeSync` and passes it to
+every repository it builds (its own, its step executor's and a nested
+workflow's service); `serve_deps_rules_test.ts` checks each construction site
+passes it. The per-model lock's directory creation, the refused-push restore
+and the libswamp direct construction sites (`data delete`, `rename`, `prune`,
+`gc`, `model delete`) keep the full sync. On macOS a durable write to the
+default datastore is therefore ordered, not flushed: a power cut can lose the
+newest versions, but never publishes one whose content is missing.
 
 ### v3 commit store (datastore rework Phase 3)
 
@@ -9632,6 +9667,7 @@ exclude patterns.
 | `src/infrastructure/persistence/datastore_format_marker_writer.ts` | Durable format marker writes |
 | `src/infrastructure/persistence/fs_datastore_storage.ts` | `FileSystemStorage`: staged chunks synced before their renames, chunk stats, the directory barrier and its durable-chunk memo, the macOS ordering barrier and its per-device fallback, quarantine |
 | `src/infrastructure/persistence/barrier_sync.ts` | `barrierSync`: macOS `F_BARRIERFSYNC` through libc over FFI |
+| `src/infrastructure/persistence/ordered_sync.ts` | The v2 write-sync policy: `fullWriteSync`, `orderedWriteSync` and its per-device fallback, `selectDurableWriteSync` |
 | `src/infrastructure/persistence/sync_directory.ts` | `syncDirectory`: directory fsync shared by the read model and chunk storage |
 | `src/infrastructure/datastore_v3/v3_datastore.ts` | `openV3Datastore`, `initializeV3Datastore`, `isFreshV3Skeleton`, `restoreV3FormatMarker` |
 | `src/infrastructure/datastore_v3/sqlite_read_model.ts` | `SqliteReadModel`: catch-ups, the reboot check, the checkout-copy guard, at-risk copies, unreadable records |

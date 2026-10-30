@@ -24469,3 +24469,108 @@ Deno.test("job abort cleanup: a settled job does not replace the outcome of a sa
     assertJobRanAsCleanup(run, executor, "teardown");
   });
 });
+
+// --- The repository context's sync policy reaches every repository built here (swamp-club#4032) ---
+
+/** A recognisable sync policy, compared by identity. */
+function recordingWriteSync(): FileSystemUnifiedDataRepository["writeSync"] {
+  return { syncDirectory: () => Promise.resolve() };
+}
+
+/** The repository behind a step executor's deps. */
+function depsWriteSync(
+  deps: { unifiedDataRepo: unknown },
+): FileSystemUnifiedDataRepository["writeSync"] {
+  const repo = deps.unifiedDataRepo;
+  assert(repo instanceof FileSystemUnifiedDataRepository);
+  return repo.writeSync;
+}
+
+Deno.test("WorkflowExecutionService: the passed writeSync reaches its own repository and its step executor's", async () => {
+  await withTempDir(async (tempDir) => {
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const writeSync = recordingWriteSync();
+      const service = new WorkflowExecutionService(
+        new InMemoryWorkflowRepository(),
+        new InMemoryWorkflowRunRepository(),
+        tempDir,
+        undefined,
+        undefined,
+        catalogStore,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        false,
+        undefined,
+        undefined,
+        undefined,
+        writeSync,
+      );
+      const internals = service as unknown as {
+        dataRepo: FileSystemUnifiedDataRepository;
+        executor: {
+          resolveDeps(ctx: unknown): Promise<{ unifiedDataRepo: unknown }>;
+        };
+      };
+      assertStrictEquals(internals.dataRepo.writeSync, writeSync);
+      const deps = await internals.executor.resolveDeps({
+        repoDir: tempDir,
+        catalogStore,
+      });
+      assertStrictEquals(depsWriteSync(deps), writeSync);
+    } finally {
+      catalogStore.close();
+    }
+  });
+});
+
+Deno.test("DefaultStepExecutor.fromRepoDir: the passed writeSync reaches the repository it builds", async () => {
+  await withTempDir(async (tempDir) => {
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const writeSync = recordingWriteSync();
+      const executor = await DefaultStepExecutor.fromRepoDir(tempDir, {
+        catalogStore,
+        durableWriteSync: writeSync,
+      });
+      const { injectedDeps } = executor as unknown as {
+        injectedDeps: { unifiedDataRepo: unknown };
+      };
+      assertStrictEquals(depsWriteSync(injectedDeps), writeSync);
+    } finally {
+      catalogStore.close();
+    }
+  });
+});
+
+Deno.test("WorkflowExecutionService: without a writeSync its repository syncs in full", async () => {
+  await withTempDir((tempDir) => {
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const service = new WorkflowExecutionService(
+        new InMemoryWorkflowRepository(),
+        new InMemoryWorkflowRunRepository(),
+        tempDir,
+        undefined,
+        undefined,
+        catalogStore,
+      );
+      const { dataRepo } = service as unknown as {
+        dataRepo: FileSystemUnifiedDataRepository;
+      };
+      assertEquals(dataRepo.writeSync, {});
+    } finally {
+      catalogStore.close();
+    }
+    return Promise.resolve();
+  });
+});

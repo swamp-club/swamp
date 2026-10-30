@@ -511,6 +511,7 @@ export const workflowResumeCommand = withRemoteOptions(
       repoContext.unifiedDataRepo.fetchForeignContent,
       repoContext.unreadableContent,
       unlocked.marker?.defaultVault,
+      repoContext.unifiedDataRepo.writeSync,
     );
 
     service.runClaims = createWorkflowRunClaims(unlocked.datastoreConfig);

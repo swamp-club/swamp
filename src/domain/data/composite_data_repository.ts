@@ -132,6 +132,7 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
       contentPath: string;
       priorVersions: number[];
       durable?: boolean;
+      syncContent?: (file: Deno.FsFile) => Promise<void>;
     }
   > {
     const repo = this.routeWrite(data);

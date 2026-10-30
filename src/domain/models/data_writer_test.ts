@@ -6098,6 +6098,7 @@ async function withDurableAllocation(
     repo: UnifiedDataRepository,
     finalized: ({ contentSynced?: boolean } | undefined)[],
   ) => Promise<void>,
+  syncContent?: (file: Deno.FsFile) => Promise<void>,
 ): Promise<void> {
   const tmpFile = await Deno.makeTempFile();
   const finalized: ({ contentSynced?: boolean } | undefined)[] = [];
@@ -6110,6 +6111,7 @@ async function withDurableAllocation(
           contentPath: tmpFile,
           priorVersions: [],
           ...(durable === undefined ? {} : { durable }),
+          ...(syncContent === undefined ? {} : { syncContent }),
         }),
       finalizeVersion: (_type, _id, _data, _version, _prior, options) => {
         finalized.push(options);
@@ -6146,6 +6148,42 @@ Deno.test("DataWriter.writeStream: on a durable allocation, syncs its own handle
     );
     assertEquals(finalized, [{ contentSynced: true }]);
   });
+});
+
+Deno.test("DataWriter.writeStream: syncs through the allocation's syncContent when it has one (swamp-club#4032)", async () => {
+  let synced = 0;
+  await withDurableAllocation(true, async (repo, finalized) => {
+    const { createFileWriter } = createFileWriterFactory(
+      repo,
+      modelType,
+      modelId,
+      testFiles,
+    );
+    await createFileWriter("log", "test-log").writeStream(streamOf("a\n"));
+    assertEquals(synced, 1);
+    assertEquals(finalized, [{ contentSynced: true }]);
+  }, () => {
+    synced++;
+    return Promise.resolve();
+  });
+});
+
+Deno.test("DataWriter.writeStream: a failed syncContent names the content path once", async () => {
+  await withDurableAllocation(true, async (repo, finalized) => {
+    const { createFileWriter } = createFileWriterFactory(
+      repo,
+      modelType,
+      modelId,
+      testFiles,
+    );
+    const error = await assertRejects(() =>
+      createFileWriter("log", "test-log").writeStream(streamOf("a\n"))
+    );
+    assert(error instanceof Error);
+    assertEquals(error.message.match(/Could not sync/g)?.length, 1);
+    assertStringIncludes(error.message, "EIO");
+    assertEquals(finalized, []);
+  }, () => Promise.reject(new Error("EIO")));
 });
 
 Deno.test("DataWriter.writeStream: without a durable allocation, does not claim the content is synced", async () => {
