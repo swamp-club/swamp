@@ -17,10 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 // A v3 recovery or a replica restore can put back the committed version of an
-// output record whose later save its summary row already holds, and a finished
-// row is never checked against its record (swamp-club#4145). So whatever rewinds
-// records clears the output summaries after, whether or not it succeeded. These
-// rules read the source: the restore branch needs a Litestream replica to reach.
+// output record whose later save its summary row already holds (swamp-club#4145).
+// A row answers only while its record's stat matches, so such a row is not used,
+// but whatever rewinds records still clears the output summaries after, whether or
+// not it succeeded, as a second guard and to free their disk. These rules read the
+// source: the restore branch needs a Litestream replica to reach.
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";

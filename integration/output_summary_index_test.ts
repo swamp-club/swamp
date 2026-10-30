@@ -666,3 +666,129 @@ Deno.test("output summaries: on a v3 datastore a committed save keeps its row th
     assertEquals(read.reads, 0);
   });
 });
+
+/** Runs `fn` counting stats of record files by how they were made. */
+async function countRecordStats<T>(
+  fn: () => Promise<T>,
+): Promise<{ result: T; sync: number; awaited: number; mostAtOnce: number }> {
+  const statSync = Deno.statSync;
+  const stat = Deno.stat;
+  let sync = 0;
+  let awaited = 0;
+  let inFlight = 0;
+  let mostAtOnce = 0;
+  (Deno as { statSync: typeof Deno.statSync }).statSync = (path) => {
+    if (String(path).endsWith(".yaml")) sync++;
+    return statSync(path);
+  };
+  (Deno as { stat: typeof Deno.stat }).stat = async (path) => {
+    if (!String(path).endsWith(".yaml")) return await stat(path);
+    awaited++;
+    mostAtOnce = Math.max(mostAtOnce, ++inFlight);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return await stat(path);
+    } finally {
+      inFlight--;
+    }
+  };
+  try {
+    return { result: await fn(), sync, awaited, mostAtOnce };
+  } finally {
+    (Deno as { statSync: typeof Deno.statSync }).statSync = statSync;
+    (Deno as { stat: typeof Deno.stat }).stat = stat;
+  }
+}
+
+/** `count` finished records under `repo`, and a first read that adds their rows. */
+async function warmRecords(
+  repo: YamlOutputRepository,
+  count: number,
+): Promise<ModelOutput[]> {
+  const outputs: ModelOutput[] = [];
+  for (let i = 0; i < count; i++) {
+    const output = running(new Date(STARTED.getTime() + i));
+    output.markSucceeded();
+    await writeRecord(repo, output);
+    outputs.push(output);
+  }
+  await repo.findAllGlobalSummaries();
+  return outputs;
+}
+
+Deno.test("output summaries: records in the checkout's .swamp are stat'ed synchronously", async () => {
+  await withRepo(async (repo) => {
+    await warmRecords(repo, 3);
+    const { result, sync, awaited } = await countRecordStats(() =>
+      repo.findAllGlobalSummaries()
+    );
+    assertEquals(result.length, 3);
+    assertEquals(sync, 3);
+    assertEquals(awaited, 0);
+  });
+});
+
+Deno.test("output summaries: records outside the checkout may be on a network mount, so their stats are awaited, several at once", async () => {
+  await withRepo(async (_repo, dir) => {
+    const repo = new YamlOutputRepository(
+      dir,
+      join(dir, "datastore", "outputs"),
+    );
+    await warmRecords(repo, 8);
+    const reads = await countRecordReads(() =>
+      countRecordStats(() => repo.findAllGlobalSummaries())
+    );
+    const { result, sync, awaited, mostAtOnce } = reads.result;
+    assertEquals(reads.reads, 0);
+    assertEquals(result.length, 8);
+    assertEquals(sync, 0);
+    assertEquals(awaited, 8);
+    assertEquals(mostAtOnce > 1, true, `${mostAtOnce} at once`);
+  });
+});
+
+Deno.test({
+  name:
+    "output summaries: a .swamp/outputs symlinked out of the checkout counts as outside it",
+  // Creating a symlink needs a privilege Windows runners may lack.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withRepo(async (_repo, dir) => {
+      const mount = join(dir, "mount");
+      await ensureDir(mount);
+      await ensureDir(swampPath(dir));
+      await Deno.symlink(mount, swampPath(dir, "outputs"), { type: "dir" });
+      const repo = new YamlOutputRepository(dir);
+      await warmRecords(repo, 2);
+      const { sync, awaited } = await countRecordStats(() =>
+        repo.findAllGlobalSummaries()
+      );
+      assertEquals(sync, 0);
+      assertEquals(awaited, 2);
+    });
+  },
+});
+
+Deno.test("output summaries: outside the checkout, a damaged record is still left out, and a cancelled read rejects with its reason", async () => {
+  await withRepo(async (_repo, dir) => {
+    const repo = new YamlOutputRepository(
+      dir,
+      join(dir, "datastore", "outputs"),
+    );
+    const [kept, damaged] = await warmRecords(repo, 2);
+    await Deno.writeTextFile(repo.getPath(TYPE, "run", damaged), "");
+    assertEquals(
+      (await repo.findAllGlobalSummaries()).map((r) => r.output.id),
+      [kept.id],
+    );
+
+    const controller = new AbortController();
+    const reason = new Error("cancelled");
+    controller.abort(reason);
+    const failure = await repo.findAllGlobalSummaries(controller.signal).then(
+      () => undefined,
+      (error) => error,
+    );
+    assertEquals(failure, reason);
+  });
+});

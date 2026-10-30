@@ -550,17 +550,17 @@ Deno.test("OutputSummaryIndex.read: yields to the event loop while it parses a s
     let turns = 0;
     const read = await withEverySliceExpired(async () => {
       const reading = index.read(TYPE, DAY);
-      const ticking = (async () => {
-        let done = false;
-        reading.finally(() => done = true);
-        while (!done) {
-          await new Promise((resolve) => setTimeout(resolve, 0));
-          turns++;
-        }
-      })();
-      const rows = await reading;
-      await ticking;
-      return rows;
+      let done = false;
+      const finish = () => {
+        done = true;
+      };
+      const finished = reading.then(finish, finish);
+      while (!done) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        turns++;
+      }
+      await finished;
+      return await reading;
     });
     assertEquals(read.size, 3);
     assertEquals(turns > 1, true, `${turns} turns`);

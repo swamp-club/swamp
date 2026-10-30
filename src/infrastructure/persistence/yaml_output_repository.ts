@@ -346,6 +346,9 @@ export class YamlOutputRepository implements OutputRepository {
   /** Finished outputs' summaries, so a search need not open their records. */
   private readonly summaries: OutputSummaryIndex;
 
+  /** Whether the records really are under this checkout's `.swamp`. */
+  private recordsInCheckout?: Promise<boolean>;
+
   /**
    * `unreadableContent` tells an output record a v3 read model could not
    * materialise from an absent one (swamp-club#3617): a lookup that could
@@ -1508,10 +1511,14 @@ export class YamlOutputRepository implements OutputRepository {
 
   /**
    * The fingerprint of each of `paths` that has one: not a file that cannot be
-   * stat'ed, whose read says what that means. A read checks one record per row,
-   * and an awaited stat waits a turn of a busy loop: on a contended loop 75,000
-   * stats took 5 s awaited, 16 at a time, and 0.3 s synchronously in slices (0.25 s
-   * and 0.4 s on a quiet one). They take no scan permit: a stat holds no descriptor.
+   * stat'ed, whose read says what that means. A read checks one record per row.
+   *
+   * Records under the checkout's own `.swamp` are stat'ed synchronously in slices,
+   * because an awaited stat waits a turn of a busy loop: on a contended loop 75,000
+   * took 5 s awaited, 16 at a time, and 0.3 s in slices (0.25 s and 0.4 s on a quiet
+   * one). Records anywhere else are in a datastore that may be a network mount,
+   * where stats one at a time would take minutes and each would hold the event
+   * loop, so those are awaited, on the scan permits.
    */
   private async recordFingerprints(
     paths: readonly string[],
@@ -1519,25 +1526,52 @@ export class YamlOutputRepository implements OutputRepository {
   ): Promise<Map<string, RecordFingerprint>> {
     const tally = currentDiagnosticTally();
     const fingerprints = new Map<string, RecordFingerprint>();
-    let next = 0;
-    await inTimeSlices(
-      () => next < paths.length,
-      (until) =>
-        tally.measureSync("summary_stat", () => {
-          do {
-            const path = paths[next++];
-            try {
-              const fingerprint = fingerprintOf(Deno.statSync(path));
-              if (fingerprint !== undefined) {
-                fingerprints.set(path, fingerprint);
+    if (paths.length === 0) return fingerprints;
+    this.recordsInCheckout ??= assertSafePath(
+      this.baseDir,
+      swampPath(this.repoDir),
+    ).then(() => true, () => false);
+    if (await this.recordsInCheckout) {
+      let next = 0;
+      await inTimeSlices(
+        () => next < paths.length,
+        (until) =>
+          tally.measureSync("summary_stat", () => {
+            do {
+              const path = paths[next++];
+              try {
+                const fingerprint = fingerprintOf(Deno.statSync(path));
+                if (fingerprint !== undefined) {
+                  fingerprints.set(path, fingerprint);
+                }
+              } catch {
+                // Its read reports what is wrong with it.
               }
-            } catch {
-              // Its read reports what is wrong with it.
-            }
-          } while (next < paths.length && performance.now() < until);
-        }),
-      signal,
-    );
+            } while (next < paths.length && performance.now() < until);
+          }),
+        signal,
+      );
+    } else {
+      await mapBounded(
+        paths,
+        SCAN_CONCURRENCY,
+        async (path) => {
+          try {
+            const info = await withScanPermit(
+              "search",
+              () => tally.measure("summary_stat", () => Deno.stat(path)),
+              signal,
+            );
+            const fingerprint = fingerprintOf(info);
+            if (fingerprint !== undefined) fingerprints.set(path, fingerprint);
+          } catch {
+            signal.throwIfAborted();
+            // Its read reports what is wrong with it.
+          }
+        },
+        signal,
+      );
+    }
     tally.add("summary_stats", paths.length);
     return fingerprints;
   }
