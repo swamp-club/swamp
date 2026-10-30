@@ -96,25 +96,40 @@ export function shouldStepRun(step: Step, jobRun: JobRun): boolean {
 /**
  * True for a cleanup step: one that would still run had all the work before
  * the run's abort failed. Every `dependsOn` condition must hold with its
- * dependency failed, or, for a dependency in `cleanupSteps` (the cleanup steps
- * this walk already started, by step or forEach template name), with its real
- * status, so a teardown chain runs to its end. A step with no `dependsOn` is
- * work. Conditions are evaluated, so `and`, `or` and `not` need no special
- * case.
+ * dependency failed, or, for a dependency that is itself a cleanup step and
+ * succeeded, with that real status, so a teardown chain runs to its end. A
+ * dependency that was skipped answers failed like work does: had the work
+ * failed it might have run, so its skip says nothing. A step with no
+ * `dependsOn` is work. Conditions are evaluated, so `and`, `or` and `not` need
+ * no special case. Read from the definition and the records, so it does not
+ * matter when the abort fired or which walk finished a dependency.
  */
 export function runsAfterFailure(
   step: Step,
+  job: Job,
   jobRun: JobRun,
-  cleanupSteps: ReadonlySet<string>,
 ): boolean {
-  if (step.dependsOn.length === 0) return false;
-  const afterFailure: TriggerEvaluationContext = {
-    getStatus: (ref) =>
-      cleanupSteps.has(ref) ? jobRun.getStatus(ref) : "failed",
+  const known = new Map<string, boolean>();
+  const isCleanup = (candidate: Step): boolean => {
+    const answer = known.get(candidate.name);
+    if (answer !== undefined) return answer;
+    const afterFailure: TriggerEvaluationContext = {
+      getStatus: (ref) => {
+        const dependency = job.getStep(ref);
+        return dependency && jobRun.getStatus(ref) === "succeeded" &&
+            isCleanup(dependency)
+          ? "succeeded"
+          : "failed";
+      },
+    };
+    const cleanup = candidate.dependsOn.length > 0 &&
+      candidate.dependsOn.every((dep) =>
+        dep.condition.evaluate(afterFailure, dep.step)
+      );
+    known.set(candidate.name, cleanup);
+    return cleanup;
   };
-  return step.dependsOn.every((dep) =>
-    dep.condition.evaluate(afterFailure, dep.step)
-  );
+  return isCleanup(step);
 }
 
 /**

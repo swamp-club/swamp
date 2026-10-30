@@ -5669,9 +5669,10 @@ export class WorkflowExecutionService {
       let jobFailed = false;
       // Set when an interrupted level leaves a guarded step undecided.
       let jobUndecided = false;
-      // The cleanup steps this walk started after the abort with nothing
-      // failed, by step or forEach template name (runsAfterFailure).
-      const abortCleanupSteps = new Set<string>();
+      // Set once a level is reached after the abort with nothing failed. Later
+      // levels stay on that rule, so a step settled there does not turn the
+      // work behind it into cleanup.
+      let jobReachedAfterAbort = false;
       for (const level of sortedSteps.levels) {
         for (const stepName of level) {
           const dependencyWait = stepWaits.get(stepName);
@@ -5690,14 +5691,16 @@ export class WorkflowExecutionService {
         // levels a fresh cleanup signal so always/completed dependents
         // can run. shouldStepRun() handles condition-based filtering —
         // steps whose conditions aren't met are skipped naturally.
-        const cleanupMode: boolean = (jobFailed || jobUndecided) &&
-          (options.signal?.aborted ?? false);
         // A level reached after the abort with nothing failed starts no work:
         // merge() would start a step alone in its level whatever the signal.
         // Its cleanup steps run under the cleanup signal, the rest are settled
         // (swamp-club#4149). A suspended run keeps its pending steps to resume.
-        const reachedAfterAbort: boolean = !cleanupMode &&
-          (options.signal?.aborted ?? false) && run.status !== "suspended";
+        const reachedAfterAbort: boolean = (options.signal?.aborted ?? false) &&
+          run.status !== "suspended" &&
+          (jobReachedAfterAbort || (!jobFailed && !jobUndecided));
+        jobReachedAfterAbort = reachedAfterAbort;
+        const cleanupMode: boolean = !reachedAfterAbort &&
+          (jobFailed || jobUndecided) && (options.signal?.aborted ?? false);
         const cleanupSignal: AbortSignal | undefined =
           cleanupMode || reachedAfterAbort
             ? cleanupGraceSignal(CLEANUP_GRACE_TIMEOUT_MS)
@@ -5710,7 +5713,7 @@ export class WorkflowExecutionService {
         const levelOptions = cleanupMode ? cleanupOptions : options;
         let levelStartsCleanup: boolean = cleanupMode;
 
-        if (cleanupMode) {
+        if (cleanupMode || reachedAfterAbort) {
           // Mark any steps still in "running" status as failed — the
           // signal aborted their execution but the generators were
           // abandoned before they could record the failure.
@@ -5774,7 +5777,7 @@ export class WorkflowExecutionService {
           if (forEachVar?.name) levelIterations.add(stepName);
 
           // Only a step yet to start is decided here: a finished one, or one
-          // re-entering a wait or a running record, keeps the run's signal.
+          // re-entering a wait, keeps the run's signal.
           let stepOptions: StepOptions = levelOptions;
           const levelStepRun = jobRun.getStep(stepName);
           if (
@@ -5783,14 +5786,10 @@ export class WorkflowExecutionService {
               ? levelStepRun.status === "pending"
               : levelIterations.has(stepName))
           ) {
-            if (
-              !levelStep ||
-              !runsAfterFailure(levelStep, jobRun, abortCleanupSteps)
-            ) {
+            if (!levelStep || !runsAfterFailure(levelStep, job, jobRun)) {
               settleLevelStep(stepName);
               return undefined;
             }
-            abortCleanupSteps.add(forEachTemplate ?? stepName);
             levelStartsCleanup = true;
             stepOptions = cleanupOptions;
           }

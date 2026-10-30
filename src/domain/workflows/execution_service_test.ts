@@ -23783,8 +23783,7 @@ Deno.test("abort cleanup: a step recorded running on resume is failed as stopped
       executor.controller,
     );
 
-    // The running record sends the level into cleanup mode, which fails it
-    // as abandoned, so it never gets the cleanup signal.
+    // Nothing starts a running record after the abort: it fails as abandoned.
     assertRanAsCleanup(executor, ["cleanup"]);
     assertEquals(executor.count("main/work"), 0);
     const work = run.getJob("main")!.getStep("work")!;
@@ -23848,5 +23847,149 @@ Deno.test("abort cleanup: a resume after the abort runs the steps of a level rea
     assertEquals(executor.count("main/a"), 1);
     assertEquals(executor.count("main/b"), 1);
     assertEquals(executor.count("main/c"), 1);
+  });
+});
+
+Deno.test("abort cleanup: a teardown chain runs to its end when the abort lands during its first step", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run, executor } = await runThroughAbort(tempDir, "chain-t1-wf", [
+      modelStep("a"),
+      modelStep("t1", onStep("a", TriggerCondition.always())),
+      modelStep("t2", onStep("t1", TriggerCondition.succeeded())),
+    ], new SignalRecordingAbortingExecutor("t1", "succeed"));
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("main")!.getStep("t1")!.status, "succeeded");
+    assertRanAsCleanup(executor, ["t2"]);
+  });
+});
+
+Deno.test("abort cleanup: a teardown chain whose first step finished before a resume runs to its end", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "chain-resume-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("a"),
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+              ...onStep("a", TriggerCondition.succeeded()),
+            }),
+            modelStep("t1", onStep("a", TriggerCondition.always())),
+            modelStep("t2", onStep("t1", TriggerCondition.succeeded())),
+          ],
+        }),
+      ],
+    });
+    const executor = new SignalRecordingAbortingExecutor("never", "succeed");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, workflow);
+    assertEquals(
+      suspended.getJob("main")!.getStep("t1")!.status,
+      "succeeded",
+    );
+
+    const { run } = await abortAtJobStart(
+      service.resume(workflow.name, suspended.id, {
+        signal: executor.controller.signal,
+      }),
+      executor.controller,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertRanAsCleanup(executor, ["t2"]);
+  });
+});
+
+Deno.test("abort cleanup: a step gated on a skipped cleanup step is work, so it does not start after the abort", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run, executor } = await runThroughAbort(tempDir, "promote-wf", [
+      modelStep("a"),
+      modelStep("rollback", onStep("a", TriggerCondition.failed())),
+      modelStep("promote", onStep("rollback", TriggerCondition.skipped())),
+    ]);
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("main")!.getStep("rollback")!.status, "skipped");
+    assertEquals(executor.count("main/rollback"), 0);
+    assertEquals(executor.count("main/promote"), 0);
+    assertCancelledBeforeStart(run, "main", ["promote"]);
+  });
+});
+
+Deno.test("abort cleanup: a step needing a work step's success stays work in a level after a settled step", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run, executor } = await runThroughAbort(tempDir, "later-work-wf", [
+      modelStep("a"),
+      modelStep("b", onStep("a", TriggerCondition.succeeded())),
+      modelStep("c", {
+        dependsOn: [
+          { step: "a", condition: TriggerCondition.succeeded() },
+          { step: "b", condition: TriggerCondition.always() },
+        ],
+      }),
+    ]);
+
+    assertEquals(run.status, "cancelled");
+    assertCancelledBeforeStart(run, "main", ["b", "c"]);
+    assertEquals(executor.count("main/c"), 0);
+  });
+});
+
+Deno.test("abort cleanup: a step recorded running beside a settled step in a first level does not start alone", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "first-level-running-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          concurrency: 1,
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+            }),
+            modelStep("work"),
+            modelStep("other"),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("never", "succeed");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, workflow);
+    const job = suspended.getJob("main")!;
+    job.getStep("work")!.resetToPending();
+    job.getStep("work")!.start();
+    job.getStep("other")!.resetToPending();
+    await runRepo.save(workflow.id, suspended);
+    const workCalls = executor.count("main/work");
+
+    const { run } = await abortAtJobStart(
+      service.resume(workflow.name, suspended.id, {
+        signal: executor.controller.signal,
+      }),
+      executor.controller,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(executor.count("main/work"), workCalls);
+    const work = run.getJob("main")!.getStep("work")!;
+    assertEquals(work.status, "failed");
+    assertEquals(work.stoppedByAbort, true);
+    assertCancelledBeforeStart(run, "main", ["other"]);
   });
 });
