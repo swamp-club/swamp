@@ -135,3 +135,26 @@ Deno.test("advertiseAddressInCleartext: plain http to a host that is not loopbac
   // A host name that merely starts with 127 is not loopback.
   assertEquals(advertiseAddressInCleartext("http://127.example.com"), true);
 });
+
+Deno.test("advertiseAddressInCleartext: an IPv4-mapped loopback is loopback (swamp-club#4153)", () => {
+  assertEquals(
+    advertiseAddressInCleartext("http://[::ffff:127.0.0.1]:9090"),
+    false,
+  );
+  assertEquals(
+    advertiseAddressInCleartext("http://[::ffff:127.255.0.1]:9090"),
+    false,
+  );
+  assertEquals(
+    advertiseAddressInCleartext("http://[0:0:0:0:0:ffff:7f00:1]:9090"),
+    false,
+  );
+  assertEquals(
+    advertiseAddressInCleartext("http://[::ffff:10.0.0.5]:9090"),
+    true,
+  );
+  assertEquals(
+    advertiseAddressInCleartext("http://[::ffff:128.0.0.1]:9090"),
+    true,
+  );
+});

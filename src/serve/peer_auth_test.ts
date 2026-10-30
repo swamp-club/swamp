@@ -170,6 +170,110 @@ Deno.test("TeamPeerKey: a cached key outlives failing vault reads only for a bou
   assertEquals(key.cachedToken(), undefined);
 });
 
+/** A memory vault that counts reads; `hold` makes the next gets wait. */
+function countingVault() {
+  const vault = memoryVault();
+  const counts = { gets: 0, lists: 0 };
+  let held: PromiseWithResolvers<void> | undefined;
+  const get = vault.get.bind(vault);
+  const list = vault.list.bind(vault);
+  vault.get = async (key: string) => {
+    counts.gets++;
+    if (held !== undefined) await held.promise;
+    return await get(key);
+  };
+  vault.list = () => {
+    counts.lists++;
+    return list();
+  };
+  return {
+    vault,
+    counts,
+    hold: () => {
+      held = Promise.withResolvers<void>();
+      return held;
+    },
+  };
+}
+
+const FAKE_PEER_TOKEN = `${PEER_TOKEN_PREFIX}${"0".repeat(64)}`;
+
+Deno.test("TeamPeerKey.verify: a failing vault is read once per window, however many tokens are checked (swamp-club#4153)", async () => {
+  let now = 0;
+  const { vault, counts } = countingVault();
+  const key = new TeamPeerKey(vault, () => now);
+  const token = await key.token();
+  vault.failReads = true;
+  counts.gets = 0;
+  counts.lists = 0;
+  now = PEER_KEY_CACHE_MS;
+  for (let i = 0; i < 100; i++) {
+    assert(!await key.verify(FAKE_PEER_TOKEN));
+  }
+  assert(await key.verify(token));
+  assertEquals(counts, { gets: 1, lists: 1 });
+  now = 2 * PEER_KEY_CACHE_MS;
+  assert(!await key.verify(FAKE_PEER_TOKEN));
+  assertEquals(counts, { gets: 2, lists: 2 });
+});
+
+Deno.test("TeamPeerKey.verify: a vault with no key is read once per window, and a key made later is found after it (swamp-club#4153)", async () => {
+  let now = 0;
+  const { vault, counts } = countingVault();
+  const key = new TeamPeerKey(vault, () => now);
+  for (let i = 0; i < 100; i++) {
+    assert(!await key.verify(FAKE_PEER_TOKEN));
+  }
+  assertEquals(counts, { gets: 1, lists: 1 });
+  const token = await new TeamPeerKey(vault, () => now).token();
+  counts.gets = 0;
+  counts.lists = 0;
+  assert(!await key.verify(token));
+  assertEquals(counts, { gets: 0, lists: 0 });
+  now = PEER_KEY_CACHE_MS;
+  assert(await key.verify(token));
+  assertEquals(counts, { gets: 1, lists: 0 });
+});
+
+Deno.test("TeamPeerKey.verify: checks made while a read is running wait for that read (swamp-club#4153)", async () => {
+  let now = 0;
+  const { vault, counts, hold } = countingVault();
+  const key = new TeamPeerKey(vault, () => now);
+  const token = await key.token();
+  now = PEER_KEY_CACHE_MS;
+  counts.gets = 0;
+  let read = hold();
+  let checks = Promise.all(
+    Array.from({ length: 50 }, () => key.verify(token)),
+  );
+  read.resolve();
+  assertEquals(new Set(await checks), new Set([true]));
+  assertEquals(counts.gets, 1);
+  // A read that fails is shared too, and every check falls back.
+  now = 2 * PEER_KEY_CACHE_MS;
+  vault.failReads = true;
+  read = hold();
+  checks = Promise.all(Array.from({ length: 50 }, () => key.verify(token)));
+  read.resolve();
+  assertEquals(new Set(await checks), new Set([true]));
+  assertEquals(counts.gets, 2);
+});
+
+Deno.test("TeamPeerKey.current: never answers from a throttled read (swamp-club#4153)", async () => {
+  let now = 0;
+  const { vault } = countingVault();
+  const key = new TeamPeerKey(vault, () => now);
+  // Remembered absence: the node still makes the key.
+  assert(!await key.verify(FAKE_PEER_TOKEN));
+  const token = await key.token();
+  assert(await key.verify(token));
+  // Remembered failure: a read that fails is still thrown.
+  now = PEER_KEY_CACHE_MS;
+  vault.failReads = true;
+  assert(await key.verify(token));
+  await assertRejects(() => key.current());
+});
+
 Deno.test("requestClientAddress: the socket peer, the first entry behind a trusted proxy, the follower's entry for a verified team forward", () => {
   const headers = (extra: Record<string, string> = {}) =>
     new Headers({ "x-forwarded-for": "198.51.100.9, 10.0.0.5", ...extra });

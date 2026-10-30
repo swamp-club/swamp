@@ -7645,8 +7645,11 @@ lineage restore would have brought them.
 team's peer key (`TeamPeerKey`, `src/serve/peer_auth.ts`): one random key
 per namespace in serve's encrypted control-plane vault, so a `token-secrets`
 key protects it as it protects token secrets. A node reads the key at most
-every 10 s, and uses the key it last read for at most 60 s more while vault
-reads fail, so a key deleted during an outage stops verifying. With the default co-located
+every 10 s, whether the read finds the key, finds none or fails, and peer
+checks made while a read runs wait for it, so failed peer tokens cannot drive
+vault reads (swamp-club#4153). It uses the key it last read for at most 60 s
+more while vault reads fail, so a key deleted during an outage stops
+verifying. With the default co-located
 key, anyone who can read and write the datastore can read the peer key and
 so sign a leader record of their own, which followers would forward
 callers' credentials to: a team-mode serve (one with `--advertise-address`,
