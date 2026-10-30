@@ -28,6 +28,9 @@
  * - An explicit lease (`swamp model lease acquire`) holds the behavior
  *   across commands: a command in the checkout uses it, and another
  *   caller's write waits for it.
+ * - A command whose renewal of the checkout's lease meets a serve blip
+ *   still names the lease, and a lease serve no longer holds does not
+ *   refuse its commit (swamp-club#4167).
  */
 
 import "../src/domain/models/models.ts";
@@ -52,6 +55,7 @@ import {
   releaseExplicitLease,
 } from "../src/infrastructure/datastore_v3/explicit_model_leases.ts";
 import { ServeLeaseLapsedError } from "../src/infrastructure/datastore_v3/serve_lock.ts";
+import { PartitionsRefusedError } from "../src/domain/datastore_v3/commit_log_unit_of_work.ts";
 import { serveUpstreamAt } from "../src/infrastructure/datastore_v3/serve_upstream_registry.ts";
 import { resetServeLeasesForTesting } from "../src/infrastructure/datastore_v3/serve_lease_registry.ts";
 import { resetLeaseRenewalsForTesting } from "../src/infrastructure/datastore_v3/serve_upstream_binding.ts";
@@ -415,6 +419,204 @@ Deno.test({
         );
       }
       assertEquals(versions, [4, 5, 6]);
+    });
+  },
+});
+
+/**
+ * Runs `fn` while the first lease renewal (`PUT locks/{leaseId}`) this
+ * process sends fails as a serve blip would (swamp-club#4167).
+ */
+async function withRenewalBlip<T>(fn: () => Promise<T>): Promise<T> {
+  const realFetch = globalThis.fetch;
+  let blips = 0;
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (blips === 0 && init?.method === "PUT" && url.includes("/locks/")) {
+      blips++;
+      return Promise.reject(new TypeError("connection reset by serve"));
+    }
+    return realFetch(input, init);
+  }) as typeof fetch;
+  try {
+    return await fn();
+  } finally {
+    globalThis.fetch = realFetch;
+    assertEquals(blips, 1);
+  }
+}
+
+/** A lease command in `client`: `fn` gets the checkout's v3 root. */
+async function inLeaseCommand<T>(
+  scratch: Scratch,
+  serve: Serve,
+  client: Client,
+  token: string,
+  fn: (root: string) => Promise<T>,
+): Promise<T> {
+  return await withClientEnv(
+    scratch,
+    serveEnv(serve, token),
+    ["model", "lease"],
+    async () => {
+      try {
+        const resolution = await resolveDatastoreForRepo(client.repoDir);
+        return await fn((await v3LocationOf(resolution)).path);
+      } finally {
+        await endCommand();
+      }
+    },
+  );
+}
+
+/** Takes an explicit lease on `lockKey` in the checkout at `root`. */
+async function takeExplicitLease(root: string, lockKey: string) {
+  const client = serveUpstreamAt(root)!.client();
+  try {
+    return await acquireExplicitLease(
+      root,
+      client,
+      lockKey,
+      600_000,
+      5_000,
+      new AbortController().signal,
+    );
+  } finally {
+    client.close();
+  }
+}
+
+/**
+ * One lockless save of `out` on web in `client`, as a read-kind method
+ * saves, in a fresh process whose renewal of the checkout's leases blips.
+ */
+async function locklessSaveThroughBlip(
+  scratch: Scratch,
+  serve: Serve,
+  client: Client,
+  token: string,
+  label: string,
+): Promise<number> {
+  resetServeLeasesForTesting();
+  resetLeaseRenewalsForTesting();
+  return await withRenewalBlip(() =>
+    writeCommand(
+      scratch,
+      client,
+      serveEnv(serve, token),
+      async (repos) =>
+        (await repos.unifiedDataRepo.save(
+          serve.modelType,
+          serve.models.web,
+          dataOf("out", DATA_ID),
+          json({ by: label }),
+        )).version,
+    )
+  );
+}
+
+Deno.test({
+  name:
+    "serve upstream leases: a lockless save whose renewal of the checkout's lease blipped still lands under the lease (swamp-club#4167)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: MEMBER });
+      const alice = await scratch.client("a");
+      const lockKey =
+        `data/${serve.modelType.normalized}/${serve.models.web}/.lock`;
+      const taken = await inLeaseCommand(
+        scratch,
+        serve,
+        alice,
+        "alice-token",
+        (root) => takeExplicitLease(root, lockKey),
+      );
+      assertEquals(
+        await locklessSaveThroughBlip(
+          scratch,
+          serve,
+          alice,
+          "alice-token",
+          "alice, blipped",
+        ),
+        1,
+      );
+      const log = await serve.log();
+      assertEquals(log.at(-1)?.leaseFence, taken.lease.fence);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve upstream leases: a recorded lease serve no longer holds does not refuse a lockless save through a blip, and another caller's lease still does (swamp-club#4167)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const grants: readonly GrantSpec[] = [
+      ...MEMBER,
+      { user: "bob", actions: ["read", "run"], kind: "model", pattern: "*" },
+      { user: "bob", actions: ["read", "write"], kind: "data", pattern: "*" },
+    ];
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants });
+      const alice = await scratch.client("a");
+      const bob = await scratch.client("b");
+      const lockKey =
+        `data/${serve.modelType.normalized}/${serve.models.web}/.lock`;
+      // Serve forgets alice's lease while her checkout still records it,
+      // as a serve that restarted would.
+      await inLeaseCommand(
+        scratch,
+        serve,
+        alice,
+        "alice-token",
+        async (root) => {
+          const taken = await takeExplicitLease(root, lockKey);
+          const client = serveUpstreamAt(root)!.client();
+          try {
+            await client.releaseLock(
+              taken.lease.leaseId,
+              new AbortController().signal,
+            );
+          } finally {
+            client.close();
+          }
+        },
+      );
+      assertEquals(
+        await locklessSaveThroughBlip(
+          scratch,
+          serve,
+          alice,
+          "alice-token",
+          "alice, lease gone",
+        ),
+        1,
+      );
+      assertEquals((await serve.log()).at(-1)?.leaseFence, undefined);
+
+      // Bob's live lease still refuses alice's unleased resend.
+      await inLeaseCommand(
+        scratch,
+        serve,
+        bob,
+        "bob-token",
+        (root) => takeExplicitLease(root, lockKey),
+      );
+      const refused = await assertRejects(() =>
+        locklessSaveThroughBlip(
+          scratch,
+          serve,
+          alice,
+          "alice-token",
+          "alice, under bob's lease",
+        )
+      );
+      assertInstanceOf(refused, PartitionsRefusedError);
+      assertEquals(refused.reason, "lease-lost");
     });
   },
 });

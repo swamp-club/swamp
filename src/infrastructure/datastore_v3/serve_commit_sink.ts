@@ -112,6 +112,14 @@ export interface ServeCommitSinkOptions {
    */
   readonly leaseOf?: (partition: PartitionKey) => HeldServeLease | undefined;
   /**
+   * Forgets the unconfirmed lease `leaseId` on `partition` once serve has
+   * refused a commit under it (swamp-club#4167).
+   */
+  readonly dropUnconfirmedLease?: (
+    partition: PartitionKey,
+    leaseId: string,
+  ) => void;
+  /**
    * Called once a commit naming lease `leaseId` has landed, with the data
    * versions it recorded, so the lease's floor follows the holder's own
    * writes (swamp-club#4121). A failure is the callback's to report.
@@ -337,7 +345,29 @@ export function createServeCommitSink(
       await catchUp.catchUpPartition(namespace, partition, options.signal());
       return await commitStore.landedSeq(namespace, partition, txnId);
     },
-    append: (commit) => forward(commit, leaseOf(commit.partition)?.leaseId),
+    append: async (commit) => {
+      const lease = leaseOf(commit.partition);
+      try {
+        return await forward(commit, lease?.leaseId);
+      } catch (error) {
+        // A lease registered from the checkout's record, which serve has
+        // not vouched for in this process, may have ended with a serve
+        // that restarted (swamp-club#4167). Serve refused the commit before
+        // writing it, so it is sent again under no lease, which serve
+        // refuses only while another holder's lease covers the partition,
+        // as an outbox recovery does. A lease serve vouched for is never
+        // dropped: a commit refused under it is the caller's.
+        if (
+          lease?.unconfirmed !== true ||
+          !(error instanceof CommitRejectedError) ||
+          error.reason !== "lease-lost"
+        ) {
+          throw error;
+        }
+        options.dropUnconfirmedLease?.(commit.partition, lease.leaseId);
+        return await forward(commit, undefined);
+      }
+    },
     appendUnderLease: forward,
   };
   const sink = createOutboxCommitSink({

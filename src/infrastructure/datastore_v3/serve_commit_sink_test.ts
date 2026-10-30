@@ -86,6 +86,7 @@ interface Checkout {
 async function withCheckout(
   fn: (c: Checkout) => Promise<void>,
   leaseOf?: (partition: PartitionKey) => HeldServeLease | undefined,
+  dropUnconfirmedLease?: (partition: PartitionKey, leaseId: string) => void,
 ) {
   const dir = await Deno.makeTempDir({ prefix: "swamp-serve-sink-" });
   const store = SqliteCommitStore.open(join(dir, "commits.db"), {
@@ -115,6 +116,7 @@ async function withCheckout(
     outbox,
     signal: () => lifetime.signal,
     ...(leaseOf === undefined ? {} : { leaseOf }),
+    ...(dropUnconfirmedLease === undefined ? {} : { dropUnconfirmedLease }),
   });
   try {
     await fn({ store, state, outbox, serve, catchUp, cache, sink });
@@ -594,6 +596,69 @@ Deno.test("createServeCommitSink: a commit to a partition no held lease covers n
     await sink.append(commit);
     assertEquals(serve.posted[0].envelope.lease, undefined);
   }, () => undefined);
+});
+
+// A lease registered from the checkout's record (swamp-club#4167).
+const UNCONFIRMED: HeldServeLease = { ...LEASE, unconfirmed: true };
+
+Deno.test("createServeCommitSink: a commit refused as lease-lost under an unconfirmed lease is sent again under no lease, and the lease is dropped", async () => {
+  const dropped: [string, string][] = [];
+  let held: HeldServeLease | undefined = UNCONFIRMED;
+  await withCheckout(
+    async ({ serve, cache, sink }) => {
+      serve.leaseLost = (lease) => lease !== undefined;
+      const { commit } = await chunkedCommit(cache, 2);
+      assertEquals(await sink.append(commit), { kind: "appended", seq: 1 });
+      assertEquals(
+        serve.posted.map((post) => post.envelope.lease),
+        [LEASE.leaseId, undefined],
+      );
+      // The resend is the same commit: same txnId and expected seq.
+      assertEquals(serve.posted[1].envelope.txnId, commit.txnId);
+      assertEquals(serve.posted[1].envelope.expectedSeq, commit.seq - 1);
+      assertEquals(dropped, [[MODEL.toString(), LEASE.leaseId]]);
+    },
+    (partition) => partition.equals(MODEL) ? held : undefined,
+    (partition, leaseId) => {
+      dropped.push([partition.toString(), leaseId]);
+      held = undefined;
+    },
+  );
+});
+
+Deno.test("createServeCommitSink: a commit refused as lease-lost under a confirmed lease is the caller's, and is never sent again", async () => {
+  const dropped: string[] = [];
+  await withCheckout(
+    async ({ serve, cache, sink }) => {
+      serve.leaseLost = (lease) => lease !== undefined;
+      const { commit } = await chunkedCommit(cache, 2);
+      const error = await assertRejects(() => sink.append(commit));
+      assert(error instanceof CommitRejectedError);
+      assertEquals(error.reason, "lease-lost");
+      assertEquals(serve.posted.length, 1);
+      assertEquals(dropped, []);
+    },
+    leasedModel,
+    (_partition, leaseId) => dropped.push(leaseId),
+  );
+});
+
+Deno.test("createServeCommitSink: an unleased resend serve refuses too, under another holder's lease, is the caller's", async () => {
+  await withCheckout(
+    async ({ serve, cache, sink }) => {
+      serve.leaseLost = () => true;
+      const { commit } = await chunkedCommit(cache, 2);
+      const error = await assertRejects(() => sink.append(commit));
+      assert(error instanceof CommitRejectedError);
+      assertEquals(error.reason, "lease-lost");
+      assertEquals(
+        serve.posted.map((post) => post.envelope.lease),
+        [LEASE.leaseId, undefined],
+      );
+    },
+    (partition) => partition.equals(MODEL) ? UNCONFIRMED : undefined,
+    () => {},
+  );
 });
 
 Deno.test("createServeCommitSink: an outbox entry records the lease it was prepared under", async () => {

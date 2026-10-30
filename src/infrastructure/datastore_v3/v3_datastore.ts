@@ -117,6 +117,7 @@ import {
 } from "./serve_upstream_state.ts";
 import { serveUpstreamAt } from "./serve_upstream_registry.ts";
 import {
+  dropUnconfirmedServeLease,
   heldServeLeaseOf,
   raiseServeLeaseFloor,
 } from "./serve_lease_registry.ts";
@@ -974,6 +975,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       sweepBatch: () => sweepBatchAt(outbox.path),
       signal: () => lifetime.signal,
       leaseOf: (partition) => heldServeLeaseOf(serve!.root, partition),
+      dropUnconfirmedLease: (partition, leaseId) =>
+        dropUnconfirmedServeLease(serve!.root, partition, leaseId),
       onLeasedCommit: async (partition, leaseId, landed) => {
         raiseServeLeaseFloor(serve!.root, partition, leaseId, landed);
         try {

@@ -43,6 +43,7 @@ import {
 } from "./serve_datastore_client.ts";
 import {
   ServeChunksMissingError,
+  ServeCommitRejectedError,
   ServeCommitsCompactedError,
   ServeReplyTooLargeError,
   ServeStaleSeqError,
@@ -137,6 +138,11 @@ export class FakeServe implements Client {
   readonly postFaults: PostFault[] = [];
   /** Runs before each commit request is acted on: another writer, say. */
   beforePost: (() => Promise<void>) | undefined;
+  /**
+   * Refuses a commit naming `lease` as lease-lost while it returns true:
+   * serve's judgement of the commit's lease (swamp-club#4121).
+   */
+  leaseLost: ((lease: string | undefined) => boolean) | undefined;
   /** Thrown by the next `changes` requests while set. */
   changesFault: Error | undefined;
   /** How many of the next partition reads fail as unreachable. */
@@ -332,6 +338,13 @@ export class FakeServe implements Client {
       chunks: chunks.map((chunk) => chunk.sha256),
     });
     await this.beforePost?.();
+    if (this.leaseLost?.(envelope.lease) === true) {
+      throw new ServeCommitRejectedError(
+        "lease-lost",
+        "commit_lease-lost",
+        "This commit's model lease is not held: take the lock again and retry",
+      );
+    }
     const fault = this.postFaults.shift();
     if (fault?.kind === "never") throw this.#unreachable("never");
     if (fault?.kind === "collect") {

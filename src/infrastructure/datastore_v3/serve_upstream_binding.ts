@@ -59,6 +59,8 @@ import {
   serveUpstreamAt,
 } from "./serve_upstream_registry.ts";
 import {
+  type ExplicitLease,
+  type ExplicitLeaseRenewal,
   readExplicitLeases,
   renewExplicitLeases,
 } from "./explicit_model_leases.ts";
@@ -175,30 +177,53 @@ async function renewCheckoutLeases(root: string): Promise<void> {
   if (renewedLeaseRoots.has(root)) return;
   renewedLeaseRoots.add(root);
   const binding = serveUpstreamAt(root);
-  if (binding === undefined || (await readExplicitLeases(root)).length === 0) {
-    return;
-  }
+  if (binding === undefined) return;
+  const recorded = await readExplicitLeases(root);
+  if (recorded.length === 0) return;
   const client = binding.client();
+  let renewal: ExplicitLeaseRenewal | undefined;
   try {
-    const { renewed } = await renewExplicitLeases(
+    renewal = await renewExplicitLeases(
       root,
       client,
       AbortSignal.timeout(client.timeoutMs),
     );
-    // Every commit this process makes to a behavior the checkout holds
-    // names its lease, whether or not the command takes the behavior's
-    // lock: a read-kind method saves data without one.
-    for (const lease of renewed) {
-      holdServeLease(root, lease.lockKey, {
-        leaseId: lease.leaseId,
-        fence: lease.fence,
-        floor: lease.floor,
-      });
-    }
   } catch (error) {
     logger.warn`Could not renew this checkout's model leases: ${error}`;
   } finally {
     client.close();
+  }
+  registerCheckoutLeases(root, recorded, renewal);
+}
+
+/**
+ * Registers the explicit leases `recorded` for `root` in this process, so
+ * every commit it makes to a behavior the checkout holds names the lease,
+ * whether or not the command takes the behavior's lock: a read-kind method
+ * saves data without one. A lease `renewal` renewed is registered as
+ * serve vouched for it. One it could not renew, or every one when the
+ * renewal failed as a whole, is registered from the record, unconfirmed
+ * (swamp-club#4167): serve, not the record, decides whether it is live, and
+ * a commit serve refuses under it is sent again under no lease. A lease
+ * serve said has ended is never registered.
+ */
+export function registerCheckoutLeases(
+  root: string,
+  recorded: readonly ExplicitLease[],
+  renewal: ExplicitLeaseRenewal | undefined,
+): void {
+  const renewed = new Set(
+    renewal?.renewed.map((lease) => lease.leaseId) ?? [],
+  );
+  const ended = new Set(renewal?.ended.map((lease) => lease.leaseId) ?? []);
+  for (const lease of recorded) {
+    if (ended.has(lease.leaseId)) continue;
+    holdServeLease(root, lease.lockKey, {
+      leaseId: lease.leaseId,
+      fence: lease.fence,
+      floor: lease.floor,
+      ...(renewed.has(lease.leaseId) ? {} : { unconfirmed: true as const }),
+    });
   }
 }
 
