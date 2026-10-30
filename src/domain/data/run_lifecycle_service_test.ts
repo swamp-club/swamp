@@ -75,6 +75,7 @@ function createMockOutputRepo(
     findAllGlobal: () => Promise.resolve([]),
     findAllGlobalSince: () => Promise.resolve([]),
     findGlobalNewestFirst: () => Promise.reject(new Error("not used here")),
+    findHistoryNewestFirst: () => Promise.reject(new Error("not used here")),
     save: () => Promise.resolve(),
     delete: () => Promise.resolve(),
     deleteOlderThan: (cutoff: Date, options?: { dryRun?: boolean }) => {

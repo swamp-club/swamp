@@ -203,6 +203,28 @@ export interface OutputRepository {
   ): Promise<OutputsNewestFirst>;
 
   /**
+   * The outputs of one definition started in `window`, read as
+   * `findGlobalNewestFirst()` reads the outputs of every type: as `next` asks
+   * for them, instead of every output in the window. Each is still to be
+   * checked against `window`.
+   *
+   * @param type - The model type
+   * @param definitionId - The definition whose outputs to read
+   * @param window - The earliest (inclusive) and latest (exclusive) `startedAt`
+   * @param signal - Stops the reads once aborted
+   * @param selectReadable - Which output keys the caller may read, as in
+   *   `findAllGlobal()`, asked only about the outputs the reads reach
+   * @returns The definition's outputs in the window, ready to read
+   */
+  findHistoryNewestFirst(
+    type: ModelType,
+    definitionId: DefinitionId,
+    window: { since?: Date; until?: Date },
+    signal?: AbortSignal,
+    selectReadable?: SelectReadableOutputs,
+  ): Promise<OutputsNewestFirst>;
+
+  /**
    * Saves an output.
    *
    * @param type - The model type

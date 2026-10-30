@@ -2154,6 +2154,19 @@ export async function handleModelOutputSearch(
           window,
           controller.signal,
         ),
+      findOutputsByDefinitionNewestFirst: (
+        type,
+        definitionId,
+        window,
+        selectReadable,
+      ) =>
+        outputRepo.findHistoryNewestFirst(
+          ModelType.create(type.normalized),
+          createDefinitionId(definitionId),
+          window,
+          controller.signal,
+          selectReadable,
+        ),
       resolveWorkflowNames: async (ids) => {
         const names = new Map<string, string>();
         for (const workflow of await workflowRepo.findAll()) {
@@ -2187,13 +2200,12 @@ export async function handleModelOutputSearch(
     await withDiagnosticArea("output_search", async () => {
       let result: ModelOutputSearchData | undefined;
       await consumeStream(
-        // A search without a model judges each output it reads with canRead,
-        // so its limit counts only outputs the caller may read, and it stops
-        // reading there (swamp-club#4143). A model's search limits only after
-        // model authorization. Unreadable run links are redacted after both.
+        // A limited search judges each output it reads with canRead, so its
+        // limit counts only outputs the caller may read, and it stops reading
+        // there (swamp-club#4143, swamp-club#4174). Unreadable run links are
+        // redacted after authorization.
         modelOutputSearch(libCtx, deps, {
           ...payload,
-          limit: payload?.model === undefined ? payload?.limit : undefined,
           includeProvenance: true,
         }),
         {

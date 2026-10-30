@@ -58,6 +58,7 @@ import { ModelType } from "../../domain/models/model_type.ts";
 import {
   createDefinitionId,
   Definition,
+  type DefinitionId,
 } from "../../domain/definitions/definition.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { DefinitionIdIndex } from "../../infrastructure/persistence/definition_id_index.ts";
@@ -2678,7 +2679,7 @@ Deno.test("handleModelOutputSearch: with authorization off, a limit stops the re
   });
 });
 
-Deno.test("handleModelOutputSearch: a model's search still limits only after authorization", async () => {
+Deno.test("handleModelOutputSearch: a model's limit counts only the methods the caller may read", async () => {
   await withTempDir(async (dir) => {
     const definitionRepo = new YamlDefinitionRepository(dir);
     const outputRepo = new YamlOutputRepository(dir);
@@ -2892,6 +2893,318 @@ Deno.test("handleModelOutputSearch: 64 identical limited searches at once read e
         // by those that arrived while it ran.
         assert(outputReads <= 32, `${outputReads} reads`);
       });
+    } finally {
+      (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile =
+        readTextFile;
+    }
+  });
+});
+
+// --- A limited search for a model reads newest first and stops (swamp-club#4174) ---
+
+Deno.test("handleModelOutputSearch: a model's limited search reads the same however many of its outputs are in the window, and returns the head of the full search", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const model = await saveEditModel(definitionRepo, "model");
+    const other = createDefinitionId(crypto.randomUUID());
+    for (let minutes = 1; minutes <= 40; minutes++) {
+      await saveMinutesIn(outputRepo, model, minutes);
+      await outputRepo.save(
+        EDIT_TEST_TYPE,
+        "execute",
+        limitedSearchOutput(other, minutes),
+      );
+    }
+    const ctx = limitedSearchCtx(
+      createEditCtx(dir, definitionRepo),
+      dir,
+      definitionRepo,
+      outputRepo,
+    );
+    const search = async (payload: { limit?: number }) => {
+      const socket = createMockSocket();
+      await handleModelOutputSearch(
+        socket,
+        ctx,
+        "req-1",
+        new AbortController(),
+        null,
+        { model: "model", since: "2026-01-01T00:00:00Z", ...payload },
+      );
+      return frames(socket)[0].payload.data.results;
+    };
+    const scanOf = (spans: Parameters<typeof findSpan>[0]) =>
+      findSpan(spans, "swamp.diagnostic.candidate_scan").attributes;
+
+    await withObservedSpans(async (spans) => {
+      assertEquals((await search({ limit: 5 })).length, 5);
+      const scan = scanOf(spans);
+      // A batch's reads, and the file of the definition the filter names.
+      assertEquals(scan["swamp.diagnostic.candidates"], 16);
+      assertEquals(scan["swamp.diagnostic.files_read"], 17);
+      assertEquals(scan["swamp.diagnostic.left_unread"], 24);
+      assertEquals(scan["swamp.diagnostic.skipped_by_name"], 40);
+      assertEquals(
+        findSpan(spans, "swamp.diagnostic.authorization").attributes[
+          "swamp.diagnostic.items"
+        ],
+        5,
+      );
+      assertEquals(diagnosticPhases(spans, "candidate_authorization"), []);
+      assertEquals(diagnosticPhases(spans, "definition_names"), []);
+    });
+
+    for (let minutes = 41; minutes <= 80; minutes++) {
+      await saveMinutesIn(outputRepo, model, minutes);
+    }
+    await withObservedSpans(async (spans) => {
+      const limited = await search({ limit: 5 });
+      const scan = scanOf(spans);
+      assertEquals(scan["swamp.diagnostic.candidates"], 16);
+      assertEquals(scan["swamp.diagnostic.files_read"], 17);
+      assertEquals(scan["swamp.diagnostic.left_unread"], 64);
+
+      const full = await search({});
+      assertEquals(full.length, 80);
+      assertEquals(limited, full.slice(0, 5));
+      assertEquals(limited[0].modelName, "model");
+    });
+  });
+});
+
+Deno.test("handleModelOutputSearch: a caller refused a whole model reads none of its outputs, whatever the limit", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const model = await saveEditModel(definitionRepo, "hidden");
+    for (let minutes = 1; minutes <= 40; minutes++) {
+      await saveMinutesIn(outputRepo, model, minutes);
+    }
+    const ctx = limitedSearchCtx(
+      createPolicyEditCtx(dir, definitionRepo, [
+        grant({
+          actions: ["read"],
+          resource: { kind: "model", pattern: "readable" },
+        }),
+      ]),
+      dir,
+      definitionRepo,
+      outputRepo,
+    );
+
+    await withObservedSpans(async (spans) => {
+      const socket = createMockSocket();
+      await handleModelOutputSearch(
+        socket,
+        ctx,
+        "req-1",
+        new AbortController(),
+        EDITOR,
+        { model: "hidden", limit: 5 },
+      );
+
+      assertEquals(frames(socket)[0].payload.data.results, []);
+      const scan = findSpan(spans, "swamp.diagnostic.candidate_scan")
+        .attributes;
+      assertEquals(scan["swamp.diagnostic.candidates"], undefined);
+      assertEquals(scan["swamp.diagnostic.skipped_by_authorization"], 40);
+      assertEquals(scan["swamp.diagnostic.left_unread"], 0);
+    });
+  });
+});
+
+Deno.test("handleModelOutputSearch: a grant revoked after a model's limited search chose its results leaves them out, however few remain", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const model = await saveEditModel(definitionRepo, "revoked-model");
+    for (let minutes = 1; minutes <= 3; minutes++) {
+      await saveMinutesIn(outputRepo, model, minutes);
+    }
+    const decisionService = (grants: Grant[]) =>
+      new GrantBasedAccessDecisionService(
+        new PolicySnapshot(grants, [], createConditionEvaluator()),
+      );
+    const loader = {
+      decisionService: decisionService([grant({ actions: ["read"] })]),
+    };
+    const ctx: ConnectionContext = {
+      ...limitedSearchCtx(
+        createPolicyEditCtx(dir, definitionRepo, []),
+        dir,
+        definitionRepo,
+        {
+          findHistoryNewestFirst: async (
+            type: ModelType,
+            definitionId: DefinitionId,
+            window: { since?: Date; until?: Date },
+            signal?: AbortSignal,
+            selectReadable?: SelectReadableOutputs,
+          ) => {
+            const read = await outputRepo.findHistoryNewestFirst(
+              type,
+              definitionId,
+              window,
+              signal,
+              selectReadable,
+            );
+            return {
+              get unread() {
+                return read.unread;
+              },
+              unreadStartedBefore: (instant: Date) =>
+                read.unreadStartedBefore(instant),
+              next: async (count: number) => {
+                const batch = await read.next(count);
+                // The grant is revoked once the files are chosen and read.
+                loader.decisionService = decisionService([]);
+                return batch;
+              },
+            };
+          },
+        },
+      ),
+      policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+    };
+
+    const socket = createMockSocket();
+    await handleModelOutputSearch(
+      socket,
+      ctx,
+      "req-1",
+      new AbortController(),
+      EDITOR,
+      { model: "revoked-model", limit: 2 },
+    );
+
+    const [response] = frames(socket);
+    assertEquals(response.type, "model.output.search");
+    assertEquals(response.payload.data.results, []);
+  });
+});
+
+Deno.test("handleModelOutputSearch: a cancel landing in a later batch of a model's limited search replies cancelled and reads no further", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const model = await saveEditModel(definitionRepo, "model");
+    for (let minutes = 1; minutes <= 6; minutes++) {
+      await saveMinutesIn(outputRepo, model, minutes);
+    }
+    const controller = new AbortController();
+    let batches = 0;
+    const ctx = limitedSearchCtx(
+      createEditCtx(dir, definitionRepo),
+      dir,
+      definitionRepo,
+      {
+        findHistoryNewestFirst: async (
+          type: ModelType,
+          definitionId: DefinitionId,
+          window: { since?: Date; until?: Date },
+          signal?: AbortSignal,
+        ) => {
+          const read = await outputRepo.findHistoryNewestFirst(
+            type,
+            definitionId,
+            window,
+            signal,
+          );
+          return {
+            get unread() {
+              return read.unread;
+            },
+            unreadStartedBefore: (instant: Date) =>
+              read.unreadStartedBefore(instant),
+            // One output at a time, so the search takes several rounds.
+            next: async () => {
+              const batch = await read.next(1);
+              if (++batches === 2) controller.abort();
+              return batch;
+            },
+          };
+        },
+      },
+    );
+
+    const socket = createMockSocket();
+    await handleModelOutputSearch(
+      socket,
+      ctx,
+      "req-1",
+      controller,
+      null,
+      { model: "model", limit: 4 },
+    );
+
+    const [response] = frames(socket);
+    assertEquals(response.type, "error");
+    assertEquals(response.error.code, "cancelled");
+    assertEquals(batches, 2);
+  });
+});
+
+Deno.test("handleModelOutputSearch: 64 identical limited searches of a model at once read each batch's files at most twice, and answer alike", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const model = await saveEditModel(definitionRepo, "model");
+    for (let minutes = 1; minutes <= 40; minutes++) {
+      await saveMinutesIn(outputRepo, model, minutes);
+    }
+    // Each search resolves the model through its own file reads first. Held
+    // here until all 64 have, they reach the shared scans together, whatever
+    // order those reads finish in.
+    const searches = 64;
+    let resolved = 0;
+    const allResolved = Promise.withResolvers<void>();
+    const ctx = limitedSearchCtx(
+      createEditCtx(dir, definitionRepo),
+      dir,
+      definitionRepo,
+      {
+        findHistoryNewestFirst: async (
+          ...args: Parameters<typeof outputRepo.findHistoryNewestFirst>
+        ) => {
+          if (++resolved === searches) allResolved.resolve();
+          await allResolved.promise;
+          return await outputRepo.findHistoryNewestFirst(...args);
+        },
+      },
+    );
+    const outputsDir = join(dir, ".swamp", "outputs");
+    const readTextFile = Deno.readTextFile;
+    let outputReads = 0;
+    (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile = (
+      path,
+      options,
+    ) => {
+      if (String(path).startsWith(outputsDir)) outputReads++;
+      return readTextFile(path, options);
+    };
+    try {
+      const sockets = Array.from(
+        { length: searches },
+        () => createMockSocket(),
+      );
+      await Promise.all(sockets.map((socket, i) =>
+        handleModelOutputSearch(
+          socket,
+          ctx,
+          `req-${i}`,
+          new AbortController(),
+          null,
+          { model: "model", limit: 16 },
+        )
+      ));
+
+      const answers = sockets.map((socket) =>
+        JSON.stringify(frames(socket)[0].payload.data.results)
+      );
+      assertEquals(new Set(answers).size, 1);
+      assertEquals(JSON.parse(answers[0]).length, 16);
+      assert(outputReads <= 32, `${outputReads} reads`);
     } finally {
       (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile =
         readTextFile;

@@ -209,6 +209,20 @@ export interface ModelOutputSearchDeps {
     window?: { since?: Date; until?: Date },
   ): Promise<ModelOutputSearchOutput[]>;
   /**
+   * The outputs of one definition started in `window`, read as they are asked
+   * for, newest first, leaving out what `selectReadable` refuses. With it and
+   * {@link resolveModel}, a search with a `limit` and a `model` stops reading
+   * once it holds the results it will return (swamp-club#4174). Optional:
+   * without it the search reads every output of the model and keeps the most
+   * recent.
+   */
+  findOutputsByDefinitionNewestFirst?(
+    type: { normalized: string },
+    definitionId: string,
+    window: { since?: Date; until?: Date },
+    selectReadable?: ModelOutputSearchSelector,
+  ): Promise<ModelOutputSearchNewestFirst>;
+  /**
    * The current names of the given workflow ids, looked up together. An id
    * that no longer resolves is absent from the map.
    */
@@ -217,11 +231,11 @@ export interface ModelOutputSearchDeps {
   ): Promise<ReadonlyMap<string, string>>;
   /**
    * Which of `candidates` the caller may read, one answer per candidate, in
-   * order. With it, a search without `model` leaves out unread the outputs
-   * it refuses (swamp-club#4142). Outputs whose location says nothing about
-   * them are still read, so the results still need authorizing. A search
-   * reading newest first also asks it about each record it reads, so `limit`
-   * counts only outputs it accepts.
+   * order. With it, a search without `model`, or one reading newest first,
+   * leaves out unread the outputs it refuses (swamp-club#4142). Outputs whose
+   * location says nothing about them are still read, so the results still need
+   * authorizing. A search reading newest first also asks it about each record
+   * it reads, so `limit` counts only outputs it accepts.
    */
   canRead?(
     candidates: readonly ModelOutputSearchCandidate[],
@@ -283,8 +297,9 @@ function parseInstant(
  * descending and keeps at most `limit`. Filtering for JSON mode is handled
  * by the renderer.
  *
- * With `limit`, no `model` and {@link ModelOutputSearchDeps.findOutputsNewestFirst},
- * it returns the same results reading only as far as they need.
+ * With `limit` and {@link ModelOutputSearchDeps.findOutputsNewestFirst}, or for
+ * a `model` {@link ModelOutputSearchDeps.findOutputsByDefinitionNewestFirst}, it
+ * returns the same results reading only as far as they need.
  */
 export async function* modelOutputSearch(
   _ctx: LibSwampContext,
@@ -343,19 +358,23 @@ export async function* modelOutputSearch(
 
       // Exported as the output_search diagnostic area's phases when the
       // caller runs this in it (swamp-club#4056); silent otherwise.
-      const findNewestFirst = input.limit !== undefined &&
-          input.model === undefined
-        ? deps.findOutputsNewestFirst
-        : undefined;
+      const openNewestFirst = input.limit === undefined
+        ? undefined
+        : newestFirstOpener(
+          deps,
+          input.model,
+          { since, until },
+          selectReadable,
+        );
       let results: ModelOutputSearchItem[];
-      if (findNewestFirst !== undefined) {
+      if (openNewestFirst !== undefined) {
         const limit = input.limit!;
         results = await observeDiagnosticPhase(
           "candidate_scan",
           {},
           (phase) =>
             readNewestFirst(
-              () => findNewestFirst({ since, until }, selectReadable),
+              openNewestFirst,
               limit,
               { since, until },
               namer,
@@ -506,6 +525,103 @@ const MIN_NEWEST_FIRST_BATCH = 16;
  */
 const MAX_NEWEST_FIRST_BATCH = 1024;
 
+/** A newest-first read, of every output or of a model's definitions. */
+interface NewestFirstRead extends Omit<ModelOutputSearchNewestFirst, "next"> {
+  next(count: number): Promise<
+    Array<{
+      output: ModelOutputSearchOutput;
+      type: { normalized: string };
+      position: number;
+      /** The name the output's result carries, when it is already known. */
+      modelName?: string;
+      /** Which definition's read it came from: breaks ties before `position`. */
+      rank?: number;
+    }>
+  >;
+}
+
+/**
+ * How a search with a limit opens its newest-first read, or undefined when
+ * `deps` cannot read that way.
+ */
+function newestFirstOpener(
+  deps: ModelOutputSearchDeps,
+  model: string | undefined,
+  window: { since?: Date; until?: Date },
+  selectReadable: ModelOutputSearchSelector | undefined,
+): (() => Promise<NewestFirstRead>) | undefined {
+  if (model === undefined) {
+    const findNewestFirst = deps.findOutputsNewestFirst;
+    return findNewestFirst &&
+      (() => findNewestFirst(window, selectReadable));
+  }
+  const { resolveModel, findOutputsByDefinitionNewestFirst } = deps;
+  if (!resolveModel || !findOutputsByDefinitionNewestFirst) return undefined;
+  return async () => {
+    const definitions = (await resolveModel(model)).filter((definition) =>
+      definition.definitionId === model || definition.name === model
+    );
+    const reads: ModelOutputSearchNewestFirst[] = [];
+    for (const definition of definitions) {
+      reads.push(
+        await findOutputsByDefinitionNewestFirst(
+          definition.type,
+          definition.definitionId,
+          window,
+          deps.canRead && selectUnderName(deps.canRead, definition.name),
+        ),
+      );
+    }
+    return mergedRead(definitions, reads);
+  };
+}
+
+/**
+ * Asks `canRead` about keys under `name`, the name their outputs' results
+ * carry, so they are judged as those results are.
+ */
+function selectUnderName(
+  canRead: NonNullable<ModelOutputSearchDeps["canRead"]>,
+  name: string,
+): ModelOutputSearchSelector {
+  return (keys) =>
+    canRead(keys.map((key) => ({
+      definitionId: key.definitionId,
+      modelName: name,
+      type: key.type.normalized,
+      methodName: key.methodName,
+    })));
+}
+
+/**
+ * One read over each of `definitions`' `reads`, which it asks in turn. Each
+ * output is named after its definition and ranked by its place in the list, so
+ * outputs started in the same millisecond sort as a full scan's do: by
+ * definition, then in walk order. Outputs already read are not in start order
+ * across reads, so the search stops only once every read is past its results.
+ */
+function mergedRead(
+  definitions: readonly ModelOutputSearchModel[],
+  reads: readonly ModelOutputSearchNewestFirst[],
+): NewestFirstRead {
+  return {
+    get unread() {
+      return reads.reduce((sum, read) => sum + read.unread, 0);
+    },
+    unreadStartedBefore: (instant) =>
+      reads.every((read) => read.unreadStartedBefore(instant)),
+    async next(count) {
+      const batch: Awaited<ReturnType<NewestFirstRead["next"]>> = [];
+      for (const [rank, read] of reads.entries()) {
+        for (const found of await read.next(count)) {
+          batch.push({ ...found, modelName: definitions[rank].name, rank });
+        }
+      }
+      return batch;
+    },
+  };
+}
+
 /**
  * The `limit` most recent outputs `canRead` accepts, reading only as far as it
  * takes to be sure of them: until the `limit`-th result started strictly after
@@ -513,10 +629,10 @@ const MAX_NEWEST_FIRST_BATCH = 1024;
  * in the same millisecond as it are read too, and it looks at that result, not
  * at how many are held, because an output whose name says nothing about its
  * start can be older than outputs not read yet. Results sort as a full scan's
- * do: by start time, then in walk order.
+ * do: by start time, then by definition, then in walk order.
  */
 async function readNewestFirst(
-  open: () => Promise<ModelOutputSearchNewestFirst>,
+  open: () => Promise<NewestFirstRead>,
   limit: number,
   window: { since?: Date; until?: Date },
   namer: ReturnType<typeof definitionNamer>,
@@ -526,9 +642,12 @@ async function readNewestFirst(
 ): Promise<ModelOutputSearchItem[]> {
   if (limit === 0) return [];
   const outputs = await open();
-  const kept: Array<
-    { item: ModelOutputSearchItem; startedMs: number; position: number }
-  > = [];
+  const kept: Array<{
+    item: ModelOutputSearchItem;
+    startedMs: number;
+    rank: number;
+    position: number;
+  }> = [];
   while (
     kept.length < limit ||
     !outputs.unreadStartedBefore(new Date(kept[limit - 1].startedMs))
@@ -546,14 +665,17 @@ async function readNewestFirst(
       startedInWindow(output, window.since, window.until)
     );
     await namer.resolve(
-      inWindow.map(({ output, type }) => ({
-        type,
-        definitionId: output.definitionId,
-      })),
+      inWindow
+        .filter(({ modelName }) => modelName === undefined)
+        .map(({ output, type }) => ({
+          type,
+          definitionId: output.definitionId,
+        })),
     );
     const named = await Promise.all(inWindow.map(async (found) => ({
       ...found,
-      modelName: await namer.nameOf(found.type, found.output.definitionId),
+      modelName: found.modelName ??
+        await namer.nameOf(found.type, found.output.definitionId),
     })));
     const readable = canRead && named.length > 0
       ? await canRead(named.map(({ output, type, modelName }) => ({
@@ -564,15 +686,18 @@ async function readNewestFirst(
       })))
       : undefined;
 
-    named.forEach(({ output, type, modelName, position }, i) => {
+    named.forEach(({ output, type, modelName, rank, position }, i) => {
       if (readable !== undefined && readable[i] !== true) return;
       kept.push({
         item: toSearchItem(output, type, modelName, includeProvenance),
         startedMs: output.startedAt.getTime(),
+        rank: rank ?? 0,
         position,
       });
     });
-    kept.sort((a, b) => b.startedMs - a.startedMs || a.position - b.position);
+    kept.sort((a, b) =>
+      b.startedMs - a.startedMs || a.rank - b.rank || a.position - b.position
+    );
     if (kept.length > limit) kept.length = limit;
   }
   tally.add("left_unread", outputs.unread);

@@ -4962,3 +4962,247 @@ Deno.test("YamlOutputRepository.findGlobalNewestFirst: warns only about unreadab
     assert(!warnings[0].includes(paths[2]), warnings[0]);
   });
 });
+
+// --- findHistoryNewestFirst (swamp-club#4174) ---
+
+Deno.test(
+  "findHistoryNewestFirst: reads a name not in the output form first, then newest first, with walk order breaking ties, and nothing of another definition",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      const other = createDefinitionId(crypto.randomUUID());
+      const at = (minutes: number) =>
+        new Date(Date.UTC(2026, 0, 1, 0, minutes));
+      const oldest = keyedOutput(definitionId, "a-method", at(1));
+      const tiedSecond = keyedOutput(definitionId, "b-method", at(5));
+      const tiedFirst = keyedOutput(definitionId, "a-method", at(5));
+      const newest = keyedOutput(definitionId, "b-method", at(9));
+      for (const output of [oldest, tiedSecond, tiedFirst, newest]) {
+        await repo.save(registeredType, output.methodName, output);
+      }
+      await repo.save(
+        registeredType,
+        "a-method",
+        keyedOutput(other, "a-method", at(7)),
+      );
+      // Older than everything, but its name does not say so.
+      const unnamed = keyedOutput(definitionId, "run", at(0));
+      await writeRecordAs(repo, unnamed, "renamed.yaml");
+      await writeRecordAs(
+        repo,
+        keyedOutput(other, "run", at(0)),
+        "renamed-other.yaml",
+      );
+
+      const read = await repo.findHistoryNewestFirst(
+        registeredType,
+        definitionId,
+        {},
+      );
+
+      assertEquals(await readAllNewestFirst(read), [
+        unnamed.id,
+        newest.id,
+        tiedFirst.id,
+        tiedSecond.id,
+        oldest.id,
+      ]);
+      assertEquals(read.unread, 0);
+    });
+  },
+);
+
+Deno.test(
+  "findHistoryNewestFirst: next reads only what it is asked for, and leaves unread a file of another definition or named outside the window",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      const other = createDefinitionId(crypto.randomUUID());
+      const at = (minutes: number) =>
+        new Date(Date.UTC(2026, 0, 1, 0, minutes));
+      for (let minutes = 0; minutes <= 9; minutes++) {
+        await repo.save(
+          registeredType,
+          "run",
+          keyedOutput(definitionId, "run", at(minutes)),
+        );
+        await repo.save(
+          registeredType,
+          "run",
+          keyedOutput(other, "run", at(minutes)),
+        );
+      }
+
+      await withHeldReads(async (reads) => {
+        const read = await repo.findHistoryNewestFirst(
+          registeredType,
+          definitionId,
+          { since: at(2), until: at(8) },
+        );
+        assertEquals(read.unread, 6);
+        assertEquals(read.unreadStartedBefore(at(8)), true);
+        assertEquals(read.unreadStartedBefore(at(7)), false);
+
+        assertEquals(
+          (await read.next(2)).map((found) => found.output.startedAt),
+          [at(7), at(6)],
+        );
+        assertEquals(reads.started, 2);
+        assertEquals(read.unread, 4);
+        assertEquals(read.unreadStartedBefore(at(6)), true);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findHistoryNewestFirst: a record whose name says it is this definition's but whose content does not is read and left out",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      const other = createDefinitionId(crypto.randomUUID());
+      const startedAt = new Date(Date.UTC(2026, 0, 1));
+      await writeRecordAs(
+        repo,
+        keyedOutput(other, "run", startedAt),
+        `${definitionId}-2026-01-01T00-00-00-000Z.yaml`,
+      );
+      const kept = keyedOutput(
+        definitionId,
+        "run",
+        new Date(startedAt.getTime() - 60_000),
+      );
+      await repo.save(registeredType, "run", kept);
+
+      const read = await repo.findHistoryNewestFirst(
+        registeredType,
+        definitionId,
+        {},
+      );
+
+      // The first batch holds only the stranger, so next moves on.
+      assertEquals(
+        (await read.next(1)).map((found) => found.output.id),
+        [kept.id],
+      );
+    });
+  },
+);
+
+Deno.test(
+  "findHistoryNewestFirst: asks only about this definition's keys, and reads nothing the caller may not read",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      const other = createDefinitionId(crypto.randomUUID());
+      for (let minutes = 0; minutes < 4; minutes++) {
+        const at = new Date(Date.UTC(2026, 0, 1, 0, minutes));
+        await repo.save(
+          registeredType,
+          "run",
+          keyedOutput(definitionId, "run", at),
+        );
+        await repo.save(registeredType, "run", keyedOutput(other, "run", at));
+      }
+
+      const refused = selectDefinitions(other);
+      await withHeldReads(async (reads) => {
+        const read = await repo.findHistoryNewestFirst(
+          registeredType,
+          definitionId,
+          {},
+          undefined,
+          refused.select,
+        );
+        assertEquals(await read.next(2), []);
+        assertEquals(reads.started, 0);
+      });
+      assert(
+        refused.calls.flat().every((key) => key.definitionId === definitionId),
+      );
+    });
+  },
+);
+
+Deno.test(
+  "findHistoryNewestFirst: once aborted, next rejects with the reason and starts no read",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      await repo.save(registeredType, "run", keyedOutput(definitionId));
+      const controller = new AbortController();
+      const read = await repo.findHistoryNewestFirst(
+        registeredType,
+        definitionId,
+        {},
+        controller.signal,
+      );
+
+      await withHeldReads(async (reads) => {
+        controller.abort(new DOMException("request cancelled", "AbortError"));
+        await assertRejects(
+          () => read.next(1),
+          DOMException,
+          "request cancelled",
+        );
+        assertEquals(reads.started, 0);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findHistoryNewestFirst: reads a type the registry does not hold, as a definition's history does",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const type = ModelType.create(`test/${crypto.randomUUID()}`);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      const output = keyedOutput(definitionId);
+      await repo.save(type, "run", output);
+
+      const read = await repo.findHistoryNewestFirst(type, definitionId, {});
+
+      assertEquals(await readAllNewestFirst(read), [output.id]);
+    });
+  },
+);
+
+Deno.test("YamlOutputRepository.findHistoryNewestFirst: warns only about this definition's unreadable outputs whose file name says they started in its window (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const definitionId = crypto.randomUUID();
+    const { repo, paths } = repoWithUnreadable(dir, [
+      {
+        type: registeredType,
+        method: "run",
+        output: outputAt(definitionId, "2020-01-01T00:00:00Z"),
+      },
+      {
+        type: registeredType,
+        method: "run",
+        output: outputAt(definitionId, "2026-01-01T00:00:00Z"),
+      },
+      {
+        type: registeredType,
+        method: "run",
+        output: outputAt(crypto.randomUUID(), "2026-01-01T00:00:00Z"),
+      },
+    ]);
+    const warnings = await captureUnreadableWarnings(async () => {
+      await repo.findHistoryNewestFirst(
+        registeredType,
+        createDefinitionId(definitionId),
+        { since: new Date("2025-01-01T00:00:00Z") },
+      );
+    });
+    assertEquals(warnings.length, 1, warnings.join("\n"));
+    assertStringIncludes(warnings[0], paths[1]);
+    assert(!warnings[0].includes(paths[0]), warnings[0]);
+    assert(!warnings[0].includes(paths[2]), warnings[0]);
+  });
+});

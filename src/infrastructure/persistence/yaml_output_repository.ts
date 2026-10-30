@@ -55,7 +55,7 @@ import {
   type ScanKind,
   withScanPermit,
 } from "./scan_permits.ts";
-import { SharedScans } from "./shared_scans.ts";
+import { type SharedScanOutcome, SharedScans } from "./shared_scans.ts";
 import type {
   NewestFirstOutput,
   OutputKey,
@@ -846,14 +846,76 @@ export class YamlOutputRepository implements OutputRepository {
         return stamp === undefined || stampIn(stamp);
       },
     );
+    return this.newestFirst(
+      listing,
+      (file) => file.stamp === undefined || stampIn(file.stamp),
+      () => true,
+      signal,
+      selectReadable,
+    );
+  }
 
+  /**
+   * {@link findGlobalNewestFirst} over one definition's outputs
+   * (swamp-club#4174): the type's listing, leaving out unread a file named for
+   * another definition or outside `window`, as {@link findHistoryByDefinition}
+   * does. A file whose name is not in {@link getPath}'s form is read, and its
+   * output kept only if its record says it is this definition's. Listings are
+   * shared by the concurrent searches of a type.
+   */
+  async findHistoryNewestFirst(
+    type: ModelType,
+    definitionId: DefinitionId,
+    window: { since?: Date; until?: Date },
+    signal?: AbortSignal,
+    selectReadable?: SelectReadableOutputs,
+  ): Promise<OutputsNewestFirst> {
+    const listing = await this.listingScans.run(
+      JSON.stringify([type.normalized]),
+      window.since,
+      (scanCutoff, scanSignal) =>
+        this.listTypes([type], scanCutoff, scanSignal),
+      signal,
+    );
+    const { stampIn } = historyWindowOf(window);
+    await warnUnreadableLeftOut(
+      this.unreadableContent,
+      this.getTypeDir(type),
+      (entry) => {
+        const name = parseOutputFileName(entry.path);
+        return name?.definitionId === definitionId && stampIn(name.stamp);
+      },
+    );
+    return this.newestFirst(
+      listing,
+      (file) =>
+        file.stamp === undefined ||
+        (file.definitionId === definitionId && stampIn(file.stamp)),
+      (output) => output.definitionId === definitionId,
+      signal,
+      selectReadable,
+    );
+  }
+
+  /**
+   * The read a newest-first search asks for a batch at a time: the files of
+   * `listing` that `listed` accepts, ordered by name, newest first, each output
+   * kept only if `accepted` says so.
+   */
+  private newestFirst(
+    listing: SharedScanOutcome<ListedOutput[]>,
+    listed: (file: ListedOutput) => boolean,
+    accepted: (output: ModelOutput) => boolean,
+    signal: AbortSignal | undefined,
+    selectReadable: SelectReadableOutputs | undefined,
+  ): OutputsNewestFirst {
     const tally = currentDiagnosticTally();
     const ordered: Array<ListedOutput & { position: number }> = [];
     listing.value.forEach((file, position) => {
-      if (file.stamp !== undefined && !stampIn(file.stamp)) {
-        tally.add("skipped_by_name");
-      } else {
+      if (listed(file)) {
         ordered.push({ ...file, position });
+      } else {
+        tally.add("skipped_by_name");
       }
     });
     ordered.sort((a, b) => {
@@ -921,7 +983,9 @@ export class YamlOutputRepository implements OutputRepository {
           const batch: NewestFirstOutput[] = [];
           for (const file of files) {
             const found = reads.value.get(file.path);
-            if (found) batch.push({ ...found, position: file.position });
+            if (found && accepted(found.output)) {
+              batch.push({ ...found, position: file.position });
+            }
           }
           if (batch.length > 0) return batch;
         }
@@ -987,7 +1051,18 @@ export class YamlOutputRepository implements OutputRepository {
     // memoized, so callers that already loaded the registry (serve, model
     // output get) pay nothing.
     await modelRegistry.ensureLoaded();
+    return await this.listTypes([...modelRegistry.types()], cutoff, signal);
+  }
 
+  /**
+   * The output files of `types`, in walk order, leaving out what
+   * {@link listAllGlobal}'s `cutoff` does.
+   */
+  private async listTypes(
+    types: readonly ModelType[],
+    cutoff: Date | undefined,
+    signal: AbortSignal,
+  ): Promise<ListedOutput[]> {
     const cutoffMs = cutoff?.getTime();
     // A cutoff outside years 0000-9999 has a signed stamp, which sorts
     // before every name's: then no name is skipped, only stat'ed.
@@ -997,7 +1072,7 @@ export class YamlOutputRepository implements OutputRepository {
     // Each stage keeps its items in walk order, so the result is in the
     // order a sequential walk returns it (swamp-club#3067).
     const methodDirs = (await mapBounded(
-      [...modelRegistry.types()],
+      types,
       SCAN_CONCURRENCY,
       async (modelType) => {
         const typeDir = this.getTypeDir(modelType);

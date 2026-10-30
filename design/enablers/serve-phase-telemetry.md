@@ -285,13 +285,14 @@ says they started outside that window, without a stat or a read (lab #4058). A
 file not in the output form is stat'ed for its mtime only against `since`, and
 read under `until` alone. A search with neither reads every output.
 
-A search without `model` by a caller whose reads are authorized reads only the
-files it may read (lab #4142). A file's location carries the key its
+A search without `model`, or for one model with a `limit`, by a caller whose reads
+are authorized reads only the files it may read (lab #4142). A file's location
+carries the key its
 authorization needs: the type and method directories, and the definition id in
 its name. After the listing, the search asks once about the distinct keys it
 found, in its `candidate_authorization` phase, and leaves out unread every file
 whose key the caller may not read. The model name the key is judged on is the
-one the result would carry, so `definition_names` runs inside `candidate_scan`,
+one the result would carry, so without `model` `definition_names` runs inside `candidate_scan`,
 before the reads; after the scan it looks up only a definition no listed name
 carried. A file whose name is not in the output form carries no key: it is read,
 and judged with every result in `authorization`, which stays the final check on
@@ -300,9 +301,9 @@ scan is done, so a grant revoked while the search waited for its reads no
 longer admits their outputs. With authorization off, nothing is asked and every
 file is read.
 
-A search with a `limit` and no `model` reads newest first and stops once it holds
-its results (lab #4143). It orders the listed files by the start time in their
-names, reading first any file whose name is not in the output form, because only
+A search with a `limit` reads newest first and stops once it holds its results
+(lab #4143; for one model, lab #4174). It orders the listed files by the start
+time in their names, reading first any file whose name is not in the output form, because only
 reading it says when it started. It reads batches of 16 to 1,024, so a search with
 a large `limit` holds up one with a small `limit` only briefly, judges each record
 as `authorization` will, and stops when its `limit`-th result started strictly
@@ -318,12 +319,24 @@ each chunk's distinct keys and then each record read, so the same key can count
 many times, and `candidates` counts the records read rather than the window. A
 grant revoked after
 a record is judged removes it in `authorization`, which is not refilled, so such a
-request can return fewer than `limit` results. A search for one model with a
-`limit` still reads its whole window, then limits after `authorization`.
+request can return fewer than `limit` results.
+
+A search for one model with a `limit` reads each definition its filter resolves to
+this way (lab #4174). It lists the model's type directories and leaves unread each
+file named for another definition or outside the window (`skipped_by_name`), so
+`type_dirs`, `method_dirs` and `entries` appear on it, and `entries` still grows
+with the type's outputs. It asks about keys and judges records under the name the
+filter resolved, the one its results carry, so it runs no `definition_names`, and
+a caller refused the model reads none of its outputs. `files_read` also counts the
+definition file the filter's lookup read, so a `limit` of 5 reads 16 outputs and 1
+definition. A filter resolving to several definitions, which takes a model id held
+under several types or a model named with another's id, reads a batch from each
+at every round, and sorts outputs started in the same millisecond by definition.
+Without a `limit`, a search for one model still reads its whole window.
 
 | Attribute                                        | Meaning                                                                         |
 | ------------------------------------------------ | ------------------------------------------------------------------------------- |
-| `type_dirs`, `method_dirs`, `entries`            | Directories listed and output files found by a search without `model`           |
+| `type_dirs`, `method_dirs`, `entries`            | Directories listed, files found by a search without `model` or with a `limit`   |
 | `skipped_by_name`                                | Files skipped unread because their name is outside the window or the definition |
 | `stats`, `skipped_by_mtime`, `stat_work_ms`      | Files stat'ed because their name is not in the output form, and those skipped   |
 | `skipped_by_authorization`                       | Files skipped unread because their key is one the caller may not read           |
@@ -342,7 +355,9 @@ listing and its reads apart (lab #4142): the reads are shared by every search of
 the same kind (`since`, or neither) whatever it listed, each adds the files it
 chose, and each keeps only its own, so requests that may read different files
 read the union of them once. A search with a `limit` shares its reads a batch at a
-time, only with other such searches, so a full read never holds one up. A request
+time, only with other such searches, so a full read never holds one up; a search
+for one model with a `limit` shares its type's listing with the same searches of
+that type, not with a search for one model without a `limit`. A request
 that may read none of the files it listed joins no reads. A request joins only a
 scan that has not started yet, so it
 never gets a result older than itself; one arriving while a scan runs waits for

@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 // A limited output search stops reading once it holds its results
-// (swamp-club#4143). That is safe only if it returns exactly what the full
+// (swamp-club#4143, swamp-club#4174). That is safe only if it returns exactly what the full
 // scan returns once authorized and cut to the limit: the same outputs in the
 // same order, whatever ties, names not in the output form, windows and
 // permissions the repository holds.
@@ -40,6 +40,7 @@ import {
   type ModelOutputSearchDeps,
   type ModelOutputSearchInput,
   type ModelOutputSearchItem,
+  type ModelOutputSearchModel,
 } from "../src/libswamp/models/output_search.ts";
 import { collect } from "../src/libswamp/testing.ts";
 // The global output scans walk the registered types.
@@ -258,6 +259,172 @@ Deno.test("modelOutputSearch: without ties or names not in the output form, a li
               },
             },
             { limit },
+          );
+
+          assert(
+            read <= Math.max(limit, MIN_BATCH),
+            `read ${read} for a limit of ${limit}`,
+          );
+        },
+      ),
+      { numRuns: 25 },
+    );
+  });
+});
+
+/**
+ * Deps over `repo` that resolve `model` to `definitions`, for a caller who may
+ * read only `readable`.
+ */
+function modelDepsFor(
+  repo: YamlOutputRepository,
+  readable: readonly string[],
+  definitions: ModelOutputSearchModel[],
+): ModelOutputSearchDeps {
+  return {
+    ...depsFor(repo, readable),
+    resolveModel: () => Promise.resolve(definitions),
+    findOutputsByDefinition: (type, definitionId, window) =>
+      repo.findHistoryByDefinition(
+        ModelType.create(type.normalized),
+        createDefinitionId(definitionId),
+        window,
+      ),
+  };
+}
+
+Deno.test("modelOutputSearch: a limited search for a model returns what the full scan returns once authorized and cut to the limit, however many definitions the filter resolves to", async () => {
+  // The filter is the first definition's id: it resolves to that id under each
+  // type, and to the model another definition has named with it.
+  const model = DEFINITIONS[0];
+  const resolvable: ModelOutputSearchModel[] = [
+    ...TYPES.map((type) => ({
+      definitionId: model,
+      name: "by-id",
+      type: { normalized: type.normalized },
+    })),
+    {
+      definitionId: DEFINITIONS[1],
+      name: model,
+      type: { normalized: TYPES[0].normalized },
+    },
+  ];
+  await withRepos(async (newRepo) => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(file(fc.boolean()), {
+          minLength: MIN_BATCH,
+          maxLength: 80,
+          size: "max",
+        }),
+        search,
+        fc.shuffledSubarray(resolvable),
+        async (files, { since, until, limit, readable }, definitions) => {
+          const repo = await newRepo();
+          await writeFiles(repo, files);
+          const input = {
+            model,
+            since: since === undefined ? undefined : isoAt(since),
+            until: until === undefined ? undefined : isoAt(until),
+          };
+          const allowed = new Set<string>(readable);
+          const deps = modelDepsFor(repo, readable, definitions);
+
+          const fullScan = await resultsOf(deps, input);
+          const expected = fullScan
+            .filter((item) => allowed.has(item.definitionId))
+            .slice(0, limit);
+
+          const limited = await resultsOf(
+            {
+              ...deps,
+              findOutputsByDefinition: () =>
+                Promise.reject(new Error("read the whole model")),
+              findOutputsByDefinitionNewestFirst: (
+                type,
+                definitionId,
+                window,
+                selectReadable,
+              ) =>
+                repo.findHistoryNewestFirst(
+                  ModelType.create(type.normalized),
+                  createDefinitionId(definitionId),
+                  window,
+                  undefined,
+                  selectReadable,
+                ),
+            },
+            { ...input, limit },
+          );
+
+          assertEquals(limited, expected);
+        },
+      ),
+      { numRuns: 60 },
+    );
+  });
+});
+
+Deno.test("modelOutputSearch: without ties or names not in the output form, a limited search for a model reads no more than one batch", async () => {
+  const model = DEFINITIONS[0];
+  await withRepos(async (newRepo) => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.uniqueArray(fc.nat(1000), {
+          minLength: MIN_BATCH * 2,
+          maxLength: 80,
+          size: "max",
+        }).map((offsets) =>
+          offsets.map((offset, i) => ({
+            type: 0,
+            // Half of them the model's, so a file of another is passed over.
+            definition: i % 2,
+            method: i % METHODS.length,
+            offset,
+            unnamed: false,
+          }))
+        ),
+        fc.nat(MIN_BATCH),
+        async (files, limit) => {
+          const repo = await newRepo();
+          await writeFiles(repo, files);
+          let read = 0;
+
+          await resultsOf(
+            {
+              ...modelDepsFor(repo, DEFINITIONS, [{
+                definitionId: model,
+                name: "by-id",
+                type: { normalized: TYPES[0].normalized },
+              }]),
+              findOutputsByDefinitionNewestFirst: async (
+                type,
+                definitionId,
+                window,
+                selectReadable,
+              ) => {
+                const outputs = await repo.findHistoryNewestFirst(
+                  ModelType.create(type.normalized),
+                  createDefinitionId(definitionId),
+                  window,
+                  undefined,
+                  selectReadable,
+                );
+                return {
+                  get unread() {
+                    return outputs.unread;
+                  },
+                  unreadStartedBefore: (instant) =>
+                    outputs.unreadStartedBefore(instant),
+                  next: async (count) => {
+                    const batch = await outputs.next(count);
+                    read += batch.length;
+                    return batch;
+                  },
+                };
+              },
+            },
+            { model, limit },
           );
 
           assert(
