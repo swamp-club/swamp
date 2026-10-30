@@ -24,7 +24,16 @@ import {
   getDatastoreDirectories,
   isCustomDatastoreConfig,
 } from "../../domain/datastore/datastore_config.ts";
-import type { NamespaceContaminationSummary } from "../../domain/datastore/datastore_sync_service.ts";
+import {
+  type NamespaceContaminationSummary,
+  UNPUSHED_REPAIR_EXTENSIONS,
+  UNPUSHED_REPAIR_MIN_EXTENSION_VERSION,
+  type UnpushedFilesSummary,
+} from "../../domain/datastore/datastore_sync_service.ts";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInMessage,
+} from "../../domain/control_characters.ts";
 
 import {
   isReservedNamespaceName,
@@ -150,6 +159,18 @@ function recordKeyOf(
 export interface NamespaceContaminationFinding {
   foreignNamespaces: ReadonlyArray<{ namespace: string; objectCount: number }>;
   totalForeignObjects: number;
+}
+
+/**
+ * Cache files the remote has never received, which no push sends
+ * (swamp-club#4112). Advisory: it never fails the scan.
+ */
+export interface UnpushedFilesFinding {
+  unpushed: number;
+  /** The first few, cache-relative with forward slashes. */
+  samplePaths: readonly string[];
+  /** Why the check could not run; the counts are then 0. */
+  error?: string;
 }
 
 /**
@@ -280,6 +301,8 @@ export interface DoctorDatastoresData {
   healthFindings: DatastoreHealthFinding[];
   vaultMismatchFindings: VaultMismatchFinding[];
   contaminationFinding?: NamespaceContaminationFinding;
+  /** Present when unpushed cache files were found (swamp-club#4112). */
+  unpushedFilesFinding?: UnpushedFilesFinding;
   catalogCompletenessFinding?: CatalogCompletenessSummary;
   /** Present when the unreadable-version check found some (swamp-club#3955). */
   unreadableVersionsFinding?: UnreadableVersionsSummary;
@@ -320,6 +343,13 @@ export interface DoctorDatastoresDeps {
   checkNamespaceContamination?: (
     config: DatastoreConfig,
   ) => Promise<NamespaceContaminationSummary | null>;
+  /**
+   * A dry run of the datastore's `repairUnpushedFiles` that compares size
+   * and mtime only, or null when the datastore cannot run it. Read-only.
+   */
+  checkUnpushedFiles?: (
+    config: DatastoreConfig,
+  ) => Promise<UnpushedFilesSummary | null>;
   /**
    * Compares the local catalog index against the on-disk walk.
    *
@@ -474,6 +504,7 @@ export async function* doctorDatastores(
       const healthFindings: DatastoreHealthFinding[] = [];
       const vaultMismatchFindings: VaultMismatchFinding[] = [];
       let contaminationFinding: NamespaceContaminationFinding | undefined;
+      let unpushedFilesFinding: UnpushedFilesFinding | undefined;
       let catalogCompletenessFinding: CatalogCompletenessSummary | undefined;
       let unreadableVersionsFinding: UnreadableVersionsSummary | undefined;
       let retentionFinding: RetentionCheckSummary | undefined;
@@ -587,6 +618,26 @@ export async function* doctorDatastores(
             ? `Could not check whether every published data version is readable: ${failure}`
             : unreadableVersionsFindingMessage(summary),
         });
+      }
+
+      // Unpushed cache files check (swamp-club#4112) — advisory, so a
+      // failure is reported in the finding and the scan goes on.
+      if (isCustom && deps.checkUnpushedFiles) {
+        try {
+          const summary = await deps.checkUnpushedFiles(config);
+          if (summary && summary.unpushed > 0) {
+            unpushedFilesFinding = {
+              unpushed: summary.unpushed,
+              samplePaths: summary.samplePaths,
+            };
+          }
+        } catch (error) {
+          unpushedFilesFinding = {
+            unpushed: 0,
+            samplePaths: [],
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
       }
 
       // Catalog completeness check — the catalog is a local index, so this
@@ -777,6 +828,7 @@ export async function* doctorDatastores(
           healthFindings,
           vaultMismatchFindings,
           contaminationFinding,
+          ...(unpushedFilesFinding ? { unpushedFilesFinding } : {}),
           catalogCompletenessFinding,
           ...(unreadableVersionsFinding ? { unreadableVersionsFinding } : {}),
           ...(retentionFinding ? { retentionFinding } : {}),
@@ -827,6 +879,12 @@ export interface RepairDatastoresDeps {
   pullScoped: () => Promise<number>;
   invalidateWorkflowRunIndexes: () => Promise<number>;
   invalidateCatalog: () => Promise<void>;
+  /**
+   * Why wiping the local cache would lose data or pending work, or
+   * undefined when it is safe (swamp-club#4112). Checked after the
+   * preview, before anything changes.
+   */
+  checkCacheSafeToWipe?: () => Promise<string | undefined>;
 }
 
 const REPAIR_STEPS = 5;
@@ -875,6 +933,28 @@ export async function* repairDatastoreContamination(
           kind: "preview",
           contamination,
           namespace: config.namespace,
+        };
+        return;
+      }
+
+      let refusal: string | undefined;
+      try {
+        refusal = await deps.checkCacheSafeToWipe?.();
+      } catch (err) {
+        refusal =
+          `Refusing to wipe the local cache: could not check what it holds: ${
+            errorText(err).trimEnd()
+          }`;
+      }
+      if (refusal !== undefined) {
+        yield {
+          kind: "error",
+          error: {
+            code: "repair_refused",
+            message: `${
+              refusal.includes("\n") ? `${refusal}\n` : `${refusal} `
+            }The cache was not wiped and no foreign objects were deleted.`,
+          },
         };
         return;
       }
@@ -944,7 +1024,30 @@ export async function* repairDatastoreContamination(
           namespace: config.namespace,
         };
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        // Once the foreign objects are gone a re-run finds nothing to repair,
+        // so it would never reach the invalidation steps. A wipe that failed
+        // partway may have removed files they describe. Each is tried here on
+        // its own.
+        const invalidations: Array<[string, () => Promise<unknown>]> = [];
+        if (lastCompletedStep === 1 || lastCompletedStep === 2) {
+          invalidations.push([
+            "workflow run indexes",
+            deps.invalidateWorkflowRunIndexes,
+          ]);
+        }
+        if (lastCompletedStep >= 1 && lastCompletedStep <= 3) {
+          invalidations.push(["data catalog", deps.invalidateCatalog]);
+        }
+        let invalidationFailure = "";
+        for (const [what, invalidate] of invalidations) {
+          try {
+            await invalidate();
+          } catch (invalidateErr) {
+            invalidationFailure += ` Invalidating the ${what} failed too: ${
+              errorText(invalidateErr).trimEnd()
+            }`;
+          }
+        }
         yield {
           kind: "error",
           error: {
@@ -952,12 +1055,186 @@ export async function* repairDatastoreContamination(
             message:
               `Repair failed at step ${
                 lastCompletedStep + 1
-              }/${REPAIR_STEPS}: ${message}. ` +
+              }/${REPAIR_STEPS}: ${errorText(err)}` +
               (lastCompletedStep >= 2
-                ? `Local cache was wiped — run 'swamp datastore sync --pull' to restore.`
+                ? `Local cache was wiped — run 'swamp datastore sync --pull' to restore.${invalidationFailure}`
                 : lastCompletedStep >= 1
-                ? `Foreign objects were deleted but local cache was not refreshed — run 'swamp datastore sync --pull' to restore.`
-                : `No changes were made.`),
+                ? `Foreign objects were deleted but local cache was not refreshed — run 'swamp datastore sync --pull' to restore.${invalidationFailure}`
+                : `Some foreign objects may already be deleted, and the local cache was not touched. Run 'swamp doctor datastores --repair -y' again; if it finds nothing to repair, run 'swamp datastore sync --pull'.`),
+            cause: err instanceof Error ? err : undefined,
+          },
+        };
+      }
+    })(),
+  );
+}
+
+// ============================================================================
+// Repair: cache files the remote never received (swamp-club#4112)
+// ============================================================================
+
+export type RepairUnpushedFilesEvent =
+  | { kind: "scanning" }
+  | { kind: "preview"; summary: UnpushedFilesSummary }
+  | { kind: "step"; description: string }
+  | { kind: "completed"; summary: UnpushedFilesSummary }
+  | { kind: "not_needed" }
+  | { kind: "not_supported"; message: string }
+  | { kind: "error"; error: SwampError };
+
+/** Dependencies for the unpushed cache files repair. */
+export interface RepairUnpushedFilesDeps {
+  /** Why the datastore cannot run this repair, or undefined when it can. */
+  unsupported?: string;
+  /** A dry run that compares content exactly. */
+  detect: () => Promise<UnpushedFilesSummary>;
+  /** Uploads the unpushed files. */
+  repair: () => Promise<UnpushedFilesSummary>;
+}
+
+/**
+ * An extension's error message as it can be printed, ending a sentence: its
+ * batch failures name files, and a file name can hold an escape sequence. A
+ * message that spans lines, such as a timeout's remedies, ends its last line,
+ * so what follows starts a new one.
+ */
+function errorText(err: unknown): string {
+  const text = escapeControlCharactersInMessage(
+    err instanceof Error ? err.message : String(err),
+  ).trimEnd();
+  return text.includes("\n") ? `${text}\n` : `${text.replace(/\.+$/, "")}. `;
+}
+
+/**
+ * Why a datastore cannot run the unpushed cache files repair: an s3 or gcs
+ * extension is too old, and any other extension does not implement it.
+ *
+ * @param extension - the extension named in the update command
+ */
+export function unpushedRepairUnsupportedMessage(
+  datastoreType: string,
+  extension: string,
+): string {
+  return UNPUSHED_REPAIR_EXTENSIONS.includes(datastoreType)
+    ? `The ${datastoreType} datastore extension cannot find cache files the remote never received: that needs ${UNPUSHED_REPAIR_MIN_EXTENSION_VERSION} or later. Run \`swamp extension update ${extension}\` to update it.`
+    : `The ${datastoreType} datastore extension does not implement repairUnpushedFiles, so it cannot find cache files the remote never received. Ask its author to add it.`;
+}
+
+/**
+ * Whether a summary leaves nothing to upload and nothing to report about
+ * local files the remote lacks.
+ */
+export function unpushedFilesClear(summary: UnpushedFilesSummary): boolean {
+  return summary.unpushed === 0 && summary.alreadyPresent === 0 &&
+    summary.locallyModified === 0 && summary.unknown === 0 &&
+    summary.peerDeleted === 0;
+}
+
+/**
+ * Why wiping the local cache at `cacheDir` would lose data or pending work,
+ * judged from a dry run taken just before, or undefined when it would not.
+ * A copy the remote moved on from is stale, so it does not count. Nor does a
+ * copy a peer deleted: older releases left many behind, and blocking on them
+ * would stall the repair, so the stage's output names them instead.
+ */
+export function cacheWipeRefusal(
+  summary: UnpushedFilesSummary,
+  cacheDir: string,
+): string | undefined {
+  const reasons: string[] = [];
+  // First, because it must happen first: a push deletes from the remote a
+  // marked file that is gone, so removing one as the advice below says would
+  // delete it for everyone.
+  if (summary.pendingChanges) {
+    reasons.push(
+      "changes recorded locally that no push has sent; run 'swamp datastore sync --push' first, and remove nothing from the cache before it: that push deletes from the remote, for everyone, a changed file that is gone",
+    );
+  }
+  if (summary.unpushed > 0) {
+    reasons.push(
+      `${summary.unpushed} cache file(s) the remote never received (${
+        firstOf(
+          summary.samplePaths.map(escapeControlCharacters),
+          summary.unpushed,
+        )
+      }); run the repair again to upload them`,
+    );
+  }
+  const localOnly = summary.alreadyPresent + summary.locallyModified +
+    summary.unknown;
+  if (localOnly > 0) {
+    const samples = [
+      ...summary.sampleAlreadyPresent,
+      ...summary.sampleModified,
+      ...summary.sampleUnknown,
+    ];
+    reasons.push(
+      `${localOnly} local version(s) the remote does not hold (${
+        firstOf(samples.map(escapeControlCharacters), localOnly)
+      }); copy any you want to keep out of ${cacheDir}, remove them there, and run this again. Do not pull first: a pull overwrites them`,
+    );
+  }
+  return reasons.length === 0
+    ? undefined
+    : `Refusing to wipe the local cache: ${reasons.join("; ")}.`;
+}
+
+/**
+ * Finds cache files the remote never received, and with `confirm` uploads
+ * them through the datastore's `repairUnpushedFiles`, which deletes nothing
+ * and leaves pending pushes alone. Local versions the remote lacks are
+ * reported, never uploaded.
+ */
+export async function* repairUnpushedCacheFiles(
+  _ctx: LibSwampContext,
+  deps: RepairUnpushedFilesDeps,
+  options: { confirm: boolean },
+): AsyncGenerator<RepairUnpushedFilesEvent> {
+  yield* withGeneratorSpan(
+    "swamp.doctor.datastores.repair_unpushed",
+    {},
+    (async function* () {
+      yield { kind: "scanning" };
+      if (deps.unsupported !== undefined) {
+        yield {
+          kind: "not_supported",
+          message:
+            `${deps.unsupported} Until then, namespace contamination repair refuses to wipe the cache.`,
+        };
+        return;
+      }
+      try {
+        if (!options.confirm) {
+          const summary = await deps.detect();
+          if (unpushedFilesClear(summary)) {
+            yield { kind: "not_needed" };
+          } else {
+            yield { kind: "preview", summary };
+          }
+          return;
+        }
+        yield {
+          kind: "step",
+          description: "Uploading cache files the remote never received",
+        };
+        const summary = await deps.repair();
+        if (summary.uploaded === 0 && unpushedFilesClear(summary)) {
+          yield { kind: "not_needed" };
+        } else {
+          yield { kind: "completed", summary };
+        }
+      } catch (err) {
+        yield {
+          kind: "error",
+          error: {
+            code: "repair_failed",
+            message: options.confirm
+              ? `Repairing unpushed cache files failed: ${
+                errorText(err)
+              }Files uploaded before the failure stay uploaded and nothing was deleted. Once the cause is fixed, running the repair again continues from there.`
+              : `Checking for unpushed cache files failed: ${
+                errorText(err)
+              }Nothing was uploaded or deleted.`,
             cause: err instanceof Error ? err : undefined,
           },
         };

@@ -1627,8 +1627,9 @@ commit then fails, the index entry describes the peer's bytes.
 
 `createInMemoryRemote` models the method; the conformance suite's
 `repair-unpushed` cases hold an adapter to it. `@swamp/s3-datastore` and
-`@swamp/gcs-datastore` do not implement it yet. The release that adds it also
-records scoped pulls in last-synced and keeps the commit sequence monotonic
+`@swamp/gcs-datastore` implement it from `2026.10.30.1`
+(`UNPUSHED_REPAIR_MIN_EXTENSION_VERSION`). That release also records scoped
+pulls in last-synced and keeps the commit sequence monotonic
 when `migrate-index` or contamination repair rebuilds the index.
 
 `assertSyncServiceRoundTripConformance` in `@swamp-club/swamp-testing` holds
@@ -9279,14 +9280,49 @@ datastore extensions, close it.
   sentinel means the migration is published; after either push fails, a
   re-run publishes it (swamp-club#3117).
 - `swamp doctor datastores [--repair [-y]]`: health check with optional repair
-  of catalog completeness, unmigrated root-level data, and foreign namespace
-  contamination (the last via the optional `repairNamespaceContamination?()` on
-  `DatastoreSyncService`) (`src/cli/commands/doctor_datastores.ts`). On v3 it
+  of catalog completeness, unmigrated root-level data, cache files the remote
+  never received, and foreign namespace contamination (the last two via the
+  optional `repairUnpushedFiles?()` and `repairNamespaceContamination?()` on
+  `DatastoreSyncService`) (`src/cli/commands/doctor_datastores.ts`). The
+  unpushed files stage (swamp-club#4112) runs just before contamination repair,
+  whose wipe and re-pull of the namespace cache would destroy files the remote
+  lacks. With `-y` it takes the datastore global lock (`datastoreGlobalLock`,
+  with no repository context) and holds it through contamination repair, and
+  no longer; a failed release warns, since the lock expires after its TTL, and
+  an interrupt mid-stage likewise leaves the lock until then. Contamination
+  repair checks before it changes anything, from a fresh exact dry run under
+  that lock, which does not drain writers already running: a per-model run can
+  still write to the cache after the check, as it could before. It refuses with
+  `repair_refused` when anything is unpushed, already
+  present, locally modified or unknown, or a push is pending; when that check
+  fails; when the unpushed stage did not pass; and when the extension lacks the
+  method. For `@swamp/s3-datastore` and `@swamp/gcs-datastore` that message names
+  `UNPUSHED_REPAIR_MIN_EXTENSION_VERSION` and the `swamp extension update`
+  command; any other extension is told it does not implement the method. A stale
+  copy (`remoteMovedOn`) does not block, since wiping and re-pulling it is right.
+  Nor does a copy a peer deleted (`peerDeleted`): older releases left many behind,
+  so blocking would stall the repair. The stage's output names them and says the
+  wipe removes them. A file still `unpushed` after a real repair is one the
+  extension cannot index, which repeating the repair does not clear, so the output
+  says to copy it out and remove it. A file a peer deleted before the extension kept
+  its peer-deleted record cannot be told from a stranded one, so it reads as
+  unpushed and uploading it restores it; the advisory and preview warn of this.
+  The contamination stage's detection, delete and pull are bounded by the sync
+  timeout, since they run under the lock. If the bounded re-pull fails, the stage
+  still invalidates the workflow run indexes and catalog, because a re-run then
+  finds nothing to repair. A failed dry run in a preview is reported, as with a cache
+  that never pulled, the contamination preview still shows, and the command exits 1. Plain `doctor
+  datastores` adds an advisory `unpushedFilesFinding` (never a failure) from a
+  size-and-mtime dry run, costing one remote index read and cache walk, like the
+  contamination check. On v3 it
   adds the `v3_content` check, and `--repair` restores a lost format marker
   (swamp-club#3617; "v3 opt-in" and "Format Marker"). With `--json` the v2
-  repair prints one document keyed by stage (`unmigrated`, `catalog`,
-  `duplicateLatest`, `contamination`), each the stage's result object or null
-  when it did not run; the stage renderers record into a
+  repair prints one document keyed by stage (`unmigrated`, `unreadableVersions`,
+  `catalog`, `duplicateLatest`, `unpushed`, `contamination`), each the stage's
+  result object or null when it did not run, plus `warnings` when something about
+  the run itself went wrong, such as a failed lock release, since the logger is
+  silent under `--json`. `unpushed_skipped` tells a stage that was skipped from
+  one that does not apply, which stays null. The stage renderers record into a
   `DatastoreRepairJsonReport` that the command prints once, also when a stage
   throws (swamp-club#4011). The
   completeness check walks the data dir every command reads

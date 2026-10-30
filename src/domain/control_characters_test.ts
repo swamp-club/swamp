@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import {
   CONTROL_CHARACTER_CLASS,
   escapeControlCharacters,
+  escapeControlCharactersInMessage,
   hasControlCharacter,
 } from "./control_characters.ts";
 
@@ -89,4 +90,11 @@ Deno.test("CONTROL_CHARACTER_CLASS: builds a character class covering C0, DEL an
       `U+${code.toString(16)}`,
     );
   }
+});
+
+Deno.test("escapeControlCharactersInMessage: keeps line feeds and escapes every other control character", () => {
+  assertEquals(
+    escapeControlCharactersInMessage("a\n\u001b[2Jb\rc"),
+    "a\n\\x1b[2Jb\\x0dc",
+  );
 });
