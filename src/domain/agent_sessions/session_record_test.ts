@@ -259,7 +259,7 @@ Deno.test("agentSessionDataName: the longest accepted name fits a directory name
     "a".repeat(AGENT_SESSION_LIMITS.harnessLength),
     "b".repeat(AGENT_SESSION_LIMITS.sessionIdLength),
   );
-  assert(name.length <= 200, `${name.length}`);
+  assertEquals(name.length, 175);
 });
 
 Deno.test("AgentSessionRecordV1Schema: refuses a mixed-case session id", () => {
@@ -267,7 +267,7 @@ Deno.test("AgentSessionRecordV1Schema: refuses a mixed-case session id", () => {
   assertEquals(AgentSessionRecordV1Schema.safeParse(mixed).success, false);
 });
 
-Deno.test("readAgentSessionRecord: refuses a session with more calls than the session limit", () => {
+function oversizedSession(): Record<string, unknown> {
   const session = sampleSession();
   const call = firstCall(session);
   const perTurn = AGENT_SESSION_LIMITS.callsPerTurn;
@@ -285,6 +285,27 @@ Deno.test("readAgentSessionRecord: refuses a session with more calls than the se
     })),
   }));
   session.findings = [];
+  return session;
+}
+
+Deno.test("readAgentSessionRecord: refuses a session with more calls than the session limit", () => {
+  const reading = readAgentSessionRecord(oversizedSession());
+  assert(reading.kind === "skipped" && reading.reason === "invalid");
+  assertStringIncludes(reading.note, "too_big at turns");
+});
+
+Deno.test("AgentSessionRecordV1Schema: refuses more calls than the session limit on its own", () => {
+  const parsed = AgentSessionRecordV1Schema.safeParse(oversizedSession());
+  assertEquals(parsed.success, false);
+  assertEquals(parsed.error?.issues[0].path, ["turns"]);
+});
+
+Deno.test("readAgentSessionRecord: refuses more turns than the limit before parsing them", () => {
+  const session = sampleSession();
+  session.turns = Array.from(
+    { length: AGENT_SESSION_LIMITS.turns + 1 },
+    () => "not a turn",
+  );
   const reading = readAgentSessionRecord(session);
   assert(reading.kind === "skipped" && reading.reason === "invalid");
   assertStringIncludes(reading.note, "too_big at turns");

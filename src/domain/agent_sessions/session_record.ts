@@ -184,7 +184,8 @@ export const AgentSessionRecordV1Schema = z.strictObject({
   let calls = 0;
   for (const turn of record.turns) calls += turn.calls.length;
   if (calls > L.callsPerSession) {
-    // Refused before the id scan, so an oversized record costs no more.
+    // Refused before the id scan, so it never builds a set of every call id.
+    // readAgentSessionRecord counts calls before parsing at all.
     ctx.addIssue({
       code: "too_big",
       origin: "array",
@@ -242,8 +243,8 @@ export type AgentSessionReading =
 /**
  * Reads one stored session's content. Never throws: a session this swamp
  * cannot read comes back as `skipped` with a note for the viewer, so one bad
- * record never fails a page. A note never repeats a value from the content,
- * only field paths.
+ * record never fails a page. A note names field paths and never repeats a
+ * value from the content, except the integer `schemaVersion`.
  */
 export function readAgentSessionRecord(content: unknown): AgentSessionReading {
   const version = typeof content === "object" && content !== null &&
@@ -274,6 +275,13 @@ export function readAgentSessionRecord(content: unknown): AgentSessionReading {
       `written as version ${version}, which this swamp no longer reads. Re-import the session.`,
     );
   }
+  if (exceedsSessionSize(content as Record<string, unknown>)) {
+    return skipped(
+      "invalid",
+      version,
+      `does not match version ${version}: too_big at turns`,
+    );
+  }
   const parsed = AgentSessionRecordV1Schema.safeParse(content);
   if (parsed.success) return { kind: "record", record: parsed.data };
   const first = parsed.error.issues[0];
@@ -287,6 +295,26 @@ export function readAgentSessionRecord(content: unknown): AgentSessionReading {
       first?.code ?? "invalid"
     } at ${where}`,
   );
+}
+
+/**
+ * Counts turns and calls on the raw content, so a record over the session
+ * limits is refused before the parser validates every call in it. Reads only
+ * array lengths, and stops as soon as a limit is passed.
+ */
+function exceedsSessionSize(content: Record<string, unknown>): boolean {
+  const turns = content.turns;
+  if (!Array.isArray(turns)) return false;
+  if (turns.length > L.turns) return true;
+  let calls = 0;
+  for (const turn of turns) {
+    const turnCalls = typeof turn === "object" && turn !== null
+      ? (turn as Record<string, unknown>).calls
+      : undefined;
+    if (Array.isArray(turnCalls)) calls += turnCalls.length;
+    if (calls > L.callsPerSession) return true;
+  }
+  return false;
 }
 
 function skipped(
