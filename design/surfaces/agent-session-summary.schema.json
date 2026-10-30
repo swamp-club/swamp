@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "repo": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "harness": {
+      "type": "string",
+      "maxLength": 32,
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "harnessVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "invocation": {
+      "type": "string",
+      "enum": [
+        "interactive",
+        "headless",
+        "unknown"
+      ]
+    },
+    "wallMs": {
+      "type": "number",
+      "minimum": 0
+    },
+    "activeMs": {
+      "type": "number",
+      "minimum": 0
+    },
+    "turns": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "calls": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "swamp": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "bypass": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "neutral": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "unlabeled": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "failedCalls": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "subagents": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "tokens": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "output": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "cacheRead": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "cacheWrite": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "input",
+        "output",
+        "cacheRead",
+        "cacheWrite"
+      ],
+      "additionalProperties": false
+    },
+    "findings": {
+      "type": "object",
+      "properties": {
+        "high": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "medium": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "low": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "info": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "high",
+        "medium",
+        "low",
+        "info"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "repo",
+    "harness",
+    "invocation",
+    "wallMs",
+    "activeMs",
+    "turns",
+    "calls",
+    "swamp",
+    "bypass",
+    "neutral",
+    "unlabeled",
+    "failedCalls",
+    "subagents",
+    "tokens",
+    "findings"
+  ],
+  "additionalProperties": false
+}

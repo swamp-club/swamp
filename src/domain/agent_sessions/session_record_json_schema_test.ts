@@ -19,20 +19,35 @@
 
 import { assertEquals } from "@std/assert";
 import { fromFileUrl } from "@std/path";
-import { agentSessionRecordJsonSchema } from "./session_record.ts";
+import {
+  agentSessionRecordJsonSchema,
+  agentSessionSummaryJsonSchema,
+} from "./session_record.ts";
 
-const CHECKED_IN = fromFileUrl(
-  new URL(
-    "../../../design/surfaces/agent-session-record.schema.json",
-    import.meta.url,
-  ),
-);
+function checkedIn(file: string): string {
+  return fromFileUrl(
+    new URL(`../../../design/surfaces/${file}`, import.meta.url),
+  );
+}
 
 Deno.test("agentSessionRecordJsonSchema: matches the checked-in schema for extension authors", async () => {
-  const checkedIn = JSON.parse(await Deno.readTextFile(CHECKED_IN));
+  const checkedInSchema = JSON.parse(
+    await Deno.readTextFile(checkedIn("agent-session-record.schema.json")),
+  );
   assertEquals(
-    checkedIn,
+    checkedInSchema,
     agentSessionRecordJsonSchema(),
     "design/surfaces/agent-session-record.schema.json is stale; run `deno run agent-session-schema`",
+  );
+});
+
+Deno.test("agentSessionSummaryJsonSchema: matches the checked-in schema for extension authors", async () => {
+  const checkedInSchema = JSON.parse(
+    await Deno.readTextFile(checkedIn("agent-session-summary.schema.json")),
+  );
+  assertEquals(
+    checkedInSchema,
+    agentSessionSummaryJsonSchema(),
+    "design/surfaces/agent-session-summary.schema.json is stale; run `deno run agent-session-schema`",
   );
 });
