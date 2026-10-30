@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { withDiagnosticArea } from "../../domain/diagnostics/diagnostic_phase.ts";
 import {
   diagnosticPhases,
@@ -1010,7 +1010,7 @@ Deno.test("modelOutputSearch: a limit of 0 reads nothing", async () => {
   assertEquals(counts.opened, 0);
 });
 
-Deno.test("modelOutputSearch: reads newest first only with a limit and without a model", async () => {
+Deno.test("modelOutputSearch: reads every output newest first only with a limit and without a model", async () => {
   const { dep, counts } = fakeNewestFirst(minutesApart(5));
   const deps = makeDeps({ findOutputsNewestFirst: dep });
 
@@ -1030,4 +1030,307 @@ Deno.test("modelOutputSearch: reads newest first only with a limit and without a
   assertEquals(forModel.results.map((r) => r.definitionId), ["def-1"]);
 
   assertEquals(counts.opened, 0);
+});
+
+// --- A limited search for a model (swamp-club#4174) ---
+
+/** A model's definition as `resolveModel` answers it. */
+const shellDefinition = (definitionId: string, name = "watched") => ({
+  definitionId,
+  name,
+  type: { normalized: "command/shell" },
+});
+
+/**
+ * Deps whose only way to find a model's outputs is a newest-first read of each
+ * definition, over the given files.
+ */
+function definitionReadDeps(
+  files: Record<string, Array<{ id: string; startedAt: string }>>,
+  definitions = Object.keys(files).map((id) => shellDefinition(id)),
+  overrides: Partial<ModelOutputSearchDeps> = {},
+) {
+  const reads = new Map(
+    Object.entries(files).map(([id, list]) => [id, fakeNewestFirst(list)]),
+  );
+  const deps = makeDeps({
+    findAllOutputsGlobal: () => {
+      throw new Error("a limited search must not read every output");
+    },
+    findAllDefinitions: () => {
+      throw new Error("a model's search knows its names");
+    },
+    findOutputsByDefinition: () => {
+      throw new Error("a limited search must not read the whole model");
+    },
+    resolveModel: () => Promise.resolve(definitions),
+    findOutputsByDefinitionNewestFirst: (_type, definitionId) =>
+      reads.get(definitionId)!.dep({}),
+    ...overrides,
+  });
+  return { deps, counts: (id: string) => reads.get(id)!.counts };
+}
+
+Deno.test("modelOutputSearch: with a limit and a model, reads no further than the results it returns, and names them as the definition does", async () => {
+  const { deps, counts } = definitionReadDeps(
+    { "def-1": minutesApart(100) },
+    [shellDefinition("def-1")],
+  );
+
+  const data = completedOf(
+    await collect(
+      modelOutputSearch(createLibSwampContext(), deps, {
+        model: "watched",
+        limit: 5,
+      }),
+    ),
+  );
+
+  assertEquals(data.results.map((r) => r.id), [
+    "out-0",
+    "out-1",
+    "out-2",
+    "out-3",
+    "out-4",
+  ]);
+  assertEquals(
+    new Set(data.results.map((r) => r.modelName)),
+    new Set(["watched"]),
+  );
+  assertEquals(counts("def-1").read, 16);
+});
+
+Deno.test("modelOutputSearch: with a limit and several definitions, merges their reads newest first, with the earlier definition first in a tie", async () => {
+  const at = (minutes: number) =>
+    new Date(Date.UTC(2026, 0, 1, 0, minutes)).toISOString();
+  const { deps } = definitionReadDeps(
+    {
+      "def-1": [
+        { id: "first-9", startedAt: at(9) },
+        { id: "first-5", startedAt: at(5) },
+        { id: "first-1", startedAt: at(1) },
+      ],
+      "def-2": [
+        { id: "second-7", startedAt: at(7) },
+        { id: "second-5", startedAt: at(5) },
+        { id: "second-2", startedAt: at(2) },
+      ],
+    },
+    [shellDefinition("def-1"), shellDefinition("def-2")],
+  );
+
+  const data = completedOf(
+    await collect(
+      modelOutputSearch(createLibSwampContext(), deps, {
+        model: "watched",
+        limit: 4,
+      }),
+    ),
+  );
+
+  assertEquals(data.results.map((r) => r.id), [
+    "first-9",
+    "second-7",
+    "first-5",
+    "second-5",
+  ]);
+});
+
+Deno.test("modelOutputSearch: with a limit and several definitions, does not stop while one still holds newer outputs", async () => {
+  const at = (minutes: number) =>
+    new Date(Date.UTC(2026, 0, 1, 0, minutes)).toISOString();
+  const older = Array.from({ length: 3 }, (_, i) => ({
+    id: `older-${i}`,
+    startedAt: at(100 - i),
+  }));
+  // One round reads the first 16, all refused, so only the older definition's
+  // outputs are held when the search first asks whether it may stop.
+  const newer = Array.from({ length: 20 }, (_, i) => ({
+    id: i < 16 ? `refused-${i}` : `newer-${i}`,
+    startedAt: at(1000 - i),
+  }));
+  const { deps } = definitionReadDeps(
+    { "def-1": older, "def-2": newer },
+    [shellDefinition("def-1"), shellDefinition("def-2")],
+    {
+      canRead: (candidates) =>
+        Promise.resolve(
+          candidates.map(({ definitionId }) =>
+            !definitionId.startsWith("def-refused-")
+          ),
+        ),
+    },
+  );
+
+  const data = completedOf(
+    await collect(
+      modelOutputSearch(createLibSwampContext(), deps, {
+        model: "watched",
+        limit: 2,
+      }),
+    ),
+  );
+
+  assertEquals(data.results.map((r) => r.id), ["newer-16", "newer-17"]);
+});
+
+Deno.test("modelOutputSearch: with a limit and a model, judges keys and records under the definition's name", async () => {
+  const asked: ModelOutputSearchCandidate[] = [];
+  const canRead: ModelOutputSearchDeps["canRead"] = (candidates) => {
+    asked.push(...candidates);
+    return Promise.resolve(
+      candidates.map((candidate) => candidate.methodName !== "hidden"),
+    );
+  };
+  let selected: readonly boolean[] | undefined;
+  const { deps } = definitionReadDeps(
+    { "def-1": minutesApart(20) },
+    [shellDefinition("def-1", "watched")],
+    {
+      canRead,
+      findOutputsByDefinitionNewestFirst: async (
+        _type,
+        definitionId,
+        _window,
+        selectReadable,
+      ) => {
+        selected = await selectReadable?.([
+          {
+            type: { normalized: "command/shell" },
+            definitionId,
+            methodName: "hidden",
+          },
+          {
+            type: { normalized: "command/shell" },
+            definitionId,
+            methodName: "run",
+          },
+        ]);
+        return fakeNewestFirst(minutesApart(20)).dep({});
+      },
+    },
+  );
+
+  const data = completedOf(
+    await collect(
+      modelOutputSearch(createLibSwampContext(), deps, {
+        model: "watched",
+        limit: 2,
+      }),
+    ),
+  );
+
+  assertEquals(selected, [false, true]);
+  assertEquals(data.results.map((r) => r.id), ["out-0", "out-1"]);
+  assert(asked.length > 0);
+  assert(asked.every((candidate) => candidate.modelName === "watched"));
+});
+
+Deno.test("modelOutputSearch: a limited search for a model that resolves to nothing returns nothing", async () => {
+  const { deps } = definitionReadDeps({}, []);
+
+  const data = completedOf(
+    await collect(
+      modelOutputSearch(createLibSwampContext(), deps, {
+        model: "absent",
+        limit: 5,
+      }),
+    ),
+  );
+
+  assertEquals(data.results, []);
+});
+
+Deno.test("modelOutputSearch: a limited search leaves out a definition matching the filter by neither name nor id, as the full scan does", async () => {
+  const { deps, counts } = definitionReadDeps(
+    { "def-1": minutesApart(3), "def-2": minutesApart(3) },
+    [shellDefinition("def-1", "watched"), shellDefinition("def-2", "other")],
+  );
+
+  const data = completedOf(
+    await collect(
+      modelOutputSearch(createLibSwampContext(), deps, {
+        model: "watched",
+        limit: 2,
+      }),
+    ),
+  );
+
+  assertEquals(data.results.map((r) => r.modelName), ["watched", "watched"]);
+  assertEquals(counts("def-2").opened, 0);
+});
+
+Deno.test("modelOutputSearch: a limit of 0 with a model resolves and reads nothing", async () => {
+  let resolved = 0;
+  const { deps, counts } = definitionReadDeps(
+    { "def-1": minutesApart(3) },
+    undefined,
+    {
+      resolveModel: () => {
+        resolved++;
+        return Promise.resolve([shellDefinition("def-1")]);
+      },
+    },
+  );
+
+  const data = completedOf(
+    await collect(
+      modelOutputSearch(createLibSwampContext(), deps, {
+        model: "watched",
+        limit: 0,
+      }),
+    ),
+  );
+
+  assertEquals(data.results, []);
+  assertEquals(resolved, 0);
+  assertEquals(counts("def-1").opened, 0);
+});
+
+Deno.test("modelOutputSearch: with a model but no newest-first read of a definition, reads the whole model and keeps the most recent", async () => {
+  const files = minutesApart(3);
+  const deps = makeDeps({
+    resolveModel: () => Promise.resolve([shellDefinition("def-1")]),
+    findOutputsByDefinition: () =>
+      Promise.resolve(files.map((file) => ({
+        id: file.id,
+        definitionId: "def-1",
+        methodName: "run",
+        status: "succeeded",
+        startedAt: new Date(file.startedAt),
+      }))),
+  });
+
+  const data = completedOf(
+    await collect(
+      modelOutputSearch(createLibSwampContext(), deps, {
+        model: "watched",
+        limit: 2,
+      }),
+    ),
+  );
+
+  assertEquals(data.results.map((r) => r.id), ["out-0", "out-1"]);
+});
+
+Deno.test("modelOutputSearch: without a limit, a model's search reads the whole model", async () => {
+  let reads = 0;
+  const deps = makeDeps({
+    resolveModel: () => Promise.resolve([shellDefinition("def-1")]),
+    findOutputsByDefinition: () => {
+      reads++;
+      return Promise.resolve([]);
+    },
+    findOutputsByDefinitionNewestFirst: () => {
+      throw new Error("a search without a limit reads everything");
+    },
+  });
+
+  completedOf(
+    await collect(
+      modelOutputSearch(createLibSwampContext(), deps, { model: "watched" }),
+    ),
+  );
+
+  assertEquals(reads, 1);
 });

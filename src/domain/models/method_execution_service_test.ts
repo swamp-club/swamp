@@ -4064,6 +4064,7 @@ function createMockOutputRepo(): {
       findAllGlobal: () => Promise.resolve([]),
       findAllGlobalSince: () => Promise.resolve([]),
       findGlobalNewestFirst: () => Promise.reject(new Error("not used here")),
+      findHistoryNewestFirst: () => Promise.reject(new Error("not used here")),
       save: (type: ModelType, method: string, output: ModelOutput) => {
         saved.push({ type, method, output });
         return Promise.resolve();

@@ -466,6 +466,8 @@ function createRemoteOutputRepository(
       unsupported("outputRepository.findAllGlobalSince"),
     findGlobalNewestFirst: () =>
       unsupported("outputRepository.findGlobalNewestFirst"),
+    findHistoryNewestFirst: () =>
+      unsupported("outputRepository.findHistoryNewestFirst"),
     save: () => unsupported("outputRepository.save"),
     delete: () => unsupported("outputRepository.delete"),
     getPath: () => unsupported("outputRepository.getPath"),
