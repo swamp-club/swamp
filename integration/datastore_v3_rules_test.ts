@@ -339,6 +339,9 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/serve/serve_commit_effects.ts -> src/domain/datastore_v3/commit_effects.ts",
   "src/serve/serve_commit_effects.ts -> src/domain/datastore_v3/commit_store.ts",
   "src/serve/serve_commit_effects.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  // swamp-club#4207: a follower's commit feed ends at the commits whose
+  // effects it applied.
+  "src/serve/follower_policy_wiring.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/serve_feed.ts",
   // swamp-club#4120: a long-running command on a serve-mode checkout
   // watches serve's commit feed while it runs.

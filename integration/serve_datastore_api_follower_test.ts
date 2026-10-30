@@ -32,6 +32,7 @@ import {
   getJson,
   partitionPath,
   post,
+  sha256Hex,
   withServer,
   writer,
 } from "./serve_datastore_api_harness.ts";
@@ -116,6 +117,63 @@ Deno.test({
       );
       assertEquals(refused.status, 401);
       assertEquals(refused.json.leader, undefined);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a follower pages changes only to the last commit whose effects it applied, and never moves the cursor past it (swamp-club#4207)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      const empty = new Uint8Array(0);
+      const emptySha = await sha256Hex(empty);
+      for (const expectedSeq of [0, 1]) {
+        const landed = await post(
+          partitionPath(server),
+          "alice-token",
+          commitBody({
+            expectedSeq,
+            txnId: crypto.randomUUID(),
+            ops: await blobSaveOps(server, "vpc", expectedSeq + 1, empty),
+            chunks: [{ sha256: emptySha, size: 0 }],
+          }, [empty]),
+        );
+        assertEquals(landed.status, 200, JSON.stringify(landed.json));
+      }
+      const head = server.v3.commitStore.highWaterMark().cursor;
+      const leader = await getJson(
+        `${server.url}/changes?cursor=0`,
+        "alice-token",
+      );
+      assertEquals(leader.json.cursor, head);
+      const applied = head - 1;
+      server.ctx.followerGate = follower();
+      server.ctx.commitFeed = {
+        datastore: server.v3,
+        bound: () => applied,
+        onMoved: () => () => {},
+      };
+      const bounded = await getJson(
+        `${server.url}/changes?cursor=0`,
+        "alice-token",
+      );
+      assertEquals(bounded.status, 200);
+      assertEquals(bounded.json.cursor, applied);
+      const cursors = (bounded.json.changes as { cursor: number }[]).map((
+        change,
+      ) => change.cursor);
+      assertEquals(cursors.every((cursor) => cursor <= applied), true);
+      assertEquals(cursors.includes(applied), true);
+      // Caught up: the next page resumes where it stopped.
+      const rest = await getJson(
+        `${server.url}/changes?cursor=${applied}`,
+        "alice-token",
+      );
+      assertEquals(rest.json.changes, []);
+      assertEquals(rest.json.cursor, applied);
     });
   },
 });

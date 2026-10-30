@@ -7669,13 +7669,36 @@ A follower answers reads from its own copy only while it is fresh: one that
 went three ticks (30 s) without a refresh refuses reads with the same code,
 so a revoked grant stops allowing reads on a follower within that bound.
 
+A follower's access policy follows its copy (swamp-club#4207). On a bucket
+the leader's commits land in the follower's own `commits.db` before its read
+model catches up, so `ServeCommitEffects` applies a commit's effects (the
+catalog rebuild, the policy reload) only after the read model holds it. A
+policy reloaded earlier would miss the grants those commits carry. Two
+further rules keep a read from being filtered under a policy older than the
+commits it pages:
+
+- **Bounded pages.** A follower pages `GET changes` and `commits.subscribe`
+  only to the last commit whose effects it applied
+  (`ServeCommitEffects.appliedCursor`). A cursor never moves past a commit
+  filtered under an older policy. Filtering by a grant that denies is still
+  correct, and the cursor moves past those commits.
+- **Unknown policy.** After a replaced copy (a lineage restore), the policy is
+  unknown until the refresh has rebuilt the read model and reloaded the
+  policy. The same holds while a reload that access commits asked for has not
+  yet succeeded. While the policy is unknown, the follower refuses reads with
+  the stale follower's retryable `503`. `wireFollowerPolicy` composes the
+  effects, the bounded feed and this gate for serve.
+
 **The leader's work.** Retention, server token GC, the continuation sweep,
 v3 maintenance and the Litestream sidecar upkeep start only on the leader; a
 follower starts them when it first leads. Grant config (`admins` and the
 grant files) is applied only by the node that leads: at boot, and when it
 takes the lead, where it re-reads its grant sources as they are then
 (`GrantsDirectoryPoller.reconcileNow`), never its boot snapshot, which
-would bring back a grant revoked since. A node without the lease defers its
+would bring back a grant revoked since. It then waits, bounded by the lock
+timeout, for the grant commits to be replicated and published
+(swamp-club#4207). A follower restores the published head, and one restored
+without the grants would start with none. A node without the lease defers its
 grants poller's reconcile (`"deferred"`), so the change is tried again at
 the next poll and applied once it leads. A follower's collective refresh
 writes nothing and still updates its own connections. A peer reconciliation

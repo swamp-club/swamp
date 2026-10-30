@@ -546,7 +546,10 @@ import {
   settleInterruptedWorkflowRows,
 } from "../../domain/workflows/orphaned_run_reaper.ts";
 import { requireAuthenticated, requireScope } from "../auth_context.ts";
-import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import {
+  isCustomDatastoreConfig,
+  resolveLockTimeoutMs,
+} from "../../domain/datastore/datastore_config.ts";
 import { serveHolder } from "../../domain/workflows/continuation_claim.ts";
 import { isAtomicControlPlaneStore } from "../../infrastructure/persistence/control_plane_signal_wait_store.ts";
 import {
@@ -604,7 +607,8 @@ import {
 import { followerHttpForward } from "../../serve/follower_requests.ts";
 import { LeaderLink } from "../../serve/leader_link.ts";
 import { FollowerFeed } from "../../serve/follower_feed.ts";
-import { ServeCommitEffects } from "../../serve/serve_commit_effects.ts";
+import type { ServeCommitEffects } from "../../serve/serve_commit_effects.ts";
+import { wireFollowerPolicy } from "../../serve/follower_policy_wiring.ts";
 import {
   applyV3LeaderChanges,
   v3FollowerCopyCursor,
@@ -4768,6 +4772,35 @@ export const serveCommand = new Command()
     }
     Object.assign(resolvedUserNames, grantUsernameResolution.usernamesBySub);
 
+    // The grant config's commits, published before this node serves as
+    // leader: a follower restores the published head, and one restored
+    // without them loads a policy with no grants (swamp-club#4207). The wait
+    // is bounded; commits it did not confirm ship with the next sync.
+    const publishGrantConfig = async (): Promise<void> => {
+      if (confirmReplicated === undefined) return;
+      const timeoutMs = resolveLockTimeoutMs();
+      const confirmed = confirmReplicated();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const outcome = await Promise.race([
+          confirmed.then(() => "confirmed" as const),
+          new Promise<"timeout">((done) => {
+            timer = setTimeout(() => done("timeout"), timeoutMs);
+          }),
+        ]);
+        if (outcome === "timeout") {
+          logger
+            .warn`The grant config was not confirmed replicated within ${timeoutMs}ms; it ships with the next sync`;
+          confirmed.catch(() => {});
+        }
+      } catch (error) {
+        logger
+          .warn`Replicating the grant config failed; it ships with the next sync: ${error}`;
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
     // One unit under the exclusive sync gate: ConfigPoller is already
     // pulling, and a pull landing between these writes and their push can
     // undo them (swamp-club#2247, swamp-club#2405). Unlike the definition
@@ -4817,6 +4850,7 @@ export const serveCommand = new Command()
       );
     } else {
       await applyGrantConfig();
+      await publishGrantConfig();
     }
 
     const policySnapshotLoader = new PolicySnapshotLoader(
@@ -4907,6 +4941,7 @@ export const serveCommand = new Command()
         );
       });
       await grantsDirectoryPoller?.reconcileNow();
+      await publishGrantConfig();
     };
 
     accessDataPoller?.start();
@@ -8337,19 +8372,23 @@ export const serveCommand = new Command()
           logger.warn`Taking the lead: ${what} failed: ${error}`;
         }
       };
-      // The serve-side commit feed (swamp-club#4120): what a subscriber
-      // reads, here and from this node's followers.
-      connectionCtx.commitFeed = v3CommitFeedSource(resolvedRepoDir, location);
       // In place of v2's pollers, every commit this node sees, its own and
       // the leader's feed, keeps the catalog, the access policy and the
-      // extensions current.
-      serveCommitEffects = new ServeCommitEffects({
-        source: connectionCtx.commitFeed,
+      // extensions current. A follower answers a commit only once its
+      // effects are applied (swamp-club#4207).
+      const feedSource = v3CommitFeedSource(resolvedRepoDir, location);
+      const followerPolicy = wireFollowerPolicy({
+        source: feedSource,
+        catchUpReadModel: () => feedSource.datastore.catchUp(),
         catalogInvalidate: () => repoContext.catalogStore.invalidate(),
         reloadPolicy: () => policySnapshotLoader.load(),
         checkConfig: () => configPoller?.pollNow(),
         isFollower: () => connectionCtx.followerGate?.role === "follower",
       });
+      // The serve-side commit feed (swamp-club#4120): what a subscriber
+      // reads, here and from this node's followers.
+      connectionCtx.commitFeed = followerPolicy.commitFeed;
+      serveCommitEffects = followerPolicy.effects;
       serveCommitEffects.start();
       // A follower follows the leader's commit feed, with the team's peer
       // key, in place of restoring its copy on every tick.
@@ -8368,7 +8407,9 @@ export const serveCommand = new Command()
         })
         : undefined;
       if (followerFeed !== undefined) {
-        connectionCtx.feedBarrier = () => followerFeed.barrier();
+        connectionCtx.feedBarrier = followerPolicy.barrier(() =>
+          followerFeed.barrier()
+        );
       }
       const leadership = new ServeLeadership({
         instanceId,
@@ -8440,7 +8481,7 @@ export const serveCommand = new Command()
       });
       serveLeadership = leadership;
       markRefreshed = () => leadership.markRefreshed();
-      connectionCtx.followerGate = leadership;
+      connectionCtx.followerGate = followerPolicy.gate(leadership);
       enableV3ServeTeamMode(
         location.path,
         () => leadership.leader(),

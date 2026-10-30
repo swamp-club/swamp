@@ -58,6 +58,7 @@ Deno.test({
           datastore: server.v3,
           onMoved: (listener) => store.onHeadMoved(listener),
         },
+        catchUpReadModel: () => server.v3.catchUp(),
         catalogInvalidate: () => calls.catalog++,
         reloadPolicy: () => {
           calls.policy++;

@@ -919,11 +919,17 @@ class DatastoreApi {
         "cursor and limit must be integers",
       );
     }
+    // A follower pages only to the last commit whose effects it applied:
+    // a commit past it would be filtered under a policy older than it, and
+    // the cursor would move past it for good (swamp-club#4207).
+    const bound = this.#deps.ctx.followerGate?.role === "follower"
+      ? this.#deps.ctx.commitFeed?.bound()
+      : undefined;
     const kept: { cursor: number; commit: unknown }[] = [];
     let next = cursor;
     let scanned = 0;
     let more = true;
-    while (kept.length < limit && scanned < MAX_CHANGES_SCAN) {
+    scan: while (kept.length < limit && scanned < MAX_CHANGES_SCAN) {
       const page = await this.#v3.commitStore.changesSince(
         next,
         Math.min(MAX_PAGE, MAX_CHANGES_SCAN - scanned),
@@ -933,6 +939,10 @@ class DatastoreApi {
         break;
       }
       for (const change of page) {
+        if (bound !== undefined && change.cursor > bound) {
+          more = false;
+          break scan;
+        }
         scanned++;
         next = change.cursor;
         if (
