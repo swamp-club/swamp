@@ -109,6 +109,7 @@ import {
   type WorkflowRunId,
 } from "./workflow_id.ts";
 import type {
+  RunSaveOptions,
   WorkflowRepository,
   WorkflowRunRepository,
 } from "./repositories.ts";
@@ -22478,6 +22479,9 @@ class ManualRunWriteFence implements RunWriteFence {
   isClosed(runId: string): boolean {
     return this.closed.has(runId);
   }
+  isTakenOver(_runId: string): boolean {
+    return false;
+  }
   track(_runId: string, write: Promise<void>): Promise<void> {
     return write;
   }
@@ -22550,6 +22554,9 @@ class CountingRunWriteFence implements RunWriteFence {
   isClosed(_runId: string): boolean {
     return false;
   }
+  isTakenOver(_runId: string): boolean {
+    return false;
+  }
   track(_runId: string, write: Promise<void>): Promise<void> {
     this.tracked++;
     this.inFlight++;
@@ -22610,6 +22617,62 @@ Deno.test("WorkflowExecutionService: each run save, record write and checkpoint 
     assertEquals(fence.inFlight, 0);
   });
 });
+
+for (
+  const { refused, checkpoints: expected, label } of [
+    { refused: true, checkpoints: 0, label: "refused starts no checkpoint" },
+    {
+      refused: false,
+      checkpoints: 1,
+      label: "that wrote, then saw the fence close, still checkpoints",
+    },
+  ]
+) {
+  Deno.test(`WorkflowExecutionService: a save ${label} (swamp-club#4171)`, async () => {
+    await withTempDir(async (tempDir) => {
+      const workflow = Workflow.create({
+        name: "closing-wf",
+        jobs: [Job.create({ name: "main", steps: [modelStep("build")] })],
+      });
+      const fence = new ManualRunWriteFence();
+      const handed: unknown[] = [];
+      // The fence closes while the first save is under way, as shutdown's
+      // does. Whichever side of the save's own check it falls decides.
+      class ClosingRunRepository extends SpyWorkflowRunRepository {
+        override async save(
+          workflowId: WorkflowId,
+          run: WorkflowRun,
+          options?: RunSaveOptions,
+        ) {
+          handed.push(options?.fence);
+          fence.closed.add(run.id);
+          if (refused) options?.onRefused?.();
+          await super.save(workflowId, run);
+        }
+      }
+      const { service } = await setupRetry(
+        tempDir,
+        workflow,
+        undefined,
+        undefined,
+        new ClosingRunRepository(),
+      );
+      service.runWriteFence = fence;
+      let checkpoints = 0;
+      service.runCheckpointer = {
+        checkpoint: () => {
+          checkpoints++;
+          return Promise.resolve();
+        },
+      };
+
+      await finishedRun(service.run(workflow.name));
+
+      assertEquals(handed, [fence]);
+      assertEquals(checkpoints, expected);
+    });
+  });
+}
 
 Deno.test("WorkflowExecutionService: a nested child run inherits the run write fence (swamp-club#4101)", async () => {
   await withTempDir(async (tempDir) => {

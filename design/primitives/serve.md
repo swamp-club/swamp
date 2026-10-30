@@ -1438,6 +1438,13 @@ swamp-club#3252). Before it loads them it closes their run write fence
 a save already under way. An executor can outlive the abort grace, as one whose
 remote step answers after the abort does; with the fence closed it can no
 longer save its `running` copy over the interrupted record (swamp-club#4101).
+A save that outlasts the wait checks the fence again just before its write, so
+only a write already begun can land locally, which the warning at the 2 s
+deadline reports. Once shutdown has saved a run's record it takes the run over,
+and a commit of the executor's on v3 (an in-flight or trailing checkpoint, or
+one retried at the end commit) is withdrawn instead of landing after shutdown's
+(swamp-club#4171). A run shutdown leaves alone because it already ended is not
+taken over, so its executor's final record still commits.
 The fence covers the top-level runs shutdown interrupts, not the child runs of
 nested workflows, which shutdown does not track. One 5 s deadline bounds the
 gate wait and the push together;

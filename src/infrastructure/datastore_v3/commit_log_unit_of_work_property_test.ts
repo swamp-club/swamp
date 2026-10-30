@@ -26,6 +26,7 @@ import {
   partitionOf,
 } from "../../domain/datastore_v3/partition_key.ts";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
+import { RunChanges } from "../../domain/datastore_v3/repository_changes.ts";
 import {
   MemoryStorage,
   MODEL_TYPE,
@@ -139,6 +140,103 @@ Deno.test("commit-log unit property: every staged op lands once, in staging orde
       assertEquals(sink.appendCalls, order);
       assert(sink.landed.length === order.length);
     }),
+    { numRuns: 200 },
+  );
+});
+
+const arbRunStep = fc.constantFrom(
+  "save",
+  "checkpoint",
+  "failed-checkpoint",
+  "takeover",
+  "takeover-across-a-checkpoint",
+);
+
+Deno.test("commit-log unit property: once another owner has taken the run over and committed, no commit of the executor's lands after it, and until then its latest save lands (swamp-club#4171)", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.array(arbRunStep, { maxLength: 12 }),
+      async (steps) => {
+        const sink = new MemorySink();
+        const storage = memory();
+        const changes = new RunChanges(WORKFLOW_ID, RUN_ID);
+        const key = RecordKey.create(
+          `workflow-runs/${WORKFLOW_ID}/${RUN_ID}.yaml`,
+        );
+        const encode = (text: string) => new TextEncoder().encode(text);
+        let record = "created";
+        let takenOver = false;
+        const executor = createCommitLogUnitOfWork(
+          contextHook(),
+          unitOptions(sink, storage),
+        );
+        const takeOver = async () => {
+          takenOver = true;
+          record = "interrupted";
+          const owner = createCommitLogUnitOfWork(
+            contextHook(),
+            unitOptions(sink, storage),
+          );
+          await owner.stageOps([
+            changes.write("run.update", key, encode(record)),
+          ]);
+          await owner.commit();
+        };
+
+        let saves = 0;
+        for (const step of steps) {
+          // As the fence does, an executor saves nothing once taken over.
+          if (step === "save" && !takenOver) {
+            record = `save-${++saves}`;
+            const content = record;
+            await executor.stageOps([
+              changes.write(
+                "run.update",
+                key,
+                () => ReadableStream.from([encode(content)]),
+                () => takenOver,
+              ),
+            ]);
+          } else if (step === "checkpoint") {
+            await executor.checkpoint();
+          } else if (step === "failed-checkpoint") {
+            sink.beforeAppend = () => {
+              throw new Error("connection lost");
+            };
+            await executor.checkpoint().catch(() => {});
+            sink.beforeAppend = () => {};
+          } else if (step === "takeover" && !takenOver) {
+            await takeOver();
+          } else if (step === "takeover-across-a-checkpoint" && !takenOver) {
+            // The owner takes over while the executor's append is at the
+            // sink, after its check passed: the owner's commit queues behind
+            // that append's lock, so it lands after, and is awaited there.
+            let owner: Promise<void> | undefined;
+            sink.beforeAppend = () => {
+              owner ??= takeOver();
+            };
+            await executor.checkpoint();
+            sink.beforeAppend = () => {};
+            await (owner ?? takeOver());
+          }
+        }
+        await executor.commit();
+
+        const texts = sink.commitsOf(changes.partition).flatMap((commit) =>
+          commit.ops.flatMap((op) =>
+            op.kind === "put" && "inline" in op.content
+              ? [atob(op.content.inline)]
+              : []
+          )
+        );
+        const expected = takenOver
+          ? "interrupted"
+          : saves === 0
+          ? undefined
+          : `save-${saves}`;
+        assertEquals(texts.at(-1), expected);
+      },
+    ),
     { numRuns: 200 },
   );
 });

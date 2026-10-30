@@ -21,6 +21,7 @@ import type { WorkflowListing } from "./workflow_listing.ts";
 import type { WorkflowId, WorkflowRunId } from "./workflow_id.ts";
 import type { Workflow } from "./workflow.ts";
 import type { WorkflowRun } from "./workflow_run.ts";
+import type { RunWriteFence } from "./run_write_fence.ts";
 
 export interface WorkflowRepository {
   findById(id: WorkflowId): Promise<Workflow | null>;
@@ -54,6 +55,15 @@ export interface WorkflowRepository {
   getPath(id: WorkflowId): string;
 }
 
+export interface RunSaveOptions {
+  /**
+   * a save that finds the fence closed just before its write writes nothing, and
+   * its commit is withdrawn if the run is taken over by the time it lands
+   */
+  readonly fence?: Pick<RunWriteFence, "isClosed" | "isTakenOver">;
+  readonly onRefused?: () => void;
+}
+
 export interface WorkflowRunRepository {
   findById(
     workflowId: WorkflowId,
@@ -84,7 +94,11 @@ export interface WorkflowRunRepository {
 
   verifyIndexes?(): Promise<void>;
 
-  save(workflowId: WorkflowId, run: WorkflowRun): Promise<void>;
+  save(
+    workflowId: WorkflowId,
+    run: WorkflowRun,
+    options?: RunSaveOptions,
+  ): Promise<void>;
 
   nextId(): WorkflowRunId;
 

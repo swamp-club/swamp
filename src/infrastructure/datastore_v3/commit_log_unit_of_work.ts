@@ -538,8 +538,9 @@ export function createCommitLogUnitOfWork(
         const group = pending.find((other) => !held(other));
         if (group === undefined) break;
         inFlight = group;
+        let withdrawn = false;
         try {
-          await appendGroup(
+          withdrawn = await appendGroup(
             group,
             options,
             clock,
@@ -597,6 +598,7 @@ export function createCommitLogUnitOfWork(
           inFlight = undefined;
         }
         pending = pending.filter((other) => other !== group);
+        if (withdrawn) continue;
         noteCommitted(group, options);
         if (!landed.some((other) => other.equals(group.partition))) {
           landed.push(group.partition);
@@ -1149,7 +1151,7 @@ function runRank(group: Group): number {
 /**
  * head read and append run under the partition's lock; content is committed in
  * one chunk batch before the commit is prepared, so a power loss never leaves a
- * commit naming a lost chunk
+ * commit naming a lost chunk. Resolves true when every op was withdrawn
  */
 async function appendGroup(
   group: Group,
@@ -1158,7 +1160,7 @@ async function appendGroup(
   storedOps: WeakMap<PendingPut, PutOp>,
   superseded: WeakSet<PendingPut>,
   unitOutbox: UnitOutbox,
-): Promise<void> {
+): Promise<boolean> {
   if (clock().getTime() - group.formedAt > OUTBOX_RETRY_BOUND_MS) {
     // The store may have pruned a landed first attempt's txnId: appending
     // now could land it twice.
@@ -1185,7 +1187,11 @@ async function appendGroup(
       ops,
       stored,
     );
-    if (ops.length === 0) return;
+    if (ops.length === 0) {
+      const gone = isWithdrawn(group);
+      if (gone) await discardEntries(options, unitOutbox, [group]);
+      return gone;
+    }
     await chunks.commit(options.signal);
   } catch (error) {
     throw storagePhase(error);
@@ -1193,6 +1199,7 @@ async function appendGroup(
     await chunks.discard();
   }
   let queued = false;
+  let withdrawn = false;
   await withPartitionLock(
     options.sink,
     options.namespace,
@@ -1207,6 +1214,18 @@ async function appendGroup(
         );
         const head = base ??
           await options.sink.head(options.namespace, group.partition);
+        // Asked on each attempt, since the writer that moved the head may be
+        // the owner this group's puts yield to, and after the head read, so
+        // an owner landing after this check leaves a seq gap that asks again.
+        const kept = opsNotWithdrawn(group, ops, storedOps);
+        if (kept.length === 0) {
+          withdrawn = true;
+          // One that cannot be discarded is warned about. A recovery drops
+          // it once the new owner's commit has moved the head, and if that
+          // commit missed its deadline the owner's next start commits on top.
+          await discardEntries(options, unitOutbox, [group]);
+          return;
+        }
         if (
           group.expectedSeq !== undefined && head.seq !== group.expectedSeq
         ) {
@@ -1224,7 +1243,7 @@ async function appendGroup(
             : { principal: group.principal }),
           ...executionOf(options, group),
           at: clock().toISOString(),
-          ops,
+          ops: kept,
         });
         if (
           outbox !== undefined && base !== undefined &&
@@ -1287,7 +1306,8 @@ async function appendGroup(
       }
     },
   );
-  if (queued) return;
+  if (withdrawn) return true;
+  if (queued) return false;
   // the commit has landed: a failing check is a warning, never a failure that
   // would drop landed work
   try {
@@ -1308,6 +1328,27 @@ async function appendGroup(
       );
     }
   }
+  return false;
+}
+
+function isWithdrawn(group: Group): boolean {
+  return group.changes.some((change) =>
+    "put" in change && change.put.withdrawn?.() === true
+  );
+}
+
+function opsNotWithdrawn(
+  group: Group,
+  ops: readonly Op[],
+  storedOps: WeakMap<PendingPut, PutOp>,
+): readonly Op[] {
+  const dropped = new Set<Op | undefined>();
+  for (const change of group.changes) {
+    if ("put" in change && change.put.withdrawn?.()) {
+      dropped.add(storedOps.get(change.put));
+    }
+  }
+  return dropped.size === 0 ? ops : ops.filter((op) => !dropped.has(op));
 }
 
 /**
@@ -1328,6 +1369,10 @@ async function storeGroup(
       ops.push(change.op);
       continue;
     }
+    // Stores nothing for a put that cannot land. The source may hold the new
+    // owner's bytes by now, and a failed store would fail a commit with nothing
+    // to land. The check under the partition's lock is the one that decides.
+    if (change.put.withdrawn?.()) continue;
     let op = storedOps.get(change.put);
     if (op === undefined) {
       if (superseded.has(change.put)) continue;

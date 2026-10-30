@@ -29,17 +29,28 @@ const logger = getSwampLogger(["serve", "shutdown"]);
 
 /**
  * bounds how long closing waits for saves under way so shutdown stays inside
- * its termination grace; a save still running at the deadline is logged and may
- * land over the interrupted record
+ * its termination grace; a save still running at the deadline is logged, and is
+ * refused at its write unless that write had begun
  */
 export const RUN_WRITE_FENCE_WAIT_MS = 2_000;
 
 export class ServeRunWriteFence implements RunWriteFence {
   readonly #closed = new Set<string>();
+  readonly #takenOver = new Set<string>();
   readonly #inFlight = new Map<string, Set<Promise<void>>>();
 
   isClosed(runId: string): boolean {
     return this.#closed.has(runId);
+  }
+
+  isTakenOver(runId: string): boolean {
+    return this.#takenOver.has(runId);
+  }
+
+  // called before the owner's record commits, so each executor commit either
+  // checks after this and is withdrawn, or checked earlier and lands first
+  takeOver(runId: string): void {
+    this.#takenOver.add(runId);
   }
 
   track(runId: string, write: Promise<void>): Promise<void> {
@@ -81,7 +92,7 @@ export class ServeRunWriteFence implements RunWriteFence {
     const late = runIds.filter((runId) => this.#inFlight.has(runId));
     if (late.length > 0) {
       logger.warn(
-        "A save of workflow run(s) {runIds} by their executor was still under way {seconds}s after shutdown took them over; it may land over their interrupted record",
+        "A save of workflow run(s) {runIds} by their executor was still under way {seconds}s after shutdown closed their write fence; it is refused when it reaches its write, unless that write had already begun",
         { runIds: late, seconds: waitMs / 1000 },
       );
     }

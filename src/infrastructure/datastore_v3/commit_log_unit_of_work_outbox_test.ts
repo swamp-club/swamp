@@ -992,3 +992,70 @@ Deno.test("commit-log unit with an outbox: a commit that may have landed keeps i
   assertEquals(removals(sink), []);
   assertEquals(sink.entries.size, 1, "the entry was given up");
 });
+
+Deno.test("commit-log unit with an outbox: a retry withdrawn since its failed attempt discards the entry that attempt prepared, so no recovery lands it (swamp-club#4171)", async () => {
+  const sink = new OutboxMemorySink();
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory()),
+  );
+  let withdrawn = false;
+  await uow.stageOp({
+    partition: MODEL,
+    put: {
+      intent: modelIntent({ kind: "data.save", name: "a", version: 1 }),
+      key: dataKey("a", 1),
+      content: new TextEncoder().encode("stale"),
+      withdrawn: () => withdrawn,
+    },
+  });
+  sink.beforeAppend = () => {
+    throw new Error("connection lost");
+  };
+  await assertRejects(() => uow.checkpoint(), Error, "connection lost");
+  assertEquals(sink.entries.size, 1);
+
+  sink.beforeAppend = () => {};
+  withdrawn = true;
+  await uow.commit();
+
+  assertEquals(sink.entries.size, 0);
+  assert(sink.events.some((event) => event.startsWith("discard:")));
+  assertEquals(sink.landed, []);
+});
+
+Deno.test("commit-log unit with an outbox: a retry partly withdrawn since its failed attempt lands the rest and settles its entry (swamp-club#4171)", async () => {
+  const sink = new OutboxMemorySink();
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory()),
+  );
+  let withdrawn = false;
+  const put = (name: string, guarded: boolean) => ({
+    partition: MODEL,
+    put: {
+      intent: modelIntent({ kind: "data.save", name, version: 1 }),
+      key: dataKey(name, 1),
+      content: new TextEncoder().encode(name),
+      ...(guarded ? { withdrawn: () => withdrawn } : {}),
+    },
+  });
+  await uow.stageOp(put("dropped", true));
+  await uow.stageOp(put("kept", false));
+  sink.beforeAppend = () => {
+    throw new Error("connection lost");
+  };
+  await assertRejects(() => uow.checkpoint(), Error, "connection lost");
+  assertEquals(sink.entries.size, 1);
+
+  sink.beforeAppend = () => {};
+  withdrawn = true;
+  await uow.commit();
+
+  assertEquals(sink.landed.length, 1);
+  assertEquals(
+    sink.landed[0].ops.map((op) => op.kind === "put" ? op.key.toString() : ""),
+    [dataKey("kept", 1).toString()],
+  );
+  assertEquals(sink.entries.size, 0);
+});

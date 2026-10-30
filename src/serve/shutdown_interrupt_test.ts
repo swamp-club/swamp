@@ -481,6 +481,7 @@ Deno.test("interruptShutdownRuns: closes the aborted workflow runs' write fence 
         events.push(`close ${runIds.join(",")}`);
         return Promise.resolve();
       },
+      takeOver: () => {},
     },
     syncService: {
       pushChanged: () => {
@@ -510,6 +511,7 @@ Deno.test("interruptShutdownRuns: closes the write fence on a filesystem datasto
         events.push(`close ${runIds.join(",")}`);
         return Promise.resolve();
       },
+      takeOver: () => {},
     },
   });
 
@@ -531,6 +533,7 @@ Deno.test("interruptShutdownRuns: with no aborted workflow run the write fence i
           closed = true;
           return Promise.resolve();
         },
+        takeOver: () => {},
       },
     },
   );
@@ -731,4 +734,57 @@ Deno.test("stopHeartbeatAtShutdown: writes the unpushed runs' active-run records
     },
   );
   assertEquals(events, ["put active-runs/inst/run-1", "stop true"]);
+});
+
+function takeOverFence(events: string[]) {
+  return {
+    close: () => Promise.resolve(),
+    takeOver: (runId: string) => {
+      events.push(`take over ${runId}`);
+    },
+  };
+}
+
+Deno.test("interruptShutdownRuns: takes a run over once its interrupted record is saved, before that record is pushed (swamp-club#4171)", async () => {
+  const wf = workflow();
+  const run = runningRun(wf);
+  const { events, repoContext } = harness([run], wf.id);
+
+  await interruptShutdownRuns([active(run)], {
+    repoContext,
+    runWriteFence: takeOverFence(events),
+    syncService: {
+      pushChanged: () => {
+        events.push("push");
+        return Promise.resolve(1);
+      },
+    },
+  });
+
+  assertEquals(events, [
+    "load",
+    `save ${run.id} interrupted`,
+    `take over ${run.id}`,
+    "push",
+  ]);
+});
+
+Deno.test("interruptShutdownRuns: a run whose record it leaves alone, or could not save, is not taken over, so its executor's commit still lands (swamp-club#4171)", async () => {
+  const wf = workflow();
+  const notLoaded = runningRun(wf);
+  const unsaved = runningRun(wf);
+  const { events, repoContext } = harness([unsaved], wf.id);
+
+  await interruptShutdownRuns([active(notLoaded), active(unsaved)], {
+    repoContext: {
+      ...repoContext,
+      workflowRunRepo: {
+        ...repoContext.workflowRunRepo,
+        save: () => Promise.reject(new Error("disk full")),
+      },
+    },
+    runWriteFence: takeOverFence(events),
+  });
+
+  assertEquals(events.filter((event) => event.startsWith("take over")), []);
 });

@@ -7658,7 +7658,17 @@ export class WorkflowExecutionService {
     await this.runWriteFence.track(
       run.id,
       (async () => {
-        await this.runRepo.save(workflowId, run);
+        let refused = false;
+        await this.runRepo.save(workflowId, run, {
+          fence: this.runWriteFence,
+          onRefused: () => {
+            refused = true;
+          },
+        });
+        // Only a save that wrote nothing: one the fence closed just after it
+        // wrote may be the final record of a run the new owner leaves alone,
+        // and the owner waits for this checkpoint to land it.
+        if (refused) return;
         await this.runCheckpointer.checkpoint(run);
       })(),
     );

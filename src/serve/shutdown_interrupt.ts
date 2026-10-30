@@ -66,7 +66,7 @@ export interface ShutdownInterruptDeps {
    * executor that outlived the abort grace cannot save its running copy over
    * the interrupt
    */
-  readonly runWriteFence?: Pick<ServeRunWriteFence, "close">;
+  readonly runWriteFence?: Pick<ServeRunWriteFence, "close" | "takeOver">;
   readonly syncService?: Pick<DatastoreSyncService, "pushChanged">;
   readonly namespace?: string;
   readonly syncGate?: SyncGate;
@@ -217,6 +217,9 @@ export async function interruptShutdownRuns(
               match.workflowId,
               match.run,
             );
+            // before the root commits, so an executor commit still under way is
+            // withdrawn rather than landing over the interrupt
+            deps.runWriteFence?.takeOver(run.runId);
             interrupted.push(run.runId);
             settleTrackerRow(run.runId);
             deps.onInterrupted?.(run.runId);
