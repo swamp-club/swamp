@@ -588,14 +588,15 @@ Deno.test({
   sanitizeResources: false,
   fn: async () => {
     await withServer(twoMembers(), async (server) => {
-      // Long names put the floor past 1 MiB with few of them.
+      // Long names put the floor past 1 MiB with few catalog rows, which are
+      // slow to write under the parallel suite (swamp-club#4182).
       const names = Array.from(
-        { length: 7_000 },
-        (_, i) => `instance-${String(i).padStart(6, "0")}-${"x".repeat(140)}`,
+        { length: 400 },
+        (_, i) => `instance-${String(i).padStart(6, "0")}-${"x".repeat(3_000)}`,
       );
       const type = server.modelType.normalized;
       const fence = server.v3.commitStore.writerFence();
-      for (const [index, start] of [0, 3_500].entries()) {
+      for (const [index, start] of [0, 200].entries()) {
         await server.v3.commitStore.append(Commit.create({
           seq: index + 1,
           partition: partition(server),
@@ -604,7 +605,7 @@ Deno.test({
           writer: { host: "host-a", pid: 4242, instance: "cli-1" },
           at: "2026-10-30T00:00:00.000Z",
           ...(fence === undefined ? {} : { fence }),
-          ops: names.slice(start, start + 3_500).map((name) =>
+          ops: names.slice(start, start + 200).map((name) =>
             dataVersionOp({
               key: RecordKey.create(
                 `data/${type}/${server.model.id}/${name}/1/metadata.yaml`,
@@ -621,6 +622,9 @@ Deno.test({
         )).names,
       ).length;
       assert(floorBytes > SERVE_REPLY_MAX_BYTES, `${floorBytes} bytes`);
+      // These commits bypassed serve: projecting them here keeps that work
+      // out of the first request's deadline.
+      await server.v3.catchUp();
       const client = new ServeDatastoreClient({
         baseUrl: new URL(server.url).origin,
         token: "alice-token",
