@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import type { VaultProvider } from "../domain/vaults/vault_provider.ts";
 import {
   isPeerToken,
@@ -170,11 +171,15 @@ Deno.test("TeamPeerKey: a cached key outlives failing vault reads only for a bou
   assertEquals(key.cachedToken(), undefined);
 });
 
-/** A memory vault that counts reads; `hold` makes the next gets wait. */
+/**
+ * A memory vault that counts reads; `hold` makes the next gets wait, and
+ * `holdList` makes the next list answer late with what it listed when called.
+ */
 function countingVault() {
   const vault = memoryVault();
   const counts = { gets: 0, lists: 0 };
   let held: PromiseWithResolvers<void> | undefined;
+  let heldList: PromiseWithResolvers<void> | undefined;
   const get = vault.get.bind(vault);
   const list = vault.list.bind(vault);
   vault.get = async (key: string) => {
@@ -182,9 +187,13 @@ function countingVault() {
     if (held !== undefined) await held.promise;
     return await get(key);
   };
-  vault.list = () => {
+  vault.list = async () => {
     counts.lists++;
-    return list();
+    const listed = await list();
+    const late = heldList;
+    heldList = undefined;
+    if (late !== undefined) await late.promise;
+    return listed;
   };
   return {
     vault,
@@ -192,6 +201,10 @@ function countingVault() {
     hold: () => {
       held = Promise.withResolvers<void>();
       return held;
+    },
+    holdList: () => {
+      heldList = Promise.withResolvers<void>();
+      return heldList;
     },
   };
 }
@@ -257,6 +270,20 @@ Deno.test("TeamPeerKey.verify: checks made while a read is running wait for that
   read.resolve();
   assertEquals(new Set(await checks), new Set([true]));
   assertEquals(counts.gets, 2);
+});
+
+Deno.test("TeamPeerKey: a slow read that found no key never hides the key a newer read found (swamp-club#4153)", async () => {
+  const { vault, counts, holdList } = countingVault();
+  const key = new TeamPeerKey(vault, () => 0);
+  // A check finds no key, and its listing answers late...
+  const late = holdList();
+  const check = key.verify(FAKE_PEER_TOKEN);
+  await waitFor(() => counts.lists === 1, "the check's listing");
+  // ...after this node made the key and read it back.
+  const token = await key.token();
+  late.resolve();
+  assert(!await check);
+  assert(await key.verify(token));
 });
 
 Deno.test("TeamPeerKey.current: never answers from a throttled read (swamp-club#4153)", async () => {

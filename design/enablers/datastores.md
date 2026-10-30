@@ -7642,46 +7642,45 @@ reach the feed with the next probe (at most 30 s), never later than the
 lineage restore would have brought them.
 
 **Followers follow the feed.** A follower subscribes to the leader with the
-team's peer key (`TeamPeerKey`, `src/serve/peer_auth.ts`): one random key
-per namespace in serve's encrypted control-plane vault, so a `token-secrets`
-key protects it as it protects token secrets. A node reads the key at most
-every 10 s, whether the read finds the key, finds none or fails, and peer
-checks made while a read runs wait for it, so failed peer tokens cannot drive
-vault reads (swamp-club#4153). It uses the key it last read for at most 60 s
-more while vault reads fail, so a key deleted during an outage stops
-verifying. With the default co-located
-key, anyone who can read and write the datastore can read the peer key and
-so sign a leader record of their own, which followers would forward
-callers' credentials to: a team-mode serve (one with `--advertise-address`,
-or one that finds another node leading) says so in its start-up warning
-about the co-located key, and recommends the `token-secrets` block. It is a
-warning, never a refusal, so a single node and existing deployments keep
-working. A leader record is also trusted only at the lease's current fence:
-a record an earlier leader signed, written back after a takeover, gets
-nothing forwarded to its address, and the follower refuses until the leader
-records itself at its fence. A peer socket may only read
-the feed and its head; it skips the per-caller grant filter but keeps the
-namespace one, cancels nothing but its own requests, and is refused
-everywhere else, HTTP included, where the key is an unknown token.
-`FollowerFeed` (`src/serve/follower_feed.ts`) applies each batch to the
-copy (`applyV3LeaderChanges`): on a replicating datastore it appends each
-commit at the leader's own cursor (`SqliteCommitStore.appendFromLeader`, so
-a cursor a client read from either node names the same commit), then
-catches the read model up; on one that does not replicate every node opens
-the same `commits.db`, so it only catches the read model up. Every frame
-marks the copy fresh (`ServeLeadership.markRefreshed`). Each apply step is
-tied to the socket that delivered it: one the previous socket queued
-applies nothing and marks nothing fresh once the follower follows another
-leader, and the tick stops the feed before it restores, so nothing of the
-old socket is queued behind the restore (swamp-club#4148). While the feed is
-current for the leader the record names, a tick restores nothing. A new
-leader (another instance or fence), a disconnect, a gap, a divergent commit
-(`FeedDivergedError`) or a compacted cursor stops it: the next tick
-restores from the published lineage, which holds everything the feed sent,
-and follows again from there. The 30 s staleness bound stays. Before a
-forwarded write's last reply goes back, the follower waits (at most 5 s,
-and not at all while its feed is down) until its copy holds the leader's
-head, so the caller reads its own write from that node next.
+team's peer key (`TeamPeerKey`, `src/serve/peer_auth.ts`): one random key per
+namespace in serve's encrypted control-plane vault, so a `token-secrets` key
+protects it as it protects token secrets. A node reads the key at most every
+10 s, whether the read finds the key, finds none or fails, and peer checks
+made while a read runs wait for it, so failed peer tokens cannot drive vault
+reads (swamp-club#4153). It uses the key it last read for at most 60 s more
+while vault reads fail, so a key deleted during an outage stops verifying.
+With the default co-located key, anyone who can read and write the datastore
+can read the peer key and so sign a leader record of their own, which
+followers would forward callers' credentials to: a team-mode serve (one with
+`--advertise-address`, or one that finds another node leading) says so in its
+start-up warning about the co-located key, and recommends the `token-secrets`
+block. It is a warning, never a refusal, so a single node and existing
+deployments keep working. A leader record is also trusted only at the lease's
+current fence: a record an earlier leader signed, written back after a
+takeover, gets nothing forwarded to its address, and the follower refuses
+until the leader records itself at its fence. A peer socket may only read the
+feed and its head; it skips the per-caller grant filter but keeps the
+namespace one, cancels nothing but its own requests, and is refused everywhere
+else, HTTP included, where the key is an unknown token. `FollowerFeed`
+(`src/serve/follower_feed.ts`) applies each batch to the copy
+(`applyV3LeaderChanges`): on a replicating datastore it appends each commit at
+the leader's own cursor (`SqliteCommitStore.appendFromLeader`, so a cursor a
+client read from either node names the same commit), then catches the read
+model up; on one that does not replicate every node opens the same
+`commits.db`, so it only catches the read model up. Every frame marks the copy
+fresh (`ServeLeadership.markRefreshed`). Each apply step is tied to the socket
+that delivered it: one the previous socket queued applies nothing and marks
+nothing fresh once the follower follows another leader, and the tick stops the
+feed before it restores, so nothing of the old socket is queued behind the
+restore (swamp-club#4148). While the feed is current for the leader the record
+names, a tick restores nothing. A new leader (another instance or fence), a
+disconnect, a gap, a divergent commit (`FeedDivergedError`) or a compacted
+cursor stops it: the next tick restores from the published lineage, which
+holds everything the feed sent, and follows again from there. The 30 s
+staleness bound stays. Before a forwarded write's last reply goes back, the
+follower waits (at most 5 s, and not at all while its feed is down) until its
+copy holds the leader's head, so the caller reads its own write from that node
+next.
 
 **Commit effects replace the pollers.** `ServeCommitEffects`
 (`src/serve/serve_commit_effects.ts`) watches every commit landing in a

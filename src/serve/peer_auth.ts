@@ -68,8 +68,12 @@ export class TeamPeerKey {
   readonly #now: () => number;
   /** The key last read, for {@link verify} and {@link trusts}. */
   #cached: { key: string; at: number } | undefined;
-  /** When the vault was last read, and what the read found. */
-  #lastRead: { at: number; found: "key" | "none" | "failed" } | undefined;
+  /** When the vault was last read, what the read found, and which read. */
+  #lastRead:
+    | { at: number; found: "key" | "none" | "failed"; read: number }
+    | undefined;
+  /** Reads started, so a slow read never overwrites a newer one's answer. */
+  #reads = 0;
   /** The read {@link verify} and {@link trusts} are waiting on. */
   #reading: Promise<string | undefined> | undefined;
 
@@ -176,7 +180,6 @@ export class TeamPeerKey {
     try {
       return await this.#read();
     } catch {
-      this.#lastRead = { at: this.#now(), found: "failed" };
       return this.#usableCached();
     } finally {
       this.#reading = undefined;
@@ -194,24 +197,44 @@ export class TeamPeerKey {
   /**
    * The key the vault holds, or undefined when it holds none. Any other
    * failure, and a value that is not a key, is thrown: the key is never
-   * replaced because it could not be read.
+   * replaced because it could not be read. What it found is recorded unless
+   * a read that started later already answered.
    */
   async #read(): Promise<string | undefined> {
+    const read = ++this.#reads;
+    try {
+      const key = await this.#readKey();
+      this.#record(read, key === undefined ? "none" : "key", key);
+      return key;
+    } catch (error) {
+      this.#record(read, "failed");
+      throw error;
+    }
+  }
+
+  #record(
+    read: number,
+    found: "key" | "none" | "failed",
+    key?: string,
+  ): void {
+    if (this.#lastRead !== undefined && this.#lastRead.read > read) return;
+    const at = this.#now();
+    if (key !== undefined) this.#cached = { key, at };
+    this.#lastRead = { at, found, read };
+  }
+
+  async #readKey(): Promise<string | undefined> {
     let value: string;
     try {
       value = await this.#vault.get(PEER_KEY_SECRET);
     } catch (error) {
       if ((await this.#vault.list()).includes(PEER_KEY_SECRET)) throw error;
-      this.#lastRead = { at: this.#now(), found: "none" };
       return undefined;
     }
     const key = value.trim();
     if (!PEER_KEY_PATTERN.test(key)) {
       throw new Error("The team peer key in the vault is not a valid key");
     }
-    const at = this.#now();
-    this.#cached = { key, at };
-    this.#lastRead = { at, found: "key" };
     return key;
   }
 }
