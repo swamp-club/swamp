@@ -124,9 +124,7 @@ export function runsAfterFailure(
         return dependency && ran && isCleanup(dependency) ? status : "failed";
       },
     };
-    const taskType = candidate.task.data.type;
-    const cleanup = taskType !== "manual_approval" &&
-      taskType !== "wait_for_signal" &&
+    const cleanup = !suspendsRun(candidate) &&
       candidate.dependsOn.length > 0 &&
       candidate.dependsOn.every((dep) =>
         dep.condition.evaluate(afterFailure, dep.step)
@@ -135,6 +133,50 @@ export function runsAfterFailure(
     return cleanup;
   };
   return isCleanup(step);
+}
+
+/**
+ * True for a cleanup job: one that would still run had all the work before the
+ * run's abort failed. The job counterpart of {@link runsAfterFailure}. Every
+ * `dependsOn` condition must hold with its dependency failed, or, for a
+ * dependency that is itself a cleanup job and succeeded, with that real status,
+ * so a teardown chain runs to its end. A job with no `dependsOn` is work, and so
+ * is one holding an approval gate or a wait for a signal: it would turn the
+ * cancel into a suspended run.
+ */
+export function jobRunsAfterFailure(
+  job: Job,
+  workflow: Workflow,
+  run: WorkflowRun,
+): boolean {
+  const known = new Map<string, boolean>();
+  const isCleanup = (candidate: Job): boolean => {
+    const answer = known.get(candidate.name);
+    if (answer !== undefined) return answer;
+    const afterFailure: TriggerEvaluationContext = {
+      getStatus: (ref) => {
+        const dependency = workflow.getJob(ref);
+        const status = run.getStatus(ref);
+        return dependency && status === "succeeded" && isCleanup(dependency)
+          ? status
+          : "failed";
+      },
+    };
+    const cleanup = !candidate.steps.some(suspendsRun) &&
+      candidate.dependsOn.length > 0 &&
+      candidate.dependsOn.every((dep) =>
+        dep.condition.evaluate(afterFailure, dep.job)
+      );
+    known.set(candidate.name, cleanup);
+    return cleanup;
+  };
+  return isCleanup(job);
+}
+
+/** True for an approval gate or a wait for a signal. */
+function suspendsRun(step: Step): boolean {
+  const taskType = step.task.data.type;
+  return taskType === "manual_approval" || taskType === "wait_for_signal";
 }
 
 /**
@@ -207,6 +249,23 @@ export function settleUnstartedSteps(job: Job, jobRun: JobRun): void {
 export function settleNotStartedJob(job: Job, jobRun: JobRun): void {
   settleUnstartedSteps(job, jobRun);
   jobRun.settleNotStarted();
+}
+
+/**
+ * Settles a job the run's abort left unstarted, gated on its `dependsOn`:
+ * skipped when it is unmet, otherwise as {@link settleNotStartedJob} does.
+ * Either way a resume walks it again.
+ */
+export function settleUnstartedJob(
+  job: Job,
+  jobRun: JobRun,
+  run: WorkflowRun,
+): void {
+  if (!shouldJobRun(job, run)) {
+    jobRun.skipNotStarted();
+  } else {
+    settleNotStartedJob(job, jobRun);
+  }
 }
 
 /**
