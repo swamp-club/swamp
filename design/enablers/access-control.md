@@ -1487,9 +1487,9 @@ swamp access can-i --server wss://swamp.acme.internal:9090
 
 The command sends an `access.can-i` WebSocket request. The server resolves the
 caller's subjects and calls the decision service's `explain` method, which
-returns every matching grant (allow and deny), not only the first.
-`--collectives` simulates IdP group memberships so grant configurations can be
-tested before deployment.
+returns every matching grant (allow and deny), not only the first. It always
+uses the caller's own session memberships; to test grants for other
+memberships, use `swamp access check` with `--groups` and `--collectives`.
 
 Implementation: `src/cli/commands/access_can_i.ts`,
 `src/serve/handlers/access_handlers.ts`.

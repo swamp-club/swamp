@@ -179,10 +179,11 @@ export async function getUserInfo(
   const collectives = Array.isArray(rawCollectives)
     ? rawCollectives.filter((c): c is string => typeof c === "string")
     : [];
+  // IdP groups only: collectives admit, they never stand in for groups.
   const rawGroups = data.groups;
   const groups = Array.isArray(rawGroups)
     ? rawGroups.filter((g): g is string => typeof g === "string")
-    : collectives;
+    : [];
   return {
     sub: data.sub,
     email: data.email,

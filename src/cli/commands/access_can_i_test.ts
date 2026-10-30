@@ -91,11 +91,11 @@ Deno.test("accessCanICommand: has --on option", async () => {
   assertEquals(opt !== undefined, true);
 });
 
-Deno.test("accessCanICommand: has --collectives option", async () => {
+Deno.test("accessCanICommand: does not have --collectives option", async () => {
   const { accessCanICommand } = await import("./access_can_i.ts");
   const options = accessCanICommand.getOptions();
   const opt = options.find((o) => o.name === "collectives");
-  assertEquals(opt !== undefined, true);
+  assertEquals(opt, undefined);
 });
 
 Deno.test("accessCanICommand: has --token option", async () => {

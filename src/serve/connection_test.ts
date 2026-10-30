@@ -1020,7 +1020,7 @@ Deno.test("validateServerRequest accepts access.can-i without action/resource fo
   assertEquals(typeof result, "object");
 });
 
-Deno.test("validateServerRequest accepts access.can-i with collectives", () => {
+Deno.test("validateServerRequest accepts and drops collectives on access.can-i from an older client", () => {
   const input = {
     type: "access.can-i",
     id: "req-1",
@@ -1030,6 +1030,10 @@ Deno.test("validateServerRequest accepts access.can-i with collectives", () => {
   };
   const result = validateServerRequest(input);
   assertEquals(typeof result, "object");
+  assertEquals(
+    "collectives" in (result as { payload: Record<string, unknown> }).payload,
+    false,
+  );
 });
 
 Deno.test("validateServerRequest rejects access.can-i without id", () => {

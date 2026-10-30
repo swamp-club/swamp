@@ -110,8 +110,6 @@ export interface AccessCanIPayload {
   action?: string;
   resource?: string;
   method?: string;
-  collectives?: string[];
-  groups?: string[];
 }
 
 export interface DataGetPayload {
