@@ -193,7 +193,7 @@ export class ServeCommitEffects {
     if (this.#deps.isFollower()) {
       await this.#applyAsFollower(poked);
     } else {
-      this.#applyAsLeader();
+      await this.#applyAsLeader();
     }
   }
 
@@ -240,10 +240,16 @@ export class ServeCommitEffects {
     if (head < this.#applied) this.#advance(head);
   }
 
-  #applyAsLeader(): void {
+  async #applyAsLeader(): Promise<void> {
     const effects = this.#pending;
     if (effects.has("config") || effects.has("lockfile")) {
       this.#deps.checkConfig();
+    }
+    // A node that took the lead while following with an unknown policy
+    // reloads it: its own writes keep it current only from a known start.
+    if (!this.#policyKnown) {
+      await this.#deps.reloadPolicy();
+      this.#policyKnown = true;
     }
     effects.clear();
     this.#awaitingRefresh = false;

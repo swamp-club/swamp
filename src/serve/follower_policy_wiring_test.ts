@@ -180,3 +180,27 @@ Deno.test("wireFollowerPolicy: a forwarded write's barrier waits for the effects
     await t.wiring.effects.stop();
   }
 });
+
+Deno.test("wireFollowerPolicy: a forwarded write's barrier returns once its commits are applied, though more keep landing", async () => {
+  const t = setup({ current: "follower" });
+  try {
+    const barrier = t.wiring.barrier(() => {
+      t.store.land(GRANT);
+      return Promise.resolve();
+    })();
+    // A busy feed: a pass is always queued behind the one running.
+    let landing = true;
+    const busy = (async () => {
+      while (landing) {
+        t.store.land(GRANT);
+        await new Promise((tick) => queueMicrotask(() => tick(undefined)));
+      }
+    })();
+    await barrier;
+    landing = false;
+    await busy;
+    assertEquals(t.wiring.commitFeed.bound() >= 1, true);
+  } finally {
+    await t.wiring.effects.stop();
+  }
+});

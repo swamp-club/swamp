@@ -357,3 +357,35 @@ Deno.test("ServeCommitEffects: a copy replaced below what was applied moves the 
     await effects.stop();
   }
 });
+
+Deno.test("ServeCommitEffects: a node that takes the lead while its policy is unknown reloads it", async () => {
+  let fail = true;
+  let follower = true;
+  const store = fakeSource();
+  let reloads = 0;
+  const effects = new ServeCommitEffects({
+    source: store.source,
+    catchUpReadModel: () => Promise.resolve(),
+    catalogInvalidate: () => {},
+    reloadPolicy: () => {
+      reloads++;
+      return fail ? Promise.reject(new Error("unreadable")) : Promise.resolve();
+    },
+    checkConfig: () => {},
+    isFollower: () => follower,
+  });
+  effects.start();
+  try {
+    store.land(GRANT);
+    await waitFor(() => reloads === 1, "the failed reload");
+    await effects.settled();
+    assertEquals(effects.policyKnown(), false);
+    fail = false;
+    follower = false;
+    store.land(partitionOf({ kind: "lockfile" }));
+    await waitFor(() => effects.policyKnown(), "the policy reloaded");
+    assertEquals(reloads, 2);
+  } finally {
+    await effects.stop();
+  }
+});

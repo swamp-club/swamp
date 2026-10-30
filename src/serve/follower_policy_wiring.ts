@@ -33,6 +33,7 @@
  */
 
 import type { V3CommitFeedSource } from "../infrastructure/datastore_v3/v3_repo_context.ts";
+import { FOLLOWER_FEED_BARRIER_MS } from "./follower_feed.ts";
 import type { FollowerGate } from "./follower_requests.ts";
 import {
   ServeCommitEffects,
@@ -56,8 +57,8 @@ export interface FollowerPolicyWiring {
   /** `leadership`, refusing a follower's reads while its policy is unknown. */
   gate(leadership: FollowerGate): FollowerGate;
   /**
-   * `feedBarrier`, then the effects of what it brought in: a caller reads
-   * its own forwarded write from this node next.
+   * `feedBarrier`, then the effects of what it brought in, each bounded: a
+   * caller reads its own forwarded write from this node next.
    */
   barrier(feedBarrier: () => Promise<void>): () => Promise<void>;
 }
@@ -96,7 +97,37 @@ export function wireFollowerPolicy(
     }),
     barrier: (feedBarrier) => async () => {
       await feedBarrier();
-      await effects.settled();
+      if (!deps.isFollower()) return;
+      await appliedThrough(
+        effects,
+        source.datastore.commitStore.highWaterMark().cursor,
+        FOLLOWER_FEED_BARRIER_MS,
+      );
     },
   };
+}
+
+/**
+ * Waits until `effects` applied every commit through `cursor`, for at most
+ * `timeoutMs`: a busy feed keeps queueing passes, so waiting for them all to
+ * settle could hold a reply indefinitely. The reply goes out at the limit, as
+ * the feed barrier's does.
+ */
+function appliedThrough(
+  effects: ServeCommitEffects,
+  cursor: number,
+  timeoutMs: number,
+): Promise<void> {
+  if (effects.appliedCursor() >= cursor) return Promise.resolve();
+  return new Promise<void>((done) => {
+    const finish = () => {
+      clearTimeout(timer);
+      off();
+      done();
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    const off = effects.onApplied(() => {
+      if (effects.appliedCursor() >= cursor) finish();
+    });
+  });
 }
