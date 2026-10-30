@@ -130,6 +130,27 @@ Skill files are copied as bundled from the asset list in
 `src/infrastructure/assets/skill_assets.ts`. The installed SKILL.md frontmatter
 has no version stamp.
 
+Each bundled SKILL.md does carry a fixed `metadata` block, so swamp stays the
+only updater of its skills:
+
+```yaml
+metadata:
+  github-repo: https://github.com/swamp-club/swamp
+  github-pinned: bundled-with-swamp
+```
+
+`gh skill update` scans the global skill directories and warns about any skill
+without a `github-repo` value, so a marker of swamp's own would not silence it.
+With both keys, `gh` reports the skill as pinned and skipped, without calling
+GitHub or changing its files. `bundled-with-swamp` is a label, not a git ref or
+the binary's version: `gh` does not resolve it on that path. This relies on
+behavior of a `gh` command still marked as preview, and `--unpin` bypasses it,
+which prints a warning because `gh` does not look under `.claude/skills` in the
+source repository.
+It is the one exception to the rule that skill frontmatter holds only `name` and
+`description`; `src/infrastructure/assets/skill_assets_test.ts` fails if a
+bundled skill loses the block.
+
 ## Keeping Global Skills Current
 
 Global skills are synced in three places:

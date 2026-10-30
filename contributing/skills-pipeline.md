@@ -61,7 +61,9 @@ Only gateway skills with a `references/<topic>/guide.md` tree (currently
   primary mechanism Claude uses to decide whether to load the skill, so include
   specific trigger phrases and contexts. Max 1024 chars.
 
-No other frontmatter fields (except optional `license`).
+No other frontmatter fields (except optional `license`). The bundled `swamp` and
+`swamp-getting-started` skills also carry a fixed `metadata` block, explained in
+`design/surfaces/agent-interface.md`; keep it.
 
 **Body** guidelines:
 

@@ -11,6 +11,9 @@ description: >
   first", "quickstart", "quick start", "hello world", "first behavior", "first
   model", "just installed swamp", "show me how swamp works", "intro to swamp",
   "new user", "set up swamp", "learn swamp".
+metadata:
+  github-repo: https://github.com/swamp-club/swamp
+  github-pinned: bundled-with-swamp
 ---
 
 # Getting Started with Swamp
