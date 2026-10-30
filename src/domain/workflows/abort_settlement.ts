@@ -252,6 +252,23 @@ export function settleNotStartedJob(job: Job, jobRun: JobRun): void {
 }
 
 /**
+ * Settles a job the run's abort left unstarted, gated on its `dependsOn`:
+ * skipped when it is unmet, otherwise as {@link settleNotStartedJob} does.
+ * Either way a resume walks it again.
+ */
+export function settleUnstartedJob(
+  job: Job,
+  jobRun: JobRun,
+  run: WorkflowRun,
+): void {
+  if (!shouldJobRun(job, run)) {
+    jobRun.skipNotStarted();
+  } else {
+    settleNotStartedJob(job, jobRun);
+  }
+}
+
+/**
  * Settles a job a resume inherited as running that its abort kept from
  * starting: its pending steps as {@link settleNotStartedJob} does, then the
  * job from its steps' outcome ({@link JobRun.settleNotResumed}).

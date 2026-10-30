@@ -123,7 +123,7 @@ import {
   jobRunsAfterFailure,
   runsAfterFailure,
   settleNotResumedJob,
-  settleNotStartedJob,
+  settleUnstartedJob,
   settleUnstartedStep,
   shouldJobRun,
   shouldStepRun,
@@ -3424,8 +3424,9 @@ interface StepOptions {
    */
   cleanupStepLevel?: boolean;
   /**
-   * Set on the job levels a run enters in cleanup mode after its abort. A job
-   * skipped there on its dependsOn is skipped as one the abort never started
+   * Set on the job levels a run enters in cleanup mode after its abort, and on
+   * each cleanup job of a level reached after it. A job skipped there on its
+   * dependsOn is skipped as one the abort never started
    * (`JobRun.skipNotStarted`), so a resume evaluates it again.
    */
   cleanupJobLevel?: boolean;
@@ -3445,18 +3446,6 @@ interface StepOptions {
    * {@link STEP_STOP_GRACE_MS}. Passed on to nested runs.
    */
   stepStopGraceMs?: number;
-}
-
-/**
- * Settles a job the run's abort left unstarted: skipped when its dependsOn is
- * unmet, otherwise from its steps. Either way a resume walks it again.
- */
-function settleUnstartedJob(job: Job, jobRun: JobRun, run: WorkflowRun): void {
-  if (!shouldJobRun(job, run)) {
-    jobRun.skipNotStarted();
-  } else {
-    settleNotStartedJob(job, jobRun);
-  }
 }
 
 /**
@@ -8084,6 +8073,16 @@ export class WorkflowExecutionService {
           )));
     const cleanupMode = !afterAbort && anyJobFailed && aborted;
 
+    if (cleanupMode || afterAbort) {
+      for (const jobRun of run.jobs) {
+        if (!started.has(jobRun.jobName)) continue;
+        failAbandonedSteps(jobRun);
+        if (jobRun.status === "running") {
+          jobRun.fail();
+        }
+      }
+    }
+
     const cleanupJobs = new Set<string>();
     if (afterAbort) {
       for (const jobName of level) {
@@ -8096,13 +8095,16 @@ export class WorkflowExecutionService {
         }
         settleUnstartedJob(job, jobRun, run);
         // A later cleanup step can read the outcome, as it can a started
-        // step's. An undecided step has none.
+        // step's. An undecided step has none. The context is keyed by step
+        // name alone, so a step that ran in another job keeps its entry: a
+        // teardown is there to read what the run really did.
         for (const stepRun of jobRun.steps) {
           if (stepRun.status !== "pending" && expressionContext?.steps) {
-            expressionContext.steps[stepRun.stepName] = attachStepOutputSources(
-              { status: stepRun.status, outputs: undefined },
-              undefined,
-            );
+            expressionContext.steps[stepRun.stepName] ??=
+              attachStepOutputSources(
+                { status: stepRun.status, outputs: undefined },
+                undefined,
+              );
           }
         }
       }
@@ -8118,17 +8120,8 @@ export class WorkflowExecutionService {
       cleanupJobLevel: true,
     };
 
-    if (cleanupMode || afterAbort) {
-      for (const jobRun of run.jobs) {
-        if (!started.has(jobRun.jobName)) continue;
-        failAbandonedSteps(jobRun);
-        if (jobRun.status === "running") {
-          jobRun.fail();
-        }
-      }
-    }
-
-    // Only a level the abort interrupted settles its never-started jobs.
+    // finishJobLevel settles never-started jobs only on a level the abort
+    // interrupted: one reached after it was settled above, or starts nothing.
     return {
       levelSignal,
       jobStepOpts: (jobName) =>

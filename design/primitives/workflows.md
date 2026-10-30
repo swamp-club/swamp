@@ -3922,9 +3922,11 @@ engine evaluates the remaining steps in topological order:
   `succeeded` on a `completed`-gated job counts too and starts. A job gated on a
   work job's success does not. A job holding an approval gate or a wait for a
   signal never counts, whatever gates it, so the cancellation does not become a
-  suspended run; a resume runs it. A cleanup job gets the cleanup signal, and can
-  read the status of a step in a settled job. Every other job is settled as a
-  never-started job, as above, so a resume runs it.
+  suspended run; a resume runs it. A nested workflow in a cleanup job that
+  suspends at its own gate still does, as it does in cleanup mode. A cleanup job
+  gets the cleanup signal, and can read the status of a step in a settled job,
+  unless a step of that name ran in another job, whose outcome it keeps. Every
+  other job is settled as a never-started job, as above, so a resume runs it.
 - A job level reached after the cancellation fired when nothing has run yet (the
   run was cancelled before it started) starts nothing, not even a cleanup job,
   since there is nothing to clean up. Its jobs are settled as never-started jobs

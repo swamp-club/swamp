@@ -24450,3 +24450,22 @@ Deno.test("job abort cleanup: a resume aborted before it starts with a job that 
     assertEquals(executor.count("main/post"), 0);
   });
 });
+
+Deno.test("job abort cleanup: a settled job does not replace the outcome of a same-named step that ran", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run, executor } = await runJobsThroughAbort(
+      tempDir,
+      "job-teardown-same-name-wf",
+      [
+        jobOn("next", "j1", TriggerCondition.succeeded(), [modelStep("a")]),
+        jobOn("teardown", "j1", TriggerCondition.always(), [
+          modelStep("t", { guard: "${{ steps.a.status == 'failed' }}" }),
+        ]),
+      ],
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertCancelledBeforeStart(run, "next", ["a"]);
+    assertJobRanAsCleanup(run, executor, "teardown");
+  });
+});
