@@ -763,7 +763,11 @@ async function isRegularFile(cacheDir: string, rel: string): Promise<boolean> {
   try {
     return (await Deno.lstat(join(cacheDir, ...rel.split("/")))).isFile;
   } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return false;
+    // A file now stands where a parent directory was.
+    if (
+      error instanceof Deno.errors.NotFound ||
+      error instanceof Deno.errors.NotADirectory
+    ) return false;
     throw error;
   }
 }
@@ -1668,6 +1672,14 @@ export function createInMemoryRemote(
       const created = new Map<string, Uint8Array>();
       if (!dryRun) {
         for (const [rel, bytes] of unpushed) {
+          // A peer may have committed or stored the key while the walk
+          // read files: the create is refused, and other bytes are
+          // alreadyPresent.
+          const current = committed.get(rel) ?? objects.get(rel);
+          if (current && !sameBytes(bytes, current)) {
+            alreadyPresent.push(rel);
+            continue;
+          }
           if (!objects.has(rel)) objects.set(rel, bytes);
           created.set(rel, bytes);
         }

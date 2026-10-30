@@ -578,12 +578,14 @@ export interface DatastoreSyncService {
    *    file stays at its path, record the key in a peer-deleted record
    *    persisted in the cache (an internal file the push walk skips), and
    *    forget a recorded key once the remote holds it again or its local
-   *    file is gone. Report a recorded file in `peerDeleted`, never in
-   *    `unpushed`, and never upload it. A delete this cache pushed leaves
-   *    no local file, so it is not recorded, unless the push deleted a file
-   *    still on disk (a directory taken as absent). A delete pulled before
-   *    the implementation kept the record left none, so such a copy still
-   *    reads as unpushed.
+   *    file is gone. A path under a file that replaced its directory has no
+   *    file: treat that error as absence, never as a failure, or every
+   *    later pull fails on it. Report a recorded file in `peerDeleted`,
+   *    never in `unpushed`, and never upload it. A delete this cache pushed
+   *    leaves no local file, so it is not recorded, unless the push deleted
+   *    a file still on disk (a directory taken as absent). A delete pulled
+   *    before the implementation kept the record left none, so such a copy
+   *    still reads as unpushed.
    *
    * Optional — core treats the method's presence as the capability, and
    * checks for it before calling.

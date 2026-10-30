@@ -1600,7 +1600,9 @@ files itself, shaped like `repairNamespaceContamination`.
     any operation drops a key from the last-synced index while a regular file
     stays at its path, that key in a peer-deleted record persisted in the
     cache (an internal file the push walk skips). It forgets a key once the
-    remote holds it again or the local file is gone. A recorded file counts in
+    remote holds it again or the local file is gone. A path under a file that
+    replaced its directory has no file: that error is absence, not a failure,
+    or every later pull fails on it. A recorded file counts in
     `peerDeleted`, never in `unpushed`, and is never uploaded. A delete this
     cache pushed leaves no local file, so it is not recorded, unless the push
     deleted a file still on disk (a directory taken as absent).

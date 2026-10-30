@@ -2007,6 +2007,33 @@ Deno.test({
   },
 });
 
+Deno.test("createInMemoryRemote: a file a peer put where a deleted directory was leaves later pulls working", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(dir, {
+      "data/m/d/x": "v1",
+      "data/m/keep": "k",
+    });
+    const { a, aCache, b, bCache } = machines;
+    await peerDeletes(machines, ["data/m/d/x"]);
+    await remove(aCache, "data/m/d");
+    await write(aCache, "data/m/d", "file");
+    await a.markDirty({ relPath: "data/m/d" });
+    await a.pushChanged();
+    await b.pullChanged();
+    assertEquals(await read(bCache, "data/m/d"), "file");
+
+    await write(aCache, "data/m/later", "l");
+    await a.markDirty({ relPath: "data/m/later" });
+    await a.pushChanged();
+    await b.pullChanged();
+    assertEquals(await read(bCache, "data/m/later"), "l");
+    assertEquals(
+      (await b.repairUnpushedFiles!({ dryRun: true })).peerDeleted,
+      0,
+    );
+  });
+});
+
 Deno.test("repairUnpushedFiles: a key a peer committed first is alreadyPresent and keeps the peer's bytes", async () => {
   await withTempDir(async (dir) => {
     const { remote, a, b, bCache } = await strandedCache(dir);
@@ -2023,6 +2050,33 @@ Deno.test("repairUnpushedFiles: a key a peer committed first is alreadyPresent a
     assertEquals(again.sampleAlreadyPresent, ["data/m/stranded"]);
     assertEquals(again.unpushed, 0);
   });
+});
+
+Deno.test("repairUnpushedFiles: a key a peer commits while the repair reads files stays the peer's", async () => {
+  // Under any interleaving the peer's bytes win: committed before the
+  // repair reads the key, it is alreadyPresent; after the repair commits,
+  // the peer's push replaces it; in between, the create is refused
+  // (contract rule 7). The peer walks its whole cache and the repair has
+  // more files to read after the key, so the commit tends to land in between.
+  const synced: Record<string, string> = {};
+  for (let i = 0; i < 100; i++) synced[`data/m/s${i}`] = "v1";
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await withTempDir(async (dir) => {
+      const { remote, a, aCache, b, bCache } = await syncedPair(dir, synced);
+      await write(aCache, "data/m/k", "ours");
+      for (let i = 0; i < 200; i++) await write(aCache, `data/m/u${i}`, "u");
+      await write(bCache, "data/m/k", "theirs");
+      await b.markDirty();
+
+      await Promise.all([a.repairUnpushedFiles!(), b.pushChanged()]);
+
+      assertEquals(
+        remoteText(remote, "data/m/k"),
+        "theirs",
+        `attempt ${attempt}`,
+      );
+    });
+  }
 });
 
 Deno.test("repairUnpushedFiles: indexes an unindexed object holding its bytes, and leaves one holding other bytes", async () => {
