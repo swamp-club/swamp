@@ -675,6 +675,7 @@ Deno.test("doctor datastores --repair: a cache that never pulled is told to pull
       assertStringIncludes((preview.error as Error).message, "exit code: 1");
       const report = JSON.parse(preview.out);
       assertEquals(report.unpushed.status, "unpushed_failed");
+      assertStringIncludes(report.unpushed.message, "Pull first");
       assertStringIncludes(report.unpushed.message, "Nothing was uploaded");
     },
   );
@@ -693,4 +694,33 @@ Deno.test("doctor datastores --repair --json: a skipped stage says so, unlike on
     assertEquals(report.unpushed.status, "unpushed_skipped");
     assertStringIncludes(report.unpushed.message, "unmigrated data repair");
   });
+});
+
+Deno.test("doctor datastores --repair -y: following a refusal for a pending edit keeps the file on the remote, and the wipe goes ahead (swamp-club#4138)", async () => {
+  await withHarness(
+    { contamination: true },
+    async ({ cachePath, remote, events, doctor }) => {
+      await writeFile(join(cachePath, TEAMMATE), '{"t":"edited"}');
+      const service = remote.connect(cachePath, { instance: "earlier" });
+      await service.markDirty({ relPath: TEAMMATE });
+
+      const refused = await doctor("--repair", "-y");
+      const message = (refused.error as Error).message;
+      assertEquals(
+        message.indexOf("swamp datastore sync --push") <
+          message.indexOf("remove them there"),
+        true,
+      );
+      assertEquals(events.includes("contamination-delete"), false);
+
+      // In the order the refusal gives: the push comes first.
+      await service.pushChanged({ namespace: NS });
+      assertEquals(remoteText(remote, TEAMMATE), '{"t":"edited"}');
+
+      const run = await doctor("--repair", "-y");
+      assertEquals(run.error, undefined);
+      assertEquals(JSON.parse(run.out).contamination.status, "completed");
+      assertEquals(remoteText(remote, TEAMMATE), '{"t":"edited"}');
+    },
+  );
 });

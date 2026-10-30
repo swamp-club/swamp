@@ -1142,6 +1142,14 @@ export function cacheWipeRefusal(
   cacheDir: string,
 ): string | undefined {
   const reasons: string[] = [];
+  // First, because it must happen first: a push deletes from the remote a
+  // marked file that is gone, so removing one as the advice below says would
+  // delete it for everyone.
+  if (summary.pendingChanges) {
+    reasons.push(
+      "changes recorded locally that no push has sent; run 'swamp datastore sync --push' first, and remove nothing from the cache before it: that push deletes from the remote, for everyone, a changed file that is gone",
+    );
+  }
   if (summary.unpushed > 0) {
     reasons.push(
       `${summary.unpushed} cache file(s) the remote never received (${
@@ -1164,11 +1172,6 @@ export function cacheWipeRefusal(
       `${localOnly} local version(s) the remote does not hold (${
         firstOf(samples.map(escapeControlCharacters), localOnly)
       }); copy any you want to keep out of ${cacheDir}, remove them there, and run this again. Do not pull first: a pull overwrites them`,
-    );
-  }
-  if (summary.pendingChanges) {
-    reasons.push(
-      "changes recorded locally that no push has sent; run 'swamp datastore sync --push' first",
     );
   }
   return reasons.length === 0

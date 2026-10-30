@@ -241,10 +241,12 @@ swamp datastore status --json
 ```
 
 On a format 2 datastore, `swamp doctor datastores --repair --json` (add `-y` to
-apply) prints one object with a key per repair stage: `unmigrated`, `catalog`,
-`duplicateLatest` and `contamination`. Each holds that stage's `status` object,
-or `null` when the stage did not run (no namespace, or the datastore has no
-contamination repair).
+apply) prints one object with a key per repair stage: `unmigrated`,
+`unreadableVersions`, `catalog`, `duplicateLatest`, `unpushed` and
+`contamination`. Each holds that stage's `status` object, or `null` when the
+stage did not run (no namespace, or the datastore has no contamination repair).
+A `warnings` array appears when something about the run itself went wrong, such
+as a datastore lock it could not release.
 
 ### Setting Up a Filesystem Datastore
 

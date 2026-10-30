@@ -2827,3 +2827,20 @@ Deno.test("repairDatastoreContamination: a wipe check that times out puts what d
     );
   }
 });
+
+Deno.test("cacheWipeRefusal: a pending push comes before the advice to remove files, and says why", () => {
+  const refusal = cacheWipeRefusal(
+    unpushedSummary({
+      locallyModified: 1,
+      sampleModified: ["ns/m"],
+      pendingChanges: true,
+    }),
+    "/cache",
+  )!;
+  assertEquals(
+    refusal.indexOf("swamp datastore sync --push") <
+      refusal.indexOf("remove them there"),
+    true,
+  );
+  assertStringIncludes(refusal, "remove nothing from the cache before it");
+});
