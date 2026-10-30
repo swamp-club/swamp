@@ -336,6 +336,16 @@ function play(
   return undefined;
 }
 
+/**
+ * Always played, so `assertCovered` does not depend on the random sequences
+ * reaching the retry: unsupported, a wait of the retry gap, then a poll.
+ */
+const RETRY_EXAMPLE: [Op[]] = [[
+  { op: "poll", outcome: { kind: "unsupported" }, lag: 0 },
+  { op: "advance", ms: RETRY_GAP_MS },
+  { op: "poll", outcome: { kind: "unsupported" }, lag: 0 },
+]];
+
 function assertCovered(coverage: Coverage, notices: NoticeBranch[]): void {
   console.log(
     "poll outcomes:",
@@ -383,7 +393,7 @@ Deno.test("inbox policy (property): with a monotonic clock, polls stay 900 s apa
       const broken = play(sequence, true, coverage);
       assertEquals(broken, undefined, broken);
     }),
-    { numRuns: 1000 },
+    { numRuns: 1000, examples: [RETRY_EXAMPLE] },
   );
   assertCovered(coverage, ["new", "repeat", "retired", "superseded", "silent"]);
 });
@@ -395,7 +405,7 @@ Deno.test("inbox policy (property): when the clock goes back, stopped keys stay 
       const broken = play(sequence, false, coverage);
       assertEquals(broken, undefined, broken);
     }),
-    { numRuns: 1000 },
+    { numRuns: 1000, examples: [RETRY_EXAMPLE] },
   );
   assertCovered(coverage, ["new", "repeat", "silent"]);
 });

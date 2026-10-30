@@ -110,7 +110,12 @@ async function withHarness(
   options: HarnessOptions,
   fn: (harness: Harness) => Promise<void>,
 ): Promise<void> {
-  const dir = await Deno.makeTempDir({ prefix: "swamp-repair-unpushed-" });
+  // Resolved because doctor reads the repo at its real path, and the remote
+  // keys a cache's last-synced index by path: on macOS the temp dir sits under
+  // a symlink.
+  const dir = await Deno.realPath(
+    await Deno.makeTempDir({ prefix: "swamp-repair-unpushed-" }),
+  );
   const namespace = options.namespace === undefined ? NS : options.namespace;
   const teammateKey = namespace ? TEAMMATE : "data/teammate/t.json";
   const remote = createInMemoryRemote(options.remote);
