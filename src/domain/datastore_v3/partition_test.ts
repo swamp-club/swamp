@@ -48,6 +48,7 @@ function snapshot(partition: Partition) {
   return {
     seq: partition.seq,
     fence: partition.highestFence,
+    leaseFence: partition.leaseFence,
     holder: partition.leaseHolder,
     records: partition.recordKeys().map((key) => [
       key,
@@ -571,35 +572,52 @@ Deno.test("Partition.append: refuses an unfenced commit once a fence was seen", 
   );
   assertEquals(snapshot(partition), before);
 
-  // A fence seen only through a lease op counts too.
+  // A lease fence is not a writer fence: it never makes a commit unfenced.
   const leased = Partition.empty(modelPartition());
   leased.append(modelCommit(1, [leaseOp({ holder: "serve-a", fence: 3 })]));
-  assertRejected(
-    () => leased.append(modelCommit(2, [versionOp("vpc", 1)])),
-    "unfenced",
-  );
-  leased.append(modelCommit(2, [versionOp("vpc", 1)], { fence: 3 }));
+  leased.append(modelCommit(2, [versionOp("vpc", 1)]));
   assertEquals(leased.seq, 2);
+  assertEquals(leased.highestFence, undefined);
 });
 
-Deno.test("Partition.append: lease ops raise the fence and name the holder", () => {
+Deno.test("Partition.append: lease ops raise the lease fence and name the holder", () => {
   const partition = Partition.empty(modelPartition());
-  partition.append(modelCommit(1, [leaseOp({ holder: "serve-a", fence: 1 })]));
   partition.append(
-    modelCommit(2, [leaseOp({ holder: "serve-b", fence: 2 })], { fence: 1 }),
+    modelCommit(1, [leaseOp({ holder: "lease-a", fence: 1 })], { fence: 7 }),
   );
-  assertEquals(partition.leaseHolder, "serve-b");
-  assertEquals(partition.highestFence, 2);
+  partition.append(
+    modelCommit(2, [leaseOp({ holder: "lease-b", fence: 2 })], { fence: 7 }),
+  );
+  assertEquals(partition.leaseHolder, "lease-b");
+  assertEquals(partition.leaseFence, 2);
+  // The writer fence is counted apart: a lease fence below it is fine.
+  assertEquals(partition.highestFence, 7);
+  const before = snapshot(partition);
   assertRejected(
     () =>
       partition.append(
-        modelCommit(3, [leaseOp({ holder: "serve-a", fence: 1 })], {
-          fence: 2,
+        modelCommit(3, [leaseOp({ holder: "lease-a", fence: 1 })], {
+          fence: 7,
         }),
       ),
-    "stale-fence",
+    "stale-lease",
   );
-  assertEquals(partition.leaseHolder, "serve-b");
+  assertEquals(snapshot(partition), before);
+  // The same fence again is the same lease's next commit.
+  partition.append(
+    modelCommit(3, [leaseOp({ holder: "lease-b", fence: 2 })], { fence: 7 }),
+  );
+  assertEquals(partition.seq, 3);
+});
+
+Deno.test("Partition.append: a lease fence above the writer fence never refuses a writer commit", () => {
+  const partition = Partition.empty(modelPartition());
+  partition.append(
+    modelCommit(1, [leaseOp({ holder: "lease-a", fence: 50 })], { fence: 2 }),
+  );
+  partition.append(modelCommit(2, [versionOp("vpc", 1)], { fence: 2 }));
+  assertEquals(partition.highestFence, 2);
+  assertEquals(partition.leaseFence, 50);
 });
 
 Deno.test("Partition.append: a lock-file edit with a stale expect is refused", async () => {
@@ -908,7 +926,11 @@ Deno.test("Partition.restore: refuses a damaged snapshot", async () => {
     ["a negative fence", { ...good, highestFence: -1 }],
     ["an empty lease holder", { ...good, leaseHolder: "" }],
     ["a txnIds list", { ...good, txnIds: ["txn-1", "txn-2"] }],
-    ["a lease holder without a fence", { ...good, highestFence: undefined }],
+    ["a lease holder without a lease fence", {
+      ...good,
+      leaseFence: undefined,
+    }],
+    ["a negative lease fence", { ...good, leaseFence: -1 }],
     ["a digest that is not SHA-256 hex", {
       ...good,
       records: [[good.records[0][0], "not-a-digest"]],

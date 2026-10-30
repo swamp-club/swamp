@@ -2282,8 +2282,11 @@ It is synchronous, and a refused commit leaves the partition unchanged:
   seq is now behind. Identity is the txnId alone: the payload is not
   compared.
 - **seq has no gaps.**
-- **Fences never go down.** A commit, or a lease op, whose fence is below the
-  partition's highest is refused (`stale-fence`). Once a partition has seen a
+- **Fences never go down.** A commit whose fence is below the partition's
+  highest is refused (`stale-fence`). A lease op carries a model lease's
+  fence, counted per partition apart from the writer's (swamp-club#4121): one
+  below the partition's lease fence is refused (`stale-lease`), and the two
+  never compare. Once a partition has seen a
   fence, a commit without one is refused too (`unfenced`), so a writer cannot
   slip past fencing by leaving it out. Every v3 writer holds a fence: the
   writer lease under `_control/writer/` carries it in solo mode
@@ -2799,8 +2802,8 @@ deferred `BEGIN` in WAL mode can fail on a stale snapshot even with
 
 1. reads the head row and compares its seq with the rebuilt partition's;
 2. applies the commit with `Partition.append`;
-3. writes the commit row, the head row (its fence read from the partition,
-   since a lease op raises it too) and, on every 1,000th commit, a snapshot.
+3. writes the commit row, the head row (its fence read from the partition)
+   and, on every 1,000th commit, a snapshot.
 
 A refusal rolls back and leaves the rebuilt partition unchanged. Any other
 failure rolls back and drops the rebuilt partition, which may be ahead of the
@@ -7022,10 +7025,11 @@ own locks, held through its lock routes (`ServeLock`,
 `DatastoreLockLeases`, `src/serve/datastore_locks.ts`). The global datastore
 lock stays a local file lock.
 
-These routes are the base model leases (`p5-leases`) extend, not a second
-mechanism beside them. Leases add a fencing token that serve checks on each
-commit the holder forwards, and a lapse that cancels the holder's run, on the
-same `locks` routes and the same lease records.
+These routes are the base model leases (`p5-leases`, swamp-club#4121) extend,
+not a second mechanism beside them: a lease carries a fencing token that serve
+checks on each commit the holder forwards, and a lapse cancels the holder's
+run, on the same `locks` routes and the same lease records. "Fenced leases"
+below describes them.
 
 - **The lock.** A lease is the lock serve's own handlers take for the key
   (`createModelLock` or `createWorkflowRunLock` on serve's datastore), taken
@@ -7075,6 +7079,75 @@ same `locks` routes and the same lease records.
   `{seq}`. The lock is therefore held until the commit is at serve. A commit
   left in the outbox (the connection lost after the request may have reached
   serve) is re-sent by a later recovery outside any lock.
+
+**Fenced leases** (swamp-club#4121). A checkout asks for a lease with
+`fenced: true`; an older serve ignores the field and grants an unfenced lease,
+which behaves as above.
+
+- **The fence.** Read under the lock: one above the partition's lease fence
+  (`Partition.leaseFence`, which only lease ops raise) and every fence this
+  leader issued for the key, so a lease never reuses a fence, across a
+  takeover too. A behavior's lease covers its partition
+  (`model--{type}--{id}`), a run's claim the run's (`lockTargetOfPartition`).
+- **The floor.** A behavior's lease also returns each data name's high-water
+  mark and removed versions (`SqliteCommitStore.leaseMarks`), even to a
+  caller with `run` but no `read` on the data: names and numbers, never
+  content. The holder registers the lease (`serve_lease_registry.ts`) and its
+  unit allocates above the floor (the serve sink's `dataHighWater`), so a
+  version written by a commit its copy never saw is not picked again. Each
+  commit that lands under the lease raises its floor, in the process and in
+  an explicit lease's record, by the versions it recorded: a caller without
+  `read` never sees its own commits in its copy either.
+- **The commit.** The envelope names the lease by id (`lease`), never its
+  fence; a client's commit carrying a lease op is still refused. Under the
+  forwarded lock serve judges it: a named lease must be live, fenced, the
+  caller's and cover exactly this partition, and a partition a live fenced
+  lease covers takes only commits that name it. A run's claim is the
+  exception: it is held only for a load, decision and save while the run's
+  owner checkpoints its record throughout, so a claim refuses no unleased
+  commit. Serve then stamps a lease op
+  (`holder` the lease id, `fence` its fence) after the client's ops; a retry
+  is compared without it. Anything else is `409 commit_lease-lost`, which
+  never says whose lease holds the partition. Partitions no fenced lease
+  covers keep the rules above. Leases are the leader's memory, so a takeover
+  ends them; the partition's lease fence is the durable backstop.
+- **Older readers.** A swamp before #4121 judges a lease op's fence against
+  the writer fence and would refuse the commit. Every request names what the
+  client's copy understands (`x-swamp-datastore-features: lease-ops`), and
+  serve leaves lease ops out of the commits it sends a client that does not
+  name it, so that client reads exactly what its own rules accept. Serve's
+  lease op does not count toward `MAX_COMMIT_OPS`: a writer fills a commit
+  before it knows whether serve will add one.
+- **A lapse.** The holder measures the lease from its last renewal on its
+  own monotonic clock. A renewal serve answers `404` or `403`, or none
+  before that deadline, lapses the lease: `ServeLock`'s `onLost` fires once,
+  the lease leaves the registry, and `acquireModelLocks`' `leaseLost` aborts.
+  `model method run` aborts its run with the lapse as the cancel cause; a CLI
+  `workflow run` or `resume` aborts the run's signal, which a step on a
+  worker follows. A commit sent naming the lease after it ended is refused;
+  writes staged before the lapse and flushed after it name no lease, and
+  land only if no other lease covers the partition, under the seq and
+  version checks. A
+  workflow step under a lease at serve checkpoints its writes before it
+  releases the lock, so they reach serve naming the lease.
+- **Lock status.** `GET locks?prefix=` lists the leases serve holds on locks
+  the caller could take, each decided without a refusal audit: `lockKey`,
+  `heldBy` (`caller` or `other`, never who) and `expiresAt`, at most 512 with
+  `truncated` past it. A follower refuses it: leases are the leader's.
+  `swamp datastore lock status` in a serve-mode checkout reports them as
+  `serve_lease` events.
+- **Explicit leases.** `swamp model lease acquire <behavior> --for
+  <duration>` (and `release`, `status`; `swamp behavior lease` too) takes a
+  fenced lease for a command's TTL, records it, then renews it with `holdMs`
+  (5 s to 60 min, `MAX_HOLD_MS`), which makes it explicit: serve holds it for
+  its hold between renewals. A reply lost on the way strands the lease for
+  the short TTL only; acquiring again changes the hold. The checkout records it in its local root
+  (`model_leases.json`, `explicit_model_leases.ts`). Every command renews it
+  when it binds serve and registers it, so each of its commits to the
+  behavior names the lease, a read-kind method's lockless save included. A
+  command that takes the behavior's lock adopts it under a lock local to the
+  checkout instead of asking again, leaving it held when it ends. A lease
+  no command renews within its hold lapses at serve. It ends on `release` or once its hold passes unrenewed.
 
 `integration/serve_upstream_lock_test.ts` runs two checkouts, each in a
 Worker as a machine of its own, saving ten versions each of one behavior's
@@ -7304,10 +7377,22 @@ A read that cannot reach serve uses the copy as it is and warns that it may be
 out of date. A write never falls back to storage.
 
 **Recovery.** `recoverV3Outbox` lands a serve-mode checkout's entries through
-the sink's forwarding store (`forwardedAttempts`). An entry whose txnId has
-landed at serve is settled once the partition is read. One whose base moved is
-sent on the new head, because serve judges it against its own log, rather
-than dropped as `head-moved`.
+the sink's forwarding store (`forwarded`). An entry whose txnId has landed at
+serve is settled once the partition is read. One whose base moved, or that
+serve answers with a moved head, is dropped as `head-moved`, as a local one
+is: building it again on the newer head let a put or tombstone with no
+`expect` overwrite another writer's newer record (swamp-club#4121). An entry
+records the fenced lease it was built under (the outbox's `lease_id` and
+`lease_fence`, schema 5) and is resent naming it. Once that lease has ended,
+usually with the process that held it, the entry is sent again under no
+lease: its head has not moved, so nothing was written since, and the head
+check is then its only guard (a later lease that committed nothing to the
+partition does not stop it). Serve refuses
+that only while another holder's lease covers the partition; the entry is
+then left for a later recovery (marked left, so the floor never drops it),
+with its unit's run entries, so a run record never lands without its data
+commit. A lease serve reports as superseded (`stale-lease`) drops the entry
+as `lease-superseded`.
 
 **Limits (later items).**
 
@@ -7318,18 +7403,9 @@ than dropped as `head-moved`.
   "Reset when the caller's read access changes" above): the second command
   after the change, or later within the cooldown.
 - Offline writes are refused, not queued (`p5-offline`).
-- Per-model and workflow-run locks are serve's ("Model locks" above).
-  `p5-leases` builds on those routes (fencing tokens, a lapse cancelling the
-  run) and closes what stays open here:
-  - A lease that cannot be renewed (serve away past its TTL, or a revoked
-    grant) lets the work continue unlocked. Serve's seq check is then the
-    only backstop, so a `version-live` refusal can return.
-  - The catch-up after the lock sees only what the caller may read. A caller
-    with `run` on a behavior but no `read` on its data picks versions from a
-    stale floor.
-  - `swamp datastore lock status` in a checkout does not show serve-held
-    locks.
-  - An outbox entry re-sent by a later recovery is sent outside any lock.
+- Leases, explicit ones included, live in the leader's memory: a takeover
+  ends every lease, and its holders' runs are cancelled. Keeping them across
+  a takeover is `p5-offline`'s.
 - Without `managedConfig`, behavior definitions are repository files
   (`models/`), not datastore records. Serve judges a forwarded run's step
   outputs against its own checkout's definitions, so a workflow run on a

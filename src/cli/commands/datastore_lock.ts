@@ -28,7 +28,9 @@ import {
   createModelLock,
   requireInitializedRepoReadOnly,
   resolveDatastoreForRepo,
+  v3LocationOf,
 } from "../repo_context.ts";
+import { serveUpstreamAt } from "../../infrastructure/datastore_v3/serve_upstream_registry.ts";
 import { resolveCustomProvider } from "../../infrastructure/persistence/datastore_global_lock.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -71,9 +73,8 @@ const datastoreLockStatusCommand = new Command()
     ]);
 
     const repoDir = resolveRepoDir(options.repoDir);
-    const { datastoreConfig: config, engine } = await resolveDatastoreForRepo(
-      repoDir,
-    );
+    const resolution = await resolveDatastoreForRepo(repoDir);
+    const { datastoreConfig: config, engine } = resolution;
 
     // A v3 datastore's lock that matters across processes is its writer
     // lock (swamp-club#3279); a bucket datastore's is in its control plane,
@@ -115,6 +116,22 @@ const datastoreLockStatusCommand = new Command()
       lockingConfigOf(config),
       customModelLocks,
     );
+    // A checkout written through serve also lists the leases serve holds
+    // on locks it could take (swamp-club#4121).
+    if (resolution.serveUpstream !== undefined) {
+      const binding = serveUpstreamAt((await v3LocationOf(resolution)).path);
+      if (binding !== undefined) {
+        deps.listServeLeases = async () => {
+          const client = binding.client();
+          try {
+            // Bounded by the client's own per-request timeout.
+            return await client.listLocks("", new AbortController().signal);
+          } finally {
+            client.close();
+          }
+        };
+      }
+    }
 
     const isFilesystem = !isCustomDatastoreConfig(config) &&
       config.type === "filesystem";

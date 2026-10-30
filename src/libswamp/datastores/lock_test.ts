@@ -101,6 +101,41 @@ Deno.test("datastoreLockStatus: global lock held", async () => {
   );
 });
 
+Deno.test("datastoreLockStatus: a serve-mode checkout lists serve's leases before the global status, holder kinds only (swamp-club#4121)", async () => {
+  const lease = {
+    lockKey: "data/aws/ec2/0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a01/.lock",
+    heldBy: "other" as const,
+    expiresAt: "2026-10-29T12:00:30.000Z",
+  };
+  const events = await collect(
+    datastoreLockStatus(
+      createLibSwampContext(),
+      makeStatusDeps({
+        listServeLeases: () =>
+          Promise.resolve({ leases: [lease], truncated: true }),
+      }),
+      { datastoreType: "filesystem", isFilesystemDatastore: true },
+    ),
+  );
+  assertEquals(events.map((event) => event.kind), [
+    "serve_lease",
+    "serve_leases_truncated",
+    "completed",
+  ]);
+  assertEquals(events[0], { kind: "serve_lease", data: lease });
+});
+
+Deno.test("datastoreLockStatus: an older serve that lists no leases adds no events", async () => {
+  const events = await collect(
+    datastoreLockStatus(
+      createLibSwampContext(),
+      makeStatusDeps({ listServeLeases: () => Promise.resolve(undefined) }),
+      { datastoreType: "filesystem", isFilesystemDatastore: true },
+    ),
+  );
+  assertEquals(events.map((event) => event.kind), ["completed"]);
+});
+
 Deno.test("datastoreLockStatus: with model locks on filesystem", async () => {
   const deps = makeStatusDeps({
     scanModelLocks: () =>
@@ -751,4 +786,17 @@ Deno.test("createDatastoreLockStatusDeps: bounds concurrent inspects and sorts r
   assertEquals(locks[0].modelId, "server-00");
   assertEquals(locks[39].modelId, "server-39");
   assertEquals(maxInFlight, 16);
+});
+
+Deno.test("datastoreLockStatus: a serve that cannot list its leases still lets the local status through", async () => {
+  const events = await collect(
+    datastoreLockStatus(
+      createLibSwampContext(),
+      makeStatusDeps({
+        listServeLeases: () => Promise.reject(new Error("serve unreachable")),
+      }),
+      { datastoreType: "filesystem", isFilesystemDatastore: true },
+    ),
+  );
+  assertEquals(events.map((event) => event.kind), ["completed"]);
 });

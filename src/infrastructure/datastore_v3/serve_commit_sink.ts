@@ -58,6 +58,7 @@ import {
 } from "./outbox_commit_sink.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import type { ServeCatchUp } from "./serve_catch_up.ts";
+import type { HeldServeLease, LandedVersion } from "./serve_lease_registry.ts";
 import { storageNamespaceOf } from "./serve_datastore_storage.ts";
 import type {
   CommitChunk,
@@ -104,6 +105,22 @@ export interface ServeCommitSinkOptions {
   /** Bounds every request; aborted when the handle closes. */
   readonly signal: () => AbortSignal;
   readonly clock?: () => Date;
+  /**
+   * The fenced model lease this process holds on a partition, if any
+   * (swamp-club#4121): its commits name it, its outbox entries record it,
+   * and its floor raises the partition's high-water marks.
+   */
+  readonly leaseOf?: (partition: PartitionKey) => HeldServeLease | undefined;
+  /**
+   * Called once a commit naming lease `leaseId` has landed, with the data
+   * versions it recorded, so the lease's floor follows the holder's own
+   * writes (swamp-club#4121). A failure is the callback's to report.
+   */
+  readonly onLeasedCommit?: (
+    partition: PartitionKey,
+    leaseId: string,
+    landed: readonly LandedVersion[],
+  ) => Promise<void>;
 }
 
 /**
@@ -111,10 +128,22 @@ export interface ServeCommitSinkOptions {
  * with appends forwarded to serve. Outbox recovery lands its entries
  * through it too, so a recovered commit reaches serve, never only the copy.
  */
-export type ServeUpstreamCommitStore = Pick<
-  SqliteCommitStore,
-  "append" | "head" | "headIdentity" | "dataHighWater" | "landedSeq"
->;
+export type ServeUpstreamCommitStore =
+  & Pick<
+    SqliteCommitStore,
+    "append" | "head" | "headIdentity" | "dataHighWater" | "landedSeq"
+  >
+  & {
+    /**
+     * Sends `commit` naming the model lease `leaseId`, or none: what a
+     * recovery resends an outbox entry under, the lease it was built
+     * under rather than any this process holds now (swamp-club#4121).
+     */
+    appendUnderLease(
+      commit: Commit,
+      leaseId: string | undefined,
+    ): Promise<CommitStoreAppendResult>;
+  };
 
 /** A serve-mode handle's sink, and the store its outbox recovery uses. */
 export interface ServeCommitSink extends OutboxCommitSink {
@@ -174,13 +203,21 @@ export function createServeCommitSink(
     return await chunksOf(commit, framed);
   };
 
-  const forward = async (commit: Commit): Promise<CommitStoreAppendResult> => {
+  const leaseOf = options.leaseOf ?? (() => undefined);
+
+  const forward = async (
+    commit: Commit,
+    leaseId: string | undefined,
+  ): Promise<CommitStoreAppendResult> => {
     const signal = options.signal();
     const json = commit.toJSON() as { readonly ops: readonly unknown[] };
-    // Serve stamps the principal, writer and fence: the envelope names none.
+    // Serve stamps the principal, writer and fence: the envelope names
+    // none. A commit made under a fenced lease names the lease's id; serve
+    // stamps its fence from its own record (swamp-club#4121).
     const envelope = {
       expectedSeq: commit.seq - 1,
       txnId: commit.txnId,
+      ...(leaseId === undefined ? {} : { lease: leaseId }),
       ops: json.ops,
     };
     const refs = [...new Set(commit.chunkRefs())];
@@ -236,6 +273,14 @@ export function createServeCommitSink(
       throw error;
     }
     neverSent.delete(commit.txnId);
+    if (leaseId !== undefined && options.onLeasedCommit !== undefined) {
+      const landed = commit.ops.flatMap((op) =>
+        op.kind === "data-version"
+          ? [{ name: op.metadata.name, version: op.metadata.version }]
+          : []
+      );
+      await options.onLeasedCommit(commit.partition, leaseId, landed);
+    }
     // The copy stores serve's commit as serve stamped it. A read that fails
     // here leaves the copy behind; the next catch-up brings it.
     try {
@@ -275,8 +320,15 @@ export function createServeCommitSink(
       const seq = await catchUp.headOf(namespace, partition);
       return seq > local.seq ? { seq, txnId: undefined } : local;
     },
-    dataHighWater: (namespace, partition, name) =>
-      commitStore.dataHighWater(namespace, partition, name),
+    // A fenced lease's floor holds versions the copy may not: ones written
+    // by commits the caller cannot read (swamp-club#4121).
+    dataHighWater: async (namespace, partition, name) => {
+      const copy = await commitStore.dataHighWater(namespace, partition, name);
+      const floor = leaseOf(partition)?.floor.find((marks) =>
+        marks.name === name
+      );
+      return Math.max(copy, floor?.highWater ?? 0);
+    },
     landedSeq: async (namespace, partition, txnId) => {
       const local = await commitStore.landedSeq(namespace, partition, txnId);
       if (local !== undefined || neverSent.delete(txnId)) return local;
@@ -285,7 +337,8 @@ export function createServeCommitSink(
       await catchUp.catchUpPartition(namespace, partition, options.signal());
       return await commitStore.landedSeq(namespace, partition, txnId);
     },
-    append: forward,
+    append: (commit) => forward(commit, leaseOf(commit.partition)?.leaseId),
+    appendUnderLease: forward,
   };
   const sink = createOutboxCommitSink({
     commitStore: upstream,
@@ -295,5 +348,23 @@ export function createServeCommitSink(
       : {}),
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
   });
-  return { ...sink, seqGapAttempts: SERVE_SEQ_GAP_ATTEMPTS, upstream };
+  return {
+    ...sink,
+    outbox: sink.outbox === undefined ? undefined : {
+      ...sink.outbox,
+      // The entry records the lease it was built under, which its
+      // recovery names (swamp-club#4121).
+      prepare: (preparation) => {
+        const lease = leaseOf(preparation.commit.partition);
+        return sink.outbox!.prepare(
+          lease === undefined ? preparation : {
+            ...preparation,
+            lease: { leaseId: lease.leaseId, fence: lease.fence },
+          },
+        );
+      },
+    },
+    seqGapAttempts: SERVE_SEQ_GAP_ATTEMPTS,
+    upstream,
+  };
 }

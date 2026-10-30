@@ -90,6 +90,8 @@ export interface ServeLogEntry {
   readonly txnId: string;
   readonly principal: string | undefined;
   readonly keys: readonly string[];
+  /** The fence of the lease op serve stamped, if any (swamp-club#4121). */
+  readonly leaseFence?: number;
 }
 
 export type ServeWorkerMessage =
@@ -194,6 +196,11 @@ async function start(
               principal: commit.principal,
               keys: commit.ops.flatMap((op) =>
                 "key" in op ? [op.key.toString()] : []
+              ),
+              ...Object.fromEntries(
+                commit.ops.flatMap((op) =>
+                  op.kind === "lease" ? [["leaseFence", op.fence]] : []
+                ),
               ),
             })),
           } satisfies ServeWorkerMessage,

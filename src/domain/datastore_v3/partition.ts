@@ -47,8 +47,19 @@ export type CommitRejection =
    * {@link Partition.appendObserved}, not past the partition's seq.
    */
   | "seq-gap"
-  /** The commit's fence, or a lease op's, is below the partition's highest. */
+  /** The commit's fence is below the partition's highest. */
   | "stale-fence"
+  /**
+   * A lease op's fence is below the partition's lease fence: the lease it
+   * was taken under has since changed hands (swamp-club#4121).
+   */
+  | "stale-lease"
+  /**
+   * The commit names a model lease serve does not hold for the caller and
+   * this partition, or names none while one covers it (swamp-club#4121).
+   * Raised by serve, never by the partition.
+   */
+  | "lease-lost"
   /** The commit carries no fence, but the partition has seen one. */
   | "unfenced"
   /** A put's or tombstone's `expect` does not hold. */
@@ -115,6 +126,8 @@ export interface PartitionSnapshot {
   readonly partition: string;
   readonly seq: number;
   readonly highestFence?: number;
+  /** The highest fence a lease op carried (swamp-club#4121). */
+  readonly leaseFence?: number;
   readonly leaseHolder?: string;
   /** Each present record's key and SHA-256. */
   readonly records: readonly (readonly [string, string])[];
@@ -171,12 +184,16 @@ type RecordState = string | null;
  *   partition fails the step that wrote it instead of reusing the number.
  * - A put's or tombstone's `expect` that does not hold refuses the commit.
  * - A commit carrying a fence below the highest the partition has seen is
- *   refused; so is a lease op carrying one. Once a partition has seen a
+ *   refused. Once a partition has seen a
  *   fence, a commit without one is refused too, so a writer cannot slip past
  *   fencing by leaving it out. Every v3 writer holds a fence, the solo writer
  *   lock's in solo mode and the leader lease's in team mode
  *   (swamp-club#3234), so only a partition that has never seen one accepts
  *   an unfenced commit.
+ * - A lease op carrying a fence below the partition's lease fence is
+ *   refused as `stale-lease`. A lease fence is a model lease's
+ *   (swamp-club#4121), counted per partition apart from the writer's fence:
+ *   the two never compare.
  *
  * A commit applies whole or not at all: a refused commit leaves the
  * partition exactly as it was. `append` is synchronous, so its checks and its
@@ -185,6 +202,7 @@ type RecordState = string | null;
 export class Partition {
   #seq = 0;
   #highestFence: number | undefined;
+  #leaseFence: number | undefined;
   #leaseHolder: string | undefined;
   readonly #txnIds = new Set<string>();
   /** For a restored partition, whether a txnId applied before its snapshot. */
@@ -225,6 +243,7 @@ export class Partition {
       "partition",
       "seq",
       "highestFence",
+      "leaseFence",
       "leaseHolder",
       "records",
       "names",
@@ -250,18 +269,26 @@ export class Partition {
       }
       partition.#highestFence = json.highestFence as number;
     }
+    if (json.leaseFence !== undefined) {
+      try {
+        requireFence(json.leaseFence);
+      } catch (error) {
+        fail((error as Error).message);
+      }
+      partition.#leaseFence = json.leaseFence as number;
+    }
     if (json.leaseHolder !== undefined) {
       if (typeof json.leaseHolder !== "string" || json.leaseHolder === "") {
         fail("leaseHolder is not a non-empty string");
       }
       partition.#leaseHolder = json.leaseHolder as string;
     }
-    // A lease op always raises the fence, so a holder implies one.
+    // A lease op always sets the lease fence, so a holder implies one.
     if (
       partition.#leaseHolder !== undefined &&
-      partition.#highestFence === undefined
+      partition.#leaseFence === undefined
     ) {
-      fail("it names a lease holder but no fence");
+      fail("it names a lease holder but no lease fence");
     }
     partition.#priorTxn = priorTxn;
     if (!Array.isArray(json.records)) return fail("records is not an array");
@@ -353,6 +380,9 @@ export class Partition {
       ...(this.#highestFence === undefined
         ? {}
         : { highestFence: this.#highestFence }),
+      ...(this.#leaseFence === undefined
+        ? {}
+        : { leaseFence: this.#leaseFence }),
       ...(this.#leaseHolder === undefined
         ? {}
         : { leaseHolder: this.#leaseHolder }),
@@ -375,9 +405,14 @@ export class Partition {
     return this.#seq;
   }
 
-  /** The highest fence any accepted commit or lease op carried. */
+  /** The highest fence any accepted commit carried. */
   get highestFence(): number | undefined {
     return this.#highestFence;
+  }
+
+  /** The highest fence any accepted lease op carried (swamp-club#4121). */
+  get leaseFence(): number | undefined {
+    return this.#leaseFence;
   }
 
   /** The holder named by the last lease op applied. */
@@ -573,6 +608,7 @@ export class Partition {
     // part-way through leaves the partition untouched.
     const records = new Map<string, RecordState>();
     const names = new Map<string, DataName>();
+    let leaseFence = this.#leaseFence;
     let leaseHolder = this.#leaseHolder;
     const current = (key: string): string | undefined => {
       const staged = records.get(key);
@@ -671,7 +707,13 @@ export class Partition {
           break;
         }
         case "lease":
-          fence = this.#raiseFence(fence, op.fence);
+          if (leaseFence !== undefined && op.fence < leaseFence) {
+            throw new CommitRejectedError(
+              "stale-lease",
+              `Lease fence ${op.fence} is below partition ${this.key}'s lease fence ${leaseFence}`,
+            );
+          }
+          leaseFence = op.fence;
           leaseHolder = op.holder;
           break;
       }
@@ -685,6 +727,7 @@ export class Partition {
     this.#seq = commit.seq;
     this.#txnIds.add(commit.txnId);
     this.#highestFence = fence;
+    this.#leaseFence = leaseFence;
     this.#leaseHolder = leaseHolder;
     return { kind: "appended", seq: commit.seq };
   }

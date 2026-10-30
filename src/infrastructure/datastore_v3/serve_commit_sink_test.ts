@@ -31,6 +31,7 @@ import {
   modelPartition,
   savePut,
   sha256Of,
+  versionOp,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import { contextHook, unitOptions } from "./commit_log_test_helpers.ts";
 import { createCommitLogUnitOfWork } from "./commit_log_unit_of_work.ts";
@@ -50,7 +51,9 @@ import {
   ServeUnreachableError,
   ServeUpstreamDivergedError,
 } from "./serve_upstream_errors.ts";
+import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { ServeUpstreamState } from "./serve_upstream_state.ts";
+import type { HeldServeLease } from "./serve_lease_registry.ts";
 import {
   FakeServe,
   removeTempDir,
@@ -80,7 +83,10 @@ interface Checkout {
 }
 
 /** A serve-mode checkout over a fake serve, wired as a v3 handle wires it. */
-async function withCheckout(fn: (c: Checkout) => Promise<void>) {
+async function withCheckout(
+  fn: (c: Checkout) => Promise<void>,
+  leaseOf?: (partition: PartitionKey) => HeldServeLease | undefined,
+) {
   const dir = await Deno.makeTempDir({ prefix: "swamp-serve-sink-" });
   const store = SqliteCommitStore.open(join(dir, "commits.db"), {
     follower: true,
@@ -108,6 +114,7 @@ async function withCheckout(fn: (c: Checkout) => Promise<void>) {
     chunkCache: cache,
     outbox,
     signal: () => lifetime.signal,
+    ...(leaseOf === undefined ? {} : { leaseOf }),
   });
   try {
     await fn({ store, state, outbox, serve, catchUp, cache, sink });
@@ -557,4 +564,109 @@ Deno.test("createServeCommitSink: a commit that lands on a serve without the cop
     assert(warnings[0].includes("saved to serve"), warnings[0]);
     assert(warnings[0].includes("commit 2 of partition"), warnings[0]);
   });
+});
+
+// Fenced model leases (swamp-club#4121).
+
+const LEASE: HeldServeLease = {
+  leaseId: "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a99",
+  fence: 3,
+  floor: [{ name: "vpc", highWater: 7 }],
+};
+const leasedModel = (partition: PartitionKey) =>
+  partition.equals(MODEL) ? LEASE : undefined;
+
+Deno.test("createServeCommitSink: a commit to a partition under a held lease names the lease's id, never its fence", async () => {
+  await withCheckout(async ({ serve, cache, sink }) => {
+    const { commit } = await chunkedCommit(cache, 2);
+    await sink.append(commit);
+    assertEquals(serve.posted[0].envelope.lease, LEASE.leaseId);
+    assertEquals(
+      Object.keys(serve.posted[0].envelope).includes("fence"),
+      false,
+    );
+  }, leasedModel);
+});
+
+Deno.test("createServeCommitSink: a commit to a partition no held lease covers names none", async () => {
+  await withCheckout(async ({ serve, cache, sink }) => {
+    const { commit } = await chunkedCommit(cache, 2);
+    await sink.append(commit);
+    assertEquals(serve.posted[0].envelope.lease, undefined);
+  }, () => undefined);
+});
+
+Deno.test("createServeCommitSink: an outbox entry records the lease it was prepared under", async () => {
+  await withCheckout(async ({ outbox, cache, sink }) => {
+    const { commit } = await chunkedCommit(cache, 2);
+    await sink.outbox!.prepare({
+      commit,
+      unitId: "u",
+      base: { seq: 0, txnId: undefined },
+    });
+    const [entry] = (await outbox.entries()).entries;
+    assertEquals(entry.lease, { leaseId: LEASE.leaseId, fence: LEASE.fence });
+  }, leasedModel);
+});
+
+Deno.test("createServeCommitSink: a held lease's floor raises a data name's high-water mark above the copy's", async () => {
+  await withCheckout(async ({ sink }) => {
+    assertEquals(await sink.dataHighWater!("", MODEL, "vpc"), 7);
+    assertEquals(await sink.dataHighWater!("", MODEL, "other"), 0);
+  }, leasedModel);
+});
+
+Deno.test("createServeCommitSink: a commit landed under a lease reports the data versions it recorded, so the lease's floor follows them", async () => {
+  const reported: unknown[] = [];
+  const dir = await Deno.makeTempDir({ prefix: "swamp-serve-sink-floor-" });
+  const store = SqliteCommitStore.open(join(dir, "commits.db"), {
+    follower: true,
+  });
+  const state = ServeUpstreamState.open(join(dir, "serve_upstream.db"));
+  const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"));
+  const serve = new FakeServe();
+  const catchUp = new ServeCatchUp({
+    client: serve,
+    commitStore: store,
+    state,
+    copyDir: dir,
+    namespace: "",
+  });
+  const cache = new CachedServeStorage(
+    join(dir, "datastore"),
+    new ServeChunkStorage(serve),
+    NO_SYNC,
+  );
+  const lifetime = new AbortController();
+  const sink = createServeCommitSink({
+    client: serve,
+    commitStore: store,
+    catchUp,
+    chunkCache: cache,
+    outbox,
+    signal: () => lifetime.signal,
+    leaseOf: leasedModel,
+    onLeasedCommit: (partition, leaseId, landed) => {
+      reported.push([partition.toString(), leaseId, landed]);
+      return Promise.resolve();
+    },
+  });
+  try {
+    const commit = modelCommit(1, [
+      await savePut("vpc", 4),
+      versionOp("vpc", 4),
+    ]);
+    await sink.append(commit);
+    assertEquals(reported, [[
+      MODEL.toString(),
+      LEASE.leaseId,
+      [{ name: "vpc", version: 4 }],
+    ]]);
+  } finally {
+    lifetime.abort();
+    state.close();
+    await outbox.close();
+    await store.close();
+    await removeTempDir(dir);
+  }
 });

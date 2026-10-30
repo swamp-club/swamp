@@ -87,6 +87,32 @@ Deno.test("SqliteCommitOutbox: reads see an outbox nothing wrote as empty, and c
   });
 });
 
+Deno.test("SqliteCommitOutbox: an entry keeps the model lease it was prepared under, and a re-prepare replaces it (swamp-club#4121)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "outbox.db");
+    const outbox = new SqliteCommitOutbox(path);
+    const commit = modelCommit(1, [await savePut("a", 1)], { fence: 2 });
+    const lease = { leaseId: crypto.randomUUID(), fence: 7 };
+    await outbox.prepare({
+      commit,
+      unitId: "u1",
+      base: { seq: 0, txnId: undefined },
+      lease,
+    });
+    await outbox.close();
+    const reopened = new SqliteCommitOutbox(path);
+    assertEquals((await reopened.entries()).entries[0].lease, lease);
+    // Prepared again outside any lease: the entry names none.
+    await reopened.prepare({
+      commit,
+      unitId: "u1",
+      base: { seq: 0, txnId: undefined },
+    });
+    assertEquals((await reopened.entries()).entries[0].lease, undefined);
+    await reopened.close();
+  });
+});
+
 Deno.test("SqliteCommitOutbox: a prepared entry survives a reopen, and a re-prepare keeps its sequence and creation time", async () => {
   await withTempDir(async (dir) => {
     const path = join(dir, "outbox.db");
@@ -316,7 +342,9 @@ async function schemaOneOutbox(path: string): Promise<void> {
   await outbox.close();
   const db = new DatabaseSync(path);
   db.exec(
-    "ALTER TABLE outbox_entries DROP COLUMN abandoned_at; " +
+    "ALTER TABLE outbox_entries DROP COLUMN lease_id; " +
+      "ALTER TABLE outbox_entries DROP COLUMN lease_fence; " +
+      "ALTER TABLE outbox_entries DROP COLUMN abandoned_at; " +
       "ALTER TABLE outbox_chain DROP COLUMN pending_fence; " +
       "ALTER TABLE outbox_entries DROP COLUMN writer_process; " +
       "ALTER TABLE outbox_entries DROP COLUMN left_at_fence; " +
@@ -342,7 +370,9 @@ async function schemaTwoOutbox(path: string): Promise<void> {
   await outbox.close();
   const db = new DatabaseSync(path);
   db.exec(
-    "ALTER TABLE outbox_entries DROP COLUMN abandoned_at; " +
+    "ALTER TABLE outbox_entries DROP COLUMN lease_id; " +
+      "ALTER TABLE outbox_entries DROP COLUMN lease_fence; " +
+      "ALTER TABLE outbox_entries DROP COLUMN abandoned_at; " +
       "ALTER TABLE outbox_chain DROP COLUMN pending_fence; " +
       "PRAGMA user_version=2",
   );

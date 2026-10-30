@@ -25,6 +25,7 @@ import {
   typeNameType,
   withPreferredExample,
 } from "./command_syntax.ts";
+import { createModelLeaseCommand, MODEL_LEASE_SYNTAX } from "./model_lease.ts";
 import { groupCommandAction } from "../group_action.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
@@ -220,6 +221,7 @@ export interface ModelChildren {
   readonly edit: ReturnType<typeof createModelEditCommand>;
   readonly evaluate: ReturnType<typeof createModelEvaluateCommand>;
   readonly get: ReturnType<typeof createModelGetCommand>;
+  readonly lease: ReturnType<typeof createModelLeaseCommand>;
   readonly search: ReturnType<typeof createModelSearchCommand>;
   readonly validate: ReturnType<typeof createModelValidateCommand>;
   readonly method: ReturnType<typeof createModelMethodCommand>;
@@ -271,6 +273,7 @@ export function createModelCommand(
       children.evaluate ?? createModelEvaluateCommand(sub("evaluate")),
     )
     .command("get", children.get ?? createModelGetCommand(sub("get")))
+    .command("lease", children.lease ?? createModelLeaseCommand(sub("lease")))
     .command(
       "search",
       children.search ?? createModelSearchCommand(sub("search")),
@@ -298,6 +301,7 @@ export const modelCommand = createModelCommand(MODEL_SYNTAX, {
   edit: modelEditCommand,
   evaluate: modelEvaluateCommand,
   get: modelGetCommand,
+  lease: createModelLeaseCommand(MODEL_LEASE_SYNTAX),
   search: modelSearchCommand,
   validate: modelValidateCommand,
   method: modelMethodCommand,

@@ -116,6 +116,11 @@ import {
   ServeUpstreamState,
 } from "./serve_upstream_state.ts";
 import { serveUpstreamAt } from "./serve_upstream_registry.ts";
+import {
+  heldServeLeaseOf,
+  raiseServeLeaseFloor,
+} from "./serve_lease_registry.ts";
+import { raiseExplicitLeaseFloor } from "./explicit_model_leases.ts";
 import { syncDirectory } from "../persistence/sync_directory.ts";
 import { swampPath } from "../persistence/paths.ts";
 import { dropRunIndexEntries } from "../persistence/workflow_run_index.ts";
@@ -968,6 +973,17 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       outbox,
       sweepBatch: () => sweepBatchAt(outbox.path),
       signal: () => lifetime.signal,
+      leaseOf: (partition) => heldServeLeaseOf(serve!.root, partition),
+      onLeasedCommit: async (partition, leaseId, landed) => {
+        raiseServeLeaseFloor(serve!.root, partition, leaseId, landed);
+        try {
+          await raiseExplicitLeaseFloor(serve!.root, leaseId, landed);
+        } catch (error) {
+          // The commit landed; the next command's floor may lag it.
+          logger
+            .warn`Could not record a model lease's new floor in this checkout: ${error}`;
+        }
+      },
     })
     : undefined;
   const baseSink: OutboxCommitSink = serveSink ??

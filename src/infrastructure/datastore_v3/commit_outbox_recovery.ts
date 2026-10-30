@@ -80,10 +80,18 @@ const logger = getSwampLogger(["datastore", "v3"]);
 /** What {@link recoverCommitOutbox} works over: a v3 datastore handle's parts. */
 export interface OutboxRecoveryTarget {
   readonly outbox: CommitOutbox & { readonly path: string };
-  readonly commitStore: Pick<
-    SqliteCommitStore,
-    "append" | "headIdentity" | "landedSeq"
-  >;
+  readonly commitStore:
+    & Pick<SqliteCommitStore, "append" | "headIdentity" | "landedSeq">
+    & {
+      /**
+       * Sends a commit naming the model lease `leaseId`, or none: a serve
+       * target's append (swamp-club#4121). Absent for a local store.
+       */
+      readonly appendUnderLease?: (
+        commit: Commit,
+        leaseId: string | undefined,
+      ) => Promise<unknown>;
+    };
   readonly chunkStore: Pick<ChunkStore, "missing" | "syncStored">;
 }
 
@@ -105,14 +113,24 @@ export interface RecoverCommitOutboxOptions {
   readonly clock?: () => Date;
   readonly signal?: AbortSignal;
   /**
-   * How many times an entry is built again on a moved head before it is
-   * dropped, for a target whose appends go to serve (swamp-club#3985). Serve
-   * judges each commit against its own log, so an entry whose base moved is
-   * sent on the new head rather than dropped as `head-moved`. Absent for a
-   * local commit store, whose moved head drops the entry.
+   * Whether the target's appends go to serve (swamp-club#3985). An entry
+   * whose base is not serve's head is dropped as `head-moved`, as a local
+   * one is, and one serve answers with a moved head too: it is never built
+   * again on a newer head, where a put or tombstone with no `expect` would
+   * overwrite a newer record (swamp-club#4121). An entry built under a
+   * fenced model lease is sent naming that lease, and one serve refuses
+   * because the lease ended is dropped as `lease-superseded`.
    */
-  readonly forwardedAttempts?: number;
+  readonly forwarded?: boolean;
 }
+
+/**
+ * Why a forwarded entry's moved head is not always visible in the copy: a
+ * caller's copy leaves out the commits it may not read.
+ */
+const FORWARDED_HEAD_MOVED =
+  "serve's partition moved on since, possibly by commits this checkout " +
+  "cannot read";
 
 /** What {@link recoverCommitOutbox} did. */
 export interface OutboxRecoveryReport {
@@ -288,12 +306,35 @@ export async function recoverCommitOutbox(
   }
 
   let remaining = [...plan.sends];
+  let deferred = 0;
+  // Partitions an entry was left in: later entries of one wait with it, as
+  // they were prepared after it.
+  const deferredPartitions = new Set<string>();
   while (remaining.length > 0) {
     signal.throwIfAborted();
     const [entry, ...rest] = remaining;
     remaining = rest;
     const { commit } = entry;
-    const outcome = await recoverEntry(target, entry, options, clock, signal);
+    const outcome = deferredPartitions.has(commit.partition.toString())
+      ? { kind: "deferred" as const }
+      : await recoverEntry(target, entry, options, clock, signal);
+    if (outcome.kind === "deferred") {
+      // Left for a later recovery, and marked so the floor never drops it.
+      // Its unit's run entries wait with it: a run record never lands
+      // without the data commit it names.
+      const withIt = dropsAfterRefusal(entry, remaining);
+      remaining = remaining.filter((other) => !withIt.includes(other));
+      deferredPartitions.add(commit.partition.toString());
+      for (const other of withIt) {
+        deferredPartitions.add(other.commit.partition.toString());
+      }
+      await outbox.markLeft(
+        [entry, ...withIt].map((left) => outboxKeyOf(left.commit)),
+        options.fence,
+      );
+      deferred += 1 + withIt.length;
+      continue;
+    }
     if (outcome.kind !== "dropped") {
       if (outcome.kind === "landed") landed++;
       else settled++;
@@ -310,11 +351,21 @@ export async function recoverCommitOutbox(
     logger
       .info`Landed ${landed} v3 commits a swamp process prepared before it ended, and settled ${settled} that had landed`;
   }
-  return { landed, settled, skipped: plan.skipped.length, drops };
+  if (deferred > 0) {
+    logger
+      .info`Left ${deferred} v3 commits a swamp process prepared before it ended for a later recovery: another command's lease at serve covers their behavior now`;
+  }
+  return { landed, settled, skipped: plan.skipped.length + deferred, drops };
 }
 
 type EntryOutcome =
   | { readonly kind: "landed" | "settled" }
+  /**
+   * Left in the outbox for a later recovery: serve refused it only because
+   * another holder's lease covers its partition now, and its head has not
+   * moved, so it can still land (swamp-club#4121).
+   */
+  | { readonly kind: "deferred" }
   | {
     readonly kind: "dropped";
     readonly reason: OutboxDropReason;
@@ -347,10 +398,12 @@ async function recoverEntry(
     commit.namespace,
     commit.partition,
   );
-  if (
-    options.forwardedAttempts === undefined && !sameHead(entry.base, head)
-  ) {
-    return { kind: "dropped", reason: "head-moved" };
+  if (!sameHead(entry.base, head)) {
+    return {
+      kind: "dropped",
+      reason: "head-moved",
+      ...(options.forwarded === true ? { detail: FORWARDED_HEAD_MOVED } : {}),
+    };
   }
   // Its content cannot be stored again, so a commit naming a missing chunk
   // never lands; the outbox kept its chunks from sweeps, so this is damage.
@@ -396,37 +449,71 @@ async function recoverEntry(
   } catch (error) {
     return { kind: "dropped", reason: "unreadable", detail: messageOf(error) };
   }
-  for (let attempt = 1;; attempt++) {
-    try {
+  try {
+    // A forwarded entry names the lease it was built under, or none: never
+    // one this process holds now.
+    if (options.forwarded === true && commitStore.appendUnderLease) {
+      const send = commitStore.appendUnderLease;
+      try {
+        await send(rebuilt, entry.lease?.leaseId);
+      } catch (error) {
+        // The lease it was built under has ended, usually with the process
+        // that held it. Its head has not moved, so nothing was written
+        // since: it is sent again under no lease, which serve refuses only
+        // while another holder's lease covers the partition.
+        if (
+          entry.lease === undefined ||
+          !(error instanceof CommitRejectedError) ||
+          error.reason !== "lease-lost"
+        ) {
+          throw error;
+        }
+        await send(rebuilt, undefined);
+      }
+    } else {
       await commitStore.append(rebuilt);
-      break;
-    } catch (error) {
-      // Serve's head moved past the one the entry was rebuilt on: the
-      // target caught up, so build it again on the new head.
-      if (
-        options.forwardedAttempts !== undefined &&
-        attempt < options.forwardedAttempts &&
-        error instanceof CommitRejectedError && error.reason === "seq-gap"
-      ) {
-        const moved = await commitStore.headIdentity(
-          commit.namespace,
-          commit.partition,
-        );
-        rebuilt = build(moved.seq + 1);
-        continue;
-      }
-      // Serve refusing a forwarded commit on the caller's access or its
-      // content is final: it never landed, and a narrowed grant refuses it
-      // on every recovery (swamp-club#4089). If an earlier attempt landed
-      // it, the next catch-up brings it back.
-      if (
-        error instanceof CommitRejectedError ||
-        error instanceof ServeCommitRefusedError
-      ) {
-        return { kind: "dropped", reason: "refused", detail: error.message };
-      }
-      throw error;
     }
+  } catch (error) {
+    // Serve's head moved past the copy's: it is never built again on the
+    // newer head (swamp-club#4121).
+    if (
+      options.forwarded === true &&
+      error instanceof CommitRejectedError && error.reason === "seq-gap"
+    ) {
+      return {
+        kind: "dropped",
+        reason: "head-moved",
+        detail: FORWARDED_HEAD_MOVED,
+      };
+    }
+    // Sent under no lease, on a head that has not moved, it is refused only
+    // while someone else's lease covers the partition: it is left for a
+    // later recovery, never lost.
+    if (
+      error instanceof CommitRejectedError && error.reason === "lease-lost"
+    ) {
+      return { kind: "deferred" };
+    }
+    if (
+      error instanceof CommitRejectedError && error.reason === "stale-lease"
+    ) {
+      return {
+        kind: "dropped",
+        reason: "lease-superseded",
+        detail: error.message,
+      };
+    }
+    // Serve refusing a forwarded commit on the caller's access or its
+    // content is final: it never landed, and a narrowed grant refuses it
+    // on every recovery (swamp-club#4089). If an earlier attempt landed
+    // it, the next catch-up brings it back.
+    if (
+      error instanceof CommitRejectedError ||
+      error instanceof ServeCommitRefusedError
+    ) {
+      return { kind: "dropped", reason: "refused", detail: error.message };
+    }
+    throw error;
   }
   await warnMissingChunks(chunkStore, namespace, commit, signal);
   return { kind: "landed" };
@@ -494,6 +581,8 @@ const REASONS: Record<OutboxDropReason, string> = {
     "it is a workflow run record of a unit whose other changes were dropped",
   "head-moved": "the partition was written since",
   "refused": "the commit store refused it",
+  "lease-superseded":
+    "the model lease it was made under has ended or changed hands",
   "missing-chunk": "content it names is missing or damaged",
   "unreadable": "it could not be rebuilt",
 };

@@ -1938,9 +1938,25 @@ export {
   modelLockKey,
   parseModelLockKey,
   parseModelSpec,
+  type ServeLeaseStatusData,
   stripNamespacePrefix,
   workflowRunLockKey,
 } from "./datastores/lock.ts";
+export {
+  MAX_LEASE_HOLD_MS,
+  MIN_LEASE_HOLD_MS,
+  modelLeaseAcquire,
+  type ModelLeaseAcquireData,
+  type ModelLeaseAcquireEvent,
+  type ModelLeaseDeps,
+  modelLeaseRelease,
+  type ModelLeaseReleaseData,
+  type ModelLeaseReleaseEvent,
+  modelLeaseStatus,
+  type ModelLeaseStatusData,
+  type ModelLeaseStatusEvent,
+  type ModelLeaseView,
+} from "./models/lease.ts";
 export {
   datastoreCompact,
   type DatastoreCompactData,

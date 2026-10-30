@@ -683,7 +683,60 @@ Deno.test("ServeDatastoreClient.acquireLock: posts the key, TTL and wait, and re
     lockKey: LOCK_KEY,
     ttlMs: 30_000,
     waitMs: 2_000,
+    fenced: true,
   });
+});
+
+Deno.test("ServeDatastoreClient.acquireLock: a fenced lease's fence, floor and hold are read, and an explicit lease asks for its hold (swamp-club#4121)", async () => {
+  const fenced = {
+    ...LEASE,
+    fence: 4,
+    floor: [{ name: "vpc", highWater: 3, removed: [[1, 1] as const] }],
+    holdMs: 600_000,
+  };
+  const { client, requests } = clientWith(() =>
+    Response.json(fenced, { status: 201 })
+  );
+  assertEquals(
+    await client.acquireLock(LOCK_KEY, 30_000, 0, signal(), {
+      holdMs: 600_000,
+    }),
+    { acquired: true, lease: fenced },
+  );
+  assertEquals(await requests[0].json(), {
+    lockKey: LOCK_KEY,
+    waitMs: 0,
+    fenced: true,
+    holdMs: 600_000,
+  });
+});
+
+Deno.test("ServeDatastoreClient.acquireLock: a malformed floor is refused", async () => {
+  const { client } = clientWith(() =>
+    Response.json({ ...LEASE, fence: 1, floor: [{ name: "" }] }, {
+      status: 201,
+    })
+  );
+  await assertRejects(
+    () => client.acquireLock(LOCK_KEY, 30_000, 0, signal()),
+    ServeUpstreamError,
+  );
+});
+
+Deno.test("ServeDatastoreClient.listLocks: reads serve's listing, and an older serve's 405 is no listing (swamp-club#4121)", async () => {
+  const listing = {
+    leases: [{
+      lockKey: LOCK_KEY,
+      heldBy: "other" as const,
+      expiresAt: "2026-10-29T12:00:30.000Z",
+    }],
+    truncated: false,
+  };
+  const { client, requests } = clientWith(() => Response.json(listing));
+  assertEquals(await client.listLocks("data/", signal()), listing);
+  assertEquals(requests[0].url, `${PREFIX}/locks?prefix=data%2F`);
+  const older = clientWith(() => new Response("no", { status: 405 })).client;
+  assertEquals(await older.listLocks("", signal()), undefined);
 });
 
 Deno.test("ServeDatastoreClient.acquireLock: a refusal is thrown as serve's error", async () => {
@@ -1126,4 +1179,15 @@ Deno.test("ServeDatastoreClient.compactedBase: the log id is checked before the 
     "another log",
   );
   assertEquals(seen, ["log-b"]);
+});
+
+Deno.test("ServeDatastoreClient: every request names the lease ops its copy understands (swamp-club#4121)", async () => {
+  const { client, requests } = clientWith(() =>
+    Response.json({ head: 0, commits: [] })
+  );
+  await client.partitionCommits(modelPartition(), 0, signal(), 10);
+  assertEquals(
+    requests[0].headers.get("x-swamp-datastore-features"),
+    "lease-ops",
+  );
 });

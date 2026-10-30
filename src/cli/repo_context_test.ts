@@ -40,6 +40,7 @@ import {
   assertManagedConfigWritable,
   attachSignalWaits,
   buildMarkDirtyHook,
+  cancelOnLeaseLost,
   createLockProgressWriter,
   createModelLock,
   createWorkflowRunClaims,
@@ -6559,4 +6560,25 @@ Deno.test("runRecordCurrencyOver: a run record outside the cache is never read f
     );
     assertEquals(fetched, 0);
   });
+});
+
+Deno.test("cancelOnLeaseLost: a lapse aborts the run with the lapse as its reason, already lapsed or later (swamp-club#4121)", () => {
+  const lapse = new Error("The lock at serve lapsed");
+  const later = new AbortController();
+  const run = new AbortController();
+  cancelOnLeaseLost(later.signal, run);
+  assertEquals(run.signal.aborted, false);
+  later.abort(lapse);
+  assertEquals(run.signal.reason, lapse);
+
+  const already = new AbortController();
+  already.abort(lapse);
+  const second = new AbortController();
+  cancelOnLeaseLost(already.signal, second);
+  assertEquals(second.signal.reason, lapse);
+
+  // Local locks never lapse: nothing is wired.
+  const local = new AbortController();
+  cancelOnLeaseLost(undefined, local);
+  assertEquals(local.signal.aborted, false);
 });

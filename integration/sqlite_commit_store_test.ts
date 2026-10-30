@@ -387,16 +387,20 @@ Deno.test("SqliteCommitStore: namespaces with the same partition key are indepen
   });
 });
 
-Deno.test("SqliteCommitStore: a lease op raises the head's highest fence", async () => {
+Deno.test("SqliteCommitStore: a lease op raises the partition's lease fence, never the head's writer fence (swamp-club#4121)", async () => {
   await withStore(async (store) => {
     await store.append(await save(1));
     await store.append(
-      modelCommit(2, [leaseOp({ holder: "serve-2", fence: 7 })], { fence: 1 }),
+      modelCommit(2, [leaseOp({ holder: "lease-2", fence: 7 })], { fence: 1 }),
     );
     assertEquals(await store.head("", modelPartition()), {
       seq: 2,
-      highestFence: 7,
+      highestFence: 1,
     });
+    assertEquals(
+      (await store.leaseMarks("", modelPartition())).leaseFence,
+      7,
+    );
   });
 });
 

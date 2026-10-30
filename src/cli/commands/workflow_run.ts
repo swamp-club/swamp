@@ -30,6 +30,7 @@ import {
   AssertSeveritySchema,
 } from "../../domain/workflows/step_task.ts";
 import {
+  cancelOnLeaseLost,
   createLockProgressWriter,
   createWorkflowRunClaims,
   libSwampContextForRepo,
@@ -142,6 +143,8 @@ export function workflowStepLockHook(
   datastoreConfig: DatastoreConfig,
   syncService: DatastoreSyncService | undefined,
   syncGate: SyncGate = createSyncGate(),
+  /** Cancels the run when a step's lease at serve lapses (swamp-club#4121). */
+  onLeaseLost?: (reason: unknown) => void,
 ): StepLockHook {
   return createStepLockHook(
     repoDir,
@@ -150,6 +153,7 @@ export function workflowStepLockHook(
     syncService,
     syncGate,
     createLockProgressWriter,
+    onLeaseLost,
   );
 }
 
@@ -396,14 +400,19 @@ export const workflowRunCommand = new Command()
       unlocked.datastoreResolver.resolvePath(SWAMP_SUBDIRS.workflowsEvaluated),
     );
 
+    // A step whose lease at serve lapses cancels the run (swamp-club#4121).
+    const stepLeaseLost = new AbortController();
     const stepLockHook = workflowStepLockHook(
       repoDir,
       repoContext,
       unlocked.datastoreConfig,
       unlocked.syncService,
+      undefined,
+      (reason) => stepLeaseLost.abort(reason),
     );
 
     const abort = new AbortController();
+    cancelOnLeaseLost(stepLeaseLost.signal, abort);
     const exitSuppress = suppressSyncExitOnSignal();
     let shutdownHandle: { dispose(): void } | undefined;
     let currentRunId: string | undefined;

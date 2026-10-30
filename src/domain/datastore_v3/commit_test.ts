@@ -91,9 +91,27 @@ Deno.test("Commit.create: rejects a malformed envelope", async () => {
 });
 
 Deno.test("Commit.create: rejects more than the op limit", () => {
-  const op = leaseOp({ holder: "h", fence: 1 });
+  const op = versionOp("vpc", 1);
   assertThrows(
     () => Commit.create(props(new Array(MAX_COMMIT_OPS + 1).fill(op))),
+    Error,
+    "at most",
+  );
+});
+
+Deno.test("Commit.create: serve's lease op does not count toward the op limit (swamp-club#4121)", async () => {
+  const lease = leaseOp({ holder: "h", fence: 1 });
+  const full = new Array(MAX_COMMIT_OPS).fill(versionOp("vpc", 1));
+  const commit = Commit.create(props([...full, lease]));
+  assertEquals(commit.ops.length, MAX_COMMIT_OPS + 1);
+  assertEquals(
+    (await Commit.fromJSON(JSON.parse(JSON.stringify(commit.toJSON()))))
+      .ops.length,
+    MAX_COMMIT_OPS + 1,
+  );
+  // Only one op past the limit, whatever its kind.
+  assertThrows(
+    () => Commit.create(props([...full, lease, lease])),
     Error,
     "at most",
   );

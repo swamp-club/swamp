@@ -51,7 +51,7 @@ import type { Action } from "../domain/access/action.ts";
 import { parsePrincipal } from "../domain/access/principal.ts";
 import { restoreNamespace, SOLO_NAMESPACE } from "../domain/data/namespace.ts";
 import type { BlobRef } from "../domain/datastore_v3/blob_ref.ts";
-import { MAX_COMMIT_OPS } from "../domain/datastore_v3/commit.ts";
+import { type Commit, MAX_COMMIT_OPS } from "../domain/datastore_v3/commit.ts";
 import {
   ADMIN_RESOURCE,
   type AggregateResourceResolver,
@@ -75,7 +75,12 @@ import {
   type ObservedBaseEntry,
   observedBaseEntryToJSON,
 } from "../domain/datastore_v3/observed_base.ts";
-import { type Op, opFromJSON } from "../domain/datastore_v3/op.ts";
+import {
+  type LeaseOp,
+  leaseOp,
+  type Op,
+  opFromJSON,
+} from "../domain/datastore_v3/op.ts";
 import { CommitRejectedError } from "../domain/datastore_v3/partition.ts";
 import {
   PartitionKey,
@@ -107,7 +112,9 @@ import type {
   UploadReservation,
 } from "../infrastructure/datastore_v3/upload_ledger.ts";
 import {
+  LEASE_OPS_FEATURE,
   SERVE_DATASTORE_ACCESS_HEADER,
+  SERVE_DATASTORE_FEATURES_HEADER,
   SERVE_DATASTORE_LOG_HEADER,
 } from "../infrastructure/datastore_v3/serve_datastore_client.ts";
 import type { V3Datastore } from "../infrastructure/datastore_v3/v3_datastore.ts";
@@ -139,14 +146,20 @@ import { ForwardedContentAuthority } from "./forwarded_content_authorization.ts"
 import {
   type DatastoreLockLeases,
   DEFAULT_LOCK_TTL_MS,
+  type LeaseBase,
   type LeaseView,
+  type LockHolder,
   type LockTarget,
+  lockTargetOfPartition,
   parseLockKey,
 } from "./datastore_locks.ts";
 import { ServeNotLeaderError } from "../domain/datastore_v3/serve_leader.ts";
 import { notLeaderResponse } from "./leader_link.ts";
 
 const logger = getSwampLogger(["serve", "datastore-api"]);
+
+/** The most leases one `GET locks` lists (swamp-club#4121). */
+export const MAX_LISTED_LEASES = 512;
 
 /** The largest commit envelope, before it is parsed. */
 export const MAX_ENVELOPE_BYTES = 4 * 1024 * 1024;
@@ -245,9 +258,34 @@ export async function handleDatastoreRequest(
 }
 
 /**
+ * Whether the client's copy understands lease ops (swamp-club#4121): it
+ * names {@link LEASE_OPS_FEATURE} in {@link SERVE_DATASTORE_FEATURES_HEADER}.
+ */
+function readsLeaseOps(req: Request): boolean {
+  return (req.headers.get(SERVE_DATASTORE_FEATURES_HEADER) ?? "")
+    .split(",")
+    .some((feature) => feature.trim() === LEASE_OPS_FEATURE);
+}
+
+/**
+ * `commit` as a reader is sent it: without its lease ops for a client that
+ * does not understand them (swamp-club#4121). A swamp from before them
+ * judges a lease op's fence against the writer fence; without it, the
+ * commit is exactly what that swamp's own rules accept. Serve stamps a
+ * lease op only beside a client's ops, so no commit is left empty.
+ */
+function commitJSONFor(commit: Commit, leaseOps: boolean): unknown {
+  const json = commit.toJSON() as { ops: readonly { kind?: unknown }[] };
+  return leaseOps
+    ? json
+    : { ...json, ops: json.ops.filter((op) => op.kind !== "lease") };
+}
+
+/**
  * The reply a serve follower gives a datastore API request it does not
  * answer itself: a write is the leader's reply to it, forwarded with the
- * caller's own credentials (swamp-club#4120); a read once its copy is
+ * caller's own credentials (swamp-club#4120); so is a lease listing, since
+ * leases live on the leader (swamp-club#4121). A read once its copy is
  * stale, or a write when no leader can be reached, is a retryable 503 that
  * names the leader (swamp-club#4096). A chunk check (`has`) is a read.
  */
@@ -259,7 +297,10 @@ function followerDatastoreRefusal(
 ): Promise<Response> | undefined {
   const gate = ctx.followerGate;
   if (gate === undefined || gate.role === "leader") return undefined;
-  const reads = req.method === "GET" || route.kind === "has";
+  // Leases live on the leader, so listing them is the leader's to answer
+  // (swamp-club#4121).
+  const reads = (req.method === "GET" && route.kind !== "locks") ||
+    route.kind === "has";
   if (reads && !gate.isStale()) return undefined;
   if (!reads && ctx.leaderLink !== undefined) {
     return ctx.leaderLink.forward(req, { clientIp: sourceIp });
@@ -390,7 +431,9 @@ async function answerDatastoreRequest(
       case "locks":
         return req.method === "POST"
           ? await api.acquireLock(req)
-          : methodNotAllowed("POST");
+          : req.method === "GET"
+          ? await api.listLocks(req)
+          : methodNotAllowed("GET, POST");
       case "lease":
         if (req.method === "PUT") {
           return await api.renewLock(req, route.leaseId);
@@ -768,7 +811,15 @@ class DatastoreApi {
         }
         return { notProvided: hash };
       }
-      const result = await commitForwarded(this.#v3, request, req.signal);
+      // Judged under the forwarded lock, as leases change hands between
+      // commits: the live fenced lease covering the partition decides.
+      const lease = this.#leaseOpFor(partition, envelope.lease);
+      if (lease === "lost") return { leaseLost: true as const };
+      const result = await commitForwarded(
+        this.#v3,
+        lease === undefined ? request : { ...request, lease },
+        req.signal,
+      );
       return { result };
     });
     if ("contentChanged" in landed) {
@@ -776,6 +827,14 @@ class DatastoreApi {
         409,
         "content_changed",
         "A record this commit was checked against changed: check the commit again and retry",
+      );
+    }
+    if ("leaseLost" in landed) {
+      // Never says whose lease holds the partition, or whether one does.
+      return failure(
+        409,
+        "commit_lease-lost",
+        "This commit's model lease is not held: take the lock again and retry",
       );
     }
     if ("notProvided" in landed) {
@@ -855,7 +914,7 @@ class DatastoreApi {
       if (
         await this.#mayReadCommit(change.commit.partition, change.commit.ops)
       ) {
-        commits.push(change.commit.toJSON());
+        commits.push(commitJSONFor(change.commit, readsLeaseOps(req)));
       }
     }
     return Response.json({ head: head.seq, commits });
@@ -896,7 +955,10 @@ class DatastoreApi {
             change.commit.ops,
           ))
         ) {
-          kept.push({ cursor: change.cursor, commit: change.commit.toJSON() });
+          kept.push({
+            cursor: change.cursor,
+            commit: commitJSONFor(change.commit, readsLeaseOps(req)),
+          });
           if (kept.length >= limit) break;
         }
       }
@@ -1034,12 +1096,17 @@ class DatastoreApi {
   }
 
   /**
-   * `POST locks`: `{lockKey, ttlMs?, waitMs?}`. Takes serve's own lock for
-   * a behavior (`data/{type}/{id}/.lock`) or a workflow run's claim
-   * (`workflow-run-claims/{runId}/.lock`) for the caller, waiting up to
-   * `waitMs` at serve while it is held. The key is parsed and made
+   * `POST locks`: `{lockKey, ttlMs?, waitMs?, fenced?}`. Takes serve's own
+   * lock for a behavior (`data/{type}/{id}/.lock`) or a workflow run's
+   * claim (`workflow-run-claims/{runId}/.lock`) for the caller, waiting up
+   * to `waitMs` at serve while it is held. The key is parsed and made
    * canonical before it is authorised: `run` on the behavior or on the
    * run's workflow, as a write to its partition needs (swamp-club#3985).
+   *
+   * A `fenced` lease (swamp-club#4121) also returns its fence and, for a
+   * behavior, its data-version floor: each data name's high-water mark and
+   * removed versions, even to a caller that cannot read the data, since a
+   * writer must know which versions are used. Names and numbers only.
    */
   async acquireLock(req: Request): Promise<Response> {
     const body = await readJson(req, 16 * 1024);
@@ -1052,10 +1119,39 @@ class DatastoreApi {
       return failure(
         400,
         "invalid_request",
-        'Body must be {"lockKey": "data/{type}/{id}/.lock" or "workflow-run-claims/{runId}/.lock", "ttlMs"?, "waitMs"?}',
+        'Body must be {"lockKey": "data/{type}/{id}/.lock" or "workflow-run-claims/{runId}/.lock", "ttlMs"?, "waitMs"?, "fenced"?}',
       );
     }
-    const ttlMs = this.#ttlOf(fields.ttlMs);
+    const fenced = fields.fenced ?? false;
+    if (typeof fenced !== "boolean") {
+      return failure(400, "invalid_request", "fenced must be a boolean");
+    }
+    // An explicit lease (swamp-club#4121) is held for its hold between
+    // renewals, which may pass the TTL bounds up to its own.
+    const holdMs = fields.holdMs;
+    if (holdMs !== undefined) {
+      const { min, max } = this.#deps.locks.holdBounds;
+      if (
+        typeof holdMs !== "number" || !Number.isSafeInteger(holdMs) ||
+        holdMs < min || holdMs > max
+      ) {
+        return failure(
+          400,
+          "invalid_request",
+          `holdMs must be an integer between ${min} and ${max}`,
+        );
+      }
+      if (fields.fenced !== true) {
+        return failure(
+          400,
+          "invalid_request",
+          "An explicit lease (holdMs) must be fenced",
+        );
+      }
+    }
+    const ttlMs = holdMs !== undefined
+      ? holdMs as number
+      : this.#ttlOf(fields.ttlMs);
     if (ttlMs instanceof Response) return ttlMs;
     const waitMs = fields.waitMs ?? 0;
     if (
@@ -1075,6 +1171,8 @@ class DatastoreApi {
       ttlMs,
       waitMs,
       signal: req.signal,
+      ...(fenced ? { fenced: () => this.#leaseBase(target) } : {}),
+      ...(holdMs !== undefined ? { holdMs: holdMs as number } : {}),
     });
     switch (outcome.kind) {
       case "acquired":
@@ -1101,6 +1199,40 @@ class DatastoreApi {
   }
 
   /**
+   * `GET locks?prefix=`: the leases serve holds on locks the caller could
+   * take itself (swamp-club#4121), each as its key, who holds it (`caller`
+   * or `other`, never who) and when it ends unless renewed. Each lock is
+   * decided without a refusal audit, since a listing refuses nothing. At
+   * most {@link MAX_LISTED_LEASES}, with `truncated` set past it.
+   */
+  async listLocks(req: Request): Promise<Response> {
+    const prefix = new URL(req.url).searchParams.get("prefix") ?? "";
+    if (prefix.length > 512) {
+      return failure(400, "invalid_request", "prefix is too long");
+    }
+    await this.#catchUp();
+    const leases: {
+      lockKey: string;
+      heldBy: LockHolder;
+      expiresAt: string;
+    }[] = [];
+    let truncated = false;
+    for (const lease of this.#deps.locks.list(prefix)) {
+      if (!this.#mayRead([await this.#lockAccessOf(lease.target)])) continue;
+      if (leases.length === MAX_LISTED_LEASES) {
+        truncated = true;
+        break;
+      }
+      leases.push({
+        lockKey: lease.lockKey,
+        heldBy: lease.principal === this.#caller.principal ? "caller" : "other",
+        expiresAt: lease.expiresAt,
+      });
+    }
+    return Response.json({ leases, truncated });
+  }
+
+  /**
    * `PUT locks/{leaseId}`: `{ttlMs?}`. Extends the caller's lease, after
    * authorising its lock again: a caller whose grant was revoked loses the
    * lease at its next renewal.
@@ -1111,11 +1243,37 @@ class DatastoreApi {
         !Array.isArray(body)
       ? body as Record<string, unknown>
       : {};
-    const ttlMs = this.#ttlOf(fields.ttlMs);
-    if (ttlMs instanceof Response) return ttlMs;
     const principal = this.#caller.principal;
     const held = this.#deps.locks.lease(principal, leaseId);
     if (held === undefined) return leaseNotFound();
+    // `holdMs` makes a fenced lease explicit, or changes its hold: a
+    // checkout takes a short lease, records it, then extends it, so a reply
+    // lost on the way strands it only briefly (swamp-club#4121).
+    const holdMs = fields.holdMs;
+    if (holdMs !== undefined) {
+      const { min, max } = this.#deps.locks.holdBounds;
+      if (
+        typeof holdMs !== "number" || !Number.isSafeInteger(holdMs) ||
+        holdMs < min || holdMs > max
+      ) {
+        return failure(
+          400,
+          "invalid_request",
+          `holdMs must be an integer between ${min} and ${max}`,
+        );
+      }
+      if (held.view.fence === undefined) {
+        return failure(
+          400,
+          "invalid_request",
+          "Only a fenced lease can be held across commands",
+        );
+      }
+    }
+    // An explicit lease is extended by its own hold (swamp-club#4121).
+    const ttlMs = (holdMs as number | undefined) ?? held.view.holdMs ??
+      this.#ttlOf(fields.ttlMs);
+    if (ttlMs instanceof Response) return ttlMs;
     const refused = await this.#authorizeLock(held.target);
     if (refused !== undefined) {
       await this.#deps.locks.release(principal, leaseId);
@@ -1125,6 +1283,7 @@ class DatastoreApi {
       principal,
       leaseId,
       ttlMs,
+      holdMs as number | undefined,
     );
     return renewed === undefined ? leaseNotFound() : Response.json(renewed);
   }
@@ -1134,6 +1293,79 @@ class DatastoreApi {
     return await this.#deps.locks.release(this.#caller.principal, leaseId)
       ? Response.json({ released: true })
       : leaseNotFound();
+  }
+
+  /**
+   * The lease op serve stamps on a commit to `partition` naming `named`
+   * (swamp-club#4121), or "lost" when the commit is refused: a named lease
+   * must be live, fenced, the caller's, and cover exactly this partition,
+   * and a partition a live fenced lease covers takes only commits that name
+   * it. Undefined for an unleased commit to a partition no fenced lease
+   * covers, which keeps today's rules. The fence is serve's, never the
+   * client's.
+   */
+  #leaseOpFor(
+    partition: PartitionKey,
+    named: string | undefined,
+  ): LeaseOp | "lost" | undefined {
+    const target = lockTargetOfPartition(partition);
+    const live = target === undefined
+      ? undefined
+      : this.#deps.locks.fencedLeaseOn(target);
+    // A run's claim is held only for a load, decision and save, while the
+    // run's owner checkpoints its record throughout: a claim does not
+    // refuse the owner's unleased commits. A behavior's lease does.
+    if (named === undefined) {
+      return live === undefined || target?.kind === "workflow-run"
+        ? undefined
+        : "lost";
+    }
+    if (
+      live === undefined || live.leaseId !== named ||
+      live.principal !== this.#caller.principal
+    ) {
+      return "lost";
+    }
+    return leaseOp({ holder: live.leaseId, fence: live.fence });
+  }
+
+  /**
+   * The lease fence and version marks of the partition `target`'s lease
+   * covers, read under its lock. A run serve does not hold yet has no
+   * partition: its fence starts from what this process issued.
+   */
+  async #leaseBase(target: LockTarget): Promise<LeaseBase> {
+    const partition = await this.#partitionOfLock(target);
+    if (partition === undefined) return { leaseFence: undefined, names: [] };
+    const marks = await this.#v3.commitStore.leaseMarks(
+      this.#namespace,
+      partition,
+    );
+    // A run's partition holds no data versions; only a behavior's floor
+    // is sent.
+    return target.kind === "model"
+      ? marks
+      : { leaseFence: marks.leaseFence, names: [] };
+  }
+
+  /** The partition `target`'s lease covers; undefined for an unknown run. */
+  async #partitionOfLock(
+    target: LockTarget,
+  ): Promise<PartitionKey | undefined> {
+    if (target.kind === "model") {
+      return partitionOf({
+        kind: "model",
+        type: ModelType.create(target.modelType),
+        id: target.modelId,
+      });
+    }
+    const found = await this.#deps.ctx.repoContext.workflowRunRepo
+      .findGlobalById(createWorkflowRunId(target.runId));
+    return found === null ? undefined : partitionOf({
+      kind: "run",
+      workflowId: found.workflowId,
+      runId: target.runId,
+    });
   }
 
   /** A TTL within the leases' bounds, or the 400 refusing it. */
@@ -1163,6 +1395,19 @@ class DatastoreApi {
    */
   async #authorizeLock(target: LockTarget): Promise<Response | undefined> {
     await this.#catchUp();
+    const required = await this.#lockAccessOf(target);
+    if (this.#writeAuthority().allows(required.action, required.resource)) {
+      return undefined;
+    }
+    return failure(
+      403,
+      "forbidden",
+      `Holding this lock needs ${required.action} on ${required.resource.kind}:${required.resource.name}`,
+    );
+  }
+
+  /** What holding `target`'s lock needs: what a write to its partition does. */
+  async #lockAccessOf(target: LockTarget): Promise<RequiredAccess> {
     let required: RequiredAccess;
     if (target.kind === "model") {
       required = await partitionWriteAccessOf(
@@ -1195,14 +1440,7 @@ class DatastoreApi {
           this.#resolver,
         );
     }
-    if (this.#writeAuthority().allows(required.action, required.resource)) {
-      return undefined;
-    }
-    return failure(
-      403,
-      "forbidden",
-      `Holding this lock needs ${required.action} on ${required.resource.kind}:${required.resource.name}`,
-    );
+    return required;
   }
 
   /**
@@ -1514,6 +1752,8 @@ interface CommitEnvelope {
   readonly expectedSeq: number;
   readonly txnId: string;
   readonly fence?: number;
+  /** The model lease the commit is made under (swamp-club#4121): its id. */
+  readonly lease?: string;
   readonly ops: readonly unknown[];
   readonly chunks: readonly { sha256: string; size: number }[];
 }
@@ -1523,6 +1763,7 @@ const ENVELOPE_FIELDS = new Set([
   "expectedSeq",
   "txnId",
   "fence",
+  "lease",
   "ops",
   "chunks",
 ]);
@@ -1539,7 +1780,7 @@ function parseEnvelope(value: unknown): CommitEnvelope {
       throw new Error(`the envelope does not take the field '${field}'`);
     }
   }
-  const { expectedSeq, txnId, fence, ops, chunks } = json;
+  const { expectedSeq, txnId, fence, lease, ops, chunks } = json;
   if (
     typeof expectedSeq !== "number" || !Number.isSafeInteger(expectedSeq) ||
     expectedSeq < 0
@@ -1554,6 +1795,9 @@ function parseEnvelope(value: unknown): CommitEnvelope {
     (typeof fence !== "number" || !Number.isSafeInteger(fence) || fence < 0)
   ) {
     throw new Error("fence must be a non-negative integer");
+  }
+  if (lease !== undefined && (typeof lease !== "string" || !UUID.test(lease))) {
+    throw new Error("lease must be a lease id: a lowercase UUID");
   }
   if (!Array.isArray(ops) || ops.length === 0 || ops.length > MAX_COMMIT_OPS) {
     throw new Error(`ops must hold between 1 and ${MAX_COMMIT_OPS} ops`);
@@ -1581,6 +1825,7 @@ function parseEnvelope(value: unknown): CommitEnvelope {
     expectedSeq,
     txnId,
     ...(fence === undefined ? {} : { fence: fence as number }),
+    ...(lease === undefined ? {} : { lease: lease as string }),
     ops,
     chunks: declared as { sha256: string; size: number }[],
   };

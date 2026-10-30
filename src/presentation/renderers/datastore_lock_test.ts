@@ -102,3 +102,54 @@ Deno.test("datastoreLockStatusRenderer: shows a v3 writer lease's fence, and onl
   assertEquals(renderStatus("log", heldLock).includes("Fence:"), false);
   assertEquals(JSON.parse(renderStatus("json", lease)).info.fence, 7);
 });
+
+function capture(fn: () => void): string {
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => output.push(args.join(" "));
+  try {
+    fn();
+  } finally {
+    console.log = origLog;
+  }
+  return output.join("\n");
+}
+
+const serveLease = {
+  lockKey: "data/aws/ec2/0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a01/.lock",
+  heldBy: "other" as const,
+  expiresAt: "2026-10-29T12:00:30.000Z",
+};
+
+Deno.test("createDatastoreLockStatusRenderer: a serve lease names its key and holder kind in log mode, never who (swamp-club#4121)", () => {
+  const text = capture(() =>
+    createDatastoreLockStatusRenderer("log").handlers().serve_lease({
+      kind: "serve_lease",
+      data: serveLease,
+    })
+  );
+  assertStringIncludes(text, serveLease.lockKey);
+  assertStringIncludes(text, "another caller");
+  assertStringIncludes(text, serveLease.expiresAt);
+});
+
+Deno.test("createDatastoreLockStatusRenderer: serve leases and a truncated listing are JSON objects of their own", () => {
+  const handlers = createDatastoreLockStatusRenderer("json").handlers();
+  assertEquals(
+    JSON.parse(
+      capture(() =>
+        handlers.serve_lease({ kind: "serve_lease", data: serveLease })
+      ),
+    ),
+    { serveLease },
+  );
+  assertEquals(
+    JSON.parse(capture(() =>
+      handlers.serve_leases_truncated({
+        kind: "serve_leases_truncated",
+        data: { truncated: true, listed: 512 },
+      })
+    )),
+    { serveLeases: { truncated: true, listed: 512 } },
+  );
+});

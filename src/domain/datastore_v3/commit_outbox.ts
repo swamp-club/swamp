@@ -140,6 +140,18 @@ export interface OutboxPreparation {
   readonly unitId: string;
   /** The partition head the commit was built on. */
   readonly base: HeadIdentity;
+  /**
+   * The fenced model lease the commit was built under (swamp-club#4121),
+   * if any: a recovery resends it naming that lease, so serve refuses it
+   * once the lease has changed hands.
+   */
+  readonly lease?: OutboxLease;
+}
+
+/** A fenced model lease, as an outbox entry records it. */
+export interface OutboxLease {
+  readonly leaseId: string;
+  readonly fence: number;
 }
 
 /** One prepared commit, as the outbox holds it. */
@@ -251,6 +263,11 @@ export type OutboxDropReason =
   | "head-moved"
   /** The store refused it. */
   | "refused"
+  /**
+   * Serve refused it because the model lease it was built under has
+   * ended or changed hands (swamp-club#4121).
+   */
+  | "lease-superseded"
   /** A chunk it names is missing, and nothing can store it again. */
   | "missing-chunk"
   /** It could not be read or rebuilt. */

@@ -26,6 +26,7 @@ import {
   resolveTracestate,
 } from "../context.ts";
 import {
+  cancelOnLeaseLost,
   createWorkflowRunClaims,
   requireInitializedRepoUnlocked,
   signalWaitsOf,
@@ -389,11 +390,15 @@ export const workflowResumeCommand = withRemoteOptions(
       }
     }
 
+    // A step whose lease at serve lapses cancels the run (swamp-club#4121).
+    const stepLeaseLost = new AbortController();
     const stepLockHook = workflowStepLockHook(
       repoDir,
       repoContext,
       unlocked.datastoreConfig,
       unlocked.syncService,
+      undefined,
+      (reason) => stepLeaseLost.abort(reason),
     );
 
     await Promise.all([
@@ -515,6 +520,7 @@ export const workflowResumeCommand = withRemoteOptions(
     service.runCheckpointer = runCheckpointer;
 
     const abort = new AbortController();
+    cancelOnLeaseLost(stepLeaseLost.signal, abort);
     const timeoutMs = options.timeout
       ? parseTimerDuration(options.timeout as string)
       : undefined;

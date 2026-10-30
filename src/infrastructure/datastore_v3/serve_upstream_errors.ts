@@ -408,6 +408,8 @@ const COMMIT_REJECTIONS: Readonly<Record<CommitRejection, true>> = {
   "partition-mismatch": true,
   "seq-gap": true,
   "stale-fence": true,
+  "stale-lease": true,
+  "lease-lost": true,
   "unfenced": true,
   "expect-failed": true,
   "version-live": true,

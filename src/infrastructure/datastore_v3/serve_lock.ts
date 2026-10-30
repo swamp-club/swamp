@@ -30,6 +30,15 @@
  * serve's log, so the work done under the lock reads every version written
  * before it, whichever machine wrote it.
  *
+ * It asks for a fenced lease (swamp-club#4121). Serve answers with a fence,
+ * and for a behavior a data-version floor; the hold registers the lease, so
+ * the checkout's commits to the partition name it and allocate above the
+ * floor. A fenced lease that cannot be renewed (serve answers that it no
+ * longer holds it, refuses the renewal, or cannot be reached before the
+ * lease's local deadline) has lapsed: `onLost` fires once, and the work
+ * under it is cancelled. An older serve grants an unfenced lease, which
+ * behaves as before: a lapse is only logged.
+ *
  * See "Model locks" under "Team mode: the CLI's serve upstream" in
  * `design/enablers/datastores.md`.
  *
@@ -46,6 +55,9 @@ import type {
   LockLease,
   ServeDatastoreClient,
 } from "./serve_datastore_client.ts";
+import type { ExplicitLease } from "./explicit_model_leases.ts";
+import { dropServeLease, holdServeLease } from "./serve_lease_registry.ts";
+import { ServeUpstreamError } from "./serve_upstream_errors.ts";
 import { serveUpstreamAt } from "./serve_upstream_registry.ts";
 
 const logger = getSwampLogger(["datastore", "lock", "serve"]);
@@ -58,6 +70,24 @@ export const SERVE_LOCK_REQUEST_WAIT_MS = 10_000;
 const RETRY_INTERVAL_MS = 100;
 /** The longest pause between acquire requests. */
 const MAX_BACKOFF_MS = 1_000;
+
+/** The most a lease's local deadline keeps back from its TTL. */
+const MAX_DEADLINE_MARGIN_MS = 2_000;
+
+/**
+ * A fenced lease at serve lapsed (swamp-club#4121): the work under it no
+ * longer holds the lock, so it is cancelled, and serve refuses any commit
+ * it still sends.
+ */
+export class ServeLeaseLapsedError extends Error {
+  constructor(readonly lockKey: string, readonly reason: string) {
+    super(
+      `The lock ${lockKey} at serve lapsed (${reason}), so this work was ` +
+        `cancelled: another command may now hold it`,
+    );
+    this.name = "ServeLeaseLapsedError";
+  }
+}
 
 /** What a {@link ServeLock} needs of the datastore API client. */
 export type ServeLockClient =
@@ -85,7 +115,30 @@ export interface ServeLockOptions {
    * releases the lease and rejects `acquire`.
    */
   readonly onAcquired?: () => Promise<void>;
+  /**
+   * The checkout root the lease is registered under while held, so its
+   * commits name it (swamp-club#4121); no registration when omitted.
+   */
+  readonly root?: string;
+  /** Fires once when a fenced lease lapses; see the module documentation. */
+  readonly onLost?: (error: ServeLeaseLapsedError) => void;
+  /**
+   * The explicit lease this checkout holds on the key, if any
+   * (swamp-club#4121): the hold takes it over instead of asking for
+   * another, renews it while held, and leaves it held when released.
+   */
+  readonly adopt?: () => Promise<ExplicitLease | undefined>;
+  /** Forgets an adopted explicit lease serve no longer holds. */
+  readonly forget?: (leaseId: string) => Promise<void>;
+  /**
+   * A lock local to the checkout, held while an explicit lease is adopted:
+   * serve no longer keeps two of the checkout's commands apart under it,
+   * so this does.
+   */
+  readonly localLock?: () => DistributedLock;
   readonly now?: () => number;
+  /** A monotonic clock in milliseconds, for the lease's local deadline. */
+  readonly monotonic?: () => number;
 }
 
 /** A lock held at serve; see the module documentation. */
@@ -93,6 +146,7 @@ export class ServeLock implements DistributedLock {
   readonly #options: ServeLockOptions;
   readonly #ttlMs: number;
   readonly #now: () => number;
+  readonly #monotonic: () => number;
   #client: ServeLockClient | undefined;
   #lease: LockLease | undefined;
   #acquiredAt: number | undefined;
@@ -101,11 +155,22 @@ export class ServeLock implements DistributedLock {
   #renewing: Promise<void> | undefined;
   /** Aborted when the hold ends: a renewal in flight gives up. */
   #hold: AbortController | undefined;
+  /** Fires when a fenced lease's local deadline passes without a renewal. */
+  #deadline: ReturnType<typeof setTimeout> | undefined;
+  /** Whether this hold's fenced lease lapsed; `onLost` fired. */
+  #lost = false;
+  /** Whether this hold took over an explicit lease, which outlives it. */
+  #adopted = false;
+  /** The checkout-local lock held with an adopted lease. */
+  #local: DistributedLock | undefined;
+  /** Set while the hold is released: a renewal in flight cannot lapse it. */
+  #releasing = false;
 
   constructor(options: ServeLockOptions) {
     this.#options = options;
     this.#ttlMs = options.ttlMs ?? SERVE_LOCK_TTL_MS;
     this.#now = options.now ?? Date.now;
+    this.#monotonic = options.monotonic ?? (() => performance.now());
   }
 
   /** The lease serve granted this hold, while it holds one. */
@@ -122,6 +187,7 @@ export class ServeLock implements DistributedLock {
    */
   async acquire(): Promise<void> {
     if (this.#lease !== undefined) return;
+    if (await this.#adoptExplicit()) return;
     const client = this.#options.client();
     const hold = new AbortController();
     const started = this.#now();
@@ -143,6 +209,7 @@ export class ServeLock implements DistributedLock {
           ),
         );
         const asked = this.#now();
+        const askedMonotonic = this.#monotonic();
         const reply = await client.acquireLock(
           this.#options.lockKey,
           this.#ttlMs,
@@ -154,6 +221,10 @@ export class ServeLock implements DistributedLock {
           this.#hold = hold;
           this.#lease = reply.lease;
           this.#acquiredAt = this.#now();
+          this.#lost = false;
+          // Measured from when the request was sent: serve's TTL started
+          // no earlier.
+          this.#armDeadline(askedMonotonic);
           this.#startHeartbeat();
           break;
         }
@@ -177,27 +248,150 @@ export class ServeLock implements DistributedLock {
       if (this.#lease === undefined) client.close?.();
       throw error;
     }
+    await this.#settleAcquired();
+  }
+
+  /**
+   * Takes over the explicit lease this checkout holds on the key, renewing
+   * it at serve first. False when there is none, or serve no longer holds
+   * it (its record is forgotten): the hold then asks as usual.
+   */
+  async #adoptExplicit(): Promise<boolean> {
+    // Read once without the local lock, so a checkout holding no explicit
+    // lease never takes it; read again under it below.
+    if (
+      this.#options.adopt === undefined ||
+      await this.#options.adopt() === undefined
+    ) {
+      return false;
+    }
+    // Another of the checkout's commands may be using, or releasing, the
+    // lease.
+    const local = this.#options.localLock?.();
+    await local?.acquire();
+    let adopted = false;
+    try {
+      adopted = await this.#adoptRecorded(local);
+    } finally {
+      if (!adopted) await local?.release();
+    }
+    if (adopted) await this.#settleAcquired();
+    return adopted;
+  }
+
+  async #adoptRecorded(local: DistributedLock | undefined): Promise<boolean> {
+    const explicit = await this.#options.adopt!();
+    if (explicit === undefined) return false;
+    const client = this.#options.client();
+    const hold = new AbortController();
+    const asked = this.#monotonic();
+    let renewed: LockLease | undefined;
+    try {
+      // Names its hold: a lease recorded before its extension landed is
+      // still a command's at serve, whose TTL bounds a long hold.
+      renewed = await client.renewLock(
+        explicit.leaseId,
+        explicit.holdMs,
+        hold.signal,
+        { holdMs: explicit.holdMs },
+      );
+    } catch (error) {
+      client.close?.();
+      throw error;
+    }
+    if (renewed === undefined) {
+      client.close?.();
+      logger
+        .warn`The model lease on ${this.#displayKey()} has ended at serve; taking the lock again`;
+      await this.#options.forget?.(explicit.leaseId);
+      return false;
+    }
+    this.#client = client;
+    this.#hold = hold;
+    this.#adopted = true;
+    this.#lease = {
+      ...renewed,
+      leaseId: explicit.leaseId,
+      lockKey: explicit.lockKey,
+      ttlMs: explicit.holdMs,
+      fence: explicit.fence,
+      floor: explicit.floor,
+      holdMs: explicit.holdMs,
+    };
+    this.#acquiredAt = this.#now();
+    this.#lost = false;
+    this.#local = local;
+    this.#armDeadline(asked);
+    this.#startHeartbeat();
+    return true;
+  }
+
+  /** Runs `onAcquired`, then registers a fenced lease for its commits. */
+  async #settleAcquired(): Promise<void> {
     try {
       await this.#options.onAcquired?.();
     } catch (error) {
       await this.release();
       throw error;
     }
+    // Registered only once acquire has fully succeeded, and only while the
+    // lease has not lapsed meanwhile: a commit never names a lease this
+    // process does not hold.
+    const lease = this.#lease;
+    if (
+      lease?.fence !== undefined && this.#options.root !== undefined &&
+      !this.#lost
+    ) {
+      holdServeLease(this.#options.root, lease.lockKey, {
+        leaseId: lease.leaseId,
+        fence: lease.fence,
+        floor: lease.floor ?? [],
+      });
+    }
   }
 
   /** Releases the lease; safe to call again, or without a hold. */
   async release(): Promise<void> {
+    this.#releasing = true;
+    try {
+      await this.#release();
+    } finally {
+      this.#releasing = false;
+    }
+  }
+
+  async #release(): Promise<void> {
     this.#stopHeartbeat();
+    this.#clearDeadline();
+    // An adopted explicit lease stays registered: it outlives this hold,
+    // and the process's other commits to the behavior still name it.
+    const held = this.#lease;
+    if (
+      held !== undefined && this.#options.root !== undefined && !this.#adopted
+    ) {
+      dropServeLease(this.#options.root, held.lockKey, held.leaseId);
+    }
     this.#hold?.abort();
     this.#hold = undefined;
     const renewing = this.#renewing;
     if (renewing !== undefined) await renewing;
     const lease = this.#lease;
     const client = this.#client;
+    const adopted = this.#adopted;
     this.#lease = undefined;
     this.#client = undefined;
     this.#acquiredAt = undefined;
+    this.#adopted = false;
     if (lease === undefined || client === undefined) return;
+    // An explicit lease outlives the command that used it: it ends on
+    // `swamp model lease release`, or at serve once its hold passes.
+    if (adopted) {
+      client.close?.();
+      const local = this.#local;
+      this.#local = undefined;
+      await local?.release();
+      return;
+    }
     try {
       // Bounded by the client's own per-request timeout.
       await client.releaseLock(lease.leaseId, new AbortController().signal);
@@ -244,8 +438,13 @@ export class ServeLock implements DistributedLock {
     return Promise.resolve(false);
   }
 
+  /** The TTL the held lease renews with: an explicit lease's hold. */
+  #holdTtlMs(): number {
+    return this.#lease?.holdMs ?? this.#ttlMs;
+  }
+
   #startHeartbeat(): void {
-    const interval = Math.max(1, Math.floor(this.#ttlMs / 3));
+    const interval = Math.max(1, Math.floor(this.#holdTtlMs() / 3));
     this.#heartbeat = setInterval(() => {
       if (this.#renewing !== undefined) return;
       this.#renewing = this.#renew().finally(() => {
@@ -268,26 +467,89 @@ export class ServeLock implements DistributedLock {
     if (lease === undefined || client === undefined || hold === undefined) {
       return;
     }
+    const asked = this.#monotonic();
     try {
       const renewed = await client.renewLock(
         lease.leaseId,
-        this.#ttlMs,
+        this.#holdTtlMs(),
         hold.signal,
       );
-      if (this.#lease !== lease) return;
+      if (this.#lease !== lease || this.#lost) return;
       if (renewed === undefined) {
         // Serve no longer holds it for this caller: another may take it.
         this.#stopHeartbeat();
         logger
           .warn`Serve no longer holds the lock ${this.#displayKey()} for this command: its lease expired`;
+        this.#lapse("serve no longer holds it");
         return;
       }
-      this.#lease = renewed;
+      // A renewal keeps the fence and floor serve granted with the lease.
+      this.#lease = { ...lease, ...renewed };
+      this.#armDeadline(asked);
     } catch (error) {
       if (hold.signal.aborted) return;
+      // A refused renewal (a revoked grant) ends the lease at serve.
+      if (error instanceof ServeUpstreamError && error.status === 403) {
+        this.#stopHeartbeat();
+        logger
+          .warn`Serve refused to renew the lock ${this.#displayKey()}: ${error.message}`;
+        this.#lapse("serve refused its renewal");
+        return;
+      }
       logger
         .warn`Could not renew the lock ${this.#displayKey()} at serve; trying again: ${error}`;
     }
+  }
+
+  /**
+   * Arms the lease's local deadline: its TTL from `from` (a monotonic time
+   * no later than serve started the TTL), less a margin. Serve's own clock
+   * never decides it, so skew cannot move it.
+   */
+  #armDeadline(asked: number): void {
+    this.#clearDeadline();
+    if (this.#lease?.fence === undefined) return;
+    const from = Math.min(asked, this.#monotonic());
+    const ttlMs = this.#holdTtlMs();
+    const margin = Math.min(MAX_DEADLINE_MARGIN_MS, Math.floor(ttlMs / 10));
+    const due = Math.max(0, from + ttlMs - margin - this.#monotonic());
+    this.#deadline = setTimeout(() => {
+      this.#deadline = undefined;
+      this.#stopHeartbeat();
+      logger
+        .warn`Could not renew the lock ${this.#displayKey()} at serve before its lease ran out`;
+      this.#lapse("it could not be renewed in time");
+    }, due);
+  }
+
+  #clearDeadline(): void {
+    if (this.#deadline !== undefined) {
+      clearTimeout(this.#deadline);
+      this.#deadline = undefined;
+    }
+  }
+
+  /**
+   * Ends a fenced hold that lapsed: the lease leaves the registry, so no
+   * later commit names it, and `onLost` fires once. An unfenced lease only
+   * logs, as before swamp-club#4121.
+   */
+  #lapse(reason: string): void {
+    const lease = this.#lease;
+    if (
+      lease === undefined || lease.fence === undefined || this.#lost ||
+      this.#releasing
+    ) {
+      return;
+    }
+    this.#lost = true;
+    this.#clearDeadline();
+    if (this.#options.root !== undefined) {
+      dropServeLease(this.#options.root, lease.lockKey, lease.leaseId);
+    }
+    this.#options.onLost?.(
+      new ServeLeaseLapsedError(this.#displayKey(), reason),
+    );
   }
 
   #displayKey(): string {
