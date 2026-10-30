@@ -1233,6 +1233,22 @@ Deno.test("serverCancelFailure: a run id that reads like a TLS failure stays a c
   assertEquals(error.message.includes("TLS certificate rejected"), false);
 });
 
+Deno.test("serverCancelFailure: a run id cannot steer a certificate failure's diagnosis", () => {
+  const error = serverCancelFailure(
+    "https://localhost:9000",
+    "UnknownIssuer-1",
+    fetchFailure(
+      "https://localhost:9000/api/v1/cancel/workflow-run/UnknownIssuer-1",
+      "invalid peer certificate: BadSignature",
+    ),
+  );
+
+  assertEquals(
+    error.message,
+    "TLS certificate rejected: invalid peer certificate: BadSignature",
+  );
+});
+
 Deno.test("serverCancelFailure: shows the cause and no credentials from --server", () => {
   const server = "https://alice:hunter2@localhost:9000/?token=abc.s3cret";
   const error = serverCancelFailure(

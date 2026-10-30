@@ -181,10 +181,11 @@ export function serverCancelFailure(
   }
   const reason = describeCauses(error);
   // The cause text embeds the request URL, run id included, and the diagnosis
-  // matches bare substrings, so only a certificate failure may reach it.
-  const diagnosis = reason.includes("invalid peer certificate")
-    ? diagnoseTlsMessage(reason)
-    : undefined;
+  // matches bare substrings, so only the certificate failure itself reaches it.
+  const failure = reason.indexOf("invalid peer certificate");
+  const diagnosis = failure === -1
+    ? undefined
+    : diagnoseTlsMessage(reason.slice(failure));
   return new UserError(diagnosis ?? `Could not connect to ${shown}: ${reason}`);
 }
 

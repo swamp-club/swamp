@@ -23,9 +23,9 @@
 // never handing it the certificates, so one case runs the command itself.
 
 import "../src/domain/models/models.ts";
-import "../src/cli/mod.ts";
 import { join } from "@std/path";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { resetEnvCaCertsForTesting } from "../src/cli/remote_run.ts";
 import {
   buildCancelUrl,
   buildServerCancelRequest,
@@ -69,8 +69,6 @@ async function withPrivateCaServer(
         key: await Deno.readTextFile(leafKeyPath),
         signal: ac.signal,
         onListen: () => {},
-        // A refused handshake is what several of these tests expect.
-        onError: () => new Response(null, { status: 500 }),
       },
       (req) => {
         requests.push(`${req.method} ${new URL(req.url).pathname}`);
@@ -183,18 +181,23 @@ Deno.test("workflow cancel --server: the command trusts the CA in SWAMP_CA_CERT"
     return;
   }
   await withPrivateCaServer(async ({ caPath, port, requests }) => {
-    await withMockedEnv(
-      { SWAMP_CA_CERT: caPath },
-      () =>
-        workflowCancelCommand.parse([
-          "--server",
-          `https://localhost:${port}`,
-          "--run",
-          "run-1",
-          "--token",
-          "name.secret",
-        ]),
-    );
+    try {
+      await withMockedEnv(
+        { SWAMP_CA_CERT: caPath },
+        () =>
+          workflowCancelCommand.parse([
+            "--server",
+            `https://localhost:${port}`,
+            "--run",
+            "run-1",
+            "--token",
+            "name.secret",
+          ]),
+      );
+    } finally {
+      // Every run generates a new CA, and the certificates read are cached.
+      resetEnvCaCertsForTesting();
+    }
 
     assertEquals(requests, [CANCEL_REQUEST]);
   });
