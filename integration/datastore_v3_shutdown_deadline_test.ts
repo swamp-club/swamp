@@ -241,7 +241,8 @@ Deno.test({
         await commitIn(env, 1);
         // The probe holds its sync longer than this sync's own deadline.
         await confirmV3CommandReplicated();
-        assertEquals(deadlines.at(-1), 500);
+        // A later probe's sync can land after this one, so it need not be last.
+        assert(deadlines.includes(500), `the deadlines were ${deadlines}`);
       } finally {
         await upkeep.stop({ waitMs: 5_000 });
       }
