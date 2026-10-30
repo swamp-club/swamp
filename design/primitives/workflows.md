@@ -3906,14 +3906,29 @@ engine evaluates the remaining steps in topological order:
   on a settled step runs. A step recorded `running` fails as cancelled rather
   than starting, and a finished step or one re-entering a wait is not decided
   here.
-- Across a serve shutdown such a cleanup step, like any cleanup step, runs at
-  least once rather than once: it can outlast `SHUTDOWN_ABORT_GRACE_MS`, the run
-  write fence then drops its saves, and a resume after `workflow recover` can
-  run it again.
-- A job whose level is reached after the cancellation fired, without cleanup
-  mode, never starts, whether or not it shares its level (swamp-club#2898):
-  none of its steps is invoked with the cancelled signal, and it is settled as
-  a never-started job when the run records its cancellation.
+- Across a serve shutdown such a cleanup step, like any cleanup step or cleanup
+  job, runs at least once rather than once: it can outlast
+  `SHUTDOWN_ABORT_GRACE_MS`, the run write fence then drops its saves, and a
+  resume after `workflow recover` can run it again.
+- No step is invoked with the cancelled signal (swamp-club#2898). A job level
+  reached after the cancellation fired, with a job already succeeded and none
+  failed, unknown or running (each earlier job finished despite it, or it landed
+  between levels), starts no work, whether or not its jobs share the level
+  (swamp-club#4175), and neither does any later level of that run. A job that is
+  yet to start runs only if it is a cleanup job: one that would still run had
+  all the work before the cancellation failed (`jobRunsAfterFailure`,
+  `src/domain/workflows/abort_settlement.ts`). A job gated on a cleanup job that
+  succeeded counts, so a teardown chain runs to its end, and a forward job gated
+  `succeeded` on a `completed`-gated job counts too and starts. A job gated on a
+  work job's success does not. A job holding an approval gate or a wait for a
+  signal never counts, whatever gates it, so the cancellation does not become a
+  suspended run; a resume runs it. A cleanup job gets the cleanup signal, and can
+  read the status of a step in a settled job. Every other job is settled as a
+  never-started job, as above, so a resume runs it.
+- A job level reached after the cancellation fired when nothing has run yet (the
+  run was cancelled before it started) starts nothing, not even a cleanup job,
+  since there is nothing to clean up. Its jobs are settled as never-started jobs
+  when the run records its cancellation.
 - A never-started job settles its steps in dependency order, each as above.
   It stays `pending` while any step is undecided, even when another step was
   cancelled, since nothing in it ran; otherwise it fails when any step failed
@@ -3959,11 +3974,6 @@ engine evaluates the remaining steps in topological order:
   is such a step.
 - A level that suspends at an approval gate keeps its queued steps `pending`,
   so the run can be resumed.
-
-Known limitation: a job level has no equivalent of the step-level rule above.
-When every job of a level finishes successfully despite the cancellation, a
-later job level never enters cleanup mode and starts nothing, as above, so an
-`always`- or `completed`-gated teardown job does not run (swamp-club#4175).
 
 The same applies after a normal step failure without cancellation. Steps with
 `always` or `completed` conditions in later topological levels run instead of

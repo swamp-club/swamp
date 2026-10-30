@@ -22,6 +22,7 @@ import {
   cancelAndSettle,
   completeAndSettle,
   failAbandonedSteps,
+  jobRunsAfterFailure,
   resolveSettlementWorkflow,
   runsAfterFailure,
   settleCancelledRun,
@@ -895,4 +896,138 @@ Deno.test("runsAfterFailure: a forEach dependency answers skipped only when ever
     runsAfterFailure(mixed.t, mixed.definition, mixed.jobRun),
     false,
   );
+});
+
+/** Jobs a, b gated on a, c gated on b, whose records hold `statuses`. */
+function jobChain(
+  bOnA: TriggerCondition,
+  cOnB: TriggerCondition,
+  statuses: { a?: "succeeded" | "failed"; b?: "succeeded" | "failed" } = {},
+) {
+  const workflow = Workflow.create({
+    name: "job-chain-wf",
+    jobs: [
+      job("a", [modelStep("s")]),
+      job("b", [modelStep("s")], { job: "a", condition: bOnA }),
+      job("c", [modelStep("s")], { job: "b", condition: cOnB }),
+    ],
+  });
+  const run = WorkflowRun.create(workflow);
+  for (const [name, status] of Object.entries(statuses)) {
+    const record = run.getJob(name)!;
+    record.start();
+    if (status === "succeeded") record.succeed();
+    else record.fail();
+  }
+  return { workflow, run };
+}
+
+Deno.test("jobRunsAfterFailure: a job that would run had its dependency failed is cleanup", () => {
+  const { always, succeeded, failed, completed, skipped, and, or, not } =
+    TriggerCondition;
+  const cases: [string, TriggerCondition, boolean][] = [
+    ["always", always(), true],
+    ["completed", completed(), true],
+    ["failed", failed(), true],
+    ["not(succeeded)", not(succeeded()), true],
+    ["or(failed, succeeded)", or([failed(), succeeded()]), true],
+    ["and(always, completed)", and([always(), completed()]), true],
+    ["succeeded", succeeded(), false],
+    ["skipped", skipped(), false],
+    ["not(failed)", not(failed()), false],
+    ["and(always, succeeded)", and([always(), succeeded()]), false],
+  ];
+  for (const [name, condition, expected] of cases) {
+    const { workflow, run } = jobChain(condition, always(), { a: "succeeded" });
+    assertEquals(
+      jobRunsAfterFailure(workflow.getJob("b")!, workflow, run),
+      expected,
+      name,
+    );
+  }
+});
+
+Deno.test("jobRunsAfterFailure: a job with no dependsOn is work", () => {
+  const { workflow, run } = jobChain(
+    TriggerCondition.always(),
+    TriggerCondition.always(),
+  );
+  assertEquals(
+    jobRunsAfterFailure(workflow.getJob("a")!, workflow, run),
+    false,
+  );
+});
+
+Deno.test("jobRunsAfterFailure: every dependency must allow the job", () => {
+  const { workflow, run } = jobChain(
+    TriggerCondition.always(),
+    TriggerCondition.always(),
+    { a: "succeeded", b: "succeeded" },
+  );
+  const gated = Job.create({
+    name: "gated",
+    steps: [modelStep("s")],
+    dependsOn: [
+      { job: "b", condition: TriggerCondition.succeeded() },
+      { job: "a", condition: TriggerCondition.succeeded() },
+    ],
+  });
+  assertEquals(jobRunsAfterFailure(gated, workflow, run), false);
+});
+
+Deno.test("jobRunsAfterFailure: a cleanup dependency that succeeded answers its real status", () => {
+  const { succeeded, always } = TriggerCondition;
+  const ran = jobChain(always(), succeeded(), {
+    a: "succeeded",
+    b: "succeeded",
+  });
+  assertEquals(
+    jobRunsAfterFailure(ran.workflow.getJob("c")!, ran.workflow, ran.run),
+    true,
+  );
+  const failed = jobChain(always(), succeeded(), {
+    a: "succeeded",
+    b: "failed",
+  });
+  assertEquals(
+    jobRunsAfterFailure(
+      failed.workflow.getJob("c")!,
+      failed.workflow,
+      failed.run,
+    ),
+    false,
+  );
+});
+
+Deno.test("jobRunsAfterFailure: a work dependency that succeeded still answers failed", () => {
+  const { succeeded } = TriggerCondition;
+  const { workflow, run } = jobChain(succeeded(), succeeded(), {
+    a: "succeeded",
+    b: "succeeded",
+  });
+  assertEquals(
+    jobRunsAfterFailure(workflow.getJob("c")!, workflow, run),
+    false,
+  );
+});
+
+Deno.test("jobRunsAfterFailure: a job holding an approval gate or a wait for a signal is work, whatever gates it", () => {
+  const { workflow, run } = jobChain(
+    TriggerCondition.always(),
+    TriggerCondition.always(),
+    { a: "succeeded" },
+  );
+  for (
+    const task of [
+      StepTask.manualApproval("go?"),
+      StepTask.waitForSignal(600, { type: "object" }),
+    ]
+  ) {
+    const held = Job.create({
+      name: "held",
+      steps: [modelStep("s"), Step.create({ name: "hold", task })],
+      dependsOn: [{ job: "a", condition: TriggerCondition.always() }],
+    });
+    assertEquals(jobRunsAfterFailure(held, workflow, run), false);
+  }
 });

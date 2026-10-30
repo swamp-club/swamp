@@ -22,8 +22,10 @@ import fc from "fast-check";
 import {
   cancelAndSettle,
   completeAndSettle,
+  jobRunsAfterFailure,
   runsAfterFailure,
   settleCancelledRun,
+  shouldJobRun,
   shouldStepRun,
 } from "./abort_settlement.ts";
 import { Workflow } from "./workflow.ts";
@@ -421,5 +423,102 @@ Deno.test("runsAfterFailure: a dependency that was skipped, or is work, answers 
         );
       },
     ),
+  );
+});
+
+/**
+ * Jobs d0, d1... that all ended `outcome`, and a job gated on them. With
+ * `cleanupDeps` each is always-gated on a root job, so each is a cleanup job;
+ * otherwise each is work.
+ */
+function jobGatedOnFinished(
+  conditions: TriggerCondition[],
+  outcome: "succeeded" | "failed",
+  cleanupDeps: boolean,
+) {
+  const steps = () => [
+    Step.create({ name: "s", task: StepTask.model("m", "run") }),
+  ];
+  const deps = conditions.map((_, i) =>
+    Job.create({
+      name: `d${i}`,
+      steps: steps(),
+      dependsOn: cleanupDeps
+        ? [{ job: "root", condition: TriggerCondition.always() }]
+        : [],
+    })
+  );
+  const gated = Job.create({
+    name: "gated",
+    steps: steps(),
+    dependsOn: conditions.map((condition, i) => ({
+      job: `d${i}`,
+      condition,
+    })),
+  });
+  const workflow = Workflow.create({
+    name: "job-gated-wf",
+    jobs: [Job.create({ name: "root", steps: steps() }), ...deps, gated],
+  });
+  const run = WorkflowRun.create(workflow);
+  for (const dep of deps) {
+    const record = run.getJob(dep.name)!;
+    record.start();
+    if (outcome === "succeeded") record.succeed();
+    else record.fail();
+  }
+  return { gated, workflow, run };
+}
+
+Deno.test("jobRunsAfterFailure: agrees with shouldJobRun on a run whose dependencies failed", () => {
+  fc.assert(
+    fc.property(arbConditions, fc.boolean(), (conditions, cleanupDeps) => {
+      const { gated, workflow, run } = jobGatedOnFinished(
+        conditions,
+        "failed",
+        cleanupDeps,
+      );
+      assertEquals(
+        jobRunsAfterFailure(gated, workflow, run),
+        shouldJobRun(gated, run),
+      );
+    }),
+  );
+});
+
+Deno.test("jobRunsAfterFailure: agrees with shouldJobRun when its dependencies are cleanup jobs that ran", () => {
+  fc.assert(
+    fc.property(
+      arbConditions,
+      fc.constantFrom<"succeeded" | "failed">("succeeded", "failed"),
+      (conditions, outcome) => {
+        const { gated, workflow, run } = jobGatedOnFinished(
+          conditions,
+          outcome,
+          true,
+        );
+        assertEquals(
+          jobRunsAfterFailure(gated, workflow, run),
+          shouldJobRun(gated, run),
+        );
+      },
+    ),
+  );
+});
+
+Deno.test("jobRunsAfterFailure: a work dependency that succeeded answers as if it failed", () => {
+  fc.assert(
+    fc.property(arbConditions, (conditions) => {
+      const { gated, workflow, run } = jobGatedOnFinished(
+        conditions,
+        "succeeded",
+        false,
+      );
+      const failed = jobGatedOnFinished(conditions, "failed", false);
+      assertEquals(
+        jobRunsAfterFailure(gated, workflow, run),
+        shouldJobRun(failed.gated, failed.run),
+      );
+    }),
   );
 });
