@@ -410,6 +410,7 @@ export {
   type ModelOutputSearchItem,
   type ModelOutputSearchKey,
   type ModelOutputSearchModel,
+  type ModelOutputSearchNewestFirst,
   type ModelOutputSearchOutput,
   type ModelOutputSearchSelector,
 } from "./models/output_search.ts";

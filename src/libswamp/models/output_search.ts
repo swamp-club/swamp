@@ -23,7 +23,10 @@ import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 import { parseRunTimeBound } from "../workflows/run_search.ts";
 
-import { observeDiagnosticPhase } from "../../domain/diagnostics/diagnostic_phase.ts";
+import {
+  observeDiagnosticPhase,
+  type PhaseTally,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * A single model output search result item.
@@ -109,6 +112,26 @@ export interface ModelOutputSearchCandidate {
 }
 
 /**
+ * The outputs of a window read a batch at a time, newest first: see
+ * {@link ModelOutputSearchDeps.findOutputsNewestFirst}.
+ */
+export interface ModelOutputSearchNewestFirst {
+  /** The next outputs, at most `count`. Empty only once none remain. */
+  next(count: number): Promise<
+    Array<{
+      output: ModelOutputSearchOutput;
+      type: { normalized: string };
+      /** Breaks ties between outputs started in the same millisecond. */
+      position: number;
+    }>
+  >;
+  /** True when every output not read yet started strictly before `instant`. */
+  unreadStartedBefore(instant: Date): boolean;
+  /** How many listed outputs have not been read or refused. */
+  readonly unread: number;
+}
+
+/**
  * Dependencies for the model output search generator.
  */
 export interface ModelOutputSearchDeps {
@@ -136,6 +159,17 @@ export interface ModelOutputSearchDeps {
       type: { normalized: string };
     }>
   >;
+  /**
+   * The outputs started in `window`, read as they are asked for, newest first,
+   * leaving out what `selectReadable` refuses as {@link findAllOutputsGlobal}
+   * does. With it, a search with a `limit` and no `model` stops reading once it
+   * holds the results it will return (swamp-club#4143). Optional: without it
+   * the search reads every output and keeps the most recent.
+   */
+  findOutputsNewestFirst?(
+    window: { since?: Date; until?: Date },
+    selectReadable?: ModelOutputSearchSelector,
+  ): Promise<ModelOutputSearchNewestFirst>;
   /**
    * Every definition with its type, primary definitions before
    * auto-definitions. Read at most once per search to name the outputs, so
@@ -185,7 +219,9 @@ export interface ModelOutputSearchDeps {
    * Which of `candidates` the caller may read, one answer per candidate, in
    * order. With it, a search without `model` leaves out unread the outputs
    * it refuses (swamp-club#4142). Outputs whose location says nothing about
-   * them are still read, so the results still need authorizing.
+   * them are still read, so the results still need authorizing. A search
+   * reading newest first also asks it about each record it reads, so `limit`
+   * counts only outputs it accepts.
    */
   canRead?(
     candidates: readonly ModelOutputSearchCandidate[],
@@ -246,6 +282,9 @@ function parseInstant(
  * outputs' provenance, filters by model and start time, sorts by startedAt
  * descending and keeps at most `limit`. Filtering for JSON mode is handled
  * by the renderer.
+ *
+ * With `limit`, no `model` and {@link ModelOutputSearchDeps.findOutputsNewestFirst},
+ * it returns the same results reading only as far as they need.
  */
 export async function* modelOutputSearch(
   _ctx: LibSwampContext,
@@ -304,80 +343,80 @@ export async function* modelOutputSearch(
 
       // Exported as the output_search diagnostic area's phases when the
       // caller runs this in it (swamp-club#4056); silent otherwise.
-      const candidates = await observeDiagnosticPhase(
-        "candidate_scan",
-        {},
-        async (phase) => {
-          const found = await findCandidates(
-            deps,
-            input.model,
-            since,
-            until,
-            selectReadable,
+      const findNewestFirst = input.limit !== undefined &&
+          input.model === undefined
+        ? deps.findOutputsNewestFirst
+        : undefined;
+      let results: ModelOutputSearchItem[];
+      if (findNewestFirst !== undefined) {
+        const limit = input.limit!;
+        results = await observeDiagnosticPhase(
+          "candidate_scan",
+          {},
+          (phase) =>
+            readNewestFirst(
+              () => findNewestFirst({ since, until }, selectReadable),
+              limit,
+              { since, until },
+              namer,
+              canRead,
+              input.includeProvenance,
+              phase.tally,
+            ),
+        );
+      } else {
+        const candidates = await observeDiagnosticPhase(
+          "candidate_scan",
+          {},
+          async (phase) => {
+            const found = await findCandidates(
+              deps,
+              input.model,
+              since,
+              until,
+              selectReadable,
+            );
+            phase.tally.add("candidates", found.length);
+            return found;
+          },
+        );
+
+        const inWindow = candidates.filter(({ output }) =>
+          startedInWindow(output, since, until)
+        );
+        await namer.resolve(
+          inWindow
+            .filter(({ modelName }) => modelName === undefined)
+            .map(({ output, type }) => ({
+              type,
+              definitionId: output.definitionId,
+            })),
+        );
+
+        const items: ModelOutputSearchItem[] = [];
+        for (const { output, type, modelName: knownName } of inWindow) {
+          const modelName = knownName ??
+            await namer.nameOf(type, output.definitionId);
+          if (
+            input.model !== undefined &&
+            output.definitionId !== input.model &&
+            modelName !== input.model
+          ) continue;
+
+          items.push(
+            toSearchItem(output, type, modelName, input.includeProvenance),
           );
-          phase.tally.add("candidates", found.length);
-          return found;
-        },
-      );
+        }
 
-      const inWindow = candidates.filter(({ output }) => {
-        const startedMs = output.startedAt.getTime();
-        return !(since && startedMs < since.getTime()) &&
-          !(until && startedMs >= until.getTime());
-      });
-      await namer.resolve(
-        inWindow
-          .filter(({ modelName }) => modelName === undefined)
-          .map(({ output, type }) => ({
-            type,
-            definitionId: output.definitionId,
-          })),
-      );
-      const modelNameOf = namer.nameOf;
-
-      const items: ModelOutputSearchItem[] = [];
-      for (const { output, type, modelName: knownName } of inWindow) {
-        const modelName = knownName ??
-          await modelNameOf(type, output.definitionId);
-        if (
-          input.model !== undefined &&
-          output.definitionId !== input.model &&
-          modelName !== input.model
-        ) continue;
-
-        const provenance = input.includeProvenance
-          ? output.provenance
-          : undefined;
-        items.push({
-          id: output.id,
-          definitionId: output.definitionId,
-          modelName,
-          type: type.normalized,
-          methodName: output.methodName,
-          status: output.status,
-          startedAt: output.startedAt.toISOString(),
-          durationMs: output.durationMs,
-          ...(provenance ? { triggeredBy: provenance.triggeredBy } : {}),
-          ...(provenance?.workflowId !== undefined
-            ? { workflowId: provenance.workflowId }
-            : {}),
-          ...(provenance?.workflowRunId !== undefined
-            ? { workflowRunId: provenance.workflowRunId }
-            : {}),
-          ...(provenance?.stepName !== undefined
-            ? { stepName: provenance.stepName }
-            : {}),
-        });
+        // Sort by startedAt descending (most recent first)
+        items.sort(
+          (a, b) =>
+            new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
+        );
+        results = input.limit !== undefined
+          ? items.slice(0, input.limit)
+          : items;
       }
-
-      // Sort by startedAt descending (most recent first)
-      items.sort(
-        (a, b) =>
-          new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
-      );
-      const results = input.limit !== undefined
-        ? items.slice(0, input.limit)
-        : items;
 
       // One lookup for every workflow the results name, not one per result.
       const workflowIds = new Set<string>();
@@ -410,6 +449,134 @@ export async function* modelOutputSearch(
       };
     })(),
   );
+}
+
+/** Whether an output started at or after `since` and before `until`. */
+function startedInWindow(
+  output: ModelOutputSearchOutput,
+  since: Date | undefined,
+  until: Date | undefined,
+): boolean {
+  const startedMs = output.startedAt.getTime();
+  return !(since && startedMs < since.getTime()) &&
+    !(until && startedMs >= until.getTime());
+}
+
+/** The search result for an output. */
+function toSearchItem(
+  output: ModelOutputSearchOutput,
+  type: { normalized: string },
+  modelName: string | undefined,
+  includeProvenance: boolean | undefined,
+): ModelOutputSearchItem {
+  const provenance = includeProvenance ? output.provenance : undefined;
+  return {
+    id: output.id,
+    definitionId: output.definitionId,
+    modelName,
+    type: type.normalized,
+    methodName: output.methodName,
+    status: output.status,
+    startedAt: output.startedAt.toISOString(),
+    durationMs: output.durationMs,
+    ...(provenance ? { triggeredBy: provenance.triggeredBy } : {}),
+    ...(provenance?.workflowId !== undefined
+      ? { workflowId: provenance.workflowId }
+      : {}),
+    ...(provenance?.workflowRunId !== undefined
+      ? { workflowRunId: provenance.workflowRunId }
+      : {}),
+    ...(provenance?.stepName !== undefined
+      ? { stepName: provenance.stepName }
+      : {}),
+  };
+}
+
+/**
+ * The fewest outputs a newest-first search asks for at once, so that reading
+ * through outputs started in the same millisecond, or past records `canRead`
+ * refuses, does not take one read at a time.
+ */
+const MIN_NEWEST_FIRST_BATCH = 16;
+
+/**
+ * The most outputs a newest-first search asks for at once. Batches take turns
+ * at the shared reads, so this bounds how long a search with a large `limit`
+ * can hold up one with a small `limit`.
+ */
+const MAX_NEWEST_FIRST_BATCH = 1024;
+
+/**
+ * The `limit` most recent outputs `canRead` accepts, reading only as far as it
+ * takes to be sure of them: until the `limit`-th result started strictly after
+ * every output still unread. The comparison is strict so that outputs started
+ * in the same millisecond as it are read too, and it looks at that result, not
+ * at how many are held, because an output whose name says nothing about its
+ * start can be older than outputs not read yet. Results sort as a full scan's
+ * do: by start time, then in walk order.
+ */
+async function readNewestFirst(
+  open: () => Promise<ModelOutputSearchNewestFirst>,
+  limit: number,
+  window: { since?: Date; until?: Date },
+  namer: ReturnType<typeof definitionNamer>,
+  canRead: ModelOutputSearchDeps["canRead"],
+  includeProvenance: boolean | undefined,
+  tally: PhaseTally,
+): Promise<ModelOutputSearchItem[]> {
+  if (limit === 0) return [];
+  const outputs = await open();
+  const kept: Array<
+    { item: ModelOutputSearchItem; startedMs: number; position: number }
+  > = [];
+  while (
+    kept.length < limit ||
+    !outputs.unreadStartedBefore(new Date(kept[limit - 1].startedMs))
+  ) {
+    const batch = await outputs.next(
+      Math.min(
+        Math.max(limit - kept.length, MIN_NEWEST_FIRST_BATCH),
+        MAX_NEWEST_FIRST_BATCH,
+      ),
+    );
+    if (batch.length === 0) break;
+    tally.add("candidates", batch.length);
+
+    const inWindow = batch.filter(({ output }) =>
+      startedInWindow(output, window.since, window.until)
+    );
+    await namer.resolve(
+      inWindow.map(({ output, type }) => ({
+        type,
+        definitionId: output.definitionId,
+      })),
+    );
+    const named = await Promise.all(inWindow.map(async (found) => ({
+      ...found,
+      modelName: await namer.nameOf(found.type, found.output.definitionId),
+    })));
+    const readable = canRead && named.length > 0
+      ? await canRead(named.map(({ output, type, modelName }) => ({
+        definitionId: output.definitionId,
+        modelName,
+        type: type.normalized,
+        methodName: output.methodName,
+      })))
+      : undefined;
+
+    named.forEach(({ output, type, modelName, position }, i) => {
+      if (readable !== undefined && readable[i] !== true) return;
+      kept.push({
+        item: toSearchItem(output, type, modelName, includeProvenance),
+        startedMs: output.startedAt.getTime(),
+        position,
+      });
+    });
+    kept.sort((a, b) => b.startedMs - a.startedMs || a.position - b.position);
+    if (kept.length > limit) kept.length = limit;
+  }
+  tally.add("left_unread", outputs.unread);
+  return kept.map(({ item }) => item);
 }
 
 /**

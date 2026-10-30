@@ -57,8 +57,10 @@ import {
 } from "./scan_permits.ts";
 import { SharedScans } from "./shared_scans.ts";
 import type {
+  NewestFirstOutput,
   OutputKey,
   OutputRepository,
+  OutputsNewestFirst,
   SelectReadableOutputs,
 } from "../../domain/models/repositories.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
@@ -133,14 +135,15 @@ type GlobalOutput = { output: ModelOutput; type: ModelType; method: string };
 
 /**
  * An output file a global scan listed, with the method directory it is in
- * and, when its name is in {@link getPath}'s form, the definition id the
- * name carries.
+ * and, when its name is in {@link getPath}'s form, the definition id and
+ * stamp the name carries.
  */
 interface ListedOutput {
   modelType: ModelType;
   method: string;
   path: string;
   definitionId?: string;
+  stamp?: string;
 }
 
 /**
@@ -148,10 +151,10 @@ interface ListedOutput {
  * `selectReadable`, otherwise each file whose name carries no key and each
  * whose key it accepts. It is asked once, about the distinct keys.
  */
-async function chooseReadable(
-  listed: ListedOutput[],
+async function chooseReadable<T extends ListedOutput>(
+  listed: T[],
   selectReadable: SelectReadableOutputs | undefined,
-): Promise<ListedOutput[]> {
+): Promise<T[]> {
   if (selectReadable === undefined) return listed;
   const keys: OutputKey[] = [];
   const keyIndex = new Map<string, number>();
@@ -274,8 +277,8 @@ export class YamlOutputRepository implements OutputRepository {
   >((a, b) => a === undefined || b === undefined ? undefined : earlier(a, b));
   /**
    * The global scans' reads, shared by the callers of the same kind of scan
-   * whatever each listed: a caller joining adds the files it chose to the
-   * pending reads.
+   * (`since`, neither, or a batch of a newest-first read) whatever each
+   * listed: a caller joining adds the files it chose to the pending reads.
    */
   private readonly readScans = new SharedScans<
     Map<string, ListedOutput>,
@@ -809,6 +812,124 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   /**
+   * The outputs started in `window`, read as {@link OutputsNewestFirst.next}
+   * asks for them (swamp-club#4143), from the listing {@link findAllGlobal} and
+   * {@link findAllGlobalSince} share. A file's name carries the `startedAt` its
+   * record was saved with, so files are ordered by name, newest first, with
+   * walk order breaking ties. A file whose name is not in {@link getPath}'s form
+   * says nothing, so it is read first; a file named outside `window` is left out
+   * unread. `selectReadable` is asked only about the files `next` reaches, in
+   * chunks that double within a call, so a caller who may read few of them
+   * asks only a few times however many files it passes over.
+   *
+   * Batches share reads only with other newest-first batches, so a full read
+   * never holds up a batch. Each batch joins a read that has not started, as
+   * {@link findGlobal}'s reads do.
+   */
+  async findGlobalNewestFirst(
+    window: { since?: Date; until?: Date },
+    signal?: AbortSignal,
+    selectReadable?: SelectReadableOutputs,
+  ): Promise<OutputsNewestFirst> {
+    const listing = await this.listingScans.run(
+      window.since === undefined ? "all" : "since",
+      window.since,
+      (scanCutoff, scanSignal) => this.listAllGlobal(scanCutoff, scanSignal),
+      signal,
+    );
+    const { stampIn } = historyWindowOf(window);
+    await warnUnreadableLeftOut(
+      this.unreadableContent,
+      this.baseDir,
+      (entry) => {
+        const stamp = parseOutputFileName(entry.path)?.stamp;
+        return stamp === undefined || stampIn(stamp);
+      },
+    );
+
+    const tally = currentDiagnosticTally();
+    const ordered: Array<ListedOutput & { position: number }> = [];
+    listing.value.forEach((file, position) => {
+      if (file.stamp !== undefined && !stampIn(file.stamp)) {
+        tally.add("skipped_by_name");
+      } else {
+        ordered.push({ ...file, position });
+      }
+    });
+    ordered.sort((a, b) => {
+      if (a.stamp !== b.stamp) {
+        if (a.stamp === undefined) return -1;
+        if (b.stamp === undefined) return 1;
+        return a.stamp < b.stamp ? 1 : -1;
+      }
+      return a.position - b.position;
+    });
+
+    // Once per read, as the other global scans count it.
+    let reportedJoined = false;
+    const reportJoined = (joined: boolean) => {
+      if (!joined || reportedJoined) return;
+      currentDiagnosticTally().add("scans_joined");
+      reportedJoined = true;
+    };
+    let examined = 0;
+    let chosen: typeof ordered = [];
+    let chosenAt = 0;
+    const readFiles = (
+      pending: ReadonlyMap<string, ListedOutput>,
+      scanSignal: AbortSignal,
+    ) => this.readListed(pending, scanSignal);
+    const readScans = this.readScans;
+    return {
+      get unread() {
+        return ordered.length - examined + chosen.length - chosenAt;
+      },
+      unreadStartedBefore(instant) {
+        const stamp = nameStampOf(instant);
+        if (stamp === undefined) return false;
+        const head = chosen[chosenAt] ?? ordered[examined];
+        if (head === undefined) return true;
+        return head.stamp !== undefined && head.stamp < stamp;
+      },
+      async next(count): Promise<NewestFirstOutput[]> {
+        while (true) {
+          signal?.throwIfAborted();
+          let chunk = count;
+          while (
+            chosen.length - chosenAt < count && examined < ordered.length
+          ) {
+            const files = ordered.slice(examined, examined + chunk);
+            examined += files.length;
+            const picked = await chooseReadable(files, selectReadable);
+            chosen = [...chosen.slice(chosenAt), ...picked];
+            chosenAt = 0;
+            chunk *= 2;
+          }
+          const files = chosen.slice(chosenAt, chosenAt + count);
+          chosenAt += files.length;
+          if (files.length === 0) {
+            reportJoined(listing.joined);
+            return [];
+          }
+          const reads = await readScans.run(
+            "newest",
+            new Map(files.map((file) => [file.path, file])),
+            readFiles,
+            signal,
+          );
+          reportJoined(listing.joined || reads.joined);
+          const batch: NewestFirstOutput[] = [];
+          for (const file of files) {
+            const found = reads.value.get(file.path);
+            if (found) batch.push({ ...found, position: file.position });
+          }
+          if (batch.length > 0) return batch;
+        }
+      },
+    };
+  }
+
+  /**
    * The shared listing, the caller's own choice of files from it, then the
    * shared reads of them: the outputs of the files chosen, in walk order.
    */
@@ -941,6 +1062,7 @@ export class YamlOutputRepository implements OutputRepository {
             method,
             path: join(dir, entry.name),
             definitionId: match?.[1],
+            stamp: match?.[2],
           });
         }
         return found;
@@ -985,7 +1107,9 @@ export class YamlOutputRepository implements OutputRepository {
    * The reads {@link findGlobal} shares: each of `files` read and parsed,
    * by path. A record whose type, method or definition differs from what
    * its file's location says counts `key_mismatch`, so a layout that would
-   * make a caller's choice of files wrong shows in its traces.
+   * make a caller's choice of files wrong shows in its traces. One that
+   * started at another time than its name says counts `stamp_mismatch`, which
+   * would make {@link findGlobalNewestFirst}'s order wrong.
    */
   private async readListed(
     files: ReadonlyMap<string, ListedOutput>,
@@ -995,7 +1119,7 @@ export class YamlOutputRepository implements OutputRepository {
     const read = await mapBounded(
       [...files.values()],
       SCAN_CONCURRENCY,
-      async ({ modelType, method, path, definitionId }) => {
+      async ({ modelType, method, path, definitionId, stamp }) => {
         // Per-file try/catch closes the TOCTOU window: a concurrent delete
         // can remove the file between its listing and readTextFile.
         // NotFound on a single file means "skip it" — never "abandon the
@@ -1026,6 +1150,9 @@ export class YamlOutputRepository implements OutputRepository {
               output.methodName !== method)
           ) {
             tally.add("key_mismatch");
+          }
+          if (stamp !== undefined && fileStamp(output.startedAt) !== stamp) {
+            tally.add("stamp_mismatch");
           }
           return [
             path,

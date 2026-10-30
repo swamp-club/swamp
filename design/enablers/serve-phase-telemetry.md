@@ -267,11 +267,12 @@ these phases.
 (lab #4141): it looks up each definition owning an output that is not already
 named, once, and reads only those definitions' files (`files_read`), never a
 definition that owns none. It looks up 8 of them at a time (lab #4150), so its
-`read_work_ms` can exceed its wall time. A restricted search can run it twice:
-inside `candidate_scan` for the listed keys, then under the search for any output
-still unnamed (see below). `authorization` then judges each item on the same
-lookups, so its `owner_lookups` are all `owner_lookups_reused` and it reads no
-definition files. Without a definition index, the request's one scan of every
+`read_work_ms` can exceed its wall time. A restricted search can run it more than
+once: inside `candidate_scan` for the listed keys, then under the search for any
+output still unnamed (see below), and a search with a `limit` runs it again for
+each batch that has names still to look up. `authorization` then judges each item
+on the same lookups, so its `owner_lookups` are all `owner_lookups_reused` and it
+reads no definition files. Without a definition index, the request's one scan of every
 definition answers both phases.
 
 `candidate_scan` counts `candidates`, and what the repository did to find them.
@@ -299,6 +300,27 @@ scan is done, so a grant revoked while the search waited for its reads no
 longer admits their outputs. With authorization off, nothing is asked and every
 file is read.
 
+A search with a `limit` and no `model` reads newest first and stops once it holds
+its results (lab #4143). It orders the listed files by the start time in their
+names, reading first any file whose name is not in the output form, because only
+reading it says when it started. It reads batches of 16 to 1,024, so a search with
+a large `limit` holds up one with a small `limit` only briefly, judges each record
+as `authorization` will, and stops when its `limit`-th result started strictly
+after every file still unread, so outputs started in the same millisecond as that
+result are read too. It returns what reading the whole window would, as long as
+each file's name says when its record started. Only renaming or restoring a file
+by hand breaks that: such a record can be passed over, as a `since` search can pass
+one over, and `stamp_mismatch` counts it only if it is read, so zero is weak
+evidence. It asks about keys only for the files it reaches, in chunks that double
+within a batch, so `candidate_authorization` and `definition_names` can each appear
+several times under `candidate_scan`. In `candidate_authorization`, `keys` counts
+each chunk's distinct keys and then each record read, so the same key can count
+many times, and `candidates` counts the records read rather than the window. A
+grant revoked after
+a record is judged removes it in `authorization`, which is not refilled, so such a
+request can return fewer than `limit` results. A search for one model with a
+`limit` still reads its whole window, then limits after `authorization`.
+
 | Attribute                                        | Meaning                                                                         |
 | ------------------------------------------------ | ------------------------------------------------------------------------------- |
 | `type_dirs`, `method_dirs`, `entries`            | Directories listed and output files found by a search without `model`           |
@@ -306,6 +328,8 @@ file is read.
 | `stats`, `skipped_by_mtime`, `stat_work_ms`      | Files stat'ed because their name is not in the output form, and those skipped   |
 | `skipped_by_authorization`                       | Files skipped unread because their key is one the caller may not read           |
 | `key_mismatch`                                   | Records read whose method or definition differs from what their location says   |
+| `stamp_mismatch`                                 | Records read whose start differs from what their name says                      |
+| `left_unread`                                    | Files a search with a `limit` listed but neither read nor refused               |
 | `files_read`, `bytes_read`                       | Records read                                                                    |
 | `read_work_ms`, `parse_work_ms`                  | Reading and parsing them                                                        |
 | `scans_joined`                                   | 1 when the request shared a scan whose reads another request on it counted      |
@@ -317,8 +341,10 @@ neither filter read once between them. A search without `model` shares its
 listing and its reads apart (lab #4142): the reads are shared by every search of
 the same kind (`since`, or neither) whatever it listed, each adds the files it
 chose, and each keeps only its own, so requests that may read different files
-read the union of them once. A request that may read none of the files it listed
-joins no reads. A request joins only a scan that has not started yet, so it
+read the union of them once. A search with a `limit` shares its reads a batch at a
+time, only with other such searches, so a full read never holds one up. A request
+that may read none of the files it listed joins no reads. A request joins only a
+scan that has not started yet, so it
 never gets a result older than itself; one arriving while a scan runs waits for
 it and shares the next one with every request that arrives meanwhile. Joining
 widens that scan's window to cover the request's own (the earliest `since`, the
