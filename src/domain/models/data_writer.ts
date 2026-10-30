@@ -97,6 +97,7 @@ export class DefaultDataWriter implements DataWriter {
       contentPath: string;
       priorVersions: number[];
       durable?: boolean;
+      syncContent?: (file: Deno.FsFile) => Promise<void>;
     }
     | null = null;
   /**
@@ -288,12 +289,13 @@ export class DefaultDataWriter implements DataWriter {
         this.callbacks.onLine?.(this.name, buffer);
       }
 
-      // Synced on the handle that wrote it: Linux reports a write-back
-      // error reliably only to handles open when it happened. Not in the
+      // Synced on the handle that wrote it, through the repository's sync
+      // policy (swamp-club#4032): Linux reports a write-back error reliably
+      // only to handles open when it happened. Not in the
       // finally, so a sync error never hides a stream error.
       if (this.allocated.durable) {
         try {
-          await file.sync();
+          await (this.allocated.syncContent ?? ((f) => f.sync()))(file);
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error);
           throw markErrorPaths(

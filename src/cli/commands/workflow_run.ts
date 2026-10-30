@@ -587,6 +587,7 @@ export const workflowRunCommand = new Command()
                   repoContext.unifiedDataRepo.fetchForeignContent,
                   repoContext.unreadableContent,
                   unlocked.marker?.defaultVault,
+                  repoContext.unifiedDataRepo.writeSync,
                 );
                 service.signalWaits = signalWaitsOf(repoContext);
                 service.runCheckpointer = runCheckpointer;

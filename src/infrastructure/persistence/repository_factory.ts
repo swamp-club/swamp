@@ -64,6 +64,7 @@ import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
 import { YamlEvaluatedDefinitionRepository } from "./yaml_evaluated_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "./unified_data_repository.ts";
 import { resolveDurableWrites } from "../../domain/datastore/datastore_config.ts";
+import { selectDurableWriteSync } from "./ordered_sync.ts";
 import {
   type Namespace,
   restoreNamespace,
@@ -663,6 +664,11 @@ export function createRepositoryContext(
     config.fetchForeignContent,
     unreadableContent,
     resolveDurableWrites(datastoreResolver?.config()),
+    selectDurableWriteSync(
+      datastoreResolver,
+      catalogDbPath(repoDir, datastoreResolver),
+      { catalogStoreInjected: config.catalogStore !== undefined },
+    ),
   );
 
   // Construct the query service alongside its dependencies so consumers

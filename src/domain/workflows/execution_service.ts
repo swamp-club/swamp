@@ -1429,6 +1429,12 @@ export interface DirectTypeResolveResult {
   authoredExpressions?: ReadonlySet<string>;
 }
 
+/**
+ * How a durable v2 data write is synced (swamp-club#4032): a repository's
+ * `writeSync`, passed through unopened to the repositories built here.
+ */
+type DurableWriteSync = FileSystemUnifiedDataRepository["writeSync"];
+
 export type DirectTypeResolver = (
   typeArg: string,
   definitionName: string,
@@ -1544,6 +1550,7 @@ export class DefaultStepExecutor implements StepExecutor {
     private readonly hydrateFile?: HydrateFileHook,
     private readonly fetchForeignContent?: ForeignContentFetcher,
     private readonly unreadableContent?: UnreadableContentLookup,
+    private readonly durableWriteSync?: DurableWriteSync,
   ) {
     this._directTypeResolver = directTypeResolver;
   }
@@ -1564,6 +1571,7 @@ export class DefaultStepExecutor implements StepExecutor {
       hydrateFile?: HydrateFileHook;
       fetchForeignContent?: ForeignContentFetcher;
       unreadableContent?: UnreadableContentLookup;
+      durableWriteSync?: DurableWriteSync;
       namespace?: Namespace;
       vaultsDir?: string;
       defaultVaultName?: string;
@@ -1592,6 +1600,7 @@ export class DefaultStepExecutor implements StepExecutor {
       hydrateFile: this.hydrateFile,
       fetchForeignContent: this.fetchForeignContent,
       unreadableContent: this.unreadableContent,
+      durableWriteSync: this.durableWriteSync,
       namespace: ctx.namespace,
       vaultsDir: ctx.vaultsDir,
       defaultVaultName: ctx.defaultVaultName,
@@ -1618,6 +1627,7 @@ export class DefaultStepExecutor implements StepExecutor {
       hydrateFile?: HydrateFileHook;
       fetchForeignContent?: ForeignContentFetcher;
       unreadableContent?: UnreadableContentLookup;
+      durableWriteSync?: DurableWriteSync;
       namespace?: Namespace;
       vaultsDir?: string;
       defaultVaultName?: string;
@@ -1649,6 +1659,7 @@ export class DefaultStepExecutor implements StepExecutor {
       opts.fetchForeignContent,
       opts.unreadableContent,
       resolveDurableWrites(opts.datastoreResolver?.config()),
+      opts.durableWriteSync,
     );
     const unifiedDataRepo: UnifiedDataRepository = opts.ephemeralRepo
       ? new CompositeUnifiedDataRepository(fsDataRepo, opts.ephemeralRepo)
@@ -3565,6 +3576,13 @@ export class WorkflowExecutionService {
     private readonly fetchForeignContent?: ForeignContentFetcher,
     private readonly unreadableContent?: UnreadableContentLookup,
     private readonly defaultVaultName?: string,
+    /**
+     * How the repositories this service builds sync a durable v2 write
+     * (swamp-club#4032): the repository context's own policy
+     * (`FileSystemUnifiedDataRepository.writeSync`). Unset, every sync is
+     * a full one.
+     */
+    private readonly durableWriteSync?: DurableWriteSync,
   ) {
     this.executor = executor ??
       new DefaultStepExecutor(
@@ -3575,6 +3593,7 @@ export class WorkflowExecutionService {
         hydrateFile,
         fetchForeignContent,
         unreadableContent,
+        durableWriteSync,
       );
     this.dataBaseDir = dataBaseDir;
     this.catalogStore = catalogStore;
@@ -3614,6 +3633,7 @@ export class WorkflowExecutionService {
       fetchForeignContent,
       unreadableContent,
       resolveDurableWrites(datastoreResolver?.config()),
+      durableWriteSync,
     );
     this.dataRepo = ephemeralRepo
       ? new CompositeUnifiedDataRepository(fsDataRepo, ephemeralRepo)
@@ -7689,6 +7709,7 @@ export class WorkflowExecutionService {
       this.fetchForeignContent,
       this.unreadableContent,
       this.defaultVaultName,
+      this.durableWriteSync,
     );
     childService.signalWaits = this.signalWaits;
     childService.runCheckpointer = this.runCheckpointer;

@@ -17,7 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertNotStrictEquals,
+  assertStrictEquals,
+  assertThrows,
+} from "@std/assert";
 import { join } from "@std/path";
 import {
   catalogDbPath,
@@ -38,6 +44,7 @@ import {
 import { DefaultDatastorePathResolver } from "./default_datastore_path_resolver.ts";
 import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { assertPathEquals } from "./path_test_helpers.ts";
+import { fullWriteSync } from "./ordered_sync.ts";
 
 /** A temp repo directory, removed when disposed. */
 function tempRepoDir(): { path: string } & Disposable {
@@ -505,4 +512,61 @@ Deno.test("createRepositoryContext: loads a repo already bound to a reserved nam
   });
   assertEquals(ctx.unifiedDataRepo.namespace, "data");
   ctx.catalogStore.close();
+});
+
+// --- The v2 write-sync policy (swamp-club#4032) ---
+
+Deno.test("createRepositoryContext: the default datastore's repository orders its durable writes on macOS", () => {
+  using temp = tempRepoDir();
+  const datastoreResolver = new DefaultDatastorePathResolver(temp.path, {
+    type: "filesystem",
+    path: join(temp.path, ".swamp"),
+  });
+  const ctx = createRepositoryContext({
+    repoDir: temp.path,
+    enableIndexing: false,
+    datastoreResolver,
+  });
+  try {
+    if (Deno.build.os === "darwin") {
+      assertNotStrictEquals(ctx.unifiedDataRepo.writeSync, fullWriteSync);
+    } else {
+      assertStrictEquals(ctx.unifiedDataRepo.writeSync, fullWriteSync);
+    }
+  } finally {
+    ctx.catalogStore.close();
+  }
+});
+
+Deno.test("createRepositoryContext: a custom-path datastore's repository syncs in full", () => {
+  using temp = tempRepoDir();
+  const datastoreResolver = new DefaultDatastorePathResolver(temp.path, {
+    type: "filesystem",
+    path: join(temp.path, "elsewhere"),
+  });
+  const ctx = createRepositoryContext({
+    repoDir: temp.path,
+    enableIndexing: false,
+    datastoreResolver,
+  });
+  try {
+    assertStrictEquals(ctx.unifiedDataRepo.writeSync, fullWriteSync);
+  } finally {
+    ctx.catalogStore.close();
+  }
+});
+
+Deno.test("createRepositoryContext: a repository given its own catalog store syncs in full", () => {
+  using temp = tempRepoDir();
+  const catalogStore = new CatalogStore(join(temp.path, "other.db"));
+  try {
+    const ctx = createRepositoryContext({
+      repoDir: temp.path,
+      enableIndexing: false,
+      catalogStore,
+    });
+    assertStrictEquals(ctx.unifiedDataRepo.writeSync, fullWriteSync);
+  } finally {
+    catalogStore.close();
+  }
 });

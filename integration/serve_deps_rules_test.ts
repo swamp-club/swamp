@@ -445,6 +445,41 @@ Deno.test("every workflow run entry point passes the repo's defaultVault", async
   );
 });
 
+Deno.test("every WorkflowExecutionService passes the repository's write sync", async () => {
+  const violations: string[] = [];
+  let services = 0;
+
+  for await (
+    const entry of walk(join(ROOT, "src"), {
+      exts: [".ts"],
+      skip: [/_test\.ts$/],
+    })
+  ) {
+    const content = await Deno.readTextFile(entry.path);
+    const rel = normalise(relative(ROOT, entry.path));
+    for (
+      const args of callArguments(content, /\bnew WorkflowExecutionService\(/g)
+    ) {
+      services++;
+      if (!/[wW]riteSync/.test(args)) {
+        violations.push(`${rel}: new WorkflowExecutionService(...)`);
+      }
+    }
+  }
+
+  assertGreater(services, 0, "expected WorkflowExecutionService calls");
+  assertEquals(
+    violations,
+    [],
+    "A workflow's repositories sync durable v2 writes as the repository " +
+      "context does: the macOS ordering barrier on the default datastore, " +
+      "a full sync elsewhere (swamp-club#4032). A service built without " +
+      "the context's writeSync syncs every write in full. Pass " +
+      "repoContext.unifiedDataRepo.writeSync.\n\nViolations:\n" +
+      violations.join("\n"),
+  );
+});
+
 Deno.test("every serve workflow run entry point passes the run write fence", async () => {
   const violations: string[] = [];
   const counts = { runDeps: 0, triggered: 0 };

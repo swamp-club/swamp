@@ -459,7 +459,9 @@ export interface UnifiedDataRepository {
    *   is a write-handling instruction (swamp-club#4017): when true, content
    *   the caller writes to `contentPath` through a handle of its own is
    *   synced on that handle before finalizing, and finalize is told so.
-   *   Absent means false.
+   *   Absent means false. `syncContent`, when set beside `durable`, is how
+   *   that handle is synced (swamp-club#4032): the repository's own sync
+   *   policy, such as the macOS ordering barrier. Absent, `file.sync()`.
    */
   allocateVersion(
     type: ModelType,
@@ -472,6 +474,7 @@ export interface UnifiedDataRepository {
       contentPath: string;
       priorVersions: number[];
       durable?: boolean;
+      syncContent?: (file: Deno.FsFile) => Promise<void>;
     }
   >;
 

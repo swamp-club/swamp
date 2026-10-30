@@ -153,7 +153,11 @@ subprocess is synced by `finalizeVersion` (`contentSynced: false`).
   directory, after which the catalog row is still written so the two agree. On
   v3 the commit is durable and replay rewrites the checkout (swamp-club#3617);
   a version the checkout's datastore filter keeps local is never committed, so
-  the repository syncs it as on v2 (swamp-club#4019). Without the syncs,
+  the repository syncs it as on v2 (swamp-club#4019). On macOS the default
+  datastore orders these writes with `F_BARRIERFSYNC` rather than flushing
+  the drive cache (swamp-club#4032): the content still reaches the disk
+  before what publishes it, but the newest versions may not survive a power
+  cut ([datastores.md](../enablers/datastores.md#filesystem)). Without the syncs,
   ext4's delayed allocation can keep the renames, the marker and the catalog
   row across a power cut but lose the bytes, leaving empty `raw` and
   `metadata.yaml` published as latest (swamp-club#3955).

@@ -22,6 +22,7 @@ import {
   assertEquals,
   assertExists,
   assertRejects,
+  assertStrictEquals,
   assertStringIncludes,
 } from "@std/assert";
 import { dirname, join, relative, SEPARATOR } from "@std/path";
@@ -4378,6 +4379,58 @@ Deno.test({
   },
 });
 
+Deno.test("allocateVersion: on v2, hands the writer the repository's own file sync for the content (swamp-club#4032)", async () => {
+  await withDurableRepo(async ({ repo, events, label }) => {
+    const allocated = await repo.allocateVersion(
+      testType,
+      "m1",
+      makeJsonData("stream"),
+    );
+    assert(allocated.syncContent !== undefined);
+    const file = await Deno.open(allocated.contentPath, {
+      write: true,
+      create: true,
+    });
+    try {
+      await file.write(bytes("{}"));
+      await allocated.syncContent(file);
+    } finally {
+      file.close();
+    }
+    assert(events.includes(`file ${label(allocated.contentPath)}`));
+  });
+});
+
+Deno.test("FileSystemUnifiedDataRepository.writeSync: is the sync policy it was built with", async () => {
+  const hooks: AtomicWriteSync = { syncDirectory: () => Promise.resolve() };
+  const dir = await Deno.makeTempDir({ prefix: "swamp-write-sync-test-" });
+  const catalogStore = new CatalogStore(join(dir, "_catalog.db"));
+  try {
+    const repo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalogStore,
+      undefined,
+      undefined,
+      SOLO_NAMESPACE,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      true,
+      hooks,
+    );
+    assertStrictEquals(repo.writeSync, hooks);
+  } finally {
+    catalogStore.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
 Deno.test("save: with durable writes off, no write syncs anything and allocateVersion reports not durable", async () => {
   await withDurableRepo(async ({ repo, events }) => {
     await repo.save(testType, "m1", makeJsonData("state"), bytes("{}"));
@@ -4386,6 +4439,7 @@ Deno.test("save: with durable writes off, no write syncs anything and allocateVe
     const data = makeJsonData("stream");
     const allocated = await repo.allocateVersion(testType, "m1", data);
     assertEquals(allocated.durable, false);
+    assertEquals(allocated.syncContent, undefined);
     await Deno.writeTextFile(allocated.contentPath, "{}");
     await repo.finalizeVersion(testType, "m1", data, allocated.version);
     await repo.rename(testType, "m1", "state", "renamed");

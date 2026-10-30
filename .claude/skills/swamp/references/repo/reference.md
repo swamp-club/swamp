@@ -279,6 +279,13 @@ be synced is not published; when only the final sync of its `latest` marker
 fails, the version is already latest and the marker may not survive a power cut.
 Treat `EIO` or `ENOSPC` as a disk problem, not a reason to turn syncing off.
 
+On macOS, the default datastore (`.swamp/data`, no custom `path`, no
+`namespace`) orders these writes with the `F_BARRIERFSYNC` barrier instead of a
+full drive-cache flush, so durable writes there cost a few milliseconds, not
+tens. Content still reaches disk before the version is published, but the newest
+versions may not survive a power cut. Custom-path, namespaced, extension and v3
+datastores, and `data delete`/`rename`/`prune`/`gc`, keep the full flush.
+
 ### Setting Up a v3 Filesystem Datastore
 
 `--format 3` creates a v3 datastore: every change is committed to a commit log

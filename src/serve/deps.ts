@@ -266,6 +266,7 @@ export async function createWorkflowRunDeps(
         repoContext.unifiedDataRepo.fetchForeignContent,
         repoContext.unreadableContent,
         options?.defaultVault,
+        repoContext.unifiedDataRepo.writeSync,
       );
       service.signalWaits = repoContext.signalWaits ??
         SIGNAL_WAITS_NOT_CONFIGURED;

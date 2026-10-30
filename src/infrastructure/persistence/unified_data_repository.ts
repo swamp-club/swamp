@@ -330,6 +330,16 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
+   * How this repository syncs a durable v2 write (swamp-club#4032): the
+   * full sync, or the macOS ordering barrier where the repository context
+   * chose it (`selectDurableWriteSync`). The workflow service hands it to
+   * the repositories it builds, so they sync the same way.
+   */
+  get writeSync(): AtomicWriteSync {
+    return this.durableWriteHooks;
+  }
+
+  /**
    * The sync option of a write to `record`, or undefined with durable
    * writes off or when a v3 commit replays it (swamp-club#4017). On v2 a
    * version's files, and the directory entries that reach them, are synced
@@ -2458,6 +2468,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       contentPath: string;
       priorVersions: number[];
       durable?: boolean;
+      syncContent?: (file: Deno.FsFile) => Promise<void>;
     }
   > {
     // Reject reserved data names that collide with internal markers
@@ -2519,17 +2530,25 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         newVersion,
       );
 
-      // On v2 the writer syncs what it streams in (swamp-club#4017).
+      // On v2 the writer syncs what it streams in (swamp-club#4017),
+      // through this repository's sync policy (swamp-club#4032). The hook
+      // is called bare: the writer names the path in its own error.
+      const sync = this.durableSync({
+        type,
+        modelId,
+        dataName: data.name,
+        version: newVersion,
+      });
+      const syncFile = sync?.syncFile;
       return {
         version: newVersion,
         contentPath,
         priorVersions,
-        durable: this.durableSync({
-          type,
-          modelId,
-          dataName: data.name,
-          version: newVersion,
-        }) !== undefined,
+        durable: sync !== undefined,
+        ...(syncFile === undefined ? {} : {
+          syncContent: (file: Deno.FsFile) =>
+            syncFile(file, { temp: contentPath, target: contentPath }),
+        }),
       };
     });
   }
