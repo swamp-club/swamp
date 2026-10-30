@@ -363,10 +363,13 @@ import {
 } from "../../serve/shutdown_drain.ts";
 import {
   interruptShutdownRuns,
+  SHUTDOWN_PUSH_TIMEOUT_MS,
   stopHeartbeatAtShutdown,
 } from "../../serve/shutdown_interrupt.ts";
+import { ShutdownDeadline } from "../../serve/shutdown_deadline.ts";
 import { ServeRunWriteFence } from "../../serve/run_write_fence.ts";
 import {
+  clearCommittedAtBoot,
   markedRunsStillRunning,
   pushSettledAtBoot,
   readUnpushedInterrupts,
@@ -477,7 +480,10 @@ import {
   createGrantWriteCommit,
   createGrantWriteTracking,
 } from "../../serve/grant_write_tracking.ts";
-import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
+import {
+  commitsThroughCommitLog,
+  runInRootUnitOfWork,
+} from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import { withServerTokenLock } from "../../infrastructure/persistence/server_token_lock.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { DefinitionIdIndex } from "../../infrastructure/persistence/definition_id_index.ts";
@@ -521,6 +527,7 @@ import { createSyncGate } from "../../serve/sync_gate.ts";
 import {
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   InstanceHeartbeatService,
+  STOPPED_HEARTBEAT_WRITE_TIMEOUT_MS,
 } from "../../serve/instance_heartbeat.ts";
 import { ServeLeadership } from "../../serve/serve_leadership.ts";
 import { FileSystemControlPlaneStore } from "../../infrastructure/persistence/fs_control_plane_store.ts";
@@ -592,7 +599,7 @@ import { withSharedSyncGate, withSyncGate } from "../../serve/sync_gate.ts";
 import { GcMutex } from "../../serve/gc_mutex.ts";
 import { takeRetentionCandidate } from "../retention_candidate.ts";
 import {
-  setV3SyncDeadline,
+  setV3ClosingDeadline,
 } from "../../infrastructure/datastore_v3/litestream/v3_replication.ts";
 import { followerHttpForward } from "../../serve/follower_requests.ts";
 import { LeaderLink } from "../../serve/leader_link.ts";
@@ -630,6 +637,12 @@ import {
  * (swamp-club#3958). Boot waits for it before serving, so it is bounded.
  */
 const SETTLED_RUN_PUSH_TIMEOUT_MS = 30_000;
+
+/**
+ * The most serve's shutdown waits for a v3 sidecar probe or replacement in
+ * flight, within what its deadline has left (swamp-club#3961).
+ */
+const V3_UPKEEP_STOP_BOUND_MS = 5_000;
 
 /**
  * How long a reconciliation pass waits to bring one run record of a dead
@@ -5247,7 +5260,9 @@ export const serveCommand = new Command()
       UNPUSHED_INTERRUPTS_FILE,
     );
     let unpushedAtBoot: UnpushedInterrupts = { present: false };
-    if (pushSettledRuns) {
+    // On v3 the boot reap's commit is what lands them (swamp-club#3961).
+    const commitsSettledRuns = commitsThroughCommitLog(repoContext);
+    if (pushSettledRuns || commitsSettledRuns) {
       try {
         unpushedAtBoot = await readUnpushedInterrupts(unpushedMarkerPath);
       } catch (error) {
@@ -5294,6 +5309,12 @@ export const serveCommand = new Command()
                 marker: unpushedAtBoot,
                 markerPath: unpushedMarkerPath,
                 push: pushSettledRuns,
+              })
+            : commitsSettledRuns
+            ? () =>
+              clearCommittedAtBoot({
+                marker: unpushedAtBoot,
+                markerPath: unpushedMarkerPath,
               })
             : undefined,
           pushWhen: "completed",
@@ -7935,6 +7956,13 @@ export const serveCommand = new Command()
         logger.info`Shutting down, aborting in-flight runs immediately...`;
       }
       const drainStarted = Date.now();
+      // Every stage after the drain that waits on the datastore's storage
+      // takes its bound from this one deadline, so a slow bucket cannot hold
+      // shutdown past the drain timeout plus about 25 s (swamp-club#3961).
+      const shutdownDeadline = ShutdownDeadline.forShutdown(
+        drainStarted,
+        shutdownDrainTimeoutMs,
+      );
       const remaining = await runShutdownDrain({
         webhookService,
         scheduledExecution,
@@ -7961,6 +7989,7 @@ export const serveCommand = new Command()
         runWriteFence,
         runTracker,
         unpushedMarkerPath,
+        pushTimeoutMs: shutdownDeadline.remaining(SHUTDOWN_PUSH_TIMEOUT_MS),
         onInterrupted: (runId) => {
           if (isJson) {
             console.log(JSON.stringify({ status: "interrupted", runId }));
@@ -8006,6 +8035,9 @@ export const serveCommand = new Command()
           instanceId,
           aborted: remaining,
           unpushed: unpushedRunIds,
+          writeTimeoutMs: shutdownDeadline.remaining(
+            STOPPED_HEARTBEAT_WRITE_TIMEOUT_MS,
+          ),
         });
       }
       // Stop revalidation before the gateway it cuts workers off from.
@@ -8034,13 +8066,13 @@ export const serveCommand = new Command()
       }
       await policySnapshotLoader.dispose();
       await v3Maintenance?.stop();
-      // No sidecar replacement runs past here, and the closing sync gets
-      // what the drain left (swamp-club#3416). What is left may be negative:
-      // setV3SyncDeadline floors it at 10 s.
-      await v3Replication?.stop();
-      setV3SyncDeadline(
-        shutdownDrainTimeoutMs - (Date.now() - drainStarted),
-      );
+      // No sidecar replacement runs past here (swamp-club#3416), and the
+      // closing sync and the lease release get what the shutdown deadline
+      // has left when each starts (swamp-club#3961).
+      await v3Replication?.stop({
+        waitMs: shutdownDeadline.remaining(V3_UPKEEP_STOP_BOUND_MS),
+      });
+      setV3ClosingDeadline(shutdownDeadline);
       // Final telemetry flush, after runs have drained so their entries are
       // included. Must happen BEFORE ac.abort(), which releases
       // `await server.finished` and with it the CLI's own teardown flush.

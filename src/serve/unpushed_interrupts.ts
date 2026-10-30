@@ -19,9 +19,11 @@
 
 /**
  * The checkout-local record of the workflow runs a `swamp serve` shutdown
- * interrupted but could not push (swamp-club#3958). The next serve in the
- * same checkout pushes once at boot while it is present, so the datastore
- * does not keep those runs `running` until some unrelated write pushes.
+ * interrupted but could not push (swamp-club#3958), or on a v3 datastore
+ * could not commit in time (swamp-club#3961). The next serve in the same
+ * checkout pushes, or commits, once at boot while it is present, so the
+ * datastore does not keep those runs `running` until some unrelated write
+ * lands them.
  *
  * The file sits beside `serve.pid` and the run tracker, which never sync.
  * Its run ids are only logged: whether it exists is what decides the push.
@@ -175,6 +177,32 @@ function parseRuns(text: string): UnpushedRun[] | undefined {
     result.push(workflowId === undefined ? { runId } : { runId, workflowId });
   }
   return result;
+}
+
+/**
+ * On a v3 datastore, the flush of serve's boot reap: its root has committed
+ * the runs the previous shutdown could not commit in time
+ * (swamp-club#3961), so the record of them is cleared. A root that failed
+ * never flushes, and keeps the record for the next start.
+ */
+export async function clearCommittedAtBoot(options: {
+  readonly marker: UnpushedInterrupts;
+  readonly markerPath: string;
+}): Promise<void> {
+  const { marker, markerPath } = options;
+  if (!marker.present) return;
+  logger.info(
+    "Boot: committed the interrupted workflow run(s) {runIds} the previous shutdown could not commit",
+    { runIds: marker.runs.map((r) => r.runId) },
+  );
+  try {
+    await clearUnpushedInterrupts(markerPath);
+  } catch (error) {
+    logger.warn(
+      "Boot: could not remove the record of uncommitted interrupted workflow runs: {error}",
+      { error: error instanceof Error ? error.message : String(error) },
+    );
+  }
 }
 
 /**

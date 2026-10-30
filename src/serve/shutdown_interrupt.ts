@@ -39,7 +39,10 @@ import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_se
 import type { RunTrackerRepository } from "../domain/models/run_tracker_repository.ts";
 import type { WorkflowRunRepository } from "../domain/workflows/repositories.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
-import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
+import {
+  commitsThroughCommitLog,
+  runInRootUnitOfWork,
+} from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { pushNamespaceCounted } from "../infrastructure/persistence/push_paths.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { ActiveRun } from "./active_run_registry.ts";
@@ -65,7 +68,7 @@ export const SHUTDOWN_PUSH_TIMEOUT_MS = 5_000;
 
 export interface ShutdownInterruptDeps {
   readonly repoContext:
-    & Pick<RepositoryContext, "markDirty">
+    & Pick<RepositoryContext, "markDirty" | "commitLog">
     & {
       readonly workflowRunRepo: Pick<
         WorkflowRunRepository,
@@ -82,7 +85,10 @@ export interface ShutdownInterruptDeps {
   readonly syncService?: Pick<DatastoreSyncService, "pushChanged">;
   readonly namespace?: string;
   readonly syncGate?: SyncGate;
-  /** Defaults to {@link SHUTDOWN_PUSH_TIMEOUT_MS}. */
+  /**
+   * Bounds the push on a synced datastore, and the commit on a v3 one.
+   * Defaults to {@link SHUTDOWN_PUSH_TIMEOUT_MS}.
+   */
   readonly pushTimeoutMs?: number;
   /** Called once for each run marked interrupted. */
   readonly onInterrupted?: (runId: string) => void;
@@ -105,8 +111,9 @@ export interface ShutdownInterruptResult {
   /**
    * The aborted workflow runs whose interrupted record is not known to have
    * reached the datastore: every interrupted run when the push failed, and
-   * each run that could not be loaded or saved. Set only on a synced
-   * datastore, and only when not empty.
+   * each run that could not be loaded or saved. On a v3 datastore, every
+   * aborted workflow run when the commit missed its bound. Set only on a
+   * synced or v3 datastore, and only when not empty.
    */
   readonly unpushed?: readonly string[];
 }
@@ -161,13 +168,15 @@ export async function interruptShutdownRuns(
       workflowRuns.map((r) => r.runId),
       workflowRuns,
       deps,
+      [],
+      commitsThroughCommitLog(repoContext),
     );
   }
   const loaded = allRuns;
   let pushError: string | undefined;
   const notSaved: string[] = [];
   const pushTimeoutMs = deps.pushTimeoutMs ?? SHUTDOWN_PUSH_TIMEOUT_MS;
-  await runInRootUnitOfWork(
+  const root = runInRootUnitOfWork(
     repoContext,
     {
       // The interrupted records are pushed under the shared gate, as a run's
@@ -251,18 +260,73 @@ export async function interruptShutdownRuns(
       }
     },
   );
+  const commitsLocally = commitsThroughCommitLog(repoContext);
+  if (!commitsLocally) {
+    await root;
+  } else {
+    // A v3 commit stores its content in the bucket before it commits
+    // locally, so a slow bucket holds it: it is bounded as the push is
+    // (swamp-club#3961). One that misses is left to land or fail on its own
+    // until the datastore closes; the runs are recorded for the next start.
+    pushError = await commitWithin(root, pushTimeoutMs);
+    if (pushError !== undefined) {
+      logger.warn(
+        "Failed to commit interrupted workflow run(s) {runIds} to the datastore: {error}. The next serve in this checkout commits them, and a leader instance settles the runs meanwhile",
+        { runIds: workflowRuns.map((r) => r.runId), error: pushError },
+      );
+    }
+  }
   return await reported(
     pushError === undefined ? { interrupted } : { interrupted, pushError },
-    pushError === undefined ? notSaved : [...interrupted, ...notSaved],
+    pushError === undefined ? notSaved : commitsLocally
+      // Every aborted run: a commit that missed may not have saved them all.
+      ? workflowRuns.map((r) => r.runId)
+      : [...interrupted, ...notSaved],
     workflowRuns,
     deps,
     loaded,
+    commitsLocally,
   );
 }
 
 /**
- * Adds `unpushed` to `result` on a synced datastore and records it at the
- * marker path, when there is any.
+ * Waits up to `timeoutMs` for the v3 root `root` to commit. Resolves with
+ * why it did not, or undefined once it did. A root that misses is not
+ * awaited further; its later outcome is only logged.
+ */
+async function commitWithin(
+  root: Promise<void>,
+  timeoutMs: number,
+): Promise<string | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let late = false;
+  const settled = root.then(
+    () => undefined,
+    (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (late) {
+        logger
+          .debug`The interrupt commit that missed its deadline failed: ${message}`;
+      }
+      return message;
+    },
+  );
+  const deadline = new Promise<string>((resolve) => {
+    timer = setTimeout(() => {
+      late = true;
+      resolve(`timed out after ${timeoutMs}ms`);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([settled, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Adds `unpushed` to `result` on a synced datastore, or on a v3 one when
+ * `commitsLocally`, and records it at the marker path, when there is any.
  */
 async function reported(
   result: ShutdownInterruptResult,
@@ -273,8 +337,11 @@ async function reported(
   >,
   deps: ShutdownInterruptDeps,
   loaded: ReadonlyArray<{ run: { id: string }; workflowId: string }> = [],
+  commitsLocally = false,
 ): Promise<ShutdownInterruptResult> {
-  if (!deps.syncService || unpushed.length === 0) return result;
+  if ((!deps.syncService && !commitsLocally) || unpushed.length === 0) {
+    return result;
+  }
   if (deps.unpushedMarkerPath !== undefined) {
     // The workflow id lets the next start read each record by id.
     const workflowIdOf = (runId: string) =>
@@ -325,7 +392,7 @@ export async function stopHeartbeatAtShutdown(
   const writeTimeoutMs = options.writeTimeoutMs ??
     STOPPED_HEARTBEAT_WRITE_TIMEOUT_MS;
   if (options.unpushed.length === 0) {
-    await heartbeat.stop();
+    await heartbeat.stop({ writeTimeoutMs });
     return;
   }
   const unpushed = new Set(options.unpushed);

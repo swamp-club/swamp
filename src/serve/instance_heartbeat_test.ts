@@ -292,6 +292,24 @@ Deno.test("InstanceHeartbeatService: a stopped record write that never settles i
   release?.();
 });
 
+Deno.test("InstanceHeartbeatService: a heartbeat delete that never settles is cut off at its bound (swamp-club#3961)", async () => {
+  const store = createInMemoryStore();
+  const service = new InstanceHeartbeatService(store, "hung-delete", {
+    intervalMs: 60_000,
+  });
+  await service.start();
+  let fail: ((error: Error) => void) | undefined;
+  const held = new Promise<void>((_, reject) => fail = reject);
+  store.delete = () => held;
+
+  await service.stop({ writeTimeoutMs: 10 });
+
+  // Left to go stale; its late failure is handled, never unhandled.
+  assertExists(store.entries.get("heartbeats/hung-delete"));
+  fail?.(new Error("Request aborted"));
+  await held.catch(() => {});
+});
+
 Deno.test("InstanceHeartbeatService.isStale: a stopped record is stale whatever its age", () => {
   const now = new Date().toISOString();
   const record: HeartbeatRecord = {

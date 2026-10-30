@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import {
+  clearCommittedAtBoot,
   clearUnpushedInterrupts,
   markedRunsStillRunning,
   pushSettledAtBoot,
@@ -259,4 +260,33 @@ Deno.test("markedRunsStillRunning: an absent marker reads nothing, and a failed 
     ),
     [],
   );
+});
+
+Deno.test("clearCommittedAtBoot: clears the record once the boot reap committed it (swamp-club#3961)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, UNPUSHED_INTERRUPTS_FILE);
+    await recordUnpushedInterrupts(path, [{ runId: "a" }]);
+    await clearCommittedAtBoot({
+      marker: await readUnpushedInterrupts(path),
+      markerPath: path,
+    });
+    assertEquals(await readUnpushedInterrupts(path), { present: false });
+  });
+});
+
+Deno.test("clearCommittedAtBoot: with no record left it removes nothing", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, UNPUSHED_INTERRUPTS_FILE);
+    // A record written after the boot read it is not the one that landed.
+    await clearCommittedAtBoot({
+      marker: { present: false },
+      markerPath: path,
+    });
+    await recordUnpushedInterrupts(path, [{ runId: "b" }]);
+    await clearCommittedAtBoot({
+      marker: { present: false },
+      markerPath: path,
+    });
+    assertEquals((await readUnpushedInterrupts(path)).present, true);
+  });
 });

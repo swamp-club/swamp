@@ -90,7 +90,8 @@ import { hostnameOf, localProcess } from "./process_identity.ts";
 import {
   acquireV3Replication,
   type ReplicationHandle,
-  setV3SyncDeadline,
+  setV3ClosingDeadline,
+  v3ClosingDeadline,
   v3RequestSyncDeadlineMs,
   v3SyncDeadlineMs,
 } from "./litestream/v3_replication.ts";
@@ -1687,6 +1688,14 @@ export const STORAGE_PROBE_GRACE_MS = 2_000;
  */
 export const UNREACHABLE_RELEASE_BOUND_MS = 1_000;
 
+/**
+ * The most a lease release may take at serve's shutdown (swamp-club#3961),
+ * within what the shutdown deadline has left: a slow bucket otherwise holds
+ * it behind a renewal in flight and then its own write. One that misses
+ * leaves the lease to expire by its TTL, as a release that fails does.
+ */
+export const SHUTDOWN_RELEASE_BOUND_MS = 5_000;
+
 let teardownTiming = {
   probeGraceMs: STORAGE_PROBE_GRACE_MS,
   releaseBoundMs: UNREACHABLE_RELEASE_BOUND_MS,
@@ -1760,23 +1769,27 @@ function watchStorageDuringSync(
 }
 
 /**
- * Runs a lease release, but waits at most
- * {@link UNREACHABLE_RELEASE_BOUND_MS} for it (swamp-club#3802): with the
- * storage unreachable it can only fail, and the lease expires by its TTL.
+ * Runs a lease release, but waits at most `boundMs` for it: with the storage
+ * unreachable it can only fail (swamp-club#3802), and at serve's shutdown a
+ * slow bucket must not hold the process past its deadline
+ * (swamp-club#3961). One that misses leaves the lease to expire by its TTL.
  * The release keeps running until the process exits; its outcome is logged.
  */
-async function boundedRelease(release: () => Promise<void>): Promise<void> {
+async function boundedRelease(
+  release: () => Promise<void>,
+  boundMs: number,
+): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const running = release().catch((error) => {
     logger
-      .debug`A v3 writer lease release with the storage unreachable failed; the lease expires on its own: ${error}`;
+      .debug`A bounded v3 writer lease release failed; the lease expires on its own: ${error}`;
   });
   const bound = new Promise<void>((resolve) => {
     timer = setTimeout(() => {
       logger
-        .debug`Not waiting for a v3 writer lease release with the storage unreachable; the lease expires on its own`;
+        .debug`Not waiting longer for a v3 writer lease release; the lease expires on its own`;
       resolve();
-    }, teardownTiming.releaseBoundMs);
+    }, boundMs);
   });
   try {
     await Promise.race([running, bound]);
@@ -1877,6 +1890,9 @@ export async function closeV3Datastores(
 ): Promise<void> {
   await Promise.all(feedWatches.splice(0).map((watch) => watch.stop()));
   let unreachable = options.storageUnreachable === true;
+  // Serve's shutdown deadline, kept for the release once the sync's turn
+  // has cleared it.
+  const shutdownDeadline = v3ClosingDeadline();
   const pending = releases.splice(0);
   markedCheckouts.clear();
   commandStartMarks.clear();
@@ -1921,6 +1937,9 @@ export async function closeV3Datastores(
           handles,
           deadlineMs,
           watch.signal,
+          // Serve's shutdown deadline covers the wait for a probe's sync
+          // too (swamp-club#3961).
+          { queueWaitCounts: shutdownDeadline !== undefined },
         );
       } finally {
         if (watch.stop()) unreachable = true;
@@ -1939,7 +1958,7 @@ export async function closeV3Datastores(
       )
     ),
   ]);
-  setV3SyncDeadline(undefined);
+  setV3ClosingDeadline(undefined);
   // After the closing sync, which serve's drain deadline is for, and before
   // the stores close.
   for (const { key, handle, current } of dropped) {
@@ -1973,7 +1992,16 @@ export async function closeV3Datastores(
     held.flat().map((use) => use.release()),
   );
   const released = await Promise.allSettled(
-    pending.map((release) => unreachable ? boundedRelease(release) : release()),
+    pending.map((release) =>
+      unreachable
+        ? boundedRelease(release, teardownTiming.releaseBoundMs)
+        : shutdownDeadline !== undefined
+        ? boundedRelease(
+          release,
+          shutdownDeadline.remaining(SHUTDOWN_RELEASE_BOUND_MS),
+        )
+        : release()
+    ),
   );
   keepMarkers = false;
   keptMarkers.clear();
@@ -1993,6 +2021,10 @@ export async function closeV3Datastores(
  * lineages a first confirmation replaced once the check passed. Resolves
  * with the published head's high-water mark, or undefined when the sync
  * published no head.
+ *
+ * With `options.queueWaitCounts` the wait for a sync already running counts
+ * against `deadlineMs` (serve's closing sync, swamp-club#3961); otherwise the
+ * sync gets all of `deadlineMs` once that one has settled.
  */
 async function syncAndPublish(
   datastore: string,
@@ -2000,20 +2032,72 @@ async function syncAndPublish(
   handles: readonly V3Datastore[],
   deadlineMs: number,
   signal?: AbortSignal,
+  options: { readonly queueWaitCounts?: boolean } = {},
 ): Promise<number | undefined> {
   // One at a time per datastore: serve's probe and a drain can both sync,
   // and a head taken earlier must never be published over a later one.
-  const previous = publishing.get(datastore) ?? Promise.resolve();
-  const run = previous.catch(() => {}).then(() =>
-    syncAndPublishNow(datastore, use, handles, deadlineMs, signal)
-  );
-  publishing.set(datastore, run);
+  const ahead = publishing.get(datastore);
+  const previous = ahead ?? Promise.resolve();
+  const startedAt = Date.now();
+  const run = (async () => {
+    if (options.queueWaitCounts !== true) {
+      await previous.catch(() => {});
+      return await syncAndPublishNow(
+        datastore,
+        use,
+        handles,
+        deadlineMs,
+        signal,
+      );
+    }
+    const left = () => deadlineMs - (Date.now() - startedAt);
+    // Serve's closing sync otherwise waited out a probe's sync on a slow
+    // bucket before its own deadline started. Too little left once the one
+    // ahead settles is given up as a wait that never ended.
+    if (
+      !await settlesWithin(previous, deadlineMs) ||
+      (ahead !== undefined && left() < MIN_QUEUED_SYNC_MS)
+    ) {
+      throw new V3ReplicationError(
+        `the sync did not finish within ${
+          Math.round(deadlineMs / 1000)
+        }s: an earlier sync of this datastore was still running`,
+      );
+    }
+    return await syncAndPublishNow(datastore, use, handles, left(), signal);
+  })();
+  // The next sync waits for this one and for the one it gave up on.
+  const turn = Promise.allSettled([previous, run]);
+  publishing.set(datastore, turn);
   try {
     return await run;
   } finally {
-    if (publishing.get(datastore) === run) publishing.delete(datastore);
+    if (publishing.get(datastore) === turn) publishing.delete(datastore);
   }
 }
+
+/** Whether `promise` settles, either way, within `ms`. */
+async function settlesWithin(
+  promise: Promise<unknown>,
+  ms: number,
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const settled = promise.then(() => true, () => true);
+  const bound = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+  });
+  try {
+    return await Promise.race([settled, bound]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * The least a closing sync that waited for an earlier one starts its own
+ * with (swamp-club#3961); with less left it gives up instead.
+ */
+const MIN_QUEUED_SYNC_MS = 500;
 
 /** The sync-and-publish in flight, by datastore. */
 const publishing = new Map<string, Promise<unknown>>();
@@ -2343,8 +2427,13 @@ function leaseLost(datastorePath: string): boolean {
 
 /** Serve's upkeep of its Litestream sidecar; see {@link startV3ReplicationUpkeep}. */
 export interface V3ReplicationUpkeep {
-  /** Stops the triggers and waits for a replacement in flight. */
-  stop(): Promise<void>;
+  /**
+   * Stops the triggers and waits for a probe or replacement in flight: at
+   * most `waitMs` when given (serve's shutdown, swamp-club#3961), aborting a
+   * probe's sync. A replacement that ends after that releases what it
+   * acquired rather than keep it.
+   */
+  stop(options?: { readonly waitMs?: number }): Promise<void>;
 }
 
 /**
@@ -2366,6 +2455,9 @@ export function startV3ReplicationUpkeep(
   const key = resolve(datastorePath);
   const copyKey = handleKey(repoDir, config);
   let stopped = false;
+  // Aborted once a bounded stop() stops waiting: a probe's sync is given up,
+  // and a replacement still running keeps nothing it acquires.
+  const stopping = new AbortController();
   let replacing: Promise<void> | undefined;
   let probing: Promise<void> | undefined;
   // Each retake counts, so a replacement knows one came while it ran; the
@@ -2385,7 +2477,10 @@ export function startV3ReplicationUpkeep(
       return;
     }
     const startedAt = retakes;
-    const stale = () => retakes !== startedAt;
+    // A bounded stop() that gave up ends the replacement at its next
+    // checkpoint too: the teardown is closing the stores it would touch
+    // (swamp-club#3961).
+    const stale = () => retakes !== startedAt || stopping.signal.aborted;
     replacing = (async () => {
       const uses = replications.get(key) ?? [];
       replications.delete(key);
@@ -2431,6 +2526,12 @@ export function startV3ReplicationUpkeep(
         datastorePath,
         fence,
       );
+      if (next !== undefined && stopping.signal.aborted) {
+        // stop() stopped waiting: the closing teardown may already have
+        // taken the sidecars to release, so this one is never added.
+        await next.release();
+        return;
+      }
       if (next !== undefined) {
         // Merged: a writer hold taken meanwhile keeps its own entry, which
         // the closing teardown releases.
@@ -2530,6 +2631,7 @@ export function startV3ReplicationUpkeep(
           current,
           [handle],
           SERVE_REPLICATION_PROBE_INTERVAL_MS,
+          stopping.signal,
         );
       } catch (error) {
         logger
@@ -2543,13 +2645,28 @@ export function startV3ReplicationUpkeep(
   }, options.probeIntervalMs ?? SERVE_REPLICATION_PROBE_INTERVAL_MS);
   Deno.unrefTimer(timer);
   return {
-    async stop() {
+    async stop(stopOptions = {}) {
       stopped = true;
       clearInterval(timer);
       unsubscribe();
-      await probing;
-      // A rerun the settling replacement started before stopping was seen.
-      while (replacing !== undefined) await replacing;
+      const settle = async () => {
+        await probing;
+        // A rerun the settling replacement started before stopping was seen.
+        while (replacing !== undefined) await replacing;
+      };
+      if (stopOptions.waitMs === undefined) {
+        await settle();
+        return;
+      }
+      const settling = settle();
+      // Neither a probe nor a replacement rejects; handled all the same, as
+      // this one is not awaited once stop() stops waiting.
+      settling.catch(() => {});
+      if (!await settlesWithin(settling, stopOptions.waitMs)) {
+        stopping.abort(new Error("serve is shutting down"));
+        logger
+          .debug`Not waiting longer for the Litestream sidecar upkeep of the v3 datastore at ${datastorePath}; serve is shutting down`;
+      }
     },
   };
 }

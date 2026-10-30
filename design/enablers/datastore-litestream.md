@@ -968,10 +968,18 @@ and it never costs the lease. Abandoned lineages are kept in
 **Serve** keeps its sidecar for as long as it holds the lease. A retake at a new
 fence, or a 30 s probe that finds the sidecar not answering or the copy not
 current, replaces it through one tracked replacement at a time, which shutdown
-waits for. A replacement asked for while one runs is not dropped: it runs once
-the running one settles (swamp-club#3565). The closing sync
-gets what the drain left, and at least 10 s, so `--shutdown-drain-timeout 0`
-still syncs. Commits between drains replicate within Litestream's 1–2 s lag,
+waits for, at most 5 s within serve's shutdown deadline. A probe's sync it
+stops waiting for is aborted, and a replacement that ends after that releases
+the sidecar it took rather than keep it (swamp-club#3961). A replacement asked
+for while one runs is not dropped: it runs once the running one settles
+(swamp-club#3565). The closing sync gets what serve's shutdown deadline (the
+drain timeout plus 23 s, see `design/primitives/serve.md`) has left when it
+starts, at least 0.5 s, and the writer lease release at most 5 s of it; a
+release that misses leaves the lease to its TTL. A sync waits for one already
+running on the same datastore, a probe's for instance, and that wait counts
+against its own deadline: one still running at the deadline fails the closing
+sync as a timeout without a sync of its own, and the commits replicate with
+the sidecar as they do after any closing sync that times out. Commits between drains replicate within Litestream's 1–2 s lag,
 and since Phase 4D3 a write request waits for its own confirmation before it
 answers. The maintenance timer also syncs the read model's unsynced files and
 clears their list (swamp-club#3337), on start and every hour. This is the one
