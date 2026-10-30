@@ -1443,7 +1443,7 @@ heartbeat write fails, the last heartbeat is left to go stale
 (swamp-club#3958). A step the abort stopped in flight is recorded `unknown` on
 the interrupted run, so `swamp workflow recover` reopens it (swamp-club#3369).
 Otherwise it deletes its heartbeat, and it exits. Set the pod's
-`terminationGracePeriodSeconds` above the drain timeout plus about 20 s (the 5 s
+`terminationGracePeriodSeconds` above the drain timeout plus about 25 s (the 5 s
 abort grace, up to 2 s for the write fence, the 5 s interrupt push and, when that push fails, 5 s each for the
 active-run records and the stopped heartbeat), and
 use a `preStop` sleep so traffic leaves the Service endpoints before SIGTERM:

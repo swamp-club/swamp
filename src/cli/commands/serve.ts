@@ -2894,7 +2894,7 @@ export const serveCommand = new Command()
     "--shutdown-drain-timeout <duration:string>",
     "How long shutdown (SIGTERM/SIGINT) waits for in-flight webhook, scheduled and API runs to finish before aborting them. " +
       "Accepts seconds (30), explicit units (30s, 5m), or 0 to abort at once. Default: 30s. " +
-      "Keep it below the pod's terminationGracePeriodSeconds minus about 10s (env: SWAMP_SHUTDOWN_DRAIN_TIMEOUT)",
+      "Keep it below the pod's terminationGracePeriodSeconds minus about 25s (env: SWAMP_SHUTDOWN_DRAIN_TIMEOUT)",
   )
   .option(
     "--datastore-poll-interval <duration:string>",

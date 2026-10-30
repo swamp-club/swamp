@@ -28,9 +28,12 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 const logger = getSwampLogger(["serve", "shutdown"]);
 
 /**
- * How long closing the fence waits for saves already under way. A save is
- * a local record write (and on v3 a checkpoint), so it lands well within
- * this; the bound keeps shutdown inside its termination grace.
+ * How long closing the fence waits for saves already under way. A save
+ * writes the local record (and on v3 checkpoints it), but before the write
+ * it may close the run's signal waits, which can stall on a slow wait
+ * store. The bound keeps shutdown inside its termination grace; a save
+ * still under way at the deadline is logged and may land over the
+ * interrupted record.
  */
 export const RUN_WRITE_FENCE_WAIT_MS = 2_000;
 

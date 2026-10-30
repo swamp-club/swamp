@@ -23286,6 +23286,74 @@ Deno.test("WorkflowExecutionService: an aborted run whose fence another owner cl
   });
 });
 
+/** A fence that counts the saves it is tracking, so a test sees what runs inside one. */
+class CountingRunWriteFence implements RunWriteFence {
+  tracked = 0;
+  inFlight = 0;
+  isClosed(_runId: string): boolean {
+    return false;
+  }
+  track(_runId: string, write: Promise<void>): Promise<void> {
+    this.tracked++;
+    this.inFlight++;
+    return write.finally(() => {
+      this.inFlight--;
+    });
+  }
+}
+
+Deno.test("WorkflowExecutionService: each run save, record write and checkpoint both, is tracked by the run write fence, so closing it waits for the whole save (swamp-club#4101)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "tracked-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("build"),
+            modelStep("deploy", onStep("build", TriggerCondition.succeeded())),
+          ],
+        }),
+      ],
+    });
+    const fence = new CountingRunWriteFence();
+    const tracked: boolean[] = [];
+    // Each record write yields once before it lands, so it is still under
+    // way when the save is handed to the fence.
+    class YieldingRunRepository extends SpyWorkflowRunRepository {
+      override async save(workflowId: WorkflowId, run: WorkflowRun) {
+        await Promise.resolve();
+        tracked.push(fence.inFlight > 0);
+        await super.save(workflowId, run);
+      }
+    }
+    const runRepo = new YieldingRunRepository();
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      undefined,
+      runRepo,
+    );
+    service.runWriteFence = fence;
+    const checkpointed: boolean[] = [];
+    service.runCheckpointer = {
+      checkpoint: () => {
+        checkpointed.push(fence.inFlight > 0);
+        return Promise.resolve();
+      },
+    };
+
+    await finishedRun(service.run(workflow.name));
+
+    assert(runRepo.saves > 0);
+    assertEquals(fence.tracked, runRepo.saves);
+    assertEquals(tracked, Array(runRepo.saves).fill(true));
+    assertEquals(checkpointed, Array(runRepo.saves).fill(true));
+    assertEquals(fence.inFlight, 0);
+  });
+});
+
 Deno.test("WorkflowExecutionService: a nested child run inherits the run write fence (swamp-club#4101)", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
