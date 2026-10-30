@@ -606,7 +606,10 @@ export {
   type DataQueryDeps,
   type DataQueryEvent,
   type DataQueryInput,
+  parseQuerySort,
   type ProjectedData,
+  type QuerySort,
+  type QuerySortDirection,
   requireSingleResult,
   type SpecNameHint,
 } from "./data/query.ts";

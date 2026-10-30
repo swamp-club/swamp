@@ -125,6 +125,16 @@ export interface DataQueryPayload {
   predicate: string;
   limit?: number;
   select?: string;
+  /**
+   * Orders the matches by `createdAt` or `tags.<key>`, compared as strings,
+   * with the item identity as the tie-break (swamp-club#4177).
+   */
+  sort?: { field: string; direction: "asc" | "desc" };
+  /**
+   * The `nextCursor` a previous page of the same sorted query returned; the
+   * response's `data.nextCursor` is set when a sorted page filled its limit.
+   */
+  cursor?: string;
 }
 
 export interface DataListPayload {

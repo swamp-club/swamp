@@ -29,6 +29,7 @@ import {
   extractModelCall,
   extractModelNameEquality,
   extractStringEquality,
+  extractTypeTagEquality,
   extractWorkflowRunIdLatestRun,
   MAX_MODEL_REFERENCES,
   QUERY_FIELDS,
@@ -131,6 +132,37 @@ Deno.test("extractStringEquality: finds the named field among AND conjuncts", ()
 
 Deno.test("extractStringEquality: ignores a non-string literal", () => {
   assertEquals(extractStringEquality(ast("specName == 3"), "specName"), null);
+});
+
+Deno.test('extractTypeTagEquality: reads tags.type, tags["type"] and dataType equalities (swamp-club#4177)', () => {
+  for (
+    const expr of [
+      'tags.type == "agent-session"',
+      'tags["type"] == "agent-session"',
+      '"agent-session" == tags.type',
+      'dataType == "agent-session"',
+      'name == "x" && tags.type == "agent-session"',
+    ]
+  ) {
+    assertEquals(extractTypeTagEquality(ast(expr)), "agent-session", expr);
+  }
+});
+
+Deno.test("extractTypeTagEquality: leaves an empty literal, another tag, an OR or a negation in CEL (swamp-club#4177)", () => {
+  for (
+    const expr of [
+      'tags.type == ""',
+      'dataType == ""',
+      'tags.kind == "agent-session"',
+      'other.type == "agent-session"',
+      'tags.type == "a" || name == "b"',
+      '!(tags.type == "a")',
+      'tags.type != "a"',
+      "tags.type == 3",
+    ]
+  ) {
+    assertEquals(extractTypeTagEquality(ast(expr)), null, expr);
+  }
 });
 
 Deno.test("buildSpecNameFallback: swaps a lone name equality", () => {

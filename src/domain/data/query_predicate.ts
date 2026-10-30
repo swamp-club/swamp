@@ -495,6 +495,39 @@ export function extractStringEquality(
   return extractAnyStringEquality(ast, new Set([field]));
 }
 
+/** Whether a node reads the type tag: `dataType`, `tags.type` or `tags["type"]`. */
+function isTypeTagReference(node: ASTNode): boolean {
+  if (node.op === "id") return node.args === "dataType";
+  if (node.op !== "." && node.op !== "[]") return false;
+  const [object, key] = node.args as [ASTNode, unknown];
+  if (object?.op !== "id" || object.args !== "tags") return false;
+  if (node.op === ".") return key === "type";
+  const keyNode = key as ASTNode;
+  return keyNode?.op === "value" && keyNode.args === "type";
+}
+
+/**
+ * The type a predicate requires with a top-level equality between the type
+ * tag (`tags.type`, `tags["type"]` or `dataType`) and a non-empty string
+ * literal, or null. The catalog's data_type column holds the type tag or "",
+ * so the value pushes down exactly to `data_type = ?` (swamp-club#4177).
+ */
+export function extractTypeTagEquality(ast: ASTNode): string | null {
+  for (const conjunct of topLevelConjuncts(ast)) {
+    if (conjunct.op !== "==") continue;
+    const [left, right] = conjunct.args as [ASTNode, ASTNode];
+    for (const [field, value] of [[left, right], [right, left]]) {
+      if (
+        value.op === "value" && typeof value.args === "string" &&
+        value.args !== "" && isTypeTagReference(field)
+      ) {
+        return value.args;
+      }
+    }
+  }
+  return null;
+}
+
 /**
  * The first top-level `field == "literal"` equality, in conjunct order,
  * whose field is any of `fields`.

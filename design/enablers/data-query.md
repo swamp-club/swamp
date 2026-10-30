@@ -878,6 +878,7 @@ the CEL AST and pushes them into SQL WHERE clauses:
 | `modelId == "<literal>"` | `WHERE model_id = ?` | Top-level AND conjuncts only |
 | `lifecycle == "<literal>"` | `WHERE lifecycle = ?` | Top-level AND conjuncts only; catalog pull stores only `active`, `deleted` or `""`, so the column equals the field |
 | `workflowRunId == latestRun("<literal>")` | `WHERE workflow_run_id = ?` | Top-level AND conjuncts only, with the resolved run id; a workflow with no runs matches nothing |
+| `tags.type == "<literal>"`, `tags["type"]`, `dataType` | `WHERE data_type = ?` | Top-level AND conjuncts only, non-empty literal; every catalog writer stores the `type` tag or `""` in `data_type`, so the column equals the tag |
 
 All other predicates stay CEL-only and run per row on the narrowed set: OR
 expressions, comparisons, tag filters, `attributes` references, and complex
@@ -893,14 +894,15 @@ in CEL.
 ```
 1. Parse predicate into AST
 2. Validate field references
-3. Extract SQL pushdown clauses (isLatest, modelName, specName, modelType
-   and modelId equality, model()); resolve rename forwards for a
+3. Extract SQL pushdown clauses (isLatest, modelName, specName, modelType,
+   modelId and type tag equality, model()); resolve rename forwards for a
    latest-only `name == "<literal>"`
 4. Detect whether the filter or the select expression references
    `attributes` or `content` (referencesAttributes / referencesContent)
 5. SELECT * from catalog with WHERE pushdown
-   (via paged LIMIT/OFFSET queries using stmt.all(); content is never
-   a column, so this is metadata only)
+   (via paged LIMIT/OFFSET queries using stmt.all(), or keyset pages in
+   the sort's order for a sorted query; content is never a column, so
+   this is metadata only)
 6. For each row:
    a. Project row into query record
    b. If step 4 found a content reference in the filter:
@@ -1081,6 +1083,53 @@ columns `name`, `modelName`, `specName`, `dataType`, `version`, `size`. A
 instead of human-readable text. It also composes with `--limit`: the limit
 applies to matched rows, the projection to output.
 
+### Sorting and paging (`--sort`, `--cursor`)
+
+`--sort <field>[:asc|desc]` (the `sort: { field, direction }` request field)
+orders the matches by `createdAt` or `tags.<key>`, ascending unless told
+otherwise (swamp-club#4177). Both compare as strings in SQL, so ISO 8601 UTC
+times sort in time order; a row without the tag sorts as the empty string, last
+when descending. Ties break on the item identity (namespace, model type, model
+id, data name, version) in the same direction, so the order is total and the
+same on every copy of the catalog: catalog rowids differ between a serve leader
+and a follower, so they are never part of it. The tag key is letters, digits,
+`.`, `_` or `-`. Sorting by a field inside the record body is not supported:
+every page would read every body.
+
+A sorted page that filled its limit returns `nextCursor`. Passing it back as
+`--cursor` (the `cursor` request field) with the same sort returns the rows
+after the page's last row. The cursor is keyset, not offset: base64url JSON of
+the sort and the last row's sort value and identity, nothing else, built from
+the catalog row of the last record the caller was returned. A cursor for a
+different sort, a malformed one, or a cursor without a sort is refused. A row
+written between pages appears on a later page only if it sorts after the
+cursor; a new version that sorts before it (a newer `createdAt` under a
+descending sort) is seen when page 1 is read again. Rows that do not change are
+never skipped or repeated.
+
+Read access is applied as for any query: the service's `include` runs before
+the limit, so a page is filled with readable rows only and the cursor names a
+row the caller was given. A hand-built cursor only moves where the page starts;
+every row it returns still passes `include`. A sorted query is always bounded:
+the libswamp generator caps one with no limit at `MAX_QUERY_RESULTS` (10,000),
+and serve applies its default limit as for any query.
+
+`CatalogStore.iterateSorted` reads the sorted rows in internal pages, each
+starting after the previous page's last row, so no page re-sorts the rows
+before it. Pages double from 1,000 rows up to 16,000, so a predicate that
+rejects most rows SQL returns takes a logarithmic number of scans to read far
+into a large catalog, not one scan per 1,000 rows. A row whose `tags` is not
+valid JSON sorts as the empty string rather than failing the query. It reads metadata columns only, so a sort over tags or `createdAt`
+with a metadata-only predicate and `select` loads no body. `createdAt` uses the
+`created_at` index; a tag sort extracts the tag from the `tags` column and is
+not indexed, so its cost grows with the rows the SQL pushdown leaves. A
+`tags.type` equality, which pushes down to `data_type`, keeps that set to one
+data type. `--sort` and `--cursor` conflict with `--single`, and `--cursor`
+requires `--sort`. Log mode prints the cursor as a next-page hint;
+`--json` output carries `nextCursor`. The CEL `data.query()` accessor and the
+workflow-run composite query service take no sort: merging two sorted stores
+into one keyset order is not supported.
+
 ### Single result (`--single`)
 
 `--single` requires exactly one match. The libswamp generator queries without
@@ -1121,6 +1170,7 @@ swamp data query 'attributes.status == "failed"' --limit 10
 swamp data query 'modelName == "scanner"' --json
 swamp data query 'modelName == "ingest"' --select 'name'
 swamp data query 'specName == "result"' --select '{"name": name, "err": attributes.errorCode}'
+swamp data query 'tags.type == "agent-session"' --select 'tags' --sort tags.startedAt:desc --limit 50
 ```
 
 ### CEL Expressions

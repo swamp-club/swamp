@@ -356,7 +356,7 @@ export function clientErrorDetails(
 
 export const MAX_PREDICATE_LENGTH = 4096;
 
-export const MAX_QUERY_RESULTS = 10_000;
+export { MAX_QUERY_RESULTS } from "../../domain/data/query_sort.ts";
 
 export const DEFAULT_QUERY_LIMIT = 1000;
 

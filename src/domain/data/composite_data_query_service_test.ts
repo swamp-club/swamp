@@ -17,7 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertExists } from "@std/assert";
+import {
+  assertEquals,
+  assertExists,
+  assertRejects,
+  assertThrows,
+} from "@std/assert";
+import { UserError } from "../errors.ts";
+import { createQuerySort } from "./query_sort.ts";
 import { CompositeDataQueryService } from "./composite_data_query_service.ts";
 import { DataQueryService, type QueryView } from "./data_query_service.ts";
 import { InMemoryUnifiedDataRepository } from "../../infrastructure/persistence/in_memory_data_repository.ts";
@@ -336,4 +343,24 @@ Deno.test("CompositeDataQueryService: query and querySync forward the view to bo
     [{ projected: "ephemeral" }, { projected: "persistent" }],
   );
   assertEquals(seen.environments, 4);
+});
+
+Deno.test("CompositeDataQueryService: refuses a sorted or cursor-paged query (swamp-club#4177)", async () => {
+  const { composite } = createCompositeQueryService();
+  const sort = createQuerySort("createdAt", "desc");
+  await assertRejects(
+    () => composite.query("true", { sort }),
+    UserError,
+    "not supported during a workflow run",
+  );
+  await assertRejects(
+    () => composite.queryPage("true", { sort }),
+    UserError,
+    "not supported during a workflow run",
+  );
+  assertThrows(
+    () => composite.querySync("true", { sort }),
+    UserError,
+    "not supported during a workflow run",
+  );
 });

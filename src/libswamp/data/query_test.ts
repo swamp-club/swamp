@@ -29,6 +29,12 @@ import {
 } from "./query.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
 import type { SpecNameFallback } from "../../domain/data/query_predicate.ts";
+import {
+  decodeQueryCursor,
+  encodeQueryCursor,
+  MAX_QUERY_RESULTS,
+  type QueryCursorPosition,
+} from "../../domain/data/query_sort.ts";
 
 function makeRecord(overrides: Partial<DataRecord> = {}): DataRecord {
   return {
@@ -709,4 +715,172 @@ Deno.test("requireSingleResult: notes dropped conditions in the spec-name hint",
 Deno.test("requireSingleResult: no hint text without a hint", () => {
   const error = requireSingleResult({ predicate: 'name == "x"', total: 0 });
   assertEquals(error?.message.includes("spec name"), false);
+});
+
+function errorOf(events: DataQueryEvent[]) {
+  const last = events[events.length - 1];
+  assertEquals(last.kind, "error");
+  return (last as Extract<DataQueryEvent, { kind: "error" }>).error;
+}
+
+const lastRow: QueryCursorPosition = {
+  key: "2026-10-30",
+  id: ["", "t", "m", "b", 1],
+};
+
+Deno.test("dataQuery: a sorted page that fills its limit returns a cursor for the next (swamp-club#4177)", async () => {
+  const calls: Parameters<NonNullable<DataQueryDeps["queryPage"]>>[1][] = [];
+  const deps: DataQueryDeps = {
+    query: () => Promise.reject(new Error("unsorted path")),
+    queryPage: (_pred, opts) => {
+      calls.push(opts);
+      return Promise.resolve({
+        results: [makeRecord({ name: "a" }), makeRecord({ name: "b" })],
+        last: lastRow,
+      });
+    },
+  };
+  const sort = { field: "tags.startedAt", direction: "desc" };
+
+  const first = completedOf(
+    await collect<DataQueryEvent>(
+      dataQuery(createLibSwampContext(), deps, {
+        predicate: "true",
+        limit: 2,
+        sort,
+      }),
+    ),
+  );
+  assertEquals(first.limited, true);
+  const cursor = first.nextCursor!;
+  assertEquals(
+    decodeQueryCursor(cursor, { field: "tags.startedAt", direction: "desc" }),
+    lastRow,
+  );
+
+  const second = completedOf(
+    await collect<DataQueryEvent>(
+      dataQuery(createLibSwampContext(), deps, {
+        predicate: "true",
+        limit: 3,
+        sort,
+        cursor,
+      }),
+    ),
+  );
+  assertEquals(second.limited, false);
+  assertEquals(second.nextCursor, undefined);
+  assertEquals(calls[1].after, lastRow);
+  assertEquals(calls[1].sort, { field: "tags.startedAt", direction: "desc" });
+});
+
+Deno.test("dataQuery: a sorted query with no limit is capped at MAX_QUERY_RESULTS (swamp-club#4177)", async () => {
+  let limit: number | undefined;
+  const deps: DataQueryDeps = {
+    query: () => Promise.resolve([]),
+    queryPage: (_pred, opts) => {
+      limit = opts.limit;
+      return Promise.resolve({ results: [] });
+    },
+  };
+  await collect<DataQueryEvent>(
+    dataQuery(createLibSwampContext(), deps, {
+      predicate: "true",
+      sort: { field: "createdAt", direction: "asc" },
+    }),
+  );
+  assertEquals(limit, MAX_QUERY_RESULTS);
+});
+
+Deno.test("dataQuery: a projected sorted page carries the cursor too (swamp-club#4177)", async () => {
+  const deps: DataQueryDeps = {
+    query: () => Promise.resolve([]),
+    queryPage: () => Promise.resolve({ results: ["a"], last: lastRow }),
+  };
+  const data = completedOf(
+    await collect<DataQueryEvent>(
+      dataQuery(createLibSwampContext(), deps, {
+        predicate: "true",
+        select: "name",
+        limit: 1,
+        sort: { field: "createdAt", direction: "desc" },
+      }),
+    ),
+  );
+  assertEquals(data.projected, { shape: "scalar", values: ["a"] });
+  assertEquals(typeof data.nextCursor, "string");
+});
+
+Deno.test("dataQuery: refuses a cursor without a sort, a sort with single, a bad sort or cursor (swamp-club#4177)", async () => {
+  const deps: DataQueryDeps = {
+    query: () => Promise.resolve([]),
+    queryPage: () => Promise.resolve({ results: [] }),
+  };
+  const sort = { field: "createdAt", direction: "desc" };
+  const cases: [Parameters<typeof dataQuery>[2], string][] = [
+    [{ predicate: "true", cursor: "abc" }, "needs the sort"],
+    [{ predicate: "true", single: true, sort }, "single-result"],
+    [
+      { predicate: "true", sort: { field: "name", direction: "asc" } },
+      "sort by",
+    ],
+    [{ predicate: "true", sort, cursor: "!!" }, "Invalid query cursor"],
+    [
+      {
+        predicate: "true",
+        sort,
+        cursor: encodeQueryCursor(
+          { field: "createdAt", direction: "asc" },
+          lastRow,
+        ),
+      },
+      "sorted by createdAt:asc",
+    ],
+  ];
+  for (const [input, message] of cases) {
+    const error = errorOf(
+      await collect<DataQueryEvent>(
+        dataQuery(createLibSwampContext(), deps, input),
+      ),
+    );
+    assertEquals(error.code, "validation_failed");
+    assertStringIncludes(error.message, message);
+  }
+  const unsupported = errorOf(
+    await collect<DataQueryEvent>(
+      dataQuery(createLibSwampContext(), { query: deps.query }, {
+        predicate: "true",
+        sort,
+      }),
+    ),
+  );
+  assertStringIncludes(unsupported.message, "not supported here");
+});
+
+Deno.test("dataQuery: an empty page after a cursor offers no spec-name hint (swamp-club#4177)", async () => {
+  let probes = 0;
+  const deps: DataQueryDeps = {
+    query: () => {
+      probes++;
+      return Promise.resolve([makeRecord()]);
+    },
+    queryPage: () => Promise.resolve({ results: [] }),
+    specNameFallback: (): SpecNameFallback => ({
+      namePredicate: 'name == "x"',
+      specNamePredicate: 'specName == "x"',
+      droppedConjuncts: false,
+    }),
+  };
+  const sort = { field: "createdAt", direction: "desc" as const };
+  const data = completedOf(
+    await collect<DataQueryEvent>(
+      dataQuery(createLibSwampContext(), deps, {
+        predicate: 'name == "x"',
+        sort,
+        cursor: encodeQueryCursor(sort, lastRow),
+      }),
+    ),
+  );
+  assertEquals(data.specNameHint, undefined);
+  assertEquals(probes, 0);
 });

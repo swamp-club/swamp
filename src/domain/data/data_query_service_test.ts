@@ -51,6 +51,7 @@ import { UserError } from "../errors.ts";
 import { BinaryContentPredicateError } from "./binary_content_predicate_error.ts";
 import { ModelType } from "../models/model_type.ts";
 import { Data } from "./data.ts";
+import { createQuerySort, type QueryCursorPosition } from "./query_sort.ts";
 
 function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
   return {
@@ -6817,4 +6818,221 @@ Deno.test("DataQueryService: under a view reading a text record's content in a p
   );
   assertEquals(seen.records.length, 0);
   catalog.close();
+});
+
+function sessionRow(
+  name: string,
+  tags: Record<string, string>,
+  overrides: Partial<CatalogRow> = {},
+): CatalogRow {
+  return makeRow({
+    data_name: name,
+    id: crypto.randomUUID(),
+    tags: JSON.stringify({ type: "resource", ...tags }),
+    ...overrides,
+  });
+}
+
+async function pageNames(
+  service: DataQueryService,
+  predicate: string,
+  options: DataQueryOptions,
+): Promise<{ names: string[]; last?: QueryCursorPosition }> {
+  const page = await service.queryPage(predicate, {
+    ...options,
+    select: "name",
+  });
+  return { names: page.results as string[], last: page.last };
+}
+
+Deno.test("DataQueryService.queryPage: sorts by a tag as a string, a missing tag as empty, ties by identity (swamp-club#4177)", async () => {
+  using t = setupTest();
+  const { catalog, service } = t;
+  catalog.upsert(sessionRow("b", { startedAt: "2026-10-02T00:00:00.000Z" }));
+  catalog.upsert(sessionRow("a", { startedAt: "2026-10-02T00:00:00.000Z" }));
+  catalog.upsert(sessionRow("old", { startedAt: "2026-09-01T00:00:00.000Z" }));
+  catalog.upsert(sessionRow("untagged", {}));
+  catalog.upsert(sessionRow("new", { startedAt: "2026-10-30T00:00:00.000Z" }));
+
+  const desc = await pageNames(service, "true", {
+    sort: createQuerySort("tags.startedAt", "desc"),
+  });
+  assertEquals(desc.names, ["new", "b", "a", "old", "untagged"]);
+  const asc = await pageNames(service, "true", {
+    sort: createQuerySort("tags.startedAt", "asc"),
+  });
+  assertEquals(asc.names, ["untagged", "old", "a", "b", "new"]);
+});
+
+Deno.test("DataQueryService.queryPage: createdAt orders milliseconds within one second (swamp-club#4177)", async () => {
+  using t = setupTest();
+  const { catalog, service } = t;
+  catalog.upsert(
+    sessionRow("later", {}, { created_at: "2026-10-30T10:00:05.900Z" }),
+  );
+  catalog.upsert(
+    sessionRow("earlier", {}, { created_at: "2026-10-30T10:00:05.100Z" }),
+  );
+  catalog.upsert(
+    sessionRow("first", {}, { created_at: "2026-10-30T10:00:04.999Z" }),
+  );
+
+  const { names } = await pageNames(service, "true", {
+    sort: createQuerySort("createdAt", "asc"),
+  });
+  assertEquals(names, ["first", "earlier", "later"]);
+});
+
+Deno.test("DataQueryService.queryPage: keyset pages neither skip nor repeat a row across a write (swamp-club#4177)", async () => {
+  using t = setupTest();
+  const { catalog, service } = t;
+  for (let i = 0; i < 7; i++) {
+    catalog.upsert(
+      sessionRow(`s${i}`, { startedAt: `2026-10-0${i + 1}T00:00:00.000Z` }),
+    );
+  }
+  const sort = createQuerySort("tags.startedAt", "desc");
+
+  const first = await pageNames(service, "true", { sort, limit: 3 });
+  assertEquals(first.names, ["s6", "s5", "s4"]);
+  // A newer session lands above the cursor; an older one below it.
+  catalog.upsert(
+    sessionRow("newest", { startedAt: "2026-10-31T00:00:00.000Z" }),
+  );
+  catalog.upsert(
+    sessionRow("oldest", { startedAt: "2026-09-01T00:00:00.000Z" }),
+  );
+  const second = await pageNames(service, "true", {
+    sort,
+    limit: 3,
+    after: first.last,
+  });
+  assertEquals(second.names, ["s3", "s2", "s1"]);
+  const third = await pageNames(service, "true", {
+    sort,
+    limit: 3,
+    after: second.last,
+  });
+  assertEquals(third.names, ["s0", "oldest"]);
+});
+
+Deno.test("DataQueryService.queryPage: include applies before the limit and the cursor is a readable row (swamp-club#4177)", async () => {
+  using t = setupTest();
+  const { catalog, service } = t;
+  for (let i = 0; i < 6; i++) {
+    catalog.upsert(sessionRow(`s${i}`, { startedAt: `2026-10-0${i + 1}` }, {
+      model_name: i % 2 === 0 ? "hidden" : "ingest",
+    }));
+  }
+  const include = (record: DataRecord) =>
+    Promise.resolve(record.modelName !== "hidden");
+  const sort = createQuerySort("tags.startedAt", "desc");
+
+  const first = await pageNames(service, "true", { sort, limit: 2, include });
+  assertEquals(first.names, ["s5", "s3"]);
+  assertEquals(first.last?.id[3], "s3");
+  const second = await pageNames(service, "true", {
+    sort,
+    limit: 2,
+    include,
+    after: first.last,
+  });
+  assertEquals(second.names, ["s1"]);
+});
+
+Deno.test("DataQueryService.queryPage: a forged position naming an unreadable row returns only readable rows (swamp-club#4177)", async () => {
+  using t = setupTest();
+  const { catalog, service } = t;
+  catalog.upsert(sessionRow("visible", { startedAt: "2026-10-01" }));
+  catalog.upsert(
+    sessionRow("secret", { startedAt: "2026-10-02" }, {
+      model_name: "hidden",
+    }),
+  );
+  catalog.upsert(
+    sessionRow("secret-older", { startedAt: "2026-09-01" }, {
+      model_name: "hidden",
+    }),
+  );
+  const include = (record: DataRecord) =>
+    Promise.resolve(record.modelName !== "hidden");
+
+  const { names } = await pageNames(service, "true", {
+    sort: createQuerySort("tags.startedAt", "desc"),
+    include,
+    after: {
+      key: "2026-10-02",
+      id: ["", "test-model", "model-001", "secret", 1],
+    },
+  });
+  assertEquals(names, ["visible"]);
+});
+
+Deno.test("DataQueryService.queryPage: a position without a sort is refused (swamp-club#4177)", async () => {
+  using t = setupTest();
+  const { service } = t;
+  await assertRejects(
+    () =>
+      service.queryPage("true", {
+        after: { key: "", id: ["", "t", "m", "n", 1] },
+      }),
+    UserError,
+    "needs the sort",
+  );
+});
+
+Deno.test("DataQueryService.queryPage: a tags-only sort and select read no body (swamp-club#4177)", async () => {
+  using t = setupLazyTest([
+    { name: "a", specName: "session", body: { v: 1 } },
+    { name: "b", specName: "session", body: { v: 2 } },
+  ]);
+  const { catalog, service, dataRepo } = t;
+  for (const row of [...catalog.iterate()]) {
+    catalog.upsert({
+      ...row,
+      data_type: "agent-session",
+      tags: JSON.stringify({ type: "agent-session", startedAt: row.data_name }),
+    });
+  }
+  dataRepo.unreadable.add("a");
+  dataRepo.unreadable.add("b");
+
+  const page = await service.queryPage('tags.type == "agent-session"', {
+    select: "tags.startedAt",
+    sort: createQuerySort("tags.startedAt", "desc"),
+    limit: 10,
+  });
+
+  assertEquals(page.results, ["b", "a"]);
+  assertEquals(dataRepo.reads.get("a"), undefined);
+  assertEquals(dataRepo.reads.get("b"), undefined);
+});
+
+Deno.test("DataQueryService: a type tag equality pushes down to data_type and matches CEL alone (swamp-club#4177)", () => {
+  using t = setupTest();
+  const { catalog, service } = t;
+  catalog.upsert(sessionRow("session", { type: "agent-session" }, {
+    data_type: "agent-session",
+  }));
+  catalog.upsert(sessionRow("other", { type: "resource" }));
+  catalog.upsert(sessionRow("untyped", {}, { data_type: "", tags: "{}" }));
+  const names = (predicate: string) =>
+    (service.querySync(predicate, { select: "name" }) as string[]).sort();
+
+  for (
+    const pushed of [
+      'tags.type == "agent-session"',
+      'tags["type"] == "agent-session"',
+      '"agent-session" == tags.type',
+      'dataType == "agent-session"',
+    ]
+  ) {
+    assertEquals(names(pushed), names('!(tags.type != "agent-session")'));
+    assertEquals(names(pushed), ["session"]);
+  }
+  // A row whose column disagrees with its tag shows the pushdown runs in SQL.
+  catalog.upsert(sessionRow("drifted", { type: "agent-session" }, {
+    data_type: "",
+  }));
+  assertEquals(names('tags.type == "agent-session"'), ["session"]);
 });
