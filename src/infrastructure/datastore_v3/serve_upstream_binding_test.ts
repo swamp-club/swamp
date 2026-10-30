@@ -19,7 +19,18 @@
 
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { serveCallerFingerprint } from "./checkout_view.ts";
-import { serveUpstreamLocalRoot } from "./serve_upstream_binding.ts";
+import {
+  registerCheckoutLeases,
+  serveUpstreamLocalRoot,
+} from "./serve_upstream_binding.ts";
+import type { ExplicitLease } from "./explicit_model_leases.ts";
+import {
+  heldServeLeaseOf,
+  resetServeLeasesForTesting,
+} from "./serve_lease_registry.ts";
+import { partitionOf } from "../../domain/datastore_v3/partition_key.ts";
+import { MODEL_TYPE } from "../../domain/datastore_v3/v3_test_helpers.ts";
+import { leaseLockKeyOfPartition } from "./serve_lease_registry.ts";
 import {
   ACCESS_RESET_COOLDOWN_MS,
   accessResetDue,
@@ -72,4 +83,51 @@ Deno.test("accessResetDue: resets when serve sent another access, except within 
     accessResetDue({ built: "a1", seen: "a1", resetAt: now - 1 }, now),
     "current",
   );
+});
+
+Deno.test("registerCheckoutLeases: a renewed lease is confirmed, one not renewed is registered unconfirmed, an ended one never (swamp-club#4167)", () => {
+  resetServeLeasesForTesting();
+  const root = "/checkout/root";
+  const partitions = [1, 2, 3].map((n) =>
+    partitionOf({
+      kind: "model",
+      type: MODEL_TYPE,
+      id: `00000000-0000-4000-8000-00000000000${n}`,
+    })
+  );
+  const leases: ExplicitLease[] = partitions.map((partition, index) => ({
+    leaseId: `lease-${index}`,
+    lockKey: leaseLockKeyOfPartition(partition)!,
+    fence: index + 1,
+    holdMs: 60_000,
+    expiresAt: "2026-10-30T00:00:00.000Z",
+    floor: [{ name: "out", highWater: index }],
+  }));
+  const [renewed, failed, ended] = leases;
+  try {
+    registerCheckoutLeases(root, leases, {
+      renewed: [renewed],
+      ended: [ended],
+    });
+    assertEquals(heldServeLeaseOf(root, partitions[0]), {
+      leaseId: "lease-0",
+      fence: 1,
+      floor: [{ name: "out", highWater: 0 }],
+    });
+    assertEquals(heldServeLeaseOf(root, partitions[1]), {
+      leaseId: "lease-1",
+      fence: 2,
+      floor: [{ name: "out", highWater: 1 }],
+      unconfirmed: true,
+    });
+    assertEquals(heldServeLeaseOf(root, partitions[2]), undefined);
+
+    // A renewal that failed as a whole leaves every lease unconfirmed.
+    resetServeLeasesForTesting();
+    registerCheckoutLeases(root, [failed, ended], undefined);
+    assertEquals(heldServeLeaseOf(root, partitions[1])?.unconfirmed, true);
+    assertEquals(heldServeLeaseOf(root, partitions[2])?.unconfirmed, true);
+  } finally {
+    resetServeLeasesForTesting();
+  }
 });

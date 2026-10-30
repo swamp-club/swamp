@@ -7246,6 +7246,12 @@ which behaves as above.
   (`model_leases.json`, `explicit_model_leases.ts`). Every command renews it
   when it binds serve and registers it, so each of its commits to the
   behavior names the lease, a read-kind method's lockless save included. A
+  lease whose renewal fails (a serve blip) is registered from the record,
+  unconfirmed (swamp-club#4167): serve, never the record, decides whether
+  it is live, and a commit serve refuses as `lease-lost` under an
+  unconfirmed lease is sent again under no lease, as an outbox recovery
+  is. A commit refused under a lease serve renewed or granted is the
+  caller's. A
   command that takes the behavior's lock adopts it under a lock local to the
   checkout instead of asking again, leaving it held when it ends. A lease
   no command renews within its hold lapses at serve. It ends on `release` or once its hold passes unrenewed.

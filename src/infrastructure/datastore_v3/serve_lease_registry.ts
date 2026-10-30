@@ -40,6 +40,12 @@ export interface HeldServeLease {
   readonly fence: number;
   /** Each data name's version marks when the lease was taken. */
   readonly floor: readonly DataNameMarks[];
+  /**
+   * Registered from the checkout's record without serve vouching for it in
+   * this process (swamp-club#4167): its renewal failed. A commit serve
+   * refuses under it is sent again under no lease.
+   */
+  readonly unconfirmed?: true;
 }
 
 const held = new Map<string, HeldServeLease>();
@@ -132,6 +138,25 @@ export function dropServeLease(
 ): void {
   const key = keyOf(root, lockKey);
   if (held.get(key)?.leaseId === leaseId) held.delete(key);
+}
+
+/**
+ * Forgets the unconfirmed lease `leaseId` on `partition` for `root`, once
+ * serve has refused a commit under it (swamp-club#4167). A lease confirmed
+ * since, or another lease taken since, is kept.
+ */
+export function dropUnconfirmedServeLease(
+  root: string,
+  partition: PartitionKey,
+  leaseId: string,
+): void {
+  const lockKey = leaseLockKeyOfPartition(partition);
+  if (lockKey === undefined) return;
+  const key = keyOf(root, lockKey);
+  const lease = held.get(key);
+  if (lease?.leaseId === leaseId && lease.unconfirmed === true) {
+    held.delete(key);
+  }
 }
 
 /** The fenced lease this process holds on `partition` for `root`, if any. */

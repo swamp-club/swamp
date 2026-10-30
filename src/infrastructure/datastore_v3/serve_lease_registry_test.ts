@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { modelPartition } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import {
+  dropUnconfirmedServeLease,
   heldServeLeaseOf,
   holdServeLease,
   leaseLockKeyOfPartition,
@@ -72,4 +73,41 @@ Deno.test("raiseServeLeaseFloor: raises only the lease still held under that id"
     { name: "vpc", highWater: 4 },
   ]);
   resetServeLeasesForTesting();
+});
+
+Deno.test("dropUnconfirmedServeLease: forgets only that lease while it is unconfirmed (swamp-club#4167)", () => {
+  resetServeLeasesForTesting();
+  const root = "/checkout/root";
+  const partition = modelPartition();
+  const lockKey = leaseLockKeyOfPartition(partition)!;
+  const lease = { leaseId: "lease-1", fence: 2, floor: [] };
+  try {
+    // A confirmed lease is never dropped.
+    holdServeLease(root, lockKey, lease);
+    dropUnconfirmedServeLease(root, partition, "lease-1");
+    assertEquals(heldServeLeaseOf(root, partition)?.leaseId, "lease-1");
+
+    // Another lease id is never dropped.
+    holdServeLease(root, lockKey, { ...lease, unconfirmed: true });
+    dropUnconfirmedServeLease(root, partition, "lease-2");
+    assertEquals(heldServeLeaseOf(root, partition)?.leaseId, "lease-1");
+
+    // A raised floor keeps the lease unconfirmed.
+    raiseServeLeaseFloor(root, partition, "lease-1", [
+      { name: "vpc", version: 1 },
+    ]);
+    assertEquals(heldServeLeaseOf(root, partition)?.unconfirmed, true);
+
+    dropUnconfirmedServeLease(root, partition, "lease-1");
+    assertEquals(heldServeLeaseOf(root, partition), undefined);
+
+    // A lock acquire confirms it: the confirmed registration replaces it.
+    holdServeLease(root, lockKey, { ...lease, unconfirmed: true });
+    holdServeLease(root, lockKey, lease);
+    dropUnconfirmedServeLease(root, partition, "lease-1");
+    assertEquals(heldServeLeaseOf(root, partition)?.unconfirmed, undefined);
+    assertEquals(heldServeLeaseOf(root, partition)?.leaseId, "lease-1");
+  } finally {
+    resetServeLeasesForTesting();
+  }
 });
