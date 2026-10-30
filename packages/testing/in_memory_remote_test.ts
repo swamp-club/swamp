@@ -1976,6 +1976,37 @@ Deno.test("repairUnpushedFiles: a delete this cache pushed is not recorded, so a
   });
 });
 
+Deno.test({
+  name:
+    "repairUnpushedFiles: records a file a marked-path push deleted while it stays on disk, with extensions through 2026.10.20.2",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const { remote, a, aCache } = await twoMachines(dir, {
+        semantics: EXTENSION_2026_10_20_SEMANTICS,
+      });
+      await write(aCache, "d/live", "l");
+      await a.markDirty({ relPath: "d/live" });
+      await a.pushChanged();
+      await a.markDirty({ relPath: "d" });
+      await write(aCache, "d/z-added", "z");
+      await Deno.symlink(join(aCache, "d", "nowhere"), join(aCache, "d", "m"), {
+        type: "file",
+      });
+      await a.pushChanged();
+      assertEquals(remote.files().has("d/live"), false);
+
+      const summary = await a.repairUnpushedFiles!();
+
+      assertEquals(summary.samplePeerDeleted, ["d/live"]);
+      assertEquals(summary.peerDeleted, 1);
+      assertEquals(summary.uploaded, 1);
+      assertEquals(remote.files().has("d/live"), false);
+      assertEquals(remoteText(remote, "d/z-added"), "z");
+    });
+  },
+});
+
 Deno.test("repairUnpushedFiles: a key a peer committed first is alreadyPresent and keeps the peer's bytes", async () => {
   await withTempDir(async (dir) => {
     const { remote, a, b, bCache } = await strandedCache(dir);

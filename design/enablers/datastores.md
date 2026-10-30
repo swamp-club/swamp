@@ -1602,7 +1602,8 @@ files itself, shaped like `repairNamespaceContamination`.
     cache (an internal file the push walk skips). It forgets a key once the
     remote holds it again or the local file is gone. A recorded file counts in
     `peerDeleted`, never in `unpushed`, and is never uploaded. A delete this
-    cache pushed leaves no local file, so it is never recorded.
+    cache pushed leaves no local file, so it is not recorded, unless the push
+    deleted a file still on disk (a directory taken as absent).
 
 Limits: a delete pulled before the extension kept the peer-deleted record left
 none, so a copy an earlier release kept still reads as unpushed. A file pulled

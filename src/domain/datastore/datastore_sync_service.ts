@@ -580,8 +580,9 @@ export interface DatastoreSyncService {
    *    forget a recorded key once the remote holds it again or its local
    *    file is gone. Report a recorded file in `peerDeleted`, never in
    *    `unpushed`, and never upload it. A delete this cache pushed leaves
-   *    no local file, so it is never recorded. A delete pulled before the
-   *    implementation kept the record left none, so such a copy still
+   *    no local file, so it is not recorded, unless the push deleted a file
+   *    still on disk (a directory taken as absent). A delete pulled before
+   *    the implementation kept the record left none, so such a copy still
    *    reads as unpushed.
    *
    * Optional — core treats the method's presence as the capability, and

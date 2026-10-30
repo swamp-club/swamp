@@ -1409,6 +1409,11 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
         true,
         "a dry run must report a cache file the remote never received",
       );
+      assertEquals(
+        preview.unpushed >= 1,
+        true,
+        "a dry run must count a cache file the remote never received as unpushed",
+      );
       assertEquals(preview.uploaded, 0, "a dry run must upload nothing");
       assertUnchanged(
         await second.service.pullChanged(),
@@ -1421,7 +1426,11 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
         true,
         "repairUnpushedFiles must upload the unpushed file",
       );
-      assertEquals(summary.samplePaths.includes(rel), false);
+      assertEquals(
+        summary.samplePaths.includes(rel),
+        false,
+        "a real run reports only the files it left unuploaded",
+      );
       assertChanged(await second.service.pullChanged(), "second pullChanged()");
       await assertHasBytes(
         second,
@@ -1546,11 +1555,18 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
         false,
         "a copy a pull kept after a peer deleted its key is not unpushed (contract rule 10)",
       );
+      // A pull that removes even an edited copy leaves nothing to classify,
+      // so only the final check, that second never gets it back, applies.
       if (await readLocalFile(first.cacheDir, kept)) {
         assertEquals(
           preview.samplePeerDeleted.includes(kept),
           true,
           "a copy a pull kept after a peer deleted its key is peerDeleted",
+        );
+        assertEquals(
+          preview.peerDeleted >= 1,
+          true,
+          "a copy a pull kept after a peer deleted its key counts as peerDeleted",
         );
       }
       await first.service.repairUnpushedFiles!();

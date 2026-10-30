@@ -1264,18 +1264,29 @@ export function createInMemoryRemote(
       }
       const synced = syncedIndexes.get(key);
       if (!synced) return;
+      const recorded = peerDeletedKeys.get(key) ?? new Set<string>();
       for (const [rel, bytes] of uploads) {
         synced.set(rel, bytes);
-        peerDeletedKeys.get(key)?.delete(rel);
+        recorded.delete(rel);
       }
-      for (const rel of deletes) synced.delete(rel);
+      for (const rel of deletes) {
+        // A directory taken as absent deletes files still on disk.
+        if (
+          synced.delete(rel) && !isInternalCacheFile(rel) &&
+          await isRegularFile(cacheDir, rel)
+        ) {
+          recorded.add(rel);
+        }
+      }
+      peerDeletedKeys.set(key, recorded);
     }
 
     /**
      * Records each key `next` drops from the last-synced index while a
      * regular file stays at its path, and forgets the keys `next` holds
      * again or whose file is gone. A delete this cache pushed leaves no
-     * file, so only a peer's delete is recorded.
+     * file, so it is recorded only when the push deleted a file still on
+     * disk.
      */
     async function recordPeerDeleted(
       next: ReadonlyMap<string, Uint8Array>,
