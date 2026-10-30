@@ -120,6 +120,7 @@ import {
 import {
   cancelAndSettle,
   failAbandonedSteps,
+  runsAfterFailure,
   settleNotResumedJob,
   settleNotStartedJob,
   settleUnstartedStep,
@@ -5668,6 +5669,9 @@ export class WorkflowExecutionService {
       let jobFailed = false;
       // Set when an interrupted level leaves a guarded step undecided.
       let jobUndecided = false;
+      // The cleanup steps this walk started after the abort with nothing
+      // failed, by step or forEach template name (runsAfterFailure).
+      const abortCleanupSteps = new Set<string>();
       for (const level of sortedSteps.levels) {
         for (const stepName of level) {
           const dependencyWait = stepWaits.get(stepName);
@@ -5688,14 +5692,23 @@ export class WorkflowExecutionService {
         // steps whose conditions aren't met are skipped naturally.
         const cleanupMode: boolean = (jobFailed || jobUndecided) &&
           (options.signal?.aborted ?? false);
-        const levelSignal: AbortSignal | undefined = cleanupMode
-          ? cleanupGraceSignal(CLEANUP_GRACE_TIMEOUT_MS)
-          : options.signal;
-        const levelOptions = cleanupMode
-          ? { ...options, signal: levelSignal, cleanupStepLevel: true }
-          : options;
-        // Only a level the abort interrupted settles its never-started steps.
-        const abortedBeforeLevel: boolean = levelSignal?.aborted ?? false;
+        // A level reached after the abort with nothing failed starts no work:
+        // merge() would start a step alone in its level whatever the signal.
+        // Its cleanup steps run under the cleanup signal, the rest are settled
+        // (swamp-club#4149). A suspended run keeps its pending steps to resume.
+        const reachedAfterAbort: boolean = !cleanupMode &&
+          (options.signal?.aborted ?? false) && run.status !== "suspended";
+        const cleanupSignal: AbortSignal | undefined =
+          cleanupMode || reachedAfterAbort
+            ? cleanupGraceSignal(CLEANUP_GRACE_TIMEOUT_MS)
+            : undefined;
+        const cleanupOptions = {
+          ...options,
+          signal: cleanupSignal,
+          cleanupStepLevel: true,
+        };
+        const levelOptions = cleanupMode ? cleanupOptions : options;
+        let levelStartsCleanup: boolean = cleanupMode;
 
         if (cleanupMode) {
           // Mark any steps still in "running" status as failed — the
@@ -5708,6 +5721,23 @@ export class WorkflowExecutionService {
         const stepConcurrencies: number[] = [];
         const levelSteps = new Map<string, Step>();
         const levelIterations = new Set<string>();
+        // Settles a step this level will not start, even when its guard
+        // leaves the persisted outcome undecided for a future resume.
+        const settleLevelStep = (stepName: string): void => {
+          // An iteration a resume added to the collection has no record
+          // until runStep creates one, as it would have on reaching it.
+          if (!jobRun.getStep(stepName) && levelIterations.has(stepName)) {
+            jobRun.addExpandedStep(stepName);
+          }
+          const stepRun = jobRun.getStep(stepName);
+          if (stepRun?.status !== "pending") return;
+          settleUnstartedStep(levelSteps.get(stepName), stepRun, jobRun);
+          stepWaits.get(stepName)?.end("cancelled");
+          stepWaits.delete(stepName);
+          const entry = progress.get(stepName);
+          if (entry) removeRunProgress(entry);
+          progress.delete(stepName);
+        };
         const stepStreams = level.map((stepName) => {
           // Find the expanded step info if applicable
           let forEachVar: ForEachBinding | undefined;
@@ -5743,6 +5773,28 @@ export class WorkflowExecutionService {
           if (levelStep) levelSteps.set(stepName, levelStep);
           if (forEachVar?.name) levelIterations.add(stepName);
 
+          // Only a step yet to start is decided here: a finished one, or one
+          // re-entering a wait or a running record, keeps the run's signal.
+          let stepOptions: StepOptions = levelOptions;
+          const levelStepRun = jobRun.getStep(stepName);
+          if (
+            reachedAfterAbort &&
+            (levelStepRun
+              ? levelStepRun.status === "pending"
+              : levelIterations.has(stepName))
+          ) {
+            if (
+              !levelStep ||
+              !runsAfterFailure(levelStep, jobRun, abortCleanupSteps)
+            ) {
+              settleLevelStep(stepName);
+              return undefined;
+            }
+            abortCleanupSteps.add(forEachTemplate ?? stepName);
+            levelStartsCleanup = true;
+            stepOptions = cleanupOptions;
+          }
+
           return this.runStep(
             workflow,
             run,
@@ -5752,13 +5804,19 @@ export class WorkflowExecutionService {
             originalStep,
             forEachVar,
             expressionContext,
-            levelOptions,
+            stepOptions,
             forEachIndex,
             forEachTemplate,
             stepWaits,
             progress.get(stepName),
           );
-        });
+        }).filter((stream) => stream !== undefined);
+
+        const levelSignal: AbortSignal | undefined = levelStartsCleanup
+          ? cleanupSignal
+          : options.signal;
+        // Only a level the abort interrupted settles its never-started steps.
+        const abortedBeforeLevel: boolean = levelSignal?.aborted ?? false;
 
         // Resolve: step (min across level) > job > workflow > global
         const levelStepConc = minOf(stepConcurrencies);
@@ -5788,23 +5846,7 @@ export class WorkflowExecutionService {
         const interrupted: boolean = !abortedBeforeLevel &&
           (levelSignal?.aborted ?? false) && run.status !== "suspended";
         if (interrupted) {
-          for (const stepName of level) {
-            // An iteration a resume added to the collection has no record
-            // until runStep creates one, as it would have on reaching it.
-            if (!jobRun.getStep(stepName) && levelIterations.has(stepName)) {
-              jobRun.addExpandedStep(stepName);
-            }
-            const stepRun = jobRun.getStep(stepName);
-            if (stepRun?.status !== "pending") continue;
-            settleUnstartedStep(levelSteps.get(stepName), stepRun, jobRun);
-            // This level will not start the step, even when its guard leaves
-            // the persisted outcome undecided for a future resume.
-            stepWaits.get(stepName)?.end("cancelled");
-            stepWaits.delete(stepName);
-            const entry = progress.get(stepName);
-            if (entry) removeRunProgress(entry);
-            progress.delete(stepName);
-          }
+          for (const stepName of level) settleLevelStep(stepName);
         }
 
         // When the signal aborts mid-level with parallel steps,
@@ -5825,11 +5867,11 @@ export class WorkflowExecutionService {
             return step?.status === "failed" && !step.allowedFailure;
           });
         }
-        // A guarded step the interrupted level left undecided: the job did
-        // not finish its work, so later levels run in cleanup mode, but its
-        // outcome is ambiguous (see the end of the job).
+        // A guarded step the abort left undecided: the job did not finish its
+        // work, so later levels run in cleanup mode, but its outcome is
+        // ambiguous (see the end of the job).
         if (
-          interrupted &&
+          (interrupted || reachedAfterAbort) &&
           level.some((name) => jobRun.getStep(name)?.status === "pending")
         ) {
           jobUndecided = true;

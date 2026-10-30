@@ -3821,9 +3821,9 @@ always treated as live (`splitServeOwnedRuns`,
 ### Post-Cancellation Cleanup
 
 When a workflow is cancelled (by `--timeout`, Ctrl+C, or `swamp workflow
-cancel`) and the cancellation stops an in-flight step or interrupts a level,
-steps with `always`, `completed` or `failed` dependency conditions still run,
-so cleanup branches (notifications, resource teardown, metric reporting,
+cancel`), steps with `always`, `completed` or `failed` dependency conditions
+still run, whether the cancellation stopped an in-flight step, interrupted a
+level, or found every step so far finished successfully, so cleanup branches (notifications, resource teardown, metric reporting,
 rollback) can run. The engine evaluates the remaining steps in topological
 order:
 
@@ -3887,6 +3887,22 @@ order:
   cleanup has finished. Each cleanup level is bounded by its 30-second
   cleanup signal, but a method that ignores its signal delays the record, as
   it would for a job alone in its level.
+- A step level reached after the cancellation fired with nothing failed or
+  undecided (each earlier step ignored the signal and finished) starts no work,
+  whether or not its steps share the level (swamp-club#4149). A step that is
+  yet to start runs only if it is a cleanup step: one that would still run had
+  all the work before the cancellation failed (`runsAfterFailure`,
+  `src/domain/workflows/abort_settlement.ts`). A step gated `succeeded` on a
+  cleanup step that succeeded counts, so a teardown chain runs to its end. A
+  cleanup step gets the cleanup signal. Every other step is settled as above, so
+  a resume runs it, and a settled step that failed sends later levels into
+  cleanup mode, so a `failed`-gated rollback runs for it. A step that also needs
+  a work step's success counts as work. A step that is finished, or that is
+  re-entering a wait, is not decided here.
+- Across a serve shutdown such a cleanup step, like any cleanup step, runs at
+  least once rather than once: it can outlast `SHUTDOWN_ABORT_GRACE_MS`, the run
+  write fence then drops its saves, and a resume after `workflow recover` can
+  run it again.
 - A job whose level is reached after the cancellation fired, without cleanup
   mode, never starts, whether or not it shares its level (swamp-club#2898):
   none of its steps is invoked with the cancelled signal, and it is settled as
@@ -3937,13 +3953,10 @@ order:
 - A level that suspends at an approval gate keeps its queued steps `pending`,
   so the run can be resumed.
 
-Known limitation: cleanup mode starts only after something in the interrupted
-level failed or was left undecided. When every step of that level finishes
-successfully despite the cancellation (a method that ignores the signal), a
-later step level of that job is reached with the cancellation already fired
-and never enters cleanup mode: a level holding one step runs it with the
-aborted signal, and a level holding several starts nothing and leaves them
-`pending`. A later job level starts nothing, as above.
+Known limitation: a job level has no equivalent of the step-level rule above.
+When every job of a level finishes successfully despite the cancellation, a
+later job level never enters cleanup mode and starts nothing, as above, so an
+`always`- or `completed`-gated teardown job does not run (swamp-club#4175).
 
 The same applies after a normal step failure without cancellation. Steps with
 `always` or `completed` conditions in later topological levels run instead of

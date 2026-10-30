@@ -20,6 +20,7 @@
 import { getLogger } from "@logtape/logtape";
 import type { Job } from "./job.ts";
 import type { Step } from "./step.ts";
+import type { TriggerEvaluationContext } from "./trigger_condition.ts";
 import type { Workflow } from "./workflow.ts";
 import {
   CANCELLED_STEP_ERROR,
@@ -90,6 +91,30 @@ export function shouldStepRun(step: Step, jobRun: JobRun): boolean {
   }
 
   return true;
+}
+
+/**
+ * True for a cleanup step: one that would still run had all the work before
+ * the run's abort failed. Every `dependsOn` condition must hold with its
+ * dependency failed, or, for a dependency in `cleanupSteps` (the cleanup steps
+ * this walk already started, by step or forEach template name), with its real
+ * status, so a teardown chain runs to its end. A step with no `dependsOn` is
+ * work. Conditions are evaluated, so `and`, `or` and `not` need no special
+ * case.
+ */
+export function runsAfterFailure(
+  step: Step,
+  jobRun: JobRun,
+  cleanupSteps: ReadonlySet<string>,
+): boolean {
+  if (step.dependsOn.length === 0) return false;
+  const afterFailure: TriggerEvaluationContext = {
+    getStatus: (ref) =>
+      cleanupSteps.has(ref) ? jobRun.getStatus(ref) : "failed",
+  };
+  return step.dependsOn.every((dep) =>
+    dep.condition.evaluate(afterFailure, dep.step)
+  );
 }
 
 /**

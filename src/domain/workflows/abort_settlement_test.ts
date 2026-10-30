@@ -23,6 +23,7 @@ import {
   completeAndSettle,
   failAbandonedSteps,
   resolveSettlementWorkflow,
+  runsAfterFailure,
   settleCancelledRun,
 } from "./abort_settlement.ts";
 import { Workflow } from "./workflow.ts";
@@ -713,4 +714,78 @@ Deno.test("failAbandonedSteps: marks the running steps it fails as stopped by th
   // A step that already failed on its own, and one never started, are left.
   assertEquals(jobRun.getStep("b")!.stoppedByAbort, false);
   assertEquals(jobRun.getStep("c")!.status, "pending");
+});
+
+/** A job run whose step `a` ended with `status`, and a step gated on it. */
+function gatedOnA(
+  condition: TriggerCondition,
+  status: "succeeded" | "failed" = "succeeded",
+) {
+  const gated = modelStep("gated", { step: "a", condition });
+  const workflow = Workflow.create({
+    name: "gated-wf",
+    jobs: [job("main", [modelStep("a"), gated])],
+  });
+  const jobRun = WorkflowRun.create(workflow).getJob("main")!;
+  const a = jobRun.getStep("a")!;
+  a.start();
+  if (status === "succeeded") a.succeed();
+  else a.fail("boom");
+  return { gated, jobRun };
+}
+
+Deno.test("runsAfterFailure: a step that would run had its dependency failed is cleanup", () => {
+  const { always, succeeded, failed, completed, skipped, and, or, not } =
+    TriggerCondition;
+  const cases: [string, TriggerCondition, boolean][] = [
+    ["always", always(), true],
+    ["completed", completed(), true],
+    ["failed", failed(), true],
+    ["not(succeeded)", not(succeeded()), true],
+    ["or(failed, succeeded)", or([failed(), succeeded()]), true],
+    ["and(always, completed)", and([always(), completed()]), true],
+    ["succeeded", succeeded(), false],
+    ["skipped", skipped(), false],
+    ["not(failed)", not(failed()), false],
+    ["and(always, succeeded)", and([always(), succeeded()]), false],
+  ];
+  for (const [name, condition, expected] of cases) {
+    const { gated, jobRun } = gatedOnA(condition);
+    assertEquals(runsAfterFailure(gated, jobRun, new Set()), expected, name);
+  }
+});
+
+Deno.test("runsAfterFailure: a step with no dependsOn is work", () => {
+  const { jobRun } = gatedOnA(TriggerCondition.always());
+  assertEquals(runsAfterFailure(modelStep("a"), jobRun, new Set()), false);
+});
+
+Deno.test("runsAfterFailure: every dependency must allow the step", () => {
+  const workflow = Workflow.create({
+    name: "two-deps-wf",
+    jobs: [job("main", [modelStep("a"), modelStep("b")])],
+  });
+  const jobRun = WorkflowRun.create(workflow).getJob("main")!;
+  const step = Step.create({
+    name: "gated",
+    task: StepTask.model("m", "run"),
+    dependsOn: [
+      { step: "a", condition: TriggerCondition.always() },
+      { step: "b", condition: TriggerCondition.succeeded() },
+    ],
+  });
+  assertEquals(runsAfterFailure(step, jobRun, new Set()), false);
+});
+
+Deno.test("runsAfterFailure: a dependency that ran as cleanup answers its real status", () => {
+  const succeeded = gatedOnA(TriggerCondition.succeeded());
+  assertEquals(
+    runsAfterFailure(succeeded.gated, succeeded.jobRun, new Set(["a"])),
+    true,
+  );
+  const failed = gatedOnA(TriggerCondition.succeeded(), "failed");
+  assertEquals(
+    runsAfterFailure(failed.gated, failed.jobRun, new Set(["a"])),
+    false,
+  );
 });

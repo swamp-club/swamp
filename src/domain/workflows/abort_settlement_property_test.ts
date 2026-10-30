@@ -22,7 +22,9 @@ import fc from "fast-check";
 import {
   cancelAndSettle,
   completeAndSettle,
+  runsAfterFailure,
   settleCancelledRun,
+  shouldStepRun,
 } from "./abort_settlement.ts";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
@@ -289,5 +291,86 @@ Deno.test("settleCancelledRun: settling a second time changes nothing", () => {
 
       assertEquals(reloaded.toData(), once);
     }),
+  );
+});
+
+const arbCondition: fc.Arbitrary<TriggerCondition> = fc.letrec<
+  { condition: TriggerCondition }
+>((tie) => ({
+  condition: fc.oneof(
+    { depthSize: "small", withCrossShrink: true },
+    fc.constantFrom(
+      TriggerCondition.always(),
+      TriggerCondition.succeeded(),
+      TriggerCondition.failed(),
+      TriggerCondition.completed(),
+      TriggerCondition.skipped(),
+    ),
+    tie("condition").map((c) => TriggerCondition.not(c)),
+    fc.array(tie("condition"), { minLength: 2, maxLength: 2 })
+      .map((cs) => TriggerCondition.and(cs)),
+    fc.array(tie("condition"), { minLength: 2, maxLength: 2 })
+      .map((cs) => TriggerCondition.or(cs)),
+  ),
+})).condition;
+
+/** A job run whose steps d0, d1 all ended `outcome`, and a step gated on them. */
+function gatedOnFinished(
+  conditions: TriggerCondition[],
+  outcome: "succeeded" | "failed",
+) {
+  const deps = conditions.map((_, i) =>
+    Step.create({ name: `d${i}`, task: StepTask.model("m", "run") })
+  );
+  const gated = Step.create({
+    name: "gated",
+    task: StepTask.model("m", "run"),
+    dependsOn: conditions.map((condition, i) => ({
+      step: `d${i}`,
+      condition,
+    })),
+  });
+  const workflow = Workflow.create({
+    name: "gated-wf",
+    jobs: [Job.create({ name: "main", steps: [...deps, gated] })],
+  });
+  const jobRun = WorkflowRun.create(workflow).getJob("main")!;
+  for (const dep of deps) {
+    const record = jobRun.getStep(dep.name)!;
+    record.start();
+    if (outcome === "succeeded") record.succeed();
+    else record.fail("boom");
+  }
+  return { gated, jobRun, names: deps.map((dep) => dep.name) };
+}
+
+Deno.test("runsAfterFailure: agrees with shouldStepRun on a job whose dependencies failed", () => {
+  fc.assert(
+    fc.property(
+      fc.array(arbCondition, { minLength: 1, maxLength: 3 }),
+      (conditions) => {
+        const { gated, jobRun } = gatedOnFinished(conditions, "failed");
+        assertEquals(
+          runsAfterFailure(gated, jobRun, new Set()),
+          shouldStepRun(gated, jobRun),
+        );
+      },
+    ),
+  );
+});
+
+Deno.test("runsAfterFailure: agrees with shouldStepRun when every dependency ran as cleanup", () => {
+  fc.assert(
+    fc.property(
+      fc.array(arbCondition, { minLength: 1, maxLength: 3 }),
+      fc.constantFrom<"succeeded" | "failed">("succeeded", "failed"),
+      (conditions, outcome) => {
+        const { gated, jobRun, names } = gatedOnFinished(conditions, outcome);
+        assertEquals(
+          runsAfterFailure(gated, jobRun, new Set(names)),
+          shouldStepRun(gated, jobRun),
+        );
+      },
+    ),
   );
 });
