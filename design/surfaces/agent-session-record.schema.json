@@ -1,0 +1,324 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "number",
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+    },
+    "repo": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "harness": {
+      "type": "string",
+      "maxLength": 32,
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "harnessVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "startedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+    },
+    "swampUserId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "swampUsername": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "parentSessionId": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+    },
+    "importerVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "turns": {
+      "maxItems": 5000,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "start": {
+            "type": "number",
+            "minimum": 0
+          },
+          "end": {
+            "type": "number",
+            "minimum": 0
+          },
+          "tokens": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "output": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "cacheRead": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "cacheWrite": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "input",
+              "output",
+              "cacheRead",
+              "cacheWrite"
+            ],
+            "additionalProperties": false
+          },
+          "calls": {
+            "maxItems": 2000,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "tool": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "toolKind": {
+                  "type": "string",
+                  "enum": [
+                    "shell",
+                    "file-read",
+                    "file-edit",
+                    "file-write",
+                    "search",
+                    "web",
+                    "mcp",
+                    "subagent",
+                    "skill",
+                    "other",
+                    "unknown"
+                  ]
+                },
+                "start": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "end": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "ok": {
+                  "type": "boolean"
+                },
+                "exitCode": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 1000
+                },
+                "label": {
+                  "type": "string",
+                  "enum": [
+                    "swamp",
+                    "bypass",
+                    "neutral"
+                  ]
+                },
+                "category": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "rule": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "swampSpans": {
+                  "maxItems": 20,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "offset": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "spans": {
+                        "minItems": 1,
+                        "maxItems": 500,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "name": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 200
+                            },
+                            "start": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "duration": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "depth": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "error": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "start",
+                            "duration",
+                            "depth",
+                            "error"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "offset",
+                      "spans"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "id",
+                "tool",
+                "toolKind",
+                "start",
+                "end",
+                "ok",
+                "text",
+                "label",
+                "category",
+                "rule"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "n",
+          "start",
+          "end",
+          "tokens",
+          "calls"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "findings": {
+      "maxItems": 500,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "detail": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "tune": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "callIds": {
+            "maxItems": 2000,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          }
+        },
+        "required": [
+          "severity",
+          "title",
+          "detail",
+          "tune",
+          "callIds"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "id",
+    "repo",
+    "harness",
+    "model",
+    "startedAt",
+    "importerVersion",
+    "turns",
+    "findings"
+  ],
+  "additionalProperties": false
+}
