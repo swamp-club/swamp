@@ -18,20 +18,30 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Writes the agent session record's JSON Schema for extension authors
- * (swamp-club#4154). session_record_json_schema_test.ts fails when the
- * checked-in file drifts from the Zod schema; run
- * `deno run agent-session-schema` to regenerate it.
+ * Writes the agent session record's and list summary's JSON Schemas for
+ * extension authors (swamp-club#4154, swamp-club#4178).
+ * session_record_json_schema_test.ts fails when a checked-in file drifts from
+ * the Zod schema; run `deno run agent-session-schema` to regenerate them.
  */
 
-import { agentSessionRecordJsonSchema } from "../src/domain/agent_sessions/session_record.ts";
+import {
+  agentSessionRecordJsonSchema,
+  agentSessionSummaryJsonSchema,
+} from "../src/domain/agent_sessions/session_record.ts";
 
 export const AGENT_SESSION_SCHEMA_PATH =
   "design/surfaces/agent-session-record.schema.json";
+
+export const AGENT_SESSION_SUMMARY_SCHEMA_PATH =
+  "design/surfaces/agent-session-summary.schema.json";
 
 if (import.meta.main) {
   await Deno.writeTextFile(
     AGENT_SESSION_SCHEMA_PATH,
     JSON.stringify(agentSessionRecordJsonSchema(), null, 2) + "\n",
+  );
+  await Deno.writeTextFile(
+    AGENT_SESSION_SUMMARY_SCHEMA_PATH,
+    JSON.stringify(agentSessionSummaryJsonSchema(), null, 2) + "\n",
   );
 }

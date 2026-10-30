@@ -4,7 +4,7 @@
   "properties": {
     "schemaVersion": {
       "type": "number",
-      "const": 1
+      "const": 2
     },
     "id": {
       "type": "string",
@@ -36,6 +36,14 @@
       "format": "date-time",
       "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
     },
+    "invocation": {
+      "type": "string",
+      "enum": [
+        "interactive",
+        "headless",
+        "unknown"
+      ]
+    },
     "swampUserId": {
       "type": "string",
       "minLength": 1,
@@ -50,6 +58,11 @@
       "type": "string",
       "maxLength": 128,
       "pattern": "^[a-z0-9][a-z0-9_-]*$"
+    },
+    "agentType": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
     },
     "importerVersion": {
       "type": "string",
@@ -159,12 +172,17 @@
                   "type": "string",
                   "maxLength": 1000
                 },
+                "truncated": {
+                  "type": "boolean",
+                  "const": true
+                },
                 "label": {
                   "type": "string",
                   "enum": [
                     "swamp",
                     "bypass",
-                    "neutral"
+                    "neutral",
+                    "unlabeled"
                   ]
                 },
                 "category": {
@@ -176,6 +194,11 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 200
+                },
+                "subagentSessionId": {
+                  "type": "string",
+                  "maxLength": 128,
+                  "pattern": "^[a-z0-9][a-z0-9_-]*$"
                 },
                 "swampSpans": {
                   "maxItems": 20,
@@ -243,9 +266,7 @@
                 "end",
                 "ok",
                 "text",
-                "label",
-                "category",
-                "rule"
+                "label"
               ],
               "additionalProperties": false
             }
@@ -272,7 +293,8 @@
             "enum": [
               "high",
               "medium",
-              "low"
+              "low",
+              "info"
             ]
           },
           "title": {
@@ -314,8 +336,8 @@
     "id",
     "repo",
     "harness",
-    "model",
     "startedAt",
+    "invocation",
     "importerVersion",
     "turns",
     "findings"
