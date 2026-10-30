@@ -37,7 +37,8 @@
 import { CommitsCompactedError } from "../../domain/datastore_v3/commit_store.ts";
 import { ServeNotLeaderError } from "../../domain/datastore_v3/serve_leader.ts";
 import type { Principal } from "../../domain/access/principal.ts";
-import { CommitReadFilter } from "../commit_read_filter.ts";
+import { LEASE_OPS_FEATURE } from "../../infrastructure/datastore_v3/serve_datastore_client.ts";
+import { commitJSONFor, CommitReadFilter } from "../commit_read_filter.ts";
 import { isPeerSocket } from "../peer_auth.ts";
 import {
   accessCallerOf,
@@ -86,7 +87,7 @@ export async function handleCommitsSubscribe(
   requestId: string,
   signal: AbortSignal,
   principal: Principal | null,
-  payload: { cursor: number },
+  payload: { cursor: number; features?: readonly string[] },
 ): Promise<void> {
   const feed = ctx.commitFeed;
   if (feed === undefined) {
@@ -107,6 +108,11 @@ export async function handleCommitsSubscribe(
   const access = isPeerSocket(socket)
     ? "unrestricted" as const
     : accessCallerOf(socket, principal);
+  // A subscription's features are fixed when it starts, so this is read
+  // once: a subscriber that does not name lease ops (a follower from before
+  // them) is sent commits without them, as GET changes sends them
+  // (swamp-club#4168).
+  const leaseOps = payload.features?.includes(LEASE_OPS_FEATURE) === true;
   let cursor = payload.cursor;
   let wake: (() => void) | undefined;
   const off = feed.onMoved(() => wake?.());
@@ -173,7 +179,7 @@ export async function handleCommitsSubscribe(
           if (await filter.readable(change)) {
             changes.push({
               cursor: change.cursor,
-              commit: change.commit.toJSON() as unknown as Record<
+              commit: commitJSONFor(change.commit, leaseOps) as Record<
                 string,
                 unknown
               >,

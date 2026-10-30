@@ -37,8 +37,10 @@ import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import {
   blobSaveOps,
   commitBody,
+  fencedLease,
   partitionPath,
   post,
+  save,
   type Server,
   sha256Hex,
   TOKENS,
@@ -98,6 +100,7 @@ async function subscribe(
   wsUrl: string,
   token: string,
   cursor: number,
+  features?: string[],
 ): Promise<Subscriber> {
   const socket = new WebSocket(wsUrl.replace("http", "ws"), {
     headers: { authorization: `Bearer ${token}` },
@@ -109,7 +112,7 @@ async function subscribe(
   socket.send(JSON.stringify({
     type: "commits.subscribe",
     id: "feed",
-    payload: { cursor },
+    payload: features === undefined ? { cursor } : { cursor, features },
   }));
   return subscriber;
 }
@@ -399,6 +402,91 @@ Deno.test({
           link.close();
         }
         assert(!feed.current(leader));
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "commit feed: a subscriber that does not name lease ops is sent commits without them, as a follower before them reads them (swamp-club#4168)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      await withFeedSocket(server, async (wsUrl) => {
+        const start = server.v3.commitStore.highWaterMark().cursor;
+        const lease = await fencedLease(server, "alice-token");
+        const saved = await save(server, "alice-token", 1, 0, {
+          lease: lease.leaseId,
+        });
+        assertEquals(saved.status, 200, JSON.stringify(saved.json));
+        const head = server.v3.commitStore.highWaterMark().cursor;
+        const older = await subscribe(wsUrl, PEER_TOKEN, start);
+        const current = await subscribe(wsUrl, PEER_TOKEN, start, [
+          "lease-ops",
+        ]);
+        try {
+          await waitFor(
+            () => lastCursor(older) === head && lastCursor(current) === head,
+            "both subscribers at the head",
+          );
+          const kinds = (subscriber: Subscriber) =>
+            (changesOf(subscriber) as {
+              cursor: number;
+              commit: { ops: { kind: string }[] };
+            }[]).map((change) => ({
+              cursor: change.cursor,
+              kinds: change.commit.ops.map((op) => op.kind),
+            }));
+          const leaseOpsOf = (subscriber: Subscriber) =>
+            kinds(subscriber).flatMap((change) =>
+              change.kinds.filter((kind) => kind === "lease")
+            );
+          assertEquals(leaseOpsOf(older), []);
+          assertEquals(leaseOpsOf(current), ["lease"]);
+          // Every other op is sent as it is, in order.
+          assertEquals(
+            kinds(current).map((change) => ({
+              cursor: change.cursor,
+              kinds: change.kinds.filter((kind) => kind !== "lease"),
+            })),
+            kinds(older),
+          );
+          assert(kinds(older).some((change) => change.kinds.length > 0));
+        } finally {
+          older.socket.close();
+          current.socket.close();
+        }
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "commit feed: a subscribe naming more features than the bound is refused (swamp-club#4168)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      await withFeedSocket(server, async (wsUrl) => {
+        const subscriber = await subscribe(
+          wsUrl,
+          PEER_TOKEN,
+          0,
+          Array.from({ length: 17 }, (_, i) => `feature-${i}`),
+        );
+        try {
+          await waitFor(
+            () => subscriber.frames.length > 0,
+            "the subscribe's reply",
+          );
+          assertEquals(subscriber.frames[0].type, "error");
+          assertEquals(subscriber.frames[0].error?.code, "invalid_request");
+        } finally {
+          subscriber.socket.close();
+        }
       });
     });
   },

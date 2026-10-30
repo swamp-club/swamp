@@ -150,3 +150,14 @@ Deno.test("FollowerFeed: an error frame stops the feed, and it is no longer curr
   await waitFor(() => !t.feed.current(leader("a", 1)), "the feed stopped");
   await t.feed.stop();
 });
+
+Deno.test("FollowerFeed: its subscribe names lease ops, so the leader sends them to this copy (swamp-club#4168)", async () => {
+  const t = setup();
+  t.feed.follow(leader("a", 1));
+  await waitFor(() => t.sockets.length === 1, "the socket");
+  t.sockets[0].open();
+  const subscribe = JSON.parse(t.sockets[0].sent[0]);
+  assertEquals(subscribe.type, "commits.subscribe");
+  assertEquals(subscribe.payload, { cursor: 0, features: ["lease-ops"] });
+  await t.feed.stop();
+});

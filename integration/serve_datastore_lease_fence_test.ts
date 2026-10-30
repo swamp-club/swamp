@@ -38,22 +38,21 @@ import {
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { grant } from "./serve_request_harness.ts";
 import {
-  blobSaveOps,
+  call,
   commitBody,
   dataMetadata,
+  fencedLease,
   member,
+  modelKey,
   partitionPath,
   post,
+  save,
+  saveBody,
   type Server,
-  sha256Hex,
   withServer,
 } from "./serve_datastore_api_harness.ts";
 
 await initializeLogging({});
-
-function modelKey(server: Server, id: string = server.model.id): string {
-  return `data/${server.modelType.normalized}/${id}/.lock`;
-}
 
 function partition(server: Server) {
   return partitionOf({
@@ -61,73 +60,6 @@ function partition(server: Server) {
     type: server.modelType,
     id: server.model.id,
   });
-}
-
-async function call(
-  server: Server,
-  method: string,
-  path: string,
-  token: string,
-  body?: unknown,
-): Promise<{ status: number; json: Record<string, unknown> }> {
-  const response = await fetch(`${server.url}/${path}`, {
-    method,
-    headers: {
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json",
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-  return { status: response.status, json: await response.json() };
-}
-
-async function fencedLease(
-  server: Server,
-  token: string,
-  lockKey = modelKey(server),
-): Promise<{ leaseId: string; fence: number; floor: unknown }> {
-  const taken = await call(server, "POST", "locks", token, {
-    lockKey,
-    fenced: true,
-  });
-  assertEquals(taken.status, 201, JSON.stringify(taken.json));
-  return {
-    leaseId: taken.json.leaseId as string,
-    fence: taken.json.fence as number,
-    floor: taken.json.floor,
-  };
-}
-
-/** The framed commit saving version `version` of `vpc`. */
-async function saveBody(
-  server: Server,
-  version: number,
-  expectedSeq: number,
-  options: { lease?: string; txnId?: string } = {},
-): Promise<Uint8Array> {
-  const content = new TextEncoder().encode(`content of version ${version}`);
-  return commitBody({
-    expectedSeq,
-    txnId: options.txnId ?? crypto.randomUUID(),
-    ...(options.lease === undefined ? {} : { lease: options.lease }),
-    ops: await blobSaveOps(server, "vpc", version, content),
-    chunks: [{ sha256: await sha256Hex(content), size: content.length }],
-  }, [content]);
-}
-
-/** Saves version `version` of `vpc`, naming `lease` when given. */
-async function save(
-  server: Server,
-  token: string,
-  version: number,
-  expectedSeq: number,
-  options: { lease?: string } = {},
-): Promise<{ status: number; json: Record<string, unknown> }> {
-  return await post(
-    partitionPath(server),
-    token,
-    await saveBody(server, version, expectedSeq, options),
-  );
 }
 
 async function landed(server: Server, seq: number): Promise<Commit> {

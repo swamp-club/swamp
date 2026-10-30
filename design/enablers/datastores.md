@@ -7216,9 +7216,11 @@ which behaves as above.
   the writer fence and would refuse the commit. Every request names what the
   client's copy understands (`x-swamp-datastore-features: lease-ops`), and
   serve leaves lease ops out of the commits it sends a client that does not
-  name it, so that client reads exactly what its own rules accept. Serve's
-  lease op does not count toward `MAX_COMMIT_OPS`: a writer fills a commit
-  before it knows whether serve will add one.
+  name it, so that client reads exactly what its own rules accept. The
+  `commits.subscribe` feed applies the same rule to the features its
+  subscribe payload names (swamp-club#4168); a follower names `lease-ops`.
+  Serve's lease op does not count toward `MAX_COMMIT_OPS`: a writer fills a
+  commit before it knows whether serve will add one.
 - **A lapse.** The holder measures the lease from its last renewal on its
   own monotonic clock. A renewal serve answers `404` or `403`, or none
   before that deadline, lapses the lease: `ServeLock`'s `onLost` fires once,
@@ -7708,6 +7710,12 @@ waits (`datastore_claimed`).
 - A follower whose commit feed is down restores its whole copy when the
   published head moved (about 4.5 s per GB). Litestream follow mode as a
   warm standby is a later step.
+- A team runs one build on every node. A follower restores the leader's
+  `commits.db`, and a follower whose commit store schema is older than the
+  leader's refuses the restored copy ("upgrade swamp"), so it cannot follow
+  until it is upgraded. Until it restores, a copy it already holds keeps
+  following the feed, which leaves out the lease ops it would refuse
+  (swamp-club#4168).
 - A serve that loses its lease exits 75, single-node too: one stalled past
   its lease's TTL, so that another writer such as a CLI command took the
   lease, stops rather than following. Run under a supervisor, it starts
@@ -7810,7 +7818,10 @@ log with `changesSince`, then waits on the store's head-moved signal
 filtered per caller exactly as `GET changes` is: `CommitReadFilter`
 (`src/serve/commit_read_filter.ts`), the changes feed's filter taken out
 of the datastore API, built afresh per batch so a changed grant takes
-effect on the next one. A frame with no commits goes out at least every
+effect on the next one. A subscriber names what its copy understands in
+the payload's `features` (at most 16), as a datastore API request names it in
+`x-swamp-datastore-features`: lease ops reach only a subscriber that names
+`lease-ops`. A frame with no commits goes out at least every
 5 s, so a subscriber tells a quiet feed from a dead one. A cursor below the
 compaction point ends the stream with `commits_compacted` (load the base,
 as for the 410); a subscriber further behind than its socket can buffer is

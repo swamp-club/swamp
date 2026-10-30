@@ -331,6 +331,10 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/serve/handlers/commit_feed_handlers.ts -> src/domain/datastore_v3/commit_store.ts",
   // swamp-club#4148: a stale follower's subscription ends with the refusal.
   "src/serve/handlers/commit_feed_handlers.ts -> src/domain/datastore_v3/serve_leader.ts",
+  // swamp-club#4168: the feed sends lease ops only to a subscriber that
+  // names them, and a follower names them.
+  "src/serve/handlers/commit_feed_handlers.ts -> src/infrastructure/datastore_v3/serve_datastore_client.ts",
+  "src/serve/follower_feed.ts -> src/infrastructure/datastore_v3/serve_datastore_client.ts",
   "src/serve/handlers/shared.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/serve/serve_commit_effects.ts -> src/domain/datastore_v3/commit_effects.ts",
   "src/serve/serve_commit_effects.ts -> src/domain/datastore_v3/commit_store.ts",
