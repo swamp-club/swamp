@@ -42,6 +42,7 @@ import type {
   LockLease,
   ServeDatastoreClient,
 } from "./serve_datastore_client.ts";
+import { type LandedVersion, raisedFloor } from "./serve_lease_registry.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "lease"]);
 
@@ -194,6 +195,31 @@ export async function recordExplicitLease(
   });
 }
 
+/**
+ * Raises the floor recorded for explicit lease `leaseId` by versions a
+ * commit under it recorded (swamp-club#4121), so the next command's floor
+ * includes them; nothing when the record no longer names that lease.
+ */
+export async function raiseExplicitLeaseFloor(
+  root: string,
+  leaseId: string,
+  landed: readonly LandedVersion[],
+): Promise<void> {
+  if (landed.length === 0) return;
+  await withRecordLock(root, async () => {
+    const leases = await readExplicitLeases(root);
+    if (!leases.some((lease) => lease.leaseId === leaseId)) return;
+    await writeExplicitLeases(
+      root,
+      leases.map((lease) =>
+        lease.leaseId === leaseId
+          ? { ...lease, floor: raisedFloor(lease.floor, landed) }
+          : lease
+      ),
+    );
+  });
+}
+
 /** Forgets the recorded lease `leaseId` for `root`. */
 export async function forgetExplicitLease(
   root: string,
@@ -249,7 +275,12 @@ export async function renewExplicitLeases(
   const ended: ExplicitLease[] = [];
   for (const lease of leases) {
     try {
-      const reply = await client.renewLock(lease.leaseId, lease.holdMs, signal);
+      const reply = await client.renewLock(
+        lease.leaseId,
+        lease.holdMs,
+        signal,
+        { holdMs: lease.holdMs },
+      );
       if (reply === undefined) {
         ended.push(lease);
         continue;

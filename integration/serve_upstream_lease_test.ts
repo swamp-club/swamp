@@ -361,3 +361,60 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "serve upstream leases: a run-only caller under one explicit lease saves above its own earlier writes, command after command",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: BOB_RUN_ONLY });
+      const alice = await scratch.client("a");
+      const bob = await scratch.client("b");
+      for (let i = 0; i < 3; i++) {
+        await lockedSave(scratch, serve, alice, "alice-token", "alice");
+      }
+      const lockKey =
+        `data/${serve.modelType.normalized}/${serve.models.web}/.lock`;
+      await withClientEnv(
+        scratch,
+        serveEnv(serve, "bob-token"),
+        ["model", "lease"],
+        async () => {
+          try {
+            const resolution = await resolveDatastoreForRepo(bob.repoDir);
+            const root = (await v3LocationOf(resolution)).path;
+            const client = serveUpstreamAt(root)!.client();
+            try {
+              await acquireExplicitLease(
+                root,
+                client,
+                lockKey,
+                600_000,
+                5_000,
+                new AbortController().signal,
+              );
+            } finally {
+              client.close();
+            }
+          } finally {
+            await endCommand();
+          }
+        },
+      );
+      // Each save is a command of its own, in a process of its own: bob's
+      // copy never sees his own landed versions, so only the lease's floor,
+      // raised by each landed commit, keeps the next one above them.
+      const versions: number[] = [];
+      for (let i = 0; i < 3; i++) {
+        resetServeLeasesForTesting();
+        resetLeaseRenewalsForTesting();
+        versions.push(
+          await lockedSave(scratch, serve, bob, "bob-token", "bob"),
+        );
+      }
+      assertEquals(versions, [4, 5, 6]);
+    });
+  },
+});

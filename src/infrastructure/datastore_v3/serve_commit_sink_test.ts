@@ -31,6 +31,7 @@ import {
   modelPartition,
   savePut,
   sha256Of,
+  versionOp,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import { contextHook, unitOptions } from "./commit_log_test_helpers.ts";
 import { createCommitLogUnitOfWork } from "./commit_log_unit_of_work.ts";
@@ -613,4 +614,59 @@ Deno.test("createServeCommitSink: a held lease's floor raises a data name's high
     assertEquals(await sink.dataHighWater!("", MODEL, "vpc"), 7);
     assertEquals(await sink.dataHighWater!("", MODEL, "other"), 0);
   }, leasedModel);
+});
+
+Deno.test("createServeCommitSink: a commit landed under a lease reports the data versions it recorded, so the lease's floor follows them", async () => {
+  const reported: unknown[] = [];
+  const dir = await Deno.makeTempDir({ prefix: "swamp-serve-sink-floor-" });
+  const store = SqliteCommitStore.open(join(dir, "commits.db"), {
+    follower: true,
+  });
+  const state = ServeUpstreamState.open(join(dir, "serve_upstream.db"));
+  const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"));
+  const serve = new FakeServe();
+  const catchUp = new ServeCatchUp({
+    client: serve,
+    commitStore: store,
+    state,
+    copyDir: dir,
+    namespace: "",
+  });
+  const cache = new CachedServeStorage(
+    join(dir, "datastore"),
+    new ServeChunkStorage(serve),
+    NO_SYNC,
+  );
+  const lifetime = new AbortController();
+  const sink = createServeCommitSink({
+    client: serve,
+    commitStore: store,
+    catchUp,
+    chunkCache: cache,
+    outbox,
+    signal: () => lifetime.signal,
+    leaseOf: leasedModel,
+    onLeasedCommit: (partition, leaseId, landed) => {
+      reported.push([partition.toString(), leaseId, landed]);
+      return Promise.resolve();
+    },
+  });
+  try {
+    const commit = modelCommit(1, [
+      await savePut("vpc", 4),
+      versionOp("vpc", 4),
+    ]);
+    await sink.append(commit);
+    assertEquals(reported, [[
+      MODEL.toString(),
+      LEASE.leaseId,
+      [{ name: "vpc", version: 4 }],
+    ]]);
+  } finally {
+    lifetime.abort();
+    state.close();
+    await outbox.close();
+    await store.close();
+    await removeTempDir(dir);
+  }
 });

@@ -287,10 +287,13 @@ export class ServeLock implements DistributedLock {
     const asked = this.#monotonic();
     let renewed: LockLease | undefined;
     try {
+      // Names its hold: a lease recorded before its extension landed is
+      // still a command's at serve, whose TTL bounds a long hold.
       renewed = await client.renewLock(
         explicit.leaseId,
         explicit.holdMs,
         hold.signal,
+        { holdMs: explicit.holdMs },
       );
     } catch (error) {
       client.close?.();

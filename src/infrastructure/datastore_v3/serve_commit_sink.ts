@@ -58,7 +58,7 @@ import {
 } from "./outbox_commit_sink.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import type { ServeCatchUp } from "./serve_catch_up.ts";
-import type { HeldServeLease } from "./serve_lease_registry.ts";
+import type { HeldServeLease, LandedVersion } from "./serve_lease_registry.ts";
 import { storageNamespaceOf } from "./serve_datastore_storage.ts";
 import type {
   CommitChunk,
@@ -111,6 +111,16 @@ export interface ServeCommitSinkOptions {
    * and its floor raises the partition's high-water marks.
    */
   readonly leaseOf?: (partition: PartitionKey) => HeldServeLease | undefined;
+  /**
+   * Called once a commit naming lease `leaseId` has landed, with the data
+   * versions it recorded, so the lease's floor follows the holder's own
+   * writes (swamp-club#4121). A failure is the callback's to report.
+   */
+  readonly onLeasedCommit?: (
+    partition: PartitionKey,
+    leaseId: string,
+    landed: readonly LandedVersion[],
+  ) => Promise<void>;
 }
 
 /**
@@ -263,6 +273,14 @@ export function createServeCommitSink(
       throw error;
     }
     neverSent.delete(commit.txnId);
+    if (leaseId !== undefined && options.onLeasedCommit !== undefined) {
+      const landed = commit.ops.flatMap((op) =>
+        op.kind === "data-version"
+          ? [{ name: op.metadata.name, version: op.metadata.version }]
+          : []
+      );
+      await options.onLeasedCommit(commit.partition, leaseId, landed);
+    }
     // The copy stores serve's commit as serve stamped it. A read that fails
     // here leaves the copy behind; the next catch-up brings it.
     try {

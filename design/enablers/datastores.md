@@ -7094,7 +7094,10 @@ which behaves as above.
   caller with `run` but no `read` on the data: names and numbers, never
   content. The holder registers the lease (`serve_lease_registry.ts`) and its
   unit allocates above the floor (the serve sink's `dataHighWater`), so a
-  version written by a commit its copy never saw is not picked again.
+  version written by a commit its copy never saw is not picked again. Each
+  commit that lands under the lease raises its floor, in the process and in
+  an explicit lease's record, by the versions it recorded: a caller without
+  `read` never sees its own commits in its copy either.
 - **The commit.** The envelope names the lease by id (`lease`), never its
   fence; a client's commit carrying a lease op is still refused. Under the
   forwarded lock serve judges it: a named lease must be live, fenced, the
