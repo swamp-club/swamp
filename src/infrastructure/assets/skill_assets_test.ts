@@ -17,11 +17,40 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertNotEquals } from "@std/assert";
 import { assertPathStringIncludes } from "../persistence/path_test_helpers.ts";
 import { join, relative, SEPARATOR } from "@std/path";
 import { walk } from "@std/fs/walk";
+import { parse as parseYaml } from "@std/yaml";
 import { SkillAssets } from "./skill_assets.ts";
+
+// gh only stops warning about a skill when github-repo is set, and github-pinned
+// makes it skip the skill instead of replacing it from the default branch.
+const GH_SKILL_PIN = {
+  "github-repo": "https://github.com/swamp-club/swamp",
+  "github-pinned": "bundled-with-swamp",
+};
+
+function parseFrontmatter(content: string): Record<string, unknown> {
+  const lines = content.split("\n");
+  assertEquals(lines[0], "---");
+  const end = lines.indexOf("---", 1);
+  assertNotEquals(end, -1);
+  return parseYaml(lines.slice(1, end).join("\n")) as Record<string, unknown>;
+}
+
+function assertPinnedFrontmatter(name: string, content: string): void {
+  const frontmatter = parseFrontmatter(content);
+  assertEquals(frontmatter.name, name);
+  assertEquals(frontmatter.metadata, GH_SKILL_PIN);
+  // A misplaced metadata block would fold into the description or truncate it
+  const description = frontmatter.description;
+  if (typeof description !== "string") {
+    throw new Error(`${name} has no string description`);
+  }
+  assertEquals(description.includes("github-repo"), false);
+  assertEquals(description.trim().length > 0, true);
+}
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-skill-test-" });
@@ -108,6 +137,30 @@ Deno.test("SkillAssets.copySkillsTo copies files correctly", async () => {
     const copiedContent = await Deno.readTextFile(skillPath);
     const originalContent = await assets.readSkill("swamp/SKILL.md");
     assertEquals(copiedContent, originalContent);
+  });
+});
+
+Deno.test("SkillAssets: every bundled skill carries the gh skill pin", async () => {
+  const assets = new SkillAssets();
+  const names = assets.getSkillNames();
+  assertEquals(names.length > 0, true);
+
+  for (const name of names) {
+    const content = await assets.readSkill(`${name}/SKILL.md`);
+    assertEquals(content !== null, true, `${name}/SKILL.md is missing`);
+    assertPinnedFrontmatter(name, content!);
+  }
+});
+
+Deno.test("SkillAssets.copySkillsTo installs the gh skill pin for every skill", async () => {
+  await withTempDir(async (dir) => {
+    const assets = new SkillAssets();
+    await assets.copySkillsTo(dir);
+
+    for (const name of assets.getSkillNames()) {
+      const installed = await Deno.readTextFile(join(dir, name, "SKILL.md"));
+      assertPinnedFrontmatter(name, installed);
+    }
   });
 });
 

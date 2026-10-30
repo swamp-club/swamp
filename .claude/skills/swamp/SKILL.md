@@ -11,6 +11,9 @@ description: >
   (use swamp-getting-started), pull requests, git operations, worktree
   management, cron/agent scheduling, or general coding tasks unrelated to
   swamp.
+metadata:
+  github-repo: https://github.com/swamp-club/swamp
+  github-pinned: bundled-with-swamp
 ---
 
 # Swamp
