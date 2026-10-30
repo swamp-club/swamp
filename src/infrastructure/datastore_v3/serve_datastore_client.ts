@@ -81,13 +81,20 @@ export const SERVE_ERROR_BODY_MAX_BYTES = 64 * 1024;
 
 /**
  * The most bytes the client reads of a small JSON reply: `chunks/has`,
- * a chunk upload, a commit and a lease. `chunks/has`, the largest,
+ * a chunk upload, a commit and a lease renewal. `chunks/has`, the largest,
  * answers at most {@link MAX_HAS_HASHES} hashes, about 70 KiB.
  */
 export const SERVE_REPLY_MAX_BYTES = 1024 * 1024;
 
 /** The most bytes the client reads of a page of more than one commit. */
 export const SERVE_PAGE_MAX_BYTES = 64 * 1024 * 1024;
+
+/**
+ * The most bytes the client reads of a granted lease (swamp-club#4166): a
+ * fenced behavior lease carries its floor, every data name's marks, so it
+ * gets the page cap the compacted base reads the same names under.
+ */
+export const SERVE_LEASE_REPLY_MAX_BYTES = SERVE_PAGE_MAX_BYTES;
 
 /** The most UTF-8 bytes one UTF-16 unit of text JSON does not escape takes. */
 const UTF8_BYTES_PER_UNIT = 3;
@@ -664,7 +671,11 @@ export class ServeDatastoreClient {
         return {
           acquired: true,
           lease: leaseOf(
-            await readBoundedJson(response, "locks", SERVE_REPLY_MAX_BYTES),
+            await readBoundedJson(
+              response,
+              "locks",
+              SERVE_LEASE_REPLY_MAX_BYTES,
+            ),
           ),
         };
       },
