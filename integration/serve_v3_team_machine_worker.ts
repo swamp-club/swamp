@@ -76,6 +76,12 @@ export type TeamNodeRequest =
   | { readonly kind: "commit" }
   | { readonly kind: "tick" }
   | { readonly kind: "pause"; readonly ms: number }
+  /**
+   * Burns the worker's thread for up to `ms`, as a node stuck in a busy
+   * loop would: the test's request deadline must cut it off
+   * (swamp-club#4152).
+   */
+  | { readonly kind: "spin"; readonly ms: number }
   | { readonly kind: "close" };
 
 /** A node's answer. */
@@ -222,6 +228,14 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
     case "pause":
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, request.ms);
       return undefined;
+    case "spin": {
+      // Bounded, so a terminate that failed to interrupt it costs the test
+      // time, never the run.
+      const end = Date.now() + request.ms;
+      let spins = 0;
+      while (Date.now() < end) spins++;
+      return spins;
+    }
     case "close":
       await leadership?.stop();
       await closeV3Datastores();
