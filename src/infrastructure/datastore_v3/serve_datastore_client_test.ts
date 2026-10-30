@@ -55,6 +55,7 @@ import {
   SERVE_DATASTORE_ACCESS_HEADER,
   SERVE_DATASTORE_LOG_HEADER,
   SERVE_ERROR_BODY_MAX_BYTES,
+  SERVE_LEASE_REPLY_MAX_BYTES,
   SERVE_PAGE_MAX_BYTES,
   SERVE_REPLY_MAX_BYTES,
   ServeDatastoreClient,
@@ -721,6 +722,45 @@ Deno.test("ServeDatastoreClient.acquireLock: a malformed floor is refused", asyn
     () => client.acquireLock(LOCK_KEY, 30_000, 0, signal()),
     ServeUpstreamError,
   );
+});
+
+Deno.test("ServeDatastoreClient.acquireLock: a floor past the small reply limit is read (swamp-club#4166)", async () => {
+  const floor = Array.from({ length: 15_000 }, (_, i) => ({
+    name: `aws-ec2-instance-${String(i).padStart(6, "0")}-us-east-1-production`,
+    highWater: 1,
+  }));
+  const fenced = { ...LEASE, fence: 1, floor };
+  const reply = JSON.stringify(fenced);
+  assert(reply.length > SERVE_REPLY_MAX_BYTES, `${reply.length} bytes`);
+  const { client } = clientWith(() => new Response(reply, { status: 201 }));
+  assertEquals(await client.acquireLock(LOCK_KEY, 30_000, 0, signal()), {
+    acquired: true,
+    lease: fenced,
+  });
+});
+
+Deno.test("ServeDatastoreClient.acquireLock: a lease past its limit is refused and cancelled (swamp-club#4166)", async () => {
+  const body = counted(Infinity, 0x20, new TextEncoder().encode("{"));
+  const { client } = clientWith(() =>
+    new Response(body.stream, { status: 201 })
+  );
+  const error = await assertRejects(
+    () => client.acquireLock(LOCK_KEY, 30_000, 0, signal()),
+    ServeReplyTooLargeError,
+  );
+  assertEquals(error.maxBytes, SERVE_LEASE_REPLY_MAX_BYTES);
+  assertBounded(body, SERVE_LEASE_REPLY_MAX_BYTES);
+});
+
+Deno.test("ServeDatastoreClient.renewLock: a renewal past the small reply limit is refused, as it carries no floor (swamp-club#4166)", async () => {
+  const body = counted(Infinity, 0x20, new TextEncoder().encode("{"));
+  const { client } = clientWith(() => new Response(body.stream));
+  const error = await assertRejects(
+    () => client.renewLock(LEASE.leaseId, 30_000, signal()),
+    ServeReplyTooLargeError,
+  );
+  assertEquals(error.maxBytes, SERVE_REPLY_MAX_BYTES);
+  assertBounded(body, SERVE_REPLY_MAX_BYTES);
 });
 
 Deno.test("ServeDatastoreClient.listLocks: reads serve's listing, and an older serve's 405 is no listing (swamp-club#4121)", async () => {

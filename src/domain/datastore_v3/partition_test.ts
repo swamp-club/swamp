@@ -19,6 +19,7 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { Commit } from "./commit.ts";
+import type { DataNameMarks } from "./commit_store.ts";
 import { createIntent } from "./intent.ts";
 import { dataVersionOp, leaseOp, putOp, tombstoneOp } from "./op.ts";
 import { CommitRejectedError, Partition } from "./partition.ts";
@@ -256,6 +257,27 @@ Deno.test("Partition.append: a removed version is never recorded again (swamp-cl
   partition.append(modelCommit(4, [versionOp("vpc", 3)]));
   assertEquals(partition.versions("vpc"), [3]);
   assertEquals(partition.highWater("vpc"), 3);
+});
+
+Deno.test("Partition.dataNameMarks: each name's marks as the snapshot records them, less live versions (swamp-club#4166)", () => {
+  const partition = Partition.empty(modelPartition());
+  assertEquals(partition.dataNameMarks(), []);
+  partition.append(modelCommit(1, [
+    versionOp("vpc", 1),
+    versionOp("vpc", 2),
+    versionOp("vpc", 3),
+    versionOp("subnet", 1),
+  ]));
+  partition.append(modelCommit(2, [deleteVersion("vpc", 2)]));
+  const marks: DataNameMarks[] = [
+    { name: "subnet", highWater: 1 },
+    { name: "vpc", highWater: 3, removed: [[2, 2]] },
+  ];
+  assertEquals(partition.dataNameMarks(), marks);
+  assertEquals(
+    partition.snapshot().names.map(({ live: _live, ...rest }) => rest),
+    marks,
+  );
 });
 
 Deno.test("Partition.append: a version removed in the same commit is not recorded again", () => {

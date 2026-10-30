@@ -404,6 +404,28 @@ Deno.test("SqliteCommitStore: a lease op raises the partition's lease fence, nev
   });
 });
 
+Deno.test("SqliteCommitStore.leaseMarks: each data name's high-water mark and removed versions, sorted (swamp-club#4166)", async () => {
+  await withStore(async (store) => {
+    assertEquals(await store.leaseMarks("", modelPartition()), {
+      leaseFence: undefined,
+      names: [],
+    });
+    await store.append(modelCommit(1, [
+      versionOp("vpc", 1),
+      versionOp("vpc", 2),
+      versionOp("subnet", 1),
+    ]));
+    await store.append(modelCommit(2, [deleteVersion("vpc", 1)]));
+    assertEquals(await store.leaseMarks("", modelPartition()), {
+      leaseFence: undefined,
+      names: [
+        { name: "subnet", highWater: 1 },
+        { name: "vpc", highWater: 2, removed: [[1, 1]] },
+      ],
+    });
+  });
+});
+
 Deno.test("SqliteCommitStore: opens with WAL, synchronous FULL and the default auto-checkpoint", async () => {
   await withTempDir((dir) => {
     const db = openCommitsDatabase(join(dir, "commits.db"));

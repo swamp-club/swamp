@@ -1048,12 +1048,10 @@ export class SqliteCommitStore implements CommitStore {
         this.#cache.delete(cacheKeyOf(namespace, key.toString()));
         partition = await this.#partition(namespace, key);
       }
-      const names = partition.snapshot().names.map((name) => ({
-        name: name.name,
-        highWater: name.highWater,
-        ...(name.removed === undefined ? {} : { removed: name.removed }),
-      }));
-      return { leaseFence: partition.leaseFence, names };
+      return {
+        leaseFence: partition.leaseFence,
+        names: partition.dataNameMarks(),
+      };
     });
   }
 

@@ -33,6 +33,7 @@
 import { maxOf } from "../array_extrema.ts";
 import { isSha256Hex } from "./blob_ref.ts";
 import type { Commit } from "./commit.ts";
+import type { DataNameMarks } from "./commit_store.ts";
 import { requireFence } from "./op.ts";
 import type { PartitionKey } from "./partition_key.ts";
 import { RecordKey } from "./record_key.ts";
@@ -448,6 +449,21 @@ export class Partition {
   /** Every data name that has ever had a version, sorted. */
   dataNames(): readonly string[] {
     return [...this.#names.keys()].sort();
+  }
+
+  /**
+   * Each data name's version marks, sorted by name: what
+   * {@link snapshot} records of it less its live versions, built without
+   * the records (swamp-club#4166).
+   */
+  dataNameMarks(): DataNameMarks[] {
+    return [...this.#names.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([name, entry]) => ({
+        name,
+        highWater: entry.highWater,
+        ...(entry.removed.isEmpty ? {} : { removed: entry.removed.ranges }),
+      }));
   }
 
   /** A name's live versions, ascending. */

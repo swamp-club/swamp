@@ -27,13 +27,20 @@
 
 import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
-import type { Commit } from "../src/domain/datastore_v3/commit.ts";
+import { Commit } from "../src/domain/datastore_v3/commit.ts";
+import { dataVersionOp } from "../src/domain/datastore_v3/op.ts";
+import { RecordKey } from "../src/domain/datastore_v3/record_key.ts";
 import { partitionOf } from "../src/domain/datastore_v3/partition_key.ts";
+import {
+  SERVE_REPLY_MAX_BYTES,
+  ServeDatastoreClient,
+} from "../src/infrastructure/datastore_v3/serve_datastore_client.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { grant } from "./serve_request_harness.ts";
 import {
   blobSaveOps,
   commitBody,
+  dataMetadata,
   member,
   partitionPath,
   post,
@@ -570,6 +577,72 @@ Deno.test({
       });
       assertEquals(current.filter((kind) => kind === "lease").length, 1);
       assertEquals(current.length, older.length + 1);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore lease fence: a behavior whose floor is past the small reply limit still takes its lease through the client (swamp-club#4166)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(twoMembers(), async (server) => {
+      // Long names put the floor past 1 MiB with few of them.
+      const names = Array.from(
+        { length: 7_000 },
+        (_, i) => `instance-${String(i).padStart(6, "0")}-${"x".repeat(140)}`,
+      );
+      const type = server.modelType.normalized;
+      const fence = server.v3.commitStore.writerFence();
+      for (const [index, start] of [0, 3_500].entries()) {
+        await server.v3.commitStore.append(Commit.create({
+          seq: index + 1,
+          partition: partition(server),
+          namespace: server.v3.namespace,
+          txnId: crypto.randomUUID(),
+          writer: { host: "host-a", pid: 4242, instance: "cli-1" },
+          at: "2026-10-30T00:00:00.000Z",
+          ...(fence === undefined ? {} : { fence }),
+          ops: names.slice(start, start + 3_500).map((name) =>
+            dataVersionOp({
+              key: RecordKey.create(
+                `data/${type}/${server.model.id}/${name}/1/metadata.yaml`,
+              ),
+              metadata: dataMetadata(name, 1),
+            })
+          ),
+        }));
+      }
+      const floorBytes = JSON.stringify(
+        (await server.v3.commitStore.leaseMarks(
+          server.v3.namespace,
+          partition(server),
+        )).names,
+      ).length;
+      assert(floorBytes > SERVE_REPLY_MAX_BYTES, `${floorBytes} bytes`);
+      const client = new ServeDatastoreClient({
+        baseUrl: new URL(server.url).origin,
+        token: "alice-token",
+      });
+      try {
+        const reply = await client.acquireLock(
+          modelKey(server),
+          30_000,
+          0,
+          AbortSignal.timeout(30_000),
+        );
+        assert(reply.acquired, JSON.stringify(reply));
+        assertEquals(reply.lease.floor?.map((marks) => marks.name), names);
+        const listing = await client.listLocks("", AbortSignal.timeout(30_000));
+        assertEquals(listing?.leases.length, 1);
+        await client.releaseLock(
+          reply.lease.leaseId,
+          AbortSignal.timeout(30_000),
+        );
+      } finally {
+        client.close?.();
+      }
     });
   },
 });

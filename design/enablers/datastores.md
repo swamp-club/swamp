@@ -7183,7 +7183,12 @@ which behaves as above.
   version written by a commit its copy never saw is not picked again. Each
   commit that lands under the lease raises its floor, in the process and in
   an explicit lease's record, by the versions it recorded: a caller without
-  `read` never sees its own commits in its copy either.
+  `read` never sees its own commits in its copy either. The floor is not
+  paged: the client reads a granted lease under the page cap
+  (`SERVE_LEASE_REPLY_MAX_BYTES`, the cap the compacted base sends the same
+  names under), not the small reply cap, and `leaseMarks` reads the names
+  (`Partition.dataNameMarks`) without building a partition snapshot
+  (swamp-club#4166).
 - **The commit.** The envelope names the lease by id (`lease`), never its
   fence; a client's commit carrying a lease op is still refused. Under the
   forwarded lock serve judges it: a named lease must be live, fenced, the
