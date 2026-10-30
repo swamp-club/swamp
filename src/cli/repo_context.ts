@@ -158,6 +158,7 @@ import {
 import {
   type CustomDatastoreConfig,
   type DatastoreConfig,
+  getDatastoreDirectories,
   isCustomDatastoreConfig,
   readDatastoreFormatKey,
   resolveDurableWrites,
@@ -2070,7 +2071,8 @@ export interface ServeLockHoldOptions {
  * The lock creates a new model's data directory, and any directory above
  * it, before the data repository writes under it. On a durable v2
  * filesystem datastore it syncs the parent of each one it creates, as the
- * repository does for the directories it creates (swamp-club#4017).
+ * repository does for the directories it creates (swamp-club#4017), and on
+ * a durable v3 one whose checkout may keep data local (swamp-club#4019).
  */
 export async function createModelLock(
   datastoreConfig: DatastoreConfig,
@@ -2100,9 +2102,21 @@ export async function createModelLock(
     maxWaitMs,
     retryIntervalMs: MODEL_LOCK_RETRY_INTERVAL_MS,
     maxBackoffMs: MODEL_LOCK_MAX_BACKOFF_MS,
-    syncCreatedDirectories: config.format !== 3 &&
-      resolveDurableWrites(datastoreConfig),
+    syncCreatedDirectories: resolveDurableWrites(datastoreConfig) &&
+      (config.format !== 3 || mayKeepDataLocal(config)),
   });
+}
+
+/**
+ * Whether a v3 checkout's datastore filter may keep data written under
+ * `config` local (swamp-club#4019): data is not among its directories, or
+ * an exclude pattern may match it. No commit replays such data, so the
+ * model lock syncs the directories it creates for it, as on v2. The lock
+ * has no data name, so any exclude pattern counts.
+ */
+function mayKeepDataLocal(config: DatastoreConfig): boolean {
+  return !getDatastoreDirectories(config).includes(SWAMP_SUBDIRS.data) ||
+    (config.exclude?.length ?? 0) > 0;
 }
 
 /**

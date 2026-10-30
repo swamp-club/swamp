@@ -35,6 +35,7 @@ import {
   signalChange,
   stageTyped,
   typedStagingActive,
+  unitAdmitsKey,
   unscopedCallerFrom,
   type UnscopedChange,
   UnscopedWriteRefusedError,
@@ -43,6 +44,7 @@ import {
 } from "./unit_of_work_scope.ts";
 import {
   typedStagers,
+  unitAdmissions,
   unitOfWorkBinding,
   unitWrites,
 } from "./unit_of_work_binding.ts";
@@ -576,6 +578,73 @@ function typedUnit(hook: MarkDirtyHook) {
   });
   return { uow, staged, batches };
 }
+
+const keepsDataLocal = (key: string) => !key.startsWith("data/");
+
+Deno.test("unitAdmitsKey: answers with the filter of the unit a hooked write stages into (swamp-club#4019)", async () => {
+  const { hook } = recordingHook();
+  unitOfWorkBinding.requireUnit(hook);
+  // Outside every unit: nothing would commit the key.
+  assertEquals(unitAdmitsKey(hook, "data/a/latest"), false);
+  // A unit with no filter admits every key.
+  const open = typedUnit(hook);
+  await runInUnitOfWork(open.uow, () => {
+    assertEquals(unitAdmitsKey(hook, "data/a/latest"), true);
+    return Promise.resolve();
+  });
+  const filtered = typedUnit(hook);
+  unitAdmissions.register(filtered.uow, keepsDataLocal);
+  typedStagers.register(
+    filtered.uow,
+    () => Promise.resolve(),
+    () => filtered.uow,
+  );
+  await runInUnitOfWork(filtered.uow, async () => {
+    assertEquals(unitAdmitsKey(hook, "data/a/latest"), false);
+    assertEquals(unitAdmitsKey(hook, "models/a.yaml"), true);
+    // An unbound unit does not hide the v3 unit around it.
+    const inner = createLegacyUnitOfWork(recordingHook().hook, {
+      flush: undefined,
+    });
+    await runInUnitOfWork(inner, () => {
+      assertEquals(unitAdmitsKey(hook, "data/a/latest"), false);
+      assertEquals(unitAdmitsKey(hook, "models/a.yaml"), true);
+      return Promise.resolve();
+    });
+  });
+  // A unit bound to another hook is not the one the write stages into.
+  const other = typedUnit(recordingHook().hook);
+  unitAdmissions.register(other.uow, () => true);
+  await runInUnitOfWork(other.uow, () => {
+    assertEquals(unitAdmitsKey(hook, "models/a.yaml"), false);
+    return Promise.resolve();
+  });
+});
+
+Deno.test("unitAdmitsKey: a hookless write after its unit ended answers with the open ancestor's filter (swamp-club#4019)", async () => {
+  assertEquals(unitAdmitsKey(undefined, "data/a/latest"), false);
+  const parent = typedUnit(recordingHook().hook);
+  unitAdmissions.register(parent.uow, keepsDataLocal);
+  typedStagers.register(
+    parent.uow,
+    () => Promise.resolve(),
+    () => parent.uow,
+  );
+  let childOpen = true;
+  const child = typedUnit(recordingHook().hook);
+  typedStagers.register(
+    child.uow,
+    () => Promise.resolve(),
+    () => childOpen ? child.uow : parent.uow,
+  );
+  await runInUnitOfWork(child.uow, () => {
+    // The open child has no filter of its own.
+    assertEquals(unitAdmitsKey(undefined, "data/a/latest"), true);
+    childOpen = false;
+    assertEquals(unitAdmitsKey(undefined, "data/a/latest"), false);
+    return Promise.resolve();
+  });
+});
 
 Deno.test("stageTyped: a builder never runs on v2: no hook, route 2, or a legacy unit (swamp-club#3250)", async () => {
   await withReports(async () => {

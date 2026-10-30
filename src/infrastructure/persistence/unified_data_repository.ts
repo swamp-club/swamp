@@ -25,6 +25,7 @@ import {
   signalChange,
   stageTyped,
   typedStagingActive,
+  unitAdmitsKey,
   versionFloorSource,
   withChangeSignalled,
 } from "./unit_of_work_scope.ts";
@@ -40,6 +41,7 @@ import {
 import { MAX_INLINE_BYTES } from "../../domain/datastore_v3/op.ts";
 import {
   type DataRemoval,
+  type DataVersionFile,
   type DataWrite,
   ModelChanges,
 } from "../../domain/datastore_v3/repository_changes.ts";
@@ -123,6 +125,21 @@ export {
 };
 
 const logger = getSwampLogger(["data", "repository"]);
+
+/** The files of a data version, each its own record key on v3. */
+const DATA_VERSION_FILES: readonly DataVersionFile[] = ["metadata.yaml", "raw"];
+
+/**
+ * The data a write publishes, which decides whether it is synced
+ * (swamp-club#4019): a version, or with no version the directories above
+ * one.
+ */
+interface DurableRecord {
+  readonly type: ModelType;
+  readonly modelId: string;
+  readonly dataName: string;
+  readonly version?: number;
+}
 
 /**
  * Version directories this process has warned cannot be read
@@ -314,17 +331,39 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * The sync option of a v2 write, or undefined on v3 or with durable
-   * writes off (swamp-club#4017). On v2 a version's files, and the
-   * directory entries that reach them, are synced before anything
-   * publishes it: the latest marker moving to it, a non-pending catalog
-   * row, or a settled one. v3 writes stay unsynced: its commits are durable
-   * and replay rewrites the checkout (swamp-club#3617).
+   * The sync option of a write to `record`, or undefined with durable
+   * writes off or when a v3 commit replays it (swamp-club#4017). On v2 a
+   * version's files, and the directory entries that reach them, are synced
+   * before anything publishes it: the latest marker moving to it, a
+   * non-pending catalog row, or a settled one. On v3 a record whose keys
+   * the unit commits stays unsynced: its commits are durable and replay
+   * rewrites the checkout (swamp-club#3617). A record whose keys the
+   * checkout's datastore filter keeps local is never committed, so it is
+   * synced as on v2 (swamp-club#4019).
    */
-  private durableSync(): AtomicWriteSync | undefined {
-    return !this.durable || typedStagingActive(this.markDirty)
+  private durableSync(record: DurableRecord): AtomicWriteSync | undefined {
+    if (!this.durable) return undefined;
+    return typedStagingActive(this.markDirty) && this.replayed(record)
       ? undefined
       : this.durableWriteHooks;
+  }
+
+  /**
+   * Whether the bound v3 unit commits every key that publishes `record`
+   * (swamp-club#4019): the name's latest marker and, given a version, its
+   * `metadata.yaml` and `raw`. Without a version it answers for the
+   * directories above one, which replay recreates whenever it rewrites
+   * the name's marker.
+   */
+  private replayed(record: DurableRecord): boolean {
+    const changes = new ModelChanges(record.type, record.modelId);
+    const keys = [changes.latestKey(record.dataName)];
+    if (record.version !== undefined) {
+      for (const file of DATA_VERSION_FILES) {
+        keys.push(changes.dataKey(record.dataName, record.version, file));
+      }
+    }
+    return keys.every((key) => unitAdmitsKey(this.markDirty, key.toString()));
   }
 
   private async syncDir(sync: AtomicWriteSync, dir: string): Promise<void> {
@@ -1425,7 +1464,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         cleanData as Record<string, unknown>,
       );
       await this.writeVersionFiles(
-        this.durableSync(),
+        this.durableSync({
+          type,
+          modelId,
+          dataName: data.name,
+          version: newVersion,
+        }),
         type,
         modelId,
         data.name,
@@ -1538,7 +1582,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         // Durable on v2 before the receipt returns, so promotion only ever
         // settles a synced version; a failed sync rolls back below.
         await this.writeVersionFiles(
-          this.durableSync(),
+          this.durableSync({
+            type,
+            modelId,
+            dataName: data.name,
+            version: newVersion,
+          }),
           type,
           modelId,
           data.name,
@@ -1627,7 +1676,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           ),
         )
         : undefined;
-      const sync = this.durableSync();
+      const sync = this.durableSync({
+        type,
+        modelId,
+        dataName,
+        version: latestVersion,
+      });
       const file = await Deno.open(contentPath, { append: true });
       try {
         await file.write(content);
@@ -2269,7 +2323,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           cleanData as Record<string, unknown>,
         );
         await this.writeVersionFiles(
-          this.durableSync(),
+          this.durableSync({
+            type,
+            modelId,
+            dataName: oldName,
+            version: tombstoneVersion,
+          }),
           type,
           modelId,
           oldName,
@@ -2466,7 +2525,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         version: newVersion,
         contentPath,
         priorVersions,
-        durable: this.durableSync() !== undefined,
+        durable: this.durableSync({
+          type,
+          modelId,
+          dataName: data.name,
+          version: newVersion,
+        }) !== undefined,
       };
     });
   }
@@ -2496,7 +2560,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       const content = await Deno.readFile(contentPath);
       const size = content.length;
       const checksum = await this.computeChecksum(content);
-      const sync = this.durableSync();
+      const sync = this.durableSync({
+        type,
+        modelId,
+        dataName: data.name,
+        version,
+      });
       await this.syncWrittenContent(sync, contentPath, options);
 
       // Create the data with updated version, size, and checksum
@@ -2600,7 +2669,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       const content = await Deno.readFile(contentPath);
       const size = content.length;
       const checksum = await this.computeChecksum(content);
-      const sync = this.durableSync();
+      const sync = this.durableSync({
+        type,
+        modelId,
+        dataName: data.name,
+        version,
+      });
       await this.syncWrittenContent(sync, contentPath, options);
 
       const dataToSave = data.withNewVersion({ version, size, checksum });
@@ -2652,7 +2726,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         // it, the version directory holding its entry and the reach are
         // synced before the row settles or the marker names it, since
         // content reads go through the marker without the metadata.
-        const sync = this.durableSync();
+        const sync = this.durableSync({
+          type: receipt.type,
+          modelId: receipt.modelId,
+          dataName: receipt.dataName,
+          version: receipt.version,
+        });
         if (data === null && sync !== undefined) {
           await syncExistingFile(
             this.getContentPath(
@@ -3523,8 +3602,11 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
    * model directory and those above it first, and syncs them the same way
    * (`createModelLock`).
    */
-  private async makeDataNameDir(dataNameDir: string): Promise<void> {
-    const sync = this.durableSync();
+  private async makeDataNameDir(
+    dataNameDir: string,
+    record: DurableRecord,
+  ): Promise<void> {
+    const sync = this.durableSync(record);
     await makeDirectories(
       dataNameDir,
       sync === undefined ? undefined : (dir) => this.syncDir(sync, dir),
@@ -3542,7 +3624,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   ): Promise<{ version: number; versionDir: string; priorVersions: number[] }> {
     const dataNameDir = this.getDataNameDir(type, modelId, dataName);
     await assertSafePath(dataNameDir, this.baseDir);
-    await this.makeDataNameDir(dataNameDir);
+    await this.makeDataNameDir(dataNameDir, { type, modelId, dataName });
 
     const versions = await this.listVersions(type, modelId, dataName);
     // Never below the version floor: a number deleted versions used is not
@@ -3731,7 +3813,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const latestPath = join(dataNameDir, "latest");
     // On v2 the new marker is written and synced before the synchronous
     // section below (swamp-club#4017), so no fsync runs inside it.
-    const sync = this.durableSync();
+    const sync = this.durableSync({ type, modelId, dataName, version });
     const syncedTmp = sync === undefined
       ? undefined
       : await writeSyncedTempFile(
@@ -4578,7 +4660,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     }
 
     // Write version number as plain text, durably on v2
-    const sync = this.durableSync();
+    const sync = this.durableSync({ type, modelId, dataName, version });
     await atomicWriteTextFile(
       latestPath,
       version.toString(),

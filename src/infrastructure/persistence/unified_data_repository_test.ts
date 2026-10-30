@@ -4183,6 +4183,182 @@ Deno.test("save: on v3, the version is not synced by the repository", async () =
   });
 });
 
+/**
+ * Runs `fn` in a v3 unit whose checkout filter admits only the keys
+ * `admits` does (swamp-club#4019), then abandons the unit.
+ */
+async function inV3Unit(
+  admits: (key: string) => boolean,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const unit = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(new MemorySink(), new MemoryStorage(), { admits }),
+  );
+  try {
+    await runInUnitOfWork(unit, fn);
+  } finally {
+    await unit.abandon();
+  }
+}
+
+/** A checkout filter that keeps data local, as `directories` without data. */
+const keepsDataLocal = (key: string) => !key.startsWith("data/");
+
+Deno.test("save: on v3, a version the checkout keeps local is synced before its marker and the catalog (swamp-club#4019)", async () => {
+  await withDurableRepo(async ({ repo, events }) => {
+    const modelId = crypto.randomUUID();
+    await inV3Unit(keepsDataLocal, async () => {
+      await repo.save(testType, modelId, makeJsonData("state"), bytes("{}"));
+    });
+    const modelDir = `.swamp/data/test/model/${modelId}`;
+    const v1 = `${modelDir}/state/1`;
+    for (const content of [`file ${v1}/metadata.yaml`, `file ${v1}/raw`]) {
+      assertBefore(
+        events,
+        content,
+        `dir ${v1}`,
+        `file ${modelDir}/state/latest`,
+        "catalog",
+      );
+    }
+    // The directories above the version, created for it, are synced too.
+    assertBefore(events, `dir .swamp/data/test/model`, `dir ${v1}`);
+  });
+});
+
+Deno.test("save: on v3, a version is synced when the checkout keeps only its raw local (swamp-club#4019)", async () => {
+  await withDurableRepo(async ({ repo, events }) => {
+    const modelId = crypto.randomUUID();
+    await inV3Unit((key) => !key.endsWith("/raw"), async () => {
+      await repo.save(testType, modelId, makeJsonData("state"), bytes("{}"));
+    });
+    const v1 = `.swamp/data/test/model/${modelId}/state/1`;
+    assertBefore(events, `file ${v1}/raw`, `dir ${v1}`);
+  });
+});
+
+Deno.test("save: on v3 with durable writes off, a version the checkout keeps local is not synced", async () => {
+  await withDurableRepo(async ({ repo, events }) => {
+    await inV3Unit(keepsDataLocal, async () => {
+      const modelId = crypto.randomUUID();
+      await repo.save(testType, modelId, makeJsonData("state"), bytes("{}"));
+      const allocated = await repo.allocateVersion(
+        testType,
+        modelId,
+        makeJsonData("stream"),
+      );
+      assertEquals(allocated.durable, false);
+    });
+    assertEquals(
+      events.filter((e) => e.startsWith("file ") || e.startsWith("dir ")),
+      [],
+    );
+  }, { durable: false });
+});
+
+Deno.test("append: on v3, content the checkout keeps local is synced before its metadata (swamp-club#4019)", async () => {
+  await withDurableRepo(async ({ repo, events }) => {
+    const modelId = crypto.randomUUID();
+    await inV3Unit(keepsDataLocal, async () => {
+      await repo.save(
+        testType,
+        modelId,
+        makeStreamingData("log"),
+        bytes("a\n"),
+      );
+      events.length = 0;
+      await repo.append(testType, modelId, "log", bytes("b\n"));
+    });
+    const v1 = `.swamp/data/test/model/${modelId}/log/1`;
+    assertBefore(events, `file ${v1}/raw`, `file ${v1}/metadata.yaml`);
+    assertBefore(events, `file ${v1}/metadata.yaml`, `dir ${v1}`, "catalog");
+  });
+});
+
+Deno.test("allocateVersion and finalizeVersion: on v3, a version the checkout keeps local is durable (swamp-club#4019)", async () => {
+  await withDurableRepo(async ({ repo, events }) => {
+    const modelId = crypto.randomUUID();
+    await inV3Unit(keepsDataLocal, async () => {
+      const data = makeJsonData("stream");
+      const allocated = await repo.allocateVersion(testType, modelId, data);
+      assertEquals(allocated.durable, true);
+      await Deno.writeTextFile(allocated.contentPath, "{}");
+      events.length = 0;
+      await repo.finalizeVersion(
+        testType,
+        modelId,
+        data,
+        allocated.version,
+        allocated.priorVersions,
+      );
+    });
+    const name = `.swamp/data/test/model/${modelId}/stream`;
+    assertBefore(
+      events,
+      `file ${name}/1/raw`,
+      `file ${name}/1/metadata.yaml`,
+      `dir ${name}/1`,
+      `file ${name}/latest`,
+      "catalog",
+    );
+  });
+});
+
+Deno.test("saveDeferred and advanceLatestMarkers: on v3, a version the checkout keeps local is synced before it settles (swamp-club#4019)", async () => {
+  await withDurableRepo(async ({ repo, events }) => {
+    const modelId = crypto.randomUUID();
+    await inV3Unit(keepsDataLocal, async () => {
+      const receipt = await repo.saveDeferred(
+        testType,
+        modelId,
+        makeJsonData("state"),
+        bytes("{}"),
+      );
+      await repo.advanceLatestMarkers([receipt]);
+    });
+    const name = `.swamp/data/test/model/${modelId}/state`;
+    assertBefore(
+      events,
+      `file ${name}/1/raw`,
+      "settle",
+      `file ${name}/latest`,
+    );
+    assertBefore(events, `dir ${name}/1`, "settle");
+  });
+});
+
+Deno.test("rename and delete: on v3, markers the checkout keeps local are written durably (swamp-club#4019)", async () => {
+  await withDurableRepo(async ({ repo, events }) => {
+    const modelId = crypto.randomUUID();
+    const modelDir = `.swamp/data/test/model/${modelId}`;
+    await inV3Unit(keepsDataLocal, async () => {
+      await repo.save(testType, modelId, makeJsonData("old"), bytes("1"));
+      await repo.save(testType, modelId, makeJsonData("old"), bytes("2"));
+      events.length = 0;
+      await repo.rename(testType, modelId, "old", "new");
+      assertBefore(
+        events,
+        `file ${modelDir}/new/1/raw`,
+        `dir ${modelDir}/new/1`,
+        `file ${modelDir}/new/latest`,
+      );
+      assertBefore(
+        events,
+        `file ${modelDir}/old/3/raw`,
+        `dir ${modelDir}/old/3`,
+        `file ${modelDir}/old/latest`,
+      );
+      await repo.save(testType, modelId, makeJsonData("kept"), bytes("1"));
+      await repo.save(testType, modelId, makeJsonData("kept"), bytes("2"));
+      events.length = 0;
+      // Deleting the latest version moves the marker back to version 1.
+      await repo.delete(testType, modelId, "kept", 2);
+    });
+    assert(events.includes(`file ${modelDir}/kept/latest`), events.join());
+  });
+});
+
 Deno.test({
   name:
     "save: a dangling symlink above the data-name directory fails instead of retrying forever",
