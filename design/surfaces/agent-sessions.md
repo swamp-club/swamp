@@ -54,8 +54,10 @@ carrying a field the schema does not name is refused, not kept. Redaction is
 the extension's job.
 
 **Size.** Every string has a maximum length and every list a maximum count
-(`AGENT_SESSION_LIMITS`). A typical session is 25–250 KB; the longest the
-prototype saw had 169 calls over 17 turns, far inside the limits.
+(`AGENT_SESSION_LIMITS`). The list limits apply to each list, so a session
+also has a cap on its total calls (20,000), checked before anything else that
+walks them. A typical session is 25–250 KB; the longest the prototype saw had
+169 calls over 17 turns, far inside the limits.
 
 ## Identity
 
@@ -81,10 +83,19 @@ caller on a forwarded write.
 ## One item per session, and how the page finds it
 
 Each session is one data item named `agent-session-<harness>_<session id>`
-(`agentSessionDataName`). A harness slug cannot contain `_`, so two sessions
-never share a name even when one harness slug prefixes another, and the helper
-throws on a harness or id the record schema would refuse. Re-importing writes
-a new version of the same item.
+(`agentSessionDataName`). The data name is stored as a directory name, so:
+
+- A harness slug cannot contain `_`, so one harness slug that prefixes
+  another still gives a different name.
+- Harness slugs and session ids are lowercase only, so two names never meet
+  on a case-insensitive filesystem (macOS, Windows). The importer lowercases
+  the harness's session id; the UUIDs harnesses use today read the same either
+  way.
+- A harness is at most 32 characters and a session id at most 128, so a name
+  is at most 175 characters, under every filesystem's limit.
+
+The helper throws on a harness or id the record schema would refuse.
+Re-importing writes a new version of the same item.
 The extension's output spec sets two tags: `type: agent-session`, which
 replaces the writer's own `type: resource`, and `swampUserId`.
 

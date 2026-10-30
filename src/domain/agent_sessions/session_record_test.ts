@@ -245,11 +245,49 @@ Deno.test("agentSessionDataName: refuses a harness or session id the schema refu
       ["", "abc"],
       ["codex", "../etc"],
       ["codex", ""],
-      ["codex", "a".repeat(AGENT_SESSION_LIMITS.idLength + 1)],
+      ["codex", "a".repeat(AGENT_SESSION_LIMITS.sessionIdLength + 1)],
+      ["codex", "AbC"],
+      ["a".repeat(AGENT_SESSION_LIMITS.harnessLength + 1), "abc"],
     ]
   ) {
     assertThrows(() => agentSessionDataName(harness, sessionId));
   }
+});
+
+Deno.test("agentSessionDataName: the longest accepted name fits a directory name", () => {
+  const name = agentSessionDataName(
+    "a".repeat(AGENT_SESSION_LIMITS.harnessLength),
+    "b".repeat(AGENT_SESSION_LIMITS.sessionIdLength),
+  );
+  assert(name.length <= 200, `${name.length}`);
+});
+
+Deno.test("AgentSessionRecordV1Schema: refuses a mixed-case session id", () => {
+  const mixed = { ...sampleSession(), id: "AbC-123" };
+  assertEquals(AgentSessionRecordV1Schema.safeParse(mixed).success, false);
+});
+
+Deno.test("readAgentSessionRecord: refuses a session with more calls than the session limit", () => {
+  const session = sampleSession();
+  const call = firstCall(session);
+  const perTurn = AGENT_SESSION_LIMITS.callsPerTurn;
+  const turnCount = Math.ceil(
+    (AGENT_SESSION_LIMITS.callsPerSession + 1) / perTurn,
+  );
+  let next = 0;
+  session.turns = Array.from({ length: turnCount }, (_, t) => ({
+    ...turns(session)[0],
+    n: t + 1,
+    calls: Array.from({ length: perTurn }, () => ({
+      ...call,
+      id: `call-${next++}`,
+      swampSpans: undefined,
+    })),
+  }));
+  session.findings = [];
+  const reading = readAgentSessionRecord(session);
+  assert(reading.kind === "skipped" && reading.reason === "invalid");
+  assertStringIncludes(reading.note, "too_big at turns");
 });
 
 Deno.test("AGENT_SESSION_QUERY_PREDICATE: lists by the type tag", () => {

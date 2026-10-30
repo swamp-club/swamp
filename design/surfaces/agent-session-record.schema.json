@@ -8,8 +8,8 @@
     },
     "id": {
       "type": "string",
-      "maxLength": 200,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9_-]*$"
     },
     "repo": {
       "type": "string",
@@ -18,7 +18,7 @@
     },
     "harness": {
       "type": "string",
-      "maxLength": 64,
+      "maxLength": 32,
       "pattern": "^[a-z0-9][a-z0-9-]*$"
     },
     "harnessVersion": {
@@ -48,8 +48,8 @@
     },
     "parentSessionId": {
       "type": "string",
-      "maxLength": 200,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9_-]*$"
     },
     "importerVersion": {
       "type": "string",

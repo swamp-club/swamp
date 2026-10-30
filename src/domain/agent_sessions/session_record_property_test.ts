@@ -104,7 +104,7 @@ const arbSession = fc.array(fc.integer({ min: 0, max: 4 }), {
   const callIds = Array.from({ length: next }, (_, i) => `call-${i}`);
   return fc.record({
     schemaVersion: fc.constant(1),
-    id: fc.stringMatching(/^[A-Za-z0-9][A-Za-z0-9_-]{0,30}$/),
+    id: fc.stringMatching(/^[a-z0-9][a-z0-9_-]{0,30}$/),
     repo: arbName,
     harness: fc.stringMatching(/^[a-z0-9][a-z0-9-]{0,20}$/),
     harnessVersion: fc.option(arbName, { nil: undefined }),

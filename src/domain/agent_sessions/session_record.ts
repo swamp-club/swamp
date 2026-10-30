@@ -49,7 +49,10 @@ export const AGENT_SESSION_QUERY_PREDICATE =
 
 /** Size bounds; a longest real session (169 calls, 17 turns) fits well inside. */
 export const AGENT_SESSION_LIMITS = {
-  harnessLength: 64,
+  // Harness and session id together form a data name, stored as a directory
+  // name: 14 + 32 + 1 + 128 = 175 characters at most, under every OS limit.
+  harnessLength: 32,
+  sessionIdLength: 128,
   idLength: 200,
   nameLength: 200,
   textLength: 1000,
@@ -58,6 +61,7 @@ export const AGENT_SESSION_LIMITS = {
   findingDetailLength: 2000,
   turns: 5000,
   callsPerTurn: 2000,
+  callsPerSession: 20000,
   spanRootsPerCall: 20,
   spansPerRoot: 500,
   findings: 500,
@@ -66,12 +70,13 @@ export const AGENT_SESSION_LIMITS = {
 
 const L = AGENT_SESSION_LIMITS;
 
-// A harness slug has no `_`, so the `_` in a data name always ends it.
+// A harness slug has no `_`, so the `_` in a data name always ends it. Both
+// are lowercase so two names never meet on a case-insensitive filesystem.
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
-const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+const SESSION_ID = /^[a-z0-9][a-z0-9_-]*$/;
 
 const HarnessSchema = z.string().max(L.harnessLength).regex(SLUG);
-const SessionIdSchema = z.string().max(L.idLength).regex(SESSION_ID);
+const SessionIdSchema = z.string().max(L.sessionIdLength).regex(SESSION_ID);
 const MillisSchema = z.number().nonnegative();
 const TokenCountSchema = z.number().int().nonnegative();
 
@@ -176,6 +181,20 @@ export const AgentSessionRecordV1Schema = z.strictObject({
   turns: z.array(TurnSchema).max(L.turns),
   findings: z.array(FindingSchema).max(L.findings),
 }).superRefine((record, ctx) => {
+  let calls = 0;
+  for (const turn of record.turns) calls += turn.calls.length;
+  if (calls > L.callsPerSession) {
+    // Refused before the id scan, so an oversized record costs no more.
+    ctx.addIssue({
+      code: "too_big",
+      origin: "array",
+      maximum: L.callsPerSession,
+      inclusive: true,
+      message: "too many calls in one session",
+      path: ["turns"],
+    });
+    return;
+  }
   const ids = new Set<string>();
   record.turns.forEach((turn, t) =>
     turn.calls.forEach((call, c) => {
@@ -234,7 +253,11 @@ export function readAgentSessionRecord(content: unknown): AgentSessionReading {
   if (
     typeof version !== "number" || !Number.isInteger(version) || version < 1
   ) {
-    return skipped("invalid", undefined, "no schemaVersion");
+    return skipped(
+      "invalid",
+      undefined,
+      "no integer schemaVersion of 1 or more",
+    );
   }
   const newest = AGENT_SESSION_SCHEMA_VERSION;
   if (version > newest) {
