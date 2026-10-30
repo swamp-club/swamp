@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { SummaryService } from "./summary_service.ts";
 import { ModelOutput } from "../models/model_output.ts";
+import { outputSummaryOf } from "../models/output_summary.ts";
 import { ModelType } from "../models/model_type.ts";
 import { WorkflowRun } from "../workflows/workflow_run.ts";
 import { createDefinitionId } from "../definitions/definition.ts";
@@ -127,8 +128,13 @@ function createMockOutputRepo(
 ): OutputRepository {
   return {
     findAllGlobal: () => Promise.resolve(items),
+    findAllGlobalSummaries: () => Promise.resolve(items),
     findAllGlobalSince: (cutoff: Date) =>
-      Promise.resolve(items.filter(({ output }) => output.startedAt >= cutoff)),
+      Promise.resolve(
+        items
+          .filter(({ output }) => output.startedAt >= cutoff)
+          .map((item) => ({ ...item, output: outputSummaryOf(item.output) })),
+      ),
     findGlobalNewestFirst: () => Promise.reject(new Error("not used here")),
     findHistoryNewestFirst: () => Promise.reject(new Error("not used here")),
     findById: () => Promise.resolve(null),

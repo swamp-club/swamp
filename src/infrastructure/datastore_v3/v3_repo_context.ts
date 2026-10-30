@@ -143,6 +143,7 @@ import {
 } from "../../domain/datastore_v3/writer_lease.ts";
 import { isNetworkFailure } from "./network_failure.ts";
 import { ReadModelCatchUpUnreachableError } from "../../domain/datastore_v3/read_model.ts";
+import { removeStaleOutputSummaries } from "../persistence/output_summary_index.ts";
 import { removeStaleRunIndexes } from "../persistence/workflow_run_index.ts";
 import { storageNamespaceOf } from "../../domain/datastore_v3/chunk_store.ts";
 import {
@@ -697,26 +698,38 @@ async function ensureV3CopyCurrentNow(
       // take it replays the commits instead, leaving the dropped commits'
       // files until a rebuild.
       const rebuilt = handle ?? v3DatastoreFor(repoDir, config);
-      const release = mode === "write"
-        ? undefined
-        : await tryAcquireV3WriterLock(config.path, { fenceStore: rebuilt });
-      if (mode === "write" || release !== undefined) {
-        try {
-          await rebuilt.recoverInterruptedWriter(0);
-        } catch (error) {
-          if (release !== undefined) await releaseAfterFailure(release, error);
-          throw error;
+      // Before as well as after the replay: this branch does not run again
+      // once the copy state names the restore, so a process killed during
+      // the replay must already have cleared them.
+      await removeStaleOutputSummaries(repoDir);
+      try {
+        const release = mode === "write"
+          ? undefined
+          : await tryAcquireV3WriterLock(config.path, { fenceStore: rebuilt });
+        if (mode === "write" || release !== undefined) {
+          try {
+            await rebuilt.recoverInterruptedWriter(0);
+          } catch (error) {
+            if (release !== undefined) {
+              await releaseAfterFailure(release, error);
+            }
+            throw error;
+          }
+          await release?.();
+        } else {
+          // The read model replays every commit from the start. Files only
+          // dropped commits wrote may stay: the reset keeps the files it
+          // shows present as removal candidates (swamp-club#3617), but only
+          // a compacted-base load removes them, so they go only when the
+          // restored store has compacted history, and then possibly by a
+          // reader without the writer lease.
+          rebuilt.catalogStore.invalidate();
+          await rebuilt.catchUp();
         }
-        await release?.();
-      } else {
-        // The read model replays every commit from the start. Files only
-        // dropped commits wrote may stay: the reset keeps the files it
-        // shows present as removal candidates (swamp-club#3617), but only
-        // a compacted-base load removes them, so they go only when the
-        // restored store has compacted history, and then possibly by a
-        // reader without the writer lease.
-        rebuilt.catalogStore.invalidate();
-        await rebuilt.catchUp();
+      } finally {
+        // Either way a replay may have put back the records of dropped
+        // commits' parents, beneath rows of what they dropped.
+        await removeStaleOutputSummaries(repoDir);
       }
     } else if (handle !== undefined) {
       // An open handle's read model catches up with the restored commits.
@@ -1858,6 +1871,7 @@ async function recoverDroppedWork(
       // A recovery that ran, finished or not, may have rewritten run records.
       if (outcome === undefined || outcome === "recovered") {
         await removeStaleRunIndexes(checkout);
+        await removeStaleOutputSummaries(checkout);
       }
     }
     if (outcome === "busy") {

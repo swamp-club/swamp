@@ -60,6 +60,7 @@
 
 import { join } from "@std/path";
 import { getSwampLogger } from "../logging/logger.ts";
+import { removeStaleOutputSummaries } from "../persistence/output_summary_index.ts";
 import { removeStaleRunIndexes } from "../persistence/workflow_run_index.ts";
 import {
   type DurableWriteBatchOptions,
@@ -410,6 +411,7 @@ async function recover(
   } finally {
     // The replay may have rewritten run records before any failure.
     await removeStaleRunIndexes(repoDir);
+    await removeStaleOutputSummaries(repoDir);
   }
   // The writer is named in the template's text, where a string
   // interpolated as a value would be quoted (swamp-club#3893).

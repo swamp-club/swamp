@@ -253,6 +253,14 @@ Deno.test("assertV3CheckoutJoinable: files a v3 checkout keeps as its own are no
     await plant(repoDir, "config", "pulled-extensions", "@acme", "mod.ts");
     await plant(repoDir, "data", ".lock");
     await plant(repoDir, "outputs", "m1", "run.log");
+    await plant(
+      repoDir,
+      "_output_summaries",
+      "v1",
+      "abc",
+      "t",
+      "2026-01-01.ndjson",
+    );
     await assertV3CheckoutJoinable(repoDir);
     // A config record beside them still counts.
     await plant(repoDir, "config", "vaults", "local_encryption", "v1.yaml");

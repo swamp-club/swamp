@@ -35,6 +35,10 @@
  * Files stat'ed and read per iteration are printed when the run ends: they
  * should stay at zero stats and the in-window count of reads (of the model's
  * outputs, for a model's history) whatever the repository size.
+ *
+ * Those read the records, with the output summaries disabled. The "whole
+ * window" group (swamp-club#4145) has every output inside the window, read
+ * from the records and then from warm summaries, which should read none.
  */
 
 import { dirname, join } from "@std/path";
@@ -47,6 +51,8 @@ import {
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ModelOutput } from "../../domain/models/model_output.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
+import { OUTPUT_SUMMARIES_DIR } from "./output_summary_index.ts";
+import { swampPath } from "./paths.ts";
 import { createRepositoryContext } from "./repository_factory.ts";
 import type { YamlOutputRepository } from "./yaml_output_repository.ts";
 import "../../domain/models/models.ts";
@@ -66,20 +72,28 @@ const root = await Deno.makeTempDir({ prefix: "swamp_history_scan_bench_" });
 /**
  * A repository of `size` outputs of `models` models over the first
  * `typeCount` types, their mtimes at completion or now, with the first model
- * and its type.
+ * and its type. `inWindow` is the share of them started inside the window.
+ * With `summaries` the repository keeps output summaries.
  */
 async function seed(
   size: number,
   fresh: boolean,
   models = 200,
   typeCount = types.length,
+  inWindow = IN_WINDOW,
+  summaries = false,
 ): Promise<
   { repo: YamlOutputRepository; definitionId: DefinitionId; type: ModelType }
 > {
   const repoDir = join(
     root,
-    `${size}-${models}-${fresh ? "fresh" : "settled"}`,
+    `${size}-${models}-${fresh ? "fresh" : "settled"}-${inWindow}-${summaries}`,
   );
+  if (!summaries) {
+    // A file where their directory would go keeps them from being used.
+    await ensureDir(swampPath(repoDir));
+    await Deno.writeTextFile(swampPath(repoDir, OUTPUT_SUMMARIES_DIR), "");
+  }
   const repo = createRepositoryContext({ repoDir, enableIndexing: false })
     .outputRepo;
   const definitions = Array.from(
@@ -90,7 +104,7 @@ async function seed(
   for (let i = 0; i < size; i++) {
     const startedAt = new Date(
       now -
-        (i < size * IN_WINDOW ? Math.random() * 6 : 8 + Math.random() * 300) *
+        (i < size * inWindow ? Math.random() * 6 : 8 + Math.random() * 300) *
           DAY_MS,
     );
     const method = `m${(i >> 5) % 5}`;
@@ -179,6 +193,38 @@ async function scan(
 }
 
 for (const size of SIZES) {
+  const wholeGroup = `${size} outputs, whole window`;
+  const records = await seed(size, false, 200, types.length, 1);
+  const warm = await seed(size, false, 200, types.length, 1, true);
+  // The first read fills the summaries of what it reads.
+  await warm.repo.findAllGlobalSince(cutoff);
+  for (
+    const [name, { repo }, baseline, n] of [
+      ["records", records, true, 3],
+      ["warm summaries", warm, false, 10],
+    ] as const
+  ) {
+    const label = `${wholeGroup}: ${name}`;
+    Deno.bench({
+      name: label,
+      group: wholeGroup,
+      baseline,
+      n,
+      warmup: 1,
+      async fn() {
+        await scan(label, () => repo.findAllGlobalSince(cutoff), false);
+      },
+    });
+  }
+  const warmHistory = await seed(
+    size,
+    false,
+    200,
+    types.length,
+    IN_WINDOW,
+    true,
+  );
+  await warmHistory.repo.findAllGlobalSince(cutoff);
   const settled = await seed(size, false);
   const fresh = await seed(size, true);
   const busy = await seed(size, false, 2, 1);
@@ -207,6 +253,7 @@ for (const size of SIZES) {
     const [name, { repo, definitionId, type }, contended, n] of [
       ["spread", settled, false, 10],
       ["spread, contended loop", settled, true, 3],
+      ["spread, warm summaries", warmHistory, false, 10],
       ["busy", busy, false, 10],
       ["busy, contended loop", busy, true, 3],
     ] as const

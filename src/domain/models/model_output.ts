@@ -47,6 +47,15 @@ export const ExecutionStatuses = [
 export type ExecutionStatus = typeof ExecutionStatuses[number];
 
 /**
+ * Whether a run with `status` has finished. A finished record never changes
+ * again: `ModelOutput` moves only out of `pending` and `running`.
+ */
+export function isSettledStatus(status: ExecutionStatus): boolean {
+  return status === "succeeded" || status === "failed" ||
+    status === "cancelled";
+}
+
+/**
  * What triggered the execution.
  */
 export const TriggerTypes = ["manual", "workflow", "model"] as const;
@@ -527,8 +536,7 @@ export class ModelOutput {
    * Checks if the execution is in a terminal state.
    */
   get isComplete(): boolean {
-    return this._status === "succeeded" || this._status === "failed" ||
-      this._status === "cancelled";
+    return isSettledStatus(this._status);
   }
 
   /**

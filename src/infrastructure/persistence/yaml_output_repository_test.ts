@@ -23,6 +23,7 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
+import { disableOutputSummaries } from "./path_test_helpers.ts";
 import { UNREADABLE_CONTENT_CODE } from "../../domain/datastore/unreadable_content.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
@@ -75,9 +76,15 @@ import "../../domain/models/models.ts";
 
 const registeredType = ModelType.create("command/shell");
 
+/**
+ * These tests are about reading output records, so `dir` holds no output
+ * summaries; those are covered by integration/output_summary_index_test.ts.
+ * A test that puts repositories in subdirectories of `dir` says so itself.
+ */
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
   try {
+    await disableOutputSummaries(dir);
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
@@ -3473,7 +3480,7 @@ async function assertScanPermitsFree(reads: HeldReads): Promise<void> {
     ) {
       reads.hold();
       const scanning = scan();
-      let found: ModelOutput[];
+      let found: readonly unknown[];
       try {
         await waitFor(
           () => reads.inFlight === expected,
@@ -3495,6 +3502,9 @@ Deno.test(
       const holder = new YamlOutputRepository(join(dir, "holder"));
       const aborted = new YamlOutputRepository(join(dir, "aborted"));
       const behind = new YamlOutputRepository(join(dir, "behind"));
+      for (const name of ["holder", "aborted", "behind"]) {
+        await disableOutputSummaries(join(dir, name));
+      }
       const holderId = createDefinitionId(crypto.randomUUID());
       const abortedId = createDefinitionId(crypto.randomUUID());
       const behindId = createDefinitionId(crypto.randomUUID());
@@ -3551,6 +3561,9 @@ Deno.test(
     await withTempDir(async (dir) => {
       const holder = new YamlOutputRepository(join(dir, "holder"));
       const scanned = new YamlOutputRepository(join(dir, "scanned"));
+      for (const name of ["holder", "scanned"]) {
+        await disableOutputSummaries(join(dir, name));
+      }
       const holderId = createDefinitionId(crypto.randomUUID());
       await saveHistory(holder, holderId, 6);
       await saveHistory(
@@ -4512,7 +4525,7 @@ Deno.test(
 
 /** Every output `read` returns, a batch of `count` at a time. */
 async function readAllNewestFirst(
-  read: { next(count: number): Promise<{ output: ModelOutput }[]> },
+  read: { next(count: number): Promise<{ output: { id: string } }[]> },
   count = 2,
 ): Promise<string[]> {
   const ids: string[] = [];

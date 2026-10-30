@@ -61,6 +61,7 @@ import type {
   OutputKey,
   OutputRepository,
   OutputsNewestFirst,
+  OutputSummaryOptions,
   SelectReadableOutputs,
 } from "../../domain/models/repositories.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
@@ -77,12 +78,23 @@ import {
 import { ModelType } from "../../domain/models/model_type.ts";
 import {
   createModelOutputId,
+  isSettledStatus,
   ModelOutput,
   type ModelOutputData,
   type ModelOutputId,
 } from "../../domain/models/model_output.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
+import {
+  type OutputSummary,
+  outputSummaryOf,
+} from "../../domain/models/output_summary.ts";
 import { lifetimeToMs } from "../../domain/data/data_metadata.ts";
+import {
+  outputFileStamp as fileStamp,
+  OutputSummaryIndex,
+  outputSummaryKey,
+  shardDayOf,
+} from "./output_summary_index.ts";
 
 const logger = getLogger(["output-repo"]);
 
@@ -110,10 +122,24 @@ function describeRecordError(error: unknown): string {
  */
 const ORPHAN_LOG_MIN_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** `startedAt` as an output file name spells it. */
-function fileStamp(startedAt: Date): string {
-  return startedAt.toISOString().replace(/[:.]/g, "-");
-}
+/**
+ * How many records a summary read reads before adding their rows, so a scan
+ * cancelled on a cold index keeps what it read for the next one.
+ */
+const SUMMARY_BACKFILL_BATCH = 1024;
+
+/** How many days back the shards still taking new rows may reach. */
+const SUMMARY_QUIET_DAYS = 2;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How many shard bytes a read may parse per file it wants from that shard before
+ * it reads the records instead, so one model's few runs do not parse a whole day
+ * of its type. A record costs about as much as 2.7 KiB of rows on a quiet loop.
+ * This allows several times that, because each awaited read also waits a turn of
+ * a busy loop, and a read in batches reuses the shard it opened.
+ */
+const SUMMARY_SHARD_BYTES_PER_FILE = 16 * 1024;
 
 /** An output file name `<definitionId>-<stamp>.yaml`, as getPath writes it. */
 const OUTPUT_FILE_NAME =
@@ -132,6 +158,16 @@ function nameStampOf(instant: Date | undefined): string | undefined {
 
 /** An output with the type and method it was found under. */
 type GlobalOutput = { output: ModelOutput; type: ModelType; method: string };
+
+/** A summary with the type and method it was found under. */
+type GlobalSummary = { output: OutputSummary; type: ModelType; method: string };
+
+/** The rows of the shards a scan has opened, by type and day. */
+interface OpenShards {
+  /** The summaries' generation they were opened in: a clear retires them. */
+  generation: string | undefined;
+  readonly rows: Map<string, Promise<Map<string, OutputSummary>>>;
+}
 
 /**
  * An output file a global scan listed, with the method directory it is in
@@ -225,6 +261,15 @@ function widenHistoryWindow(a: HistoryWindow, b: HistoryWindow): HistoryWindow {
   };
 }
 
+/** Adds the files a caller joining reads to those a scan has pending. */
+function joinPendingReads(
+  pending: Map<string, ListedOutput>,
+  joining: Map<string, ListedOutput>,
+): Map<string, ListedOutput> {
+  for (const [path, file] of joining) pending.set(path, file);
+  return pending;
+}
+
 function earlier(a: Date, b: Date): Date {
   return a.getTime() <= b.getTime() ? a : b;
 }
@@ -269,7 +314,7 @@ export class YamlOutputRepository implements OutputRepository {
    */
   private readonly historyScans = new SharedScans<
     HistoryWindow,
-    ModelOutput[]
+    OutputSummary[]
   >(widenHistoryWindow);
   private readonly listingScans = new SharedScans<
     Date | undefined,
@@ -283,10 +328,15 @@ export class YamlOutputRepository implements OutputRepository {
   private readonly readScans = new SharedScans<
     Map<string, ListedOutput>,
     Map<string, GlobalOutput>
-  >((pending, joining) => {
-    for (const [path, file] of joining) pending.set(path, file);
-    return pending;
-  });
+  >(joinPendingReads);
+  /** The same, for the scans that answer from the summaries where they can. */
+  private readonly summaryScans = new SharedScans<
+    Map<string, ListedOutput>,
+    Map<string, GlobalSummary>
+  >(joinPendingReads);
+
+  /** Finished outputs' summaries, so a search need not open their records. */
+  private readonly summaries: OutputSummaryIndex;
 
   /**
    * `unreadableContent` tells an output record a v3 read model could not
@@ -302,6 +352,7 @@ export class YamlOutputRepository implements OutputRepository {
   ) {
     this.localOutputsDir = swampPath(repoDir, SWAMP_SUBDIRS.outputs);
     this.baseDir = baseDir ?? this.localOutputsDir;
+    this.summaries = new OutputSummaryIndex(repoDir, this.baseDir);
   }
 
   /**
@@ -449,7 +500,7 @@ export class YamlOutputRepository implements OutputRepository {
     type: ModelType,
     definitionId: DefinitionId,
   ): Promise<ModelOutput[]> {
-    const all = await this.readAll(type, "lookup");
+    const all = await this.readAll(type);
     await warnUnreadableLeftOut(
       this.unreadableContent,
       this.getTypeDir(type),
@@ -468,7 +519,7 @@ export class YamlOutputRepository implements OutputRepository {
     type: ModelType,
     definitionId: DefinitionId,
   ): Promise<ModelOutput | null> {
-    const outputs = (await this.readAll(type, "lookup")).filter((output) =>
+    const outputs = (await this.readAll(type)).filter((output) =>
       output.definitionId === definitionId
     );
     // Sort by startedAt descending and take the first one
@@ -497,7 +548,7 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   async findAll(type: ModelType): Promise<ModelOutput[]> {
-    const outputs = await this.readAll(type, "lookup");
+    const outputs = await this.readAll(type);
     await warnUnreadableLeftOut(this.unreadableContent, this.getTypeDir(type));
     return outputs;
   }
@@ -537,7 +588,7 @@ export class YamlOutputRepository implements OutputRepository {
     definitionId: DefinitionId,
     window?: HistoryWindow,
     signal?: AbortSignal,
-  ): Promise<ModelOutput[]> {
+  ): Promise<OutputSummary[]> {
     const { value: outputs, joined } = await this.historyScans.run(
       JSON.stringify([type.normalized, definitionId]),
       window ?? {},
@@ -567,14 +618,14 @@ export class YamlOutputRepository implements OutputRepository {
    * skipping unread every file whose name is another definition's or is
    * stamped outside `window`.
    */
-  private readHistory(
+  private async readHistory(
     type: ModelType,
     definitionId: DefinitionId,
     window: HistoryWindow,
     signal: AbortSignal,
-  ): Promise<ModelOutput[]> {
+  ): Promise<OutputSummary[]> {
     const { stampIn } = historyWindowOf(window);
-    return this.readAll(
+    const listed = await this.listType(
       type,
       "search",
       (name) => {
@@ -582,28 +633,37 @@ export class YamlOutputRepository implements OutputRepository {
         if (match === null) return true;
         return match[1] === definitionId && stampIn(match[2]);
       },
-      window.since,
       signal,
     );
+    const files = window.since === undefined
+      ? listed
+      : await this.leaveOutOldUnnamed(listed, window.since.getTime(), signal);
+    const read = await this.readSummaries(
+      new Map(files.map((file) => [file.path, file])),
+      {},
+      signal,
+    );
+    const outputs: OutputSummary[] = [];
+    for (const file of files) {
+      const found = read.get(file.path);
+      if (found !== undefined) outputs.push(found.output);
+    }
+    return outputs;
   }
 
   /**
-   * {@link findAll} without the unreadable-record warning, its listings and
-   * reads drawing on `kind`'s share of the scan permits. With `readsName`,
-   * a file whose name it refuses is skipped without being read. With
-   * `unnamedSince`, a file whose name is not in {@link getPath}'s form and
-   * whose mtime is before it is skipped after a stat. Once `signal` aborts,
-   * the scan starts no further listing or read and rejects with its reason.
+   * The output files of one type, in walk order, its listings drawing on
+   * `kind`'s share of the scan permits. With `readsName`, a file whose name it
+   * refuses is left out. Once `signal` aborts, no further listing starts and
+   * the listing rejects with its reason.
    */
-  private async readAll(
+  private async listType(
     type: ModelType,
     kind: ScanKind,
     readsName?: (name: string) => boolean,
-    unnamedSince?: Date,
     signal?: AbortSignal,
-  ): Promise<ModelOutput[]> {
+  ): Promise<ListedOutput[]> {
     const typeDir = this.getTypeDir(type);
-    // Every record of the type is read, whatever the caller then keeps.
     const tally = currentDiagnosticTally();
 
     let methodEntries: Deno.DirEntry[];
@@ -619,15 +679,14 @@ export class YamlOutputRepository implements OutputRepository {
       throw error;
     }
 
-    // Method directories are listed, and files read, SCAN_CONCURRENCY at a
-    // time, as in findAllGlobalSince; each stage keeps its items in walk
-    // order, so the result is in the order a sequential walk returns it.
-    const files = (await mapBounded(
-      methodEntries
-        .filter((entry) => entry.isDirectory)
-        .map((entry) => join(typeDir, entry.name)),
+    // Method directories are listed SCAN_CONCURRENCY at a time, as in
+    // findAllGlobalSince; the result is in the order a sequential walk
+    // returns it.
+    return (await mapBounded(
+      methodEntries.filter((entry) => entry.isDirectory),
       SCAN_CONCURRENCY,
-      async (methodDir) => {
+      async ({ name: method }) => {
+        const methodDir = join(typeDir, method);
         // Per-method-directory try/catch closes the directory-level
         // TOCTOU window: a concurrent bulk delete can remove the
         // method directory between readDir(typeDir) and
@@ -645,49 +704,49 @@ export class YamlOutputRepository implements OutputRepository {
           if (error instanceof Deno.errors.NotFound) return [];
           throw error;
         }
-        const found: { path: string; named: boolean }[] = [];
+        const found: ListedOutput[] = [];
         for (const entry of entries) {
           if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
           if (readsName && !readsName(entry.name)) {
             tally.add("skipped_by_name");
             continue;
           }
+          const match = OUTPUT_FILE_NAME.exec(entry.name);
           found.push({
+            modelType: type,
+            method,
             path: join(methodDir, entry.name),
-            named: OUTPUT_FILE_NAME.test(entry.name),
+            definitionId: match?.[1],
+            stamp: match?.[2],
           });
         }
         return found;
       },
       signal,
     )).flat();
+  }
+
+  /**
+   * {@link findAll} without the unreadable-record warning, its listings and
+   * reads drawing on the lookups' share of the scan permits.
+   */
+  private async readAll(type: ModelType): Promise<ModelOutput[]> {
+    // Every record of the type is read, whatever the caller then keeps.
+    const tally = currentDiagnosticTally();
+    const files = await this.listType(type, "lookup");
 
     const outputs = await mapBounded(
       files,
       SCAN_CONCURRENCY,
-      async ({ path, named }) => {
+      async ({ path }) => {
         // Per-file try/catch closes the TOCTOU window: a concurrent
         // delete (e.g. GC, output cleanup) can remove the file
         // between readDir and readTextFile. NotFound on a single
         // file means "skip it" — never "abandon the rest of the scan."
         try {
-          if (unnamedSince !== undefined && !named) {
-            const stat = await withScanPermit(
-              kind,
-              () => tally.measure("stat", () => Deno.stat(path)),
-              signal,
-            );
-            tally.add("stats");
-            const mtimeMs = stat.mtime?.getTime();
-            if (mtimeMs !== undefined && mtimeMs < unnamedSince.getTime()) {
-              tally.add("skipped_by_mtime");
-              return undefined;
-            }
-          }
           const content = await withScanPermit(
-            kind,
+            "lookup",
             () => tally.measure("read", () => Deno.readTextFile(path)),
-            signal,
           );
           tally.add("files_read");
           if (tally.recording) {
@@ -703,13 +762,10 @@ export class YamlOutputRepository implements OutputRepository {
           }
           return ModelOutput.fromData(data);
         } catch (error) {
-          // A cancelled scan is not an unreadable record: it ends the scan.
-          signal?.throwIfAborted();
           this.skipUnreadableRecord(path, error);
           return undefined;
         }
       },
-      signal,
     );
     return outputs.filter((output) => output !== undefined);
   }
@@ -729,10 +785,17 @@ export class YamlOutputRepository implements OutputRepository {
     signal?: AbortSignal,
     selectReadable?: SelectReadableOutputs,
   ): Promise<GlobalOutput[]> {
-    const found = await this.findGlobal(
+    const listed = await this.listReadable(
       "all",
       undefined,
       selectReadable,
+      signal,
+    );
+    const found = await this.readChosen(
+      this.readScans,
+      "all",
+      listed,
+      (files, scanSignal) => this.readListed(files, scanSignal),
       signal,
     );
     await warnUnreadableLeftOut(this.unreadableContent, this.baseDir);
@@ -740,8 +803,36 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   /**
-   * Finds all outputs whose `startedAt` is at or after the cutoff, skipping
-   * old records without reading them (swamp-club#4056). A file's name carries
+   * The summary of every output of every registered type: what
+   * {@link findAllGlobal} finds, opening only the records the summaries cannot
+   * answer for (see {@link readSummaries}).
+   */
+  async findAllGlobalSummaries(
+    signal?: AbortSignal,
+    selectReadable?: SelectReadableOutputs,
+  ): Promise<GlobalSummary[]> {
+    const listed = await this.listReadable(
+      "all",
+      undefined,
+      selectReadable,
+      signal,
+    );
+    const found = await this.readChosen(
+      this.summaryScans,
+      "all",
+      listed,
+      (files, scanSignal) => this.readSummaries(files, {}, scanSignal),
+      signal,
+    );
+    await warnUnreadableLeftOut(this.unreadableContent, this.baseDir);
+    return found;
+  }
+
+  /**
+   * Finds the summaries of all outputs whose `startedAt` is at or after the
+   * cutoff, skipping old records without reading them (swamp-club#4056), and
+   * opening only the listed records the summaries cannot answer for
+   * (see {@link readSummaries}). A file's name carries
    * the `startedAt` its record was saved with (see {@link getPath}), and
    * `startedAt` never changes, so a name stamped before the cutoff is skipped
    * without even a stat; that holds however recently the file was written,
@@ -783,11 +874,19 @@ export class YamlOutputRepository implements OutputRepository {
     cutoff: Date,
     signal?: AbortSignal,
     selectReadable?: SelectReadableOutputs,
-  ): Promise<GlobalOutput[]> {
-    const found = await this.findGlobal(
+    options: OutputSummaryOptions = {},
+  ): Promise<GlobalSummary[]> {
+    const listed = await this.listReadable(
       "since",
       cutoff,
       selectReadable,
+      signal,
+    );
+    const found = await this.readChosen(
+      this.summaryScans,
+      options.errorMessages ? "since-with-errors" : "since",
+      listed,
+      (files, scanSignal) => this.readSummaries(files, options, scanSignal),
       signal,
     );
     const cutoffMs = cutoff.getTime();
@@ -905,7 +1004,7 @@ export class YamlOutputRepository implements OutputRepository {
   private newestFirst(
     listing: SharedScanOutcome<ListedOutput[]>,
     listed: (file: ListedOutput) => boolean,
-    accepted: (output: ModelOutput) => boolean,
+    accepted: (output: OutputSummary) => boolean,
     signal: AbortSignal | undefined,
     selectReadable: SelectReadableOutputs | undefined,
   ): OutputsNewestFirst {
@@ -937,11 +1036,13 @@ export class YamlOutputRepository implements OutputRepository {
     let examined = 0;
     let chosen: typeof ordered = [];
     let chosenAt = 0;
+    // Kept for this read: its batches would otherwise parse one shard each.
+    const shards: OpenShards = { generation: undefined, rows: new Map() };
     const readFiles = (
       pending: ReadonlyMap<string, ListedOutput>,
       scanSignal: AbortSignal,
-    ) => this.readListed(pending, scanSignal);
-    const readScans = this.readScans;
+    ) => this.readSummaries(pending, {}, scanSignal, shards);
+    const summaryScans = this.summaryScans;
     return {
       get unread() {
         return ordered.length - examined + chosen.length - chosenAt;
@@ -973,7 +1074,7 @@ export class YamlOutputRepository implements OutputRepository {
             reportJoined(listing.joined);
             return [];
           }
-          const reads = await readScans.run(
+          const reads = await summaryScans.run(
             "newest",
             new Map(files.map((file) => [file.path, file])),
             readFiles,
@@ -993,41 +1094,55 @@ export class YamlOutputRepository implements OutputRepository {
     };
   }
 
-  /**
-   * The shared listing, the caller's own choice of files from it, then the
-   * shared reads of them: the outputs of the files chosen, in walk order.
-   */
-  private async findGlobal(
+  /** The shared listing, and the caller's own choice of files from it. */
+  private async listReadable(
     key: "all" | "since",
     cutoff: Date | undefined,
     selectReadable: SelectReadableOutputs | undefined,
     signal: AbortSignal | undefined,
-  ): Promise<GlobalOutput[]> {
+  ): Promise<{ chosen: ListedOutput[]; joined: boolean }> {
     const listing = await this.listingScans.run(
       key,
       cutoff,
       (scanCutoff, scanSignal) => this.listAllGlobal(scanCutoff, scanSignal),
       signal,
     );
-    const chosen = await chooseReadable(listing.value, selectReadable);
+    return {
+      chosen: await chooseReadable(listing.value, selectReadable),
+      joined: listing.joined,
+    };
+  }
+
+  /** The shared reads of the files `listed` chose, in walk order. */
+  private async readChosen<T>(
+    scans: SharedScans<Map<string, ListedOutput>, Map<string, T>>,
+    key: string,
+    listed: { chosen: ListedOutput[]; joined: boolean },
+    read: (
+      files: Map<string, ListedOutput>,
+      signal: AbortSignal,
+    ) => Promise<Map<string, T>>,
+    signal: AbortSignal | undefined,
+  ): Promise<T[]> {
+    const { chosen } = listed;
     // A caller with nothing to read waits behind no one's reads.
     if (chosen.length === 0) {
       signal?.throwIfAborted();
-      if (listing.joined) currentDiagnosticTally().add("scans_joined");
+      if (listed.joined) currentDiagnosticTally().add("scans_joined");
       return [];
     }
     // Reads share a flight only with the same kind of scan, so a full read
     // never holds up a `since` search's few reads.
-    const reads = await this.readScans.run(
+    const reads = await scans.run(
       key,
       new Map(chosen.map((file) => [file.path, file])),
-      (files, scanSignal) => this.readListed(files, scanSignal),
+      read,
       signal,
     );
-    if (listing.joined || reads.joined) {
+    if (listed.joined || reads.joined) {
       currentDiagnosticTally().add("scans_joined");
     }
-    const found: GlobalOutput[] = [];
+    const found: T[] = [];
     for (const file of chosen) {
       const output = reads.value.get(file.path);
       if (output !== undefined) found.push(output);
@@ -1145,9 +1260,22 @@ export class YamlOutputRepository implements OutputRepository {
       signal,
     )).flat();
     if (cutoffMs === undefined) return named;
+    return await this.leaveOutOldUnnamed(named, cutoffMs, signal);
+  }
 
-    const listed = await mapBounded(
-      named,
+  /**
+   * `listed` without each file whose name is not in {@link getPath}'s form and
+   * whose mtime is before `cutoffMs`: a record is saved at or after its
+   * `startedAt`, so it cannot have started on or after the cutoff.
+   */
+  private async leaveOutOldUnnamed(
+    listed: ListedOutput[],
+    cutoffMs: number,
+    signal: AbortSignal,
+  ): Promise<ListedOutput[]> {
+    const tally = currentDiagnosticTally();
+    const kept = await mapBounded(
+      listed,
       SCAN_CONCURRENCY,
       async (file) => {
         if (file.definitionId !== undefined) return file;
@@ -1175,11 +1303,156 @@ export class YamlOutputRepository implements OutputRepository {
       },
       signal,
     );
-    return listed.filter((file) => file !== undefined);
+    return kept.filter((file) => file !== undefined);
   }
 
   /**
-   * The reads {@link findGlobal} shares: each of `files` read and parsed,
+   * The summary of each of `files`, by path: its row in the summaries when
+   * there is one, otherwise read from its record, adding the row for the next
+   * read when its location says what the record says. A file whose name is not
+   * in {@link getPath}'s form has no row. A row is what a read of its finished
+   * record returned or a save wrote, so results are those of reading every file.
+   *
+   * With `errorMessages`, a run that did not succeed is read from its record,
+   * the only place its error message is kept.
+   *
+   * A shard much larger than what is wanted from it is left unopened and those
+   * files are read from their records. They add no row, since one may be there.
+   *
+   * `shards` keeps the rows opened, for a caller reading in several batches,
+   * until the summaries are cleared.
+   */
+  private async readSummaries(
+    files: ReadonlyMap<string, ListedOutput>,
+    options: OutputSummaryOptions,
+    signal: AbortSignal,
+    shards: OpenShards = { generation: undefined, rows: new Map() },
+  ): Promise<Map<string, GlobalSummary>> {
+    const tally = currentDiagnosticTally();
+    const current = await this.summaries.generation();
+    if (shards.generation !== current) {
+      shards.generation = current;
+      shards.rows.clear();
+    }
+    const wanted = new Map<
+      string,
+      { type: ModelType; day: string; files: number }
+    >();
+    for (const { modelType, stamp } of files.values()) {
+      if (stamp === undefined) continue;
+      const day = shardDayOf(stamp);
+      const key = JSON.stringify([modelType.normalized, day]);
+      const shard = wanted.get(key) ?? { type: modelType, day, files: 0 };
+      shard.files++;
+      wanted.set(key, shard);
+    }
+    const unopened = new Set<string>();
+    await mapBounded(
+      [...wanted].filter(([key]) => !shards.rows.has(key)),
+      SCAN_CONCURRENCY,
+      async ([key, { type, day, files: count }]) => {
+        const bytes = await this.summaries.shardBytes(type.normalized, day);
+        if (bytes > count * SUMMARY_SHARD_BYTES_PER_FILE) {
+          unopened.add(key);
+          tally.add("summary_shards_left_unopened");
+          return;
+        }
+        const opened = withScanPermit(
+          "search",
+          () =>
+            tally.measure(
+              "summary_read",
+              () => this.summaries.read(type.normalized, day),
+            ),
+          signal,
+        );
+        shards.rows.set(key, opened);
+        try {
+          await opened;
+          tally.add("summary_shards_read");
+        } catch (error) {
+          shards.rows.delete(key);
+          throw error;
+        }
+      },
+      signal,
+    );
+
+    const rows = new Map<string, Map<string, OutputSummary>>();
+    for (const key of wanted.keys()) {
+      const opened = shards.rows.get(key);
+      if (opened !== undefined) rows.set(key, await opened);
+    }
+
+    const found = new Map<string, GlobalSummary>();
+    const unanswered: Array<[string, ListedOutput, boolean]> = [];
+    for (const [path, file] of files) {
+      const { modelType, method, definitionId, stamp } = file;
+      const row = stamp === undefined || definitionId === undefined
+        ? undefined
+        : rows.get(JSON.stringify([modelType.normalized, shardDayOf(stamp)]))
+          ?.get(outputSummaryKey(method, definitionId, stamp));
+      if (
+        row !== undefined &&
+        (!options.errorMessages || row.status === "succeeded")
+      ) {
+        found.set(path, {
+          output: row,
+          type: modelType,
+          method: row.methodName,
+        });
+        tally.add("summary_rows_used");
+      } else {
+        const unopenedShard = stamp !== undefined && unopened.has(
+          JSON.stringify([modelType.normalized, shardDayOf(stamp)]),
+        );
+        unanswered.push([path, file, row !== undefined || unopenedShard]);
+      }
+    }
+
+    for (let i = 0; i < unanswered.length; i += SUMMARY_BACKFILL_BATCH) {
+      const batch = unanswered.slice(i, i + SUMMARY_BACKFILL_BATCH);
+      const generation = await this.summaries.generation();
+      const read = await this.readListed(
+        new Map(batch.map(([path, file]) => [path, file])),
+        signal,
+      );
+      const backfill = new Map<ModelType, OutputSummary[]>();
+      for (const [path, file, mayHaveRow] of batch) {
+        const record = read.get(path);
+        if (record === undefined) continue;
+        const summary = outputSummaryOf(record.output);
+        found.set(path, {
+          output: summary,
+          type: record.type,
+          method: record.method,
+        });
+        if (
+          !mayHaveRow && isSettledStatus(summary.status) &&
+          file.definitionId === summary.definitionId &&
+          file.method === summary.methodName &&
+          file.stamp === fileStamp(summary.startedAt)
+        ) {
+          const added = backfill.get(file.modelType) ?? [];
+          added.push(summary);
+          backfill.set(file.modelType, added);
+        }
+      }
+      // Summaries cleared since these records were read may be what they
+      // were cleared of: a recovery rewinds records, then clears.
+      if (await this.summaries.generation() !== generation) continue;
+      for (const [type, added] of backfill) {
+        tally.add(
+          "summary_rows_backfilled",
+          await this.summaries.append(type.normalized, added),
+        );
+      }
+    }
+    return found;
+  }
+
+  /**
+   * The reads of a global scan: each of `files` read and parsed,
    * by path. A record whose type, method or definition differs from what
    * its file's location says counts `key_mismatch`, so a layout that would
    * make a caller's choice of files wrong shows in its traces. One that
@@ -1274,6 +1547,9 @@ export class YamlOutputRepository implements OutputRepository {
         new TextEncoder().encode(content),
       ),
     ]);
+    if (method === output.methodName && isSettledStatus(output.status)) {
+      await this.summaries.append(type.normalized, [outputSummaryOf(output)]);
+    }
   }
 
   async delete(
@@ -1534,9 +1810,52 @@ export class YamlOutputRepository implements OutputRepository {
             dryRun,
           ),
       );
+      // Rows another deleter left are never returned, so they can wait for a
+      // pass that deletes something.
+      if (!dryRun && deletedYamls.size > 0) {
+        await observeDiagnosticPhase(
+          "summary_compaction",
+          {},
+          async (phase) => {
+            const { shardsRewritten, shardsRemoved } = await phase.tally
+              .measure(
+                "compact",
+                () =>
+                  this.summaries.compact(
+                    this.liveSummaryKeys(yamlFiles, deletedYamls),
+                    new Date(Date.now() - SUMMARY_QUIET_DAYS * DAY_MS)
+                      .toISOString().slice(0, 10),
+                  ),
+              );
+            phase.tally.add("shards_rewritten", shardsRewritten);
+            phase.tally.add("shards_removed", shardsRemoved);
+          },
+        );
+      }
     }
 
     return { deleted, bytesReclaimed, more };
+  }
+
+  /** The summary key of each of `yamlFiles` still kept, by type. */
+  private liveSummaryKeys(
+    yamlFiles: readonly string[],
+    deletedYamls: ReadonlySet<string>,
+  ): Map<string, Set<string>> {
+    const live = new Map<string, Set<string>>();
+    for (const path of yamlFiles) {
+      if (deletedYamls.has(path)) continue;
+      const name = parseOutputFileName(path);
+      const segments = relative(this.baseDir, path).split(SEPARATOR);
+      if (name === undefined || segments.length < 3) continue;
+      const type = segments.slice(0, -2).join("/");
+      const keys = live.get(type) ?? new Set();
+      keys.add(
+        outputSummaryKey(segments.at(-2)!, name.definitionId, name.stamp),
+      );
+      live.set(type, keys);
+    }
+    return live;
   }
 
   /**

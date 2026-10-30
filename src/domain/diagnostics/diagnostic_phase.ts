@@ -88,6 +88,7 @@ const AREA_PHASES = {
     "candidate_enumeration",
     "candidate_scan",
     "orphan_log_sweep",
+    "summary_compaction",
     "batch_commit",
   ],
   access_poll: [

@@ -40,6 +40,7 @@ import {
   RunPartlyCommittedError,
   withRunUnknownSteps,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import { removeStaleOutputSummaries } from "../../infrastructure/persistence/output_summary_index.ts";
 import { removeStaleRunIndexes } from "../../infrastructure/persistence/workflow_run_index.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { workflowStepLockHook } from "./workflow_run.ts";
@@ -684,6 +685,7 @@ export const workflowResumeCommand = withRemoteOptions(
       // (swamp-club#3802).
       if (error instanceof RunPartlyCommittedError) {
         await removeStaleRunIndexes(repoDir);
+        await removeStaleOutputSummaries(repoDir);
       }
       // The run's steps ran before its commit failed (swamp-club#3759).
       // A run cut while a step ran needs that step acknowledged to be

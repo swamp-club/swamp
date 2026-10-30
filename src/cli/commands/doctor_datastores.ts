@@ -121,6 +121,7 @@ import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { resolveDatastoreConfig } from "../resolve_datastore.ts";
+import { removeStaleOutputSummaries } from "../../infrastructure/persistence/output_summary_index.ts";
 import { RUNS_INDEX_FILENAME } from "../../infrastructure/persistence/workflow_run_index.ts";
 import {
   createCatalogStore,
@@ -690,6 +691,8 @@ async function createRepairDeps(
           if (!(error instanceof Deno.errors.NotFound)) throw error;
         }
       }
+      // Output summaries are the same kind of derived file, rebuilt on read.
+      await removeStaleOutputSummaries(repoDir);
       return invalidated;
     },
     invalidateCatalog: () => removeCatalogDb(repoDir),
