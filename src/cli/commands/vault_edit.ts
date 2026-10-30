@@ -197,8 +197,7 @@ value for them other than the server's defaults, and stores those defaults.`,
             }),
             renderer.handlers(),
           ),
-      )
-    );
+      ), `the vault definition "${editNameOrId}"`);
 
   // A vault is edited on a copy and saved like a piped edit, so the edit is
   // committed (swamp-club#4107). Opening the editor loads the vault

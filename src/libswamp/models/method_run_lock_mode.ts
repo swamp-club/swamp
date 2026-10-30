@@ -24,7 +24,11 @@ import {
 import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync_service.ts";
 import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
-import { inferMethodKind, isMutatingKind } from "../../domain/models/model.ts";
+import {
+  inferMethodKind,
+  isMutatingKind,
+  type MethodKind,
+} from "../../domain/models/model.ts";
 import { isV2CustomDatastore } from "../../infrastructure/persistence/datastore_format_guard.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 
@@ -51,13 +55,23 @@ export async function isMethodMutating(
   modelType: string,
   methodName: string,
 ): Promise<boolean> {
+  return isMutatingKind(await methodKindOf(modelType, methodName));
+}
+
+/**
+ * A method's declared or name-inferred kind (swamp-club#1992); undefined
+ * when its type cannot be resolved, which counts as one that mutates.
+ */
+export async function methodKindOf(
+  modelType: string,
+  methodName: string,
+): Promise<MethodKind | undefined> {
   try {
     const modelDef = await resolveModelType(modelType, getAutoResolver());
-    if (!modelDef) return true;
-    const method = modelDef.methods[methodName];
-    return isMutatingKind(inferMethodKind(methodName, method));
+    if (!modelDef) return undefined;
+    return inferMethodKind(methodName, modelDef.methods[methodName]);
   } catch {
-    return true;
+    return undefined;
   }
 }
 

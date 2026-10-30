@@ -698,6 +698,13 @@ Deno.test("exitCodeForError: returns 75 for a write a serve follower refused (sw
   assertEquals(exitCodeForError(new ServeNotLeaderError(undefined)), 75);
 });
 
+Deno.test("exitCodeForError: returns 75 for a forced release whose kept lease record stayed (swamp-club#4195)", () => {
+  assertEquals(
+    exitCodeForError(new UserError("kept record", "lease_record_not_removed")),
+    75,
+  );
+});
+
 Deno.test("exitCodeForError: returns 75 for LockTimeoutError", () => {
   const err = new LockTimeoutError("/path/.lock", null, 60000);
   assertEquals(exitCodeForError(err), 75);

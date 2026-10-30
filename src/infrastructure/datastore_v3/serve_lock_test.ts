@@ -499,3 +499,87 @@ Deno.test("ServeLock: a recorded explicit lease serve ended is forgotten, and th
   await subject.release();
   assert(serve.calls.includes("release lease-1"));
 });
+
+Deno.test("ServeLock: offline, a recorded explicit lease is adopted on the local lock without asking serve, and registered (swamp-club#4195)", async () => {
+  resetServeLeasesForTesting();
+  const serve = new FakeServe();
+  const events: string[] = [];
+  const now = Date.parse("2026-10-30T10:00:00.000Z");
+  const explicit = {
+    leaseId: "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a56",
+    lockKey: KEY,
+    fence: 11,
+    holdMs: 3_600_000,
+    expiresAt: new Date(now + 3_600_000).toISOString(),
+    floor: [{ name: "vpc", highWater: 2 }],
+  };
+  const subject = lock(serve, {
+    root: ROOT,
+    now: () => now,
+    adopt: () => Promise.resolve(explicit),
+    localLock: () => localLock(events),
+    offline: () => ({ skewMs: 10_000 }),
+  });
+  await subject.acquire();
+  assertEquals(serve.calls, []);
+  assertEquals(subject.lease?.fence, 11);
+  assertEquals(heldServeLeaseOf(ROOT, PARTITION)?.leaseId, explicit.leaseId);
+  await subject.release();
+  assertEquals(serve.calls, []);
+  assertEquals(events, ["local acquire", "local release"]);
+});
+
+Deno.test("ServeLock: offline, a lease past its end by serve's clock, or none, holds the local lock only (swamp-club#4195)", async () => {
+  resetServeLeasesForTesting();
+  const serve = new FakeServe();
+  const events: string[] = [];
+  const now = Date.parse("2026-10-30T10:00:00.000Z");
+  const explicit = {
+    leaseId: "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a57",
+    lockKey: KEY,
+    fence: 12,
+    holdMs: 3_600_000,
+    // Live by this clock, not by serve's, which runs a minute ahead.
+    expiresAt: new Date(now + 30_000).toISOString(),
+    floor: [],
+  };
+  const subject = lock(serve, {
+    root: ROOT,
+    now: () => now,
+    adopt: () => Promise.resolve(explicit),
+    localLock: () => localLock(events),
+    offline: () => ({ clockOffsetMs: 60_000, skewMs: 10_000 }),
+  });
+  await subject.acquire();
+  assertEquals(subject.lease, undefined);
+  assertEquals(heldServeLeaseOf(ROOT, PARTITION), undefined);
+  await subject.release();
+  assertEquals(serve.calls, []);
+  assertEquals(events, ["local acquire", "local release"]);
+});
+
+Deno.test("ServeLock: offline, the work under an adopted lease is cancelled when its recorded end passes (swamp-club#4195)", async () => {
+  resetServeLeasesForTesting();
+  const serve = new FakeServe();
+  let lost: ServeLeaseLapsedError | undefined;
+  const subject = lock(serve, {
+    root: ROOT,
+    adopt: () =>
+      Promise.resolve({
+        leaseId: "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a58",
+        lockKey: KEY,
+        fence: 13,
+        holdMs: 3_600_000,
+        expiresAt: new Date(Date.now() + 10_050).toISOString(),
+        floor: [],
+      }),
+    localLock: () => localLock([]),
+    offline: () => ({ skewMs: 10_000 }),
+    onLost: (error) => lost = error,
+  });
+  await subject.acquire();
+  await waitFor(() => lost !== undefined, "the offline lease to run out");
+  assertInstanceOf(lost, ServeLeaseLapsedError);
+  assertEquals(heldServeLeaseOf(ROOT, PARTITION), undefined);
+  await subject.release();
+});

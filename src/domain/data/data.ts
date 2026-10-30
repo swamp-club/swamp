@@ -54,6 +54,13 @@ export function isReservedDataName(name: string): boolean {
 export const RESERVED_TAG_PREFIX = "_swamp.";
 
 /**
+ * The reserved tag a restatement carries (swamp-club#4195): a version an
+ * offline flush wrote only to keep the current latest's content highest. It
+ * holds the number of the version it restates, never a time.
+ */
+export const RESTATES_TAG = `${RESERVED_TAG_PREFIX}restates`;
+
+/**
  * Tag keys outside {@link RESERVED_TAG_PREFIX} that the data writers set
  * themselves and readers trust: `specName` names the spec that wrote a
  * record, and the resource reader once chose which fields resolve vault

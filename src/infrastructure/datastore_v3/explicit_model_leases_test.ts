@@ -33,6 +33,7 @@ import {
   renewExplicitLeases,
 } from "./explicit_model_leases.ts";
 import type { LockAcquireReply, LockLease } from "./serve_datastore_client.ts";
+import { ServeUnreachableError } from "./serve_upstream_errors.ts";
 
 await initializeLogging({});
 
@@ -294,5 +295,25 @@ Deno.test("renewExplicitLeases: a lease another command records while the renewa
       (await readExplicitLeases(root)).map((lease) => lease.leaseId).sort(),
       [first.leaseId, second.leaseId].sort(),
     );
+  });
+});
+
+Deno.test("renewExplicitLeases: with serve unreachable, tries once and keeps every lease's record, judged by its recorded end (swamp-club#4195)", async () => {
+  await withRoot(async (root) => {
+    await recordExplicitLease(root, held({ lockKey: "data/a/b/.lock" }));
+    await recordExplicitLease(root, held({ lockKey: "data/c/d/.lock" }));
+    const serve = new FakeServe();
+    serve.renewal = new ServeUnreachableError(
+      "https://serve.test",
+      "never",
+      new Error("fetch failed"),
+    );
+    const result = await renewExplicitLeases(root, serve, SIGNAL);
+    assertEquals(result, { renewed: [], ended: [] });
+    assertEquals(
+      serve.calls.filter((call) => call.startsWith("renew")).length,
+      1,
+    );
+    assertEquals((await readExplicitLeases(root)).length, 2);
   });
 });

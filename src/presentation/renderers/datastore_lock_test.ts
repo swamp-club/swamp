@@ -19,11 +19,15 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import type {
+  DatastoreLockReleaseData,
   DatastoreLockStatusData,
   DatastoreLockStatusEvent,
 } from "../../libswamp/datastores/lock.ts";
 import type { OutputMode } from "../output/output.ts";
-import { createDatastoreLockStatusRenderer } from "./datastore_lock.ts";
+import {
+  createDatastoreLockReleaseRenderer,
+  createDatastoreLockStatusRenderer,
+} from "./datastore_lock.ts";
 
 function renderStatus(
   mode: OutputMode,
@@ -133,23 +137,61 @@ Deno.test("createDatastoreLockStatusRenderer: a serve lease names its key and ho
   assertStringIncludes(text, serveLease.expiresAt);
 });
 
-Deno.test("createDatastoreLockStatusRenderer: serve leases and a truncated listing are JSON objects of their own", () => {
+Deno.test("createDatastoreLockStatusRenderer: serve leases ride on the one JSON document the status prints (swamp-club#4195)", () => {
   const handlers = createDatastoreLockStatusRenderer("json").handlers();
-  assertEquals(
-    JSON.parse(
-      capture(() =>
-        handlers.serve_lease({ kind: "serve_lease", data: serveLease })
-      ),
-    ),
-    { serveLease },
+  const text = capture(() => {
+    handlers.serve_lease({ kind: "serve_lease", data: serveLease });
+    handlers.serve_leases_truncated({
+      kind: "serve_leases_truncated",
+      data: { truncated: true, listed: 512 },
+    });
+    handlers.completed({
+      kind: "completed",
+      data: { held: false, datastoreType: "filesystem" },
+    });
+  });
+  assertEquals(JSON.parse(text), {
+    held: false,
+    datastoreType: "filesystem",
+    serveLeases: [serveLease],
+    serveLeasesTruncated: true,
+  });
+});
+
+Deno.test("createDatastoreLockStatusRenderer: a status with no serve leases prints the lock alone in JSON", () => {
+  const handlers = createDatastoreLockStatusRenderer("json").handlers();
+  const text = capture(() =>
+    handlers.completed({
+      kind: "completed",
+      data: { held: false, datastoreType: "filesystem" },
+    })
   );
-  assertEquals(
-    JSON.parse(capture(() =>
-      handlers.serve_leases_truncated({
-        kind: "serve_leases_truncated",
-        data: { truncated: true, listed: 512 },
-      })
-    )),
-    { serveLeases: { truncated: true, listed: 512 } },
-  );
+  assertEquals(JSON.parse(text), { held: false, datastoreType: "filesystem" });
+});
+
+function renderRelease(
+  mode: OutputMode,
+  data: DatastoreLockReleaseData,
+): string {
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => output.push(args.join(" "));
+  try {
+    createDatastoreLockReleaseRenderer(mode).handlers().completed({
+      kind: "completed",
+      data,
+    });
+  } finally {
+    console.log = origLog;
+  }
+  return output.join("\n");
+}
+
+Deno.test("datastore lock release renderer: a lease serve ended names who held it, in both modes (swamp-club#4195)", () => {
+  const data: DatastoreLockReleaseData = {
+    released: true,
+    leaseHolder: "user:alice",
+  };
+  assertStringIncludes(renderRelease("log", data), "Lease held by: user:alice");
+  assertEquals(JSON.parse(renderRelease("json", data)), data);
 });

@@ -231,8 +231,7 @@ export function createModelEditCommand(syntax: CommandSyntax) {
                 }),
                 renderer.handlers(),
               ),
-          )
-        );
+          ), `the behavior definition "${editIdOrName}"`);
 
       // A stored definition is edited on a copy and saved like a piped
       // edit, so the edit is committed (swamp-club#4107). Opening the editor

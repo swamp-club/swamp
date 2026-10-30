@@ -42,6 +42,10 @@ import {
 import type { CatalogStore } from "./catalog_store.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
 import { garbageCollectionToColumn } from "../../domain/data/data_metadata.ts";
+import {
+  isRestatement,
+  versionsBeyondKeepSync,
+} from "../../domain/data/keep_last_versions.ts";
 
 const SEP = "\0";
 
@@ -184,6 +188,19 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     return Math.max(fromLatest, fromMap) + 1;
   }
 
+  /** Whether a stored version of `dataName` is a restatement (swamp-club#4195). */
+  private restatesIn(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): (version: number) => boolean {
+    return (version) =>
+      isRestatement(
+        this.dataMap.get(dataKey(type.normalized, modelId, dataName, version))
+          ?.tags,
+      );
+  }
+
   private pruneExcessVersions(
     type: ModelType,
     modelId: string,
@@ -192,8 +209,13 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     cap: number,
   ): void {
     if (priorVersions.length < cap) return;
-    const sorted = [...priorVersions].sort((a, b) => a - b);
-    const toRemove = sorted.slice(0, sorted.length - cap + 1);
+    // Room for the version being written: cap - 1 prior observations stay,
+    // restatements among them not counted.
+    const toRemove = versionsBeyondKeepSync(
+      priorVersions,
+      cap - 1,
+      this.restatesIn(type, modelId, dataName),
+    );
     for (const version of toRemove) {
       const key = dataKey(type.normalized, modelId, dataName, version);
       const existing = this.contentMap.get(key);
@@ -830,7 +852,11 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
       if (typeof keep !== "number") continue;
       if (versions.length <= keep) continue;
 
-      const toRemove = versions.slice(0, versions.length - keep);
+      const toRemove = versionsBeyondKeepSync(
+        versions,
+        keep,
+        this.restatesIn(type, modelId, dataName),
+      );
       for (const v of toRemove) {
         const key = dataKey(type.normalized, modelId, dataName, v);
         const content = this.contentMap.get(key);

@@ -57,13 +57,35 @@ and serve refuses any commit still sent under it (`commit_lease-lost`). To hold
 a behavior across several commands:
 
 ```bash
-swamp behavior lease acquire my-server --for 30m  # 5s to 60m; renewed as each command starts
+swamp behavior lease acquire my-server --for 30m  # 5s to 24h; renewed as each command starts
 swamp behavior lease status                       # leases this checkout holds
 swamp behavior lease release my-server
 ```
 
 `swamp datastore lock status` in such a checkout also lists the leases serve
-holds (holder `caller` or `other`, never who).
+holds (holder `caller` or `other`, never who). An explicit lease survives a
+serve leader takeover; an admin ends an abandoned one with
+`swamp datastore lock release --force --behavior type/id`.
+
+### Working offline
+
+When serve is unreachable at a command's start (and the checkout has caught up
+before), the checkout works offline from its local copy:
+
+- Reads and `read`/`list` methods run. A method that changes things runs only on
+  a behavior whose lease was taken with `--for` while online and has not
+  expired; otherwise it is refused before it runs
+  (`datastore_v3_offline_lease_required`, exit 75). Definition edits are refused
+  (`datastore_v3_offline_config_edit`, exit 75).
+- Allowed work is saved in the checkout's outbox and the command exits 0. The
+  next writing command (a method or workflow run, a data save) that reaches
+  serve sends it, renumbering its versions after any written meanwhile.
+  Read-only commands never send it.
+- A command that started online and lost serve midway still exits 75 with
+  nothing changed.
+
+To work offline on a behavior, take its lease first:
+`swamp behavior lease acquire my-server --for 8h`.
 
 ## Breakglass Commands
 

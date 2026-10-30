@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
+import { OfflineConfigEditError } from "../../domain/datastore_v3/offline_write_policy.ts";
 import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import type { ConfigEditBases } from "../../domain/datastore_v3/config_edit_bases.ts";
 import {
@@ -32,6 +33,10 @@ import {
 } from "./commit_log_test_helpers.ts";
 import { createCommitLogUnitOfWork } from "./commit_log_unit_of_work.ts";
 import { runAsUserConfigEdit } from "./config_edit_scope.ts";
+import {
+  enterServeOffline,
+  resetServeOfflineForTesting,
+} from "./serve_offline.ts";
 
 const KEY = recordKeyOf(["config", "workflows", "workflow-deploy.yaml"]);
 const STARTED = { sha256: "a".repeat(64) };
@@ -117,4 +122,42 @@ Deno.test("runAsUserConfigEdit: a record the user never held keeps the save-time
     [ON_DISK, ON_DISK],
   );
   await unit.abandon();
+});
+
+Deno.test("runAsUserConfigEdit: offline, a delete is refused as one, naming the definition (swamp-club#4195)", async () => {
+  resetServeOfflineForTesting();
+  enterServeOffline(
+    "/tmp/root",
+    { serveUrl: "https://serve.test", since: 1 },
+    "test",
+  );
+  try {
+    let ran = false;
+    const deleted = await assertRejects(
+      () =>
+        runAsUserConfigEdit(
+          () => {
+            ran = true;
+            return Promise.resolve();
+          },
+          'the vault definition "prod"',
+          "deleted",
+        ),
+      OfflineConfigEditError,
+    );
+    assertEquals(ran, false);
+    assertEquals(
+      deleted.message.startsWith(
+        'Serve is unreachable, so the vault definition "prod" cannot be deleted:',
+      ),
+      true,
+    );
+    const edited = await assertRejects(
+      () => runAsUserConfigEdit(() => Promise.resolve(), "the definition"),
+      OfflineConfigEditError,
+    );
+    assertEquals(edited.message.includes("cannot be edited"), true);
+  } finally {
+    resetServeOfflineForTesting();
+  }
 });

@@ -20,7 +20,7 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { InMemoryUnifiedDataRepository } from "./in_memory_data_repository.ts";
 import { CatalogStore } from "./catalog_store.ts";
-import { Data } from "../../domain/data/data.ts";
+import { Data, RESTATES_TAG } from "../../domain/data/data.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { RenameForward } from "../../domain/data/repositories.ts";
 import {
@@ -732,4 +732,57 @@ Deno.test("findByTaggedName: returns a name whose latest version is a deletion m
     [[2, true, TEST_MODEL_ID]],
   );
   assertEquals(await repo.findByTaggedName("test-model", "old-name"), []);
+});
+
+/** Saves an observation, then a restatement of version 1 above it. */
+async function saveObservationsAndRestatement(
+  repo: InMemoryUnifiedDataRepository,
+  garbageCollection: number,
+): Promise<void> {
+  const observation = createTestData({ garbageCollection });
+  await repo.save(TEST_TYPE, TEST_MODEL_ID, observation, TEST_CONTENT);
+  await repo.save(TEST_TYPE, TEST_MODEL_ID, observation, TEST_CONTENT);
+  const restatement = Data.create({
+    name: "test-data",
+    contentType: "application/json",
+    lifetime: "ephemeral",
+    garbageCollection,
+    streaming: false,
+    tags: { type: "resource", [RESTATES_TAG]: "1" },
+    ownerDefinition: { ownerType: "model-method", ownerRef: "test-ref" },
+  });
+  await repo.save(TEST_TYPE, TEST_MODEL_ID, restatement, TEST_CONTENT);
+}
+
+Deno.test("collectGarbage: a restatement does not count toward keep-last-N (swamp-club#4195)", async () => {
+  const { repo } = createRepo();
+  await saveObservationsAndRestatement(repo, 1);
+
+  await repo.collectGarbage(TEST_TYPE, TEST_MODEL_ID);
+
+  assertEquals(
+    await repo.listVersions(TEST_TYPE, TEST_MODEL_ID, "test-data"),
+    [2, 3],
+  );
+});
+
+Deno.test("save: write-time pruning does not count a restatement toward the cap (swamp-club#4195)", async () => {
+  const repo = new InMemoryUnifiedDataRepository(
+    new CatalogStore(":memory:"),
+    undefined,
+    undefined,
+    true,
+  );
+  await saveObservationsAndRestatement(repo, 2);
+  await repo.save(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    createTestData({ garbageCollection: 2 }),
+    TEST_CONTENT,
+  );
+
+  assertEquals(
+    await repo.listVersions(TEST_TYPE, TEST_MODEL_ID, "test-data"),
+    [2, 3, 4],
+  );
 });

@@ -333,3 +333,49 @@ Deno.test("planOutboxRecovery: an expired entry whose txnId may have been pruned
     [[1, "expired", false], [2, "expired", true]],
   );
 });
+
+Deno.test("planOutboxRecovery: an entry queued offline or kept after a rejection meets no drop rule (swamp-club#4195)", async () => {
+  const stale = { ...await entry(1, { fence: 2 }), state: "offline" as const };
+  const expired = {
+    ...await entry(2, {
+      fence: 6,
+      createdAt: NOW - COMPACTED_TXN_RETENTION_MS - 1,
+    }),
+    state: "offline" as const,
+  };
+  const rejected = {
+    ...await entry(3, { fence: 3 }),
+    state: "rejected" as const,
+    stateReason: "its target changed",
+  };
+  const quarantined = {
+    ...await entry(4, { fence: 6, run: true }),
+    state: "quarantined" as const,
+  };
+  const plan = planOutboxRecovery(
+    [stale, expired, rejected, quarantined],
+    judge(),
+  );
+  assertEquals(plan.drops, []);
+  assertEquals(plan.sends, []);
+  assertEquals(plan.offline, [stale, expired]);
+  assertEquals(plan.held, [rejected, quarantined]);
+  // One that landed, offline or kept, settles.
+  const landed = planOutboxRecovery([stale, rejected], {
+    ...judge(),
+    landed: (candidate) => candidate === rejected,
+  });
+  assertEquals(landed.settles, [rejected]);
+  assertEquals(landed.offline, [stale]);
+});
+
+Deno.test("planOutboxRecovery: an entry prepared offline whose unit then failed is dropped as abandoned, never flushed: its caller was told it failed (swamp-club#4195)", async () => {
+  const abandoned = {
+    ...await entry(1, { fence: 6 }),
+    state: "offline" as const,
+    abandonedAt: NOW - 1,
+  };
+  const plan = planOutboxRecovery([abandoned], judge());
+  assertEquals(plan.offline, []);
+  assertEquals(plan.drops.map((drop) => drop.reason), ["abandoned"]);
+});

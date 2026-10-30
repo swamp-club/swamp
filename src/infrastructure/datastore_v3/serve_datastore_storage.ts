@@ -172,14 +172,22 @@ export function storageNamespaceOf(namespace: string): string {
  */
 export class CachedServeStorage extends FileSystemStorage {
   readonly #remote: DatastoreStorage;
+  readonly #offline: () => boolean;
 
   constructor(
     cacheRoot: string,
     remote: DatastoreStorage,
-    options: FileSystemStorageOptions = {},
+    options: FileSystemStorageOptions & {
+      /**
+       * Whether the checkout works offline (swamp-club#4195): the cache
+       * alone answers then, so storing content never waits on serve.
+       */
+      readonly offline?: () => boolean;
+    } = {},
   ) {
     super(cacheRoot, options);
     this.#remote = remote;
+    this.#offline = options.offline ?? (() => false);
   }
 
   override async has(
@@ -189,7 +197,7 @@ export class CachedServeStorage extends FileSystemStorage {
   ): Promise<Set<string>> {
     const local = await super.has(namespace, hashes, signal);
     const rest = hashes.filter((hash) => !local.has(hash));
-    if (rest.length === 0) return local;
+    if (rest.length === 0 || this.#offline()) return local;
     for (const hash of await this.#remote.has(namespace, rest, signal)) {
       local.add(hash);
     }
@@ -202,7 +210,7 @@ export class CachedServeStorage extends FileSystemStorage {
     signal: AbortSignal,
   ): Promise<Uint8Array | null> {
     const local = await super.get(namespace, sha256, signal);
-    if (local !== null) return local;
+    if (local !== null || this.#offline()) return local;
     const bytes = await this.#remote.get(namespace, sha256, signal);
     // The client checked the bytes' hash; keep them for the next read.
     if (bytes !== null) await super.put(namespace, sha256, bytes, signal);

@@ -1504,6 +1504,11 @@ export interface StepLockResult {
 export type StepLockHook = (
   modelType: string,
   modelId: string,
+  /**
+   * The step's method and behavior name, for a hook that judges the step
+   * before it starts (swamp-club#4195); a hook may ignore it.
+   */
+  step?: { readonly methodName: string; readonly behaviorName: string },
 ) => Promise<StepLockResult>;
 
 export interface StepExecutorDeps {
@@ -2565,6 +2570,7 @@ export class DefaultStepExecutor implements StepExecutor {
       const lockResult = await this.stepLockHook(
         modelType.normalized,
         originalDefinition.id,
+        { methodName: task.methodName, behaviorName: originalDefinition.name },
       );
       flushLock = lockResult.flush;
       heldLockIds = lockResult.lentLocks ?? lockResult.heldLockIds;

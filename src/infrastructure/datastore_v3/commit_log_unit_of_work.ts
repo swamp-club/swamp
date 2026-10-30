@@ -207,6 +207,13 @@ export type CommitSink = Pick<CommitStore, "append" | "head"> & {
    * other writers can move more than once (swamp-club#3985).
    */
   readonly seqGapAttempts?: number;
+  /**
+   * Whether a commit to `partition` would be queued offline rather than
+   * sent (swamp-club#4195): its entry is then prepared already marked
+   * `offline`, so a process that dies before the queue's mark still leaves
+   * an entry no drop rule takes.
+   */
+  readonly queuesOffline?: (partition: PartitionKey) => Promise<boolean>;
 };
 
 /**
@@ -273,6 +280,11 @@ export interface SinkOutbox {
    * (swamp-club#3586): recovery never lands a marked entry.
    */
   abandon?(keys: readonly OutboxKey[]): Promise<void>;
+  /**
+   * Marks entries queued while serve was unreachable (swamp-club#4195),
+   * fsynced: they are kept until a later command lands them.
+   */
+  queue?(keys: readonly OutboxKey[]): Promise<void>;
   /**
    * The seq a txnId landed at, if it did: read after an append fails, since
    * a writer that took over may have landed the prepared commit.
@@ -342,6 +354,13 @@ export interface CommitLogUnitOptions {
     partition: PartitionKey,
     key: string,
   ) => Promise<RecordLastChange>;
+  /**
+   * Serve's clock minus this one, as a serve-mode checkout last measured it
+   * (swamp-club#4195); undefined when never measured. When this option is
+   * given, each commit records when it ran (`executedAt`) and the offset,
+   * so a commit queued offline is judged on reconnect by when it ran.
+   */
+  readonly clockOffsetMs?: () => number | undefined;
 }
 
 /**
@@ -872,8 +891,12 @@ export function createCommitLogUnitOfWork(
       // a later recovery must not land them. When that cannot be recorded,
       // the caller is told they may land (swamp-club#3586).
       dropWork();
-      const lost = await discardEntries(options, outbox, pending) ??
-        unconfirmed;
+      // A commit that may have reached serve keeps its entry, so the next
+      // recovery settles or sends it, as the serve sink's module says: the
+      // caller is told it may land (swamp-club#4195).
+      const lost = error instanceof MayLandLaterError
+        ? unconfirmed
+        : await discardEntries(options, outbox, pending) ?? unconfirmed;
       if (lost !== undefined && !(error instanceof MayLandLaterError)) {
         throw new MayLandLaterError(error, lost.reason);
       }
@@ -1369,6 +1392,7 @@ async function appendGroup(
   } finally {
     await chunks.discard();
   }
+  let queued = false;
   await withPartitionLock(
     options.sink,
     options.namespace,
@@ -1398,6 +1422,7 @@ async function appendGroup(
           ...(group.principal === undefined
             ? {}
             : { principal: group.principal }),
+          ...executionOf(options, group),
           at: clock().toISOString(),
           ops,
         });
@@ -1412,7 +1437,14 @@ async function appendGroup(
             group.txnId,
             outboxKeyOfGroup(options, group),
           );
-          await outbox.prepare({ commit, unitId: unitOutbox.unitId, base });
+          const offline =
+            await options.sink.queuesOffline?.(group.partition) === true;
+          await outbox.prepare({
+            commit,
+            unitId: unitOutbox.unitId,
+            base,
+            ...(offline ? { queuedOffline: true } : {}),
+          });
           if (sweepMayOverlap(sweepBefore, await outbox.sweepState())) {
             // A batch in flight may have judged a chunk unreferenced before
             // the prepare and delete it after this check: once it has
@@ -1430,6 +1462,19 @@ async function appendGroup(
           await options.sink.append(commit);
           return;
         } catch (error) {
+          // Queued in the outbox while serve is unreachable (swamp-club#4195):
+          // the entry stays, marked, for the next command to land, and the
+          // unit goes on as if it had landed.
+          if (
+            error instanceof CommitQueuedOfflineError && outbox?.queue &&
+            unitOutbox.prepared.has(group.txnId)
+          ) {
+            const key = unitOutbox.prepared.get(group.txnId)!;
+            await outbox.queue([key]);
+            unitOutbox.prepared.delete(group.txnId);
+            queued = true;
+            return;
+          }
           if (
             attempt < (options.sink.seqGapAttempts ?? SEQ_GAP_ATTEMPTS) &&
             error instanceof CommitRejectedError && error.reason === "seq-gap"
@@ -1442,6 +1487,8 @@ async function appendGroup(
       }
     },
   );
+  // Queued, not landed: its entry stays for the flush (swamp-club#4195).
+  if (queued) return;
   // The commit has landed: a failing check is a warning, never a failure
   // that would drop landed work (swamp-club#3586).
   try {
@@ -1527,6 +1574,39 @@ async function storeGroup(
     }
     ops.push(op);
   }
+}
+
+/**
+ * A commit the serve sink queued in the outbox instead of sending
+ * (swamp-club#4195): the checkout is offline, and the rules allow the
+ * commit's partition to queue. The unit keeps the entry, marked, and goes
+ * on; the next command that reaches serve lands it.
+ */
+export class CommitQueuedOfflineError extends Error {
+  constructor(readonly partition: PartitionKey) {
+    super(
+      `Serve is unreachable: the commit to ${partition} was queued in the outbox`,
+    );
+    this.name = "CommitQueuedOfflineError";
+  }
+}
+
+/**
+ * When a group's commit ran, and serve's clock offset then, for a unit that
+ * records them (swamp-club#4195).
+ */
+function executionOf(
+  options: CommitLogUnitOptions,
+  group: Group,
+): { executedAt?: string; clockOffsetMs?: number } {
+  if (options.clockOffsetMs === undefined) return {};
+  const offset = options.clockOffsetMs();
+  return {
+    executedAt: new Date(group.formedAt).toISOString(),
+    ...(offset !== undefined && Number.isFinite(offset)
+      ? { clockOffsetMs: offset }
+      : {}),
+  };
 }
 
 /** A unit's outbox bookkeeping. */

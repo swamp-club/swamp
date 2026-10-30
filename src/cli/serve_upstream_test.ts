@@ -357,6 +357,18 @@ Deno.test("serveUpstreamAppliesTo: applies to ordinary repository commands", () 
   assertEquals(serveUpstreamAppliesTo(["doctor", "workflows"]), true);
 });
 
+Deno.test("serveUpstreamRunsLocally: datastore status runs in a serve-mode checkout, so it can show what the checkout saved offline; --server still sends it to serve (swamp-club#4195)", () => {
+  assertEquals(serveUpstreamRunsLocally(["datastore", "status"]), true);
+  assertEquals(serveUpstreamRunsLocally(["datastore", "setup"]), false);
+  assertEquals(serveUpstreamRunsLocally(["datastore"]), false);
+});
+
+Deno.test("serveUpstreamAppliesTo: datastore lock, status and quarantine reach the serve a checkout writes through (swamp-club#4195)", () => {
+  assertEquals(serveUpstreamAppliesTo(["datastore", "lock"]), true);
+  assertEquals(serveUpstreamAppliesTo(["datastore", "status"]), true);
+  assertEquals(serveUpstreamAppliesTo(["datastore", "quarantine"]), true);
+});
+
 Deno.test("serveUpstreamAppliesTo: an empty path or unknown word keeps the direct binding", () => {
   assertEquals(serveUpstreamAppliesTo([]), false);
   assertEquals(serveUpstreamAppliesTo(["no-such-command"]), false);
@@ -382,7 +394,8 @@ Deno.test("serveUpstreamRunsLocally: the data plane runs locally with serve as i
       ["access", "grant"],
       ["audit", "log"],
       ["doctor", "datastores"],
-      ["datastore", "status"],
+      ["datastore", "lock"],
+      ["datastore", "quarantine"],
       ["serve"],
       ["worker", "start"],
       [],

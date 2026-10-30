@@ -17,6 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  OFFLINE_CONFIG_EDIT_CODE,
+  OFFLINE_LEASE_REQUIRED_CODE,
+} from "../../domain/datastore_v3/offline_write_policy.ts";
+import { LEASE_RECORD_NOT_REMOVED_CODE } from "../../domain/datastore_v3/persisted_lease.ts";
 import { ValidationError } from "@cliffy/command";
 import { bold, dim, red, yellow } from "@std/fmt/colors";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
@@ -188,6 +193,12 @@ export function buildErrorJson(
  * - `75` for `serve_not_leader` (swamp-club#4096): the serve node does not
  *   lead the datastore in team mode, and refused the write before taking
  *   it, so a retry, at the leader or once one is elected, is safe.
+ * - `75` for `datastore_v3_offline_lease_required` and
+ *   `datastore_v3_offline_config_edit` (swamp-club#4195): a serve-mode
+ *   checkout working offline refused the work before it changed anything.
+ * - `75` for `lease_record_not_removed` (swamp-club#4195): a forced release
+ *   ended the lease, but serve could not remove its kept record, so a
+ *   takeover may bring it back; forcing the release again removes it.
  * - `1` for all other errors, including a missing or revoked credential.
  */
 export function exitCodeForError(error: unknown): number {
@@ -217,6 +228,12 @@ export function exitCodeForError(error: unknown): number {
   if (code === V3_SERVE_UNREACHABLE_CODE) return 75;
   // A serve node that does not lead refused the write (swamp-club#4096).
   if (code === SERVE_NOT_LEADER_CODE) return 75;
+  // Refused offline before anything changed (swamp-club#4195): run again
+  // once serve is reachable, or with the behavior's lease taken online.
+  if (code === OFFLINE_LEASE_REQUIRED_CODE) return 75;
+  if (code === OFFLINE_CONFIG_EDIT_CODE) return 75;
+  // A forced release whose kept record stayed: retrying finishes it.
+  if (code === LEASE_RECORD_NOT_REMOVED_CODE) return 75;
   return 1;
 }
 

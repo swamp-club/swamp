@@ -7247,8 +7247,10 @@ which behaves as above.
   (`holder` the lease id, `fence` its fence) after the client's ops; a retry
   is compared without it. Anything else is `409 commit_lease-lost`, which
   never says whose lease holds the partition. Partitions no fenced lease
-  covers keep the rules above. Leases are the leader's memory, so a takeover
-  ends them; the partition's lease fence is the durable backstop.
+  covers keep the rules above. A command's lease is the leader's memory, so
+  a takeover ends it; an explicit lease is kept across one ("Leases kept
+  across a takeover" below). The partition's lease fence is the durable
+  backstop.
 - **Older readers.** A swamp before #4121 judges a lease op's fence against
   the writer fence and would refuse the commit. Every request names what the
   client's copy understands (`x-swamp-datastore-features: lease-ops`), and
@@ -7279,7 +7281,8 @@ which behaves as above.
 - **Explicit leases.** `swamp model lease acquire <behavior> --for
   <duration>` (and `release`, `status`; `swamp behavior lease` too) takes a
   fenced lease for a command's TTL, records it, then renews it with `holdMs`
-  (5 s to 60 min, `MAX_HOLD_MS`), which makes it explicit: serve holds it for
+  (5 s to 24 h, `MAX_HOLD_MS`, swamp-club#4195: long enough to check a lease
+  out before working offline), which makes it explicit: serve holds it for
   its hold between renewals. A reply lost on the way strands the lease for
   the short TTL only; acquiring again changes the hold. The checkout records it in its local root
   (`model_leases.json`, `explicit_model_leases.ts`). Every command renews it
@@ -7294,6 +7297,65 @@ which behaves as above.
   command that takes the behavior's lock adopts it under a lock local to the
   checkout instead of asking again, leaving it held when it ends. A lease
   no command renews within its hold lapses at serve. It ends on `release` or once its hold passes unrenewed.
+- **Leases kept across a takeover** (swamp-club#4195). The leader keeps
+  every explicit lease in the shared control plane
+  (`control_plane_lease_store.ts`, `persisted_lease.ts`); a command's lease
+  is never kept. Each leader writes under its own prefix,
+  `leases/<leaderFence>/<sha256 of the lock key>`, named by its writer-lease
+  fence. A record holds the lease's id, lock key, principal, fence and
+  hold, the hold left when it was written and the writing leader's time:
+  never a deadline another node's clock judges alone.
+  - Written on acquire (a record that cannot be written refuses the lease,
+    `503 lease_not_kept`), rewritten on renew (a failed write keeps the
+    lease and is logged), deleted on release, expiry and forced release.
+    Shutdown (`dispose`, a lost lead) never writes or deletes one, so a
+    leader stopping after a takeover leaves its successor's records alone.
+  - A leader adopts (`DatastoreLockLeases.adopt`) at boot, before serve
+    listens, and on every later takeover in `onLead`. It reads the highest
+    complete prefix at or below its own fence (prefixes compared as
+    numbers; complete means its `complete` marker is there), copies every
+    record under its own prefix, writes its own marker, then deletes the
+    lower prefixes, marker first; an expired record is removed from its
+    own prefix as it is adopted. A crash before the marker leaves a prefix
+    the next leader skips. A leader deposed before it noticed writes into
+    its own prefix, which no later leader reads. A store that fails during
+    adoption is tried again with backoff, lease requests waiting meanwhile:
+    never served with leases left unadopted.
+  - While a kept lease is not adopted, serve's own runs do not take its
+    key's lock: they lock apart from the lease API, so each waits at the
+    own-lock gate (`own_lock_gate.ts`, `DatastoreLockLeases.whenAdopted`)
+    for that key, every key while the kept leases cannot be read, and gets
+    a lock timeout if it is still pending when the lock wait ends. A run
+    never runs on a behavior someone still holds a kept lease on.
+  - An adopted lease takes the node's local lock for its key, keeps its id,
+    principal, fence and hold, and ends when its hold left passes, with
+    `WRITER_LEASE_CLOCK_SKEW_MS` allowed in the holder's favour. A lease
+    whose partition fence is already above its own was superseded and is
+    dropped. One whose local lock cannot be taken yet (a run of the
+    leader before, not past its TTL) keeps its record: adoption is tried
+    again with backoff until the lock frees or the lease expires, never
+    costing its holder the lease.
+  - Until adoption ends, lease requests and commits answer `503
+    serve_not_leader`, so no caller takes an adopted key first. The
+    holder's renewal then finds its lease, and `fencedLeaseOn` refuses
+    another caller's unleased commit as before the takeover. Gating every
+    commit, not only those an unadopted lease covers, is deliberate: a
+    control plane that cannot list is the storage chunks live on, so
+    commits would fail anyway, and correctness comes before availability.
+- **Forced release** (swamp-club#4195). `swamp datastore lock release
+  --force --behavior <type/id>` on a serve-mode checkout asks serve to end
+  the explicit lease on that behavior, whoever holds it (`DELETE locks`
+  with `{lockKey}`, `admin` only). Its record is deleted; no fence is
+  raised: serve already answers `commit_lease-lost` to any commit naming an
+  ended lease, so the absent holder's queued work is later sent under no
+  lease and rebased, never applied over newer data. If the record cannot
+  be removed (three tries), the lease has still ended at serve, but a
+  takeover could adopt it again: serve answers 503
+  `lease_record_not_removed` (audited as a failure), the CLI exits 75, and
+  forcing the release again removes the leftover record. `swamp datastore
+  status --server` lists the explicit leases the node holds
+  (`explicitLeases`: lock key, holder, expiry), for admins; a follower
+  holds none.
 
 `integration/serve_upstream_lock_test.ts` runs two checkouts, each in a
 Worker as a machine of its own, saving ten versions each of one behavior's
@@ -7509,7 +7571,11 @@ never relies on:
 
 | Serve's reply | The CLI's error | Exit |
 |---|---|---|
-| Unreachable, request never sent | `datastore_v3_serve_unreachable`, outbox entry discarded, nothing changed | 75 |
+| Unreachable when the command starts, copy has read the feed | offline mode ("Working offline" below): allowed work is queued and the command succeeds | 0 |
+| Unreachable when the command starts, the work needs a lease the checkout does not hold | `datastore_v3_offline_lease_required`, nothing ran | 75 |
+| Unreachable when the command starts, a definition edit | `datastore_v3_offline_config_edit`, naming the definition by kind and name, nothing changed | 75 |
+| Unreachable when the command starts, a copy that never read serve's feed | `datastore_v3_serve_unreachable` (`ServeNeverReadError`): an empty copy would pass for an empty datastore, so nothing is read or changed | 75 |
+| Unreachable mid-command, request never sent | `datastore_v3_serve_unreachable`, outbox entry discarded, nothing changed (the offline rules never judged this command's work) | 75 |
 | Unreachable after the request may have reached serve | outbox entry kept; the next recovery settles or re-sends it | 1 (may land) |
 | `401` | the `swamp auth server-login --server …` hint | 1 |
 | `409 stale_seq` | caught up and retried | — |
@@ -7520,7 +7586,10 @@ never relies on:
 | `410 commits_compacted` | serve's compacted base is loaded; a serve with no base route keeps the refusal | 1 (old serve) |
 
 A read that cannot reach serve uses the copy as it is and warns that it may be
-out of date. A write never falls back to storage.
+out of date; in json mode it says so as a `datastore_offline` notice on
+stderr, as a writing command does. A write never falls back to storage. An entry that may have
+reached serve keeps its outbox entry even when its unit fails
+(swamp-club#4195); it was discarded before.
 
 **Recovery.** `recoverV3Outbox` lands a serve-mode checkout's entries through
 the sink's forwarding store (`forwarded`). An entry whose txnId has landed at
@@ -7538,7 +7607,233 @@ that only while another holder's lease covers the partition; the entry is
 then left for a later recovery (marked left, so the floor never drops it),
 with its unit's run entries, so a run record never lands without its data
 commit. A lease serve reports as superseded (`stale-lease`) drops the entry
-as `lease-superseded`.
+as `lease-superseded`. Entries queued offline follow their own rules
+("Working offline" below).
+
+**Working offline** (swamp-club#4195). A serve-mode checkout keeps working
+while serve is unreachable, within these rules (`offline_write_policy.ts`,
+`serve_offline.ts`).
+
+- **Entered at a command's start only.** The writer hold's catch-up is the
+  one place offline mode begins, and only on `ServeUnreachableError` with a
+  copy that has read the feed (a never-read copy still refuses with exit
+  75). The command warns once that it works from the copy, naming the last
+  contact with serve. Offline mode is sticky: it lasts the whole command,
+  its commits queue even if serve comes back, and the next command sends
+  them. A command that started online and then loses serve fails as before
+  (exit 75): the rules never judged its work.
+- **Reads and read-kind methods** (`read`, `list`) run from the copy. What
+  they record (run records, outputs, data versions) is queued: none of it
+  conflicts, or it is rebased.
+- **A method or workflow step that changes things** runs only on a
+  behavior whose explicit lease the checkout recorded
+  (`model_leases.json`), taken while online, and only while that lease has
+  not ended by serve's clock: its `expiresAt` must be later than serve's
+  now (the local clock plus the last measured offset) plus
+  `WRITER_LEASE_CLOCK_SKEW_MS`. Without one it is refused before it starts
+  with `datastore_v3_offline_lease_required` (exit 75), naming `swamp
+  behavior lease acquire <name> --for <duration>`. Methods with no declared
+  kind count as changing things. `model method run` and each workflow step
+  are judged before they start; `integration/offline_entry_points_rules_test.ts`
+  classifies every command that takes the writer hold.
+- **Definition edits** are refused with `datastore_v3_offline_config_edit`
+  (exit 75): whether an edit is stale is serve's to decide (swamp-club#4097).
+- **The lock offline.** A behavior's lock is the checkout's local lock. A
+  recorded explicit lease is adopted with it, never renewed or caught up,
+  and still registered, so queued commits record it; the run is cancelled
+  if the lease's end (corrected for the offset and skew) passes. A
+  read-kind run takes the local lock only.
+- **The backstop.** The serve sink judges each queued commit by its
+  partition (`checkOfflineCommit`): run and auto-definition partitions
+  queue; config and the lockfile never do; a behavior's partition needs a
+  live lease or a read-kind run the command entry registered.
+- **Queued, not sent.** An allowed commit goes to the outbox marked
+  `offline` and the command succeeds (exit 0), warning once that the work
+  is saved in this checkout and will be sent by the next command that
+  reaches serve. Version numbers count queued entries, so two offline
+  commands, or two commits to one partition in one unit, never share a
+  version or seq (an indexed `outbox_versions` table, not every entry's
+  body). Chunk reads use the local cache only. A later command, offline or
+  online, reads what an earlier one queued: the data repository writes the
+  version's files and catalog row before the commit is queued, and a
+  catch-up that does not hold the queued commit leaves them in place. The
+  existing config a managed-config checkout has not adopted waits for the
+  next writing command that reaches serve.
+- **Leases while offline.** A command does not renew the checkout's
+  explicit leases with serve unreachable: it says so once, and each holds
+  until its recorded end.
+- **Serve's clock.** Every reply's `Date` header measures serve's clock
+  against the local one (half the round trip plus a second of uncertainty);
+  the last contact and offset are saved in the serve-mode state once per
+  command. Each serve-mode commit carries `executedAt` and `clockOffsetMs`
+  in the outbox. The commit envelope is unchanged, so no client puts a time
+  on a commit serve stores, and an older serve takes the commit as before.
+
+**Outbox states** (schema 6, `state` and `reason`). An entry with no state
+is pending, as before. `offline`: queued while serve was unreachable. No
+drop rule takes it (`stale-fence`, `overtaken`, `abandoned`, `expired`,
+`head-moved`, `unit-dropped` and the 7-day retry bound all skip it): it may
+be the only record of a change a run made to real infrastructure.
+`rejected`: the flush could not land it; kept and reported with its reason.
+`quarantined`: serve refused it for a grant the caller lacks; kept for an
+admin. An entry the sink is about to queue is prepared already marked
+`offline`, so a process that dies before the queue's own mark never leaves
+it pending. An entry its unit gave up (`abandoned_at`) is dropped as
+abandoned whatever its state: it was never acknowledged, its caller was
+told it failed, so it is never flushed later. The schema-6 backfill skips
+a body that is not valid JSON, so one damaged entry leaves the migration
+standing and is listed unreadable. An unreadable row with a state is kept, never discarded; an
+unreadable pending one is dropped, as before. An older swamp refuses a
+schema-6 outbox (`datastore_v3_outbox_schema_newer`).
+
+Only pending and `offline` entries hold a copy's reset (a token, address,
+namespace or access change, `ServeCopyHoldsUnlandedCommitsError`): they can
+still land. `rejected` and `quarantined` entries never land again, so they
+do not hold it; the reset empties the outbox in place around them
+(`resetKeepingKept`: the fence chain and the sweep start over), never
+removing the file while it keeps any.
+
+**The flush** (`offline_flush.ts`). It runs inside the outbox recovery, so
+only under the writer hold: read-only commands never flush. Once serve is
+reachable, entries go in outbox order, one at a time, each built under its
+original txnId, so a flush cut off part-way settles what landed and never
+lands an entry twice.
+
+- **Rebased, always.** Every entry that records a data version goes
+  through `rebaseOfflineCommits` (`offline_rebase.ts`), even when its base
+  did not move: each version it writes anew is renumbered onto the end of
+  its name (the lowest just above the high-water mark, unless already
+  above it), rewritten everywhere it appears (record keys, intents,
+  metadata and `metadata.yaml`, the latest marker), and its metadata
+  `createdAt` becomes the corrected time it ran. Nothing committed is
+  renumbered. A renumbered version never lands on a number another entry
+  of the partition still holds queued, so a queued number never names two
+  versions (without another writer meanwhile nothing moves; after one, the
+  skipped numbers stay empty). Runs, outputs and auto-definitions pass
+  through.
+- **Later entries follow earlier ones.** Entries are sent one at a time,
+  so each landed entry hands what it renumbered, the metadata digests it
+  rewrote and the corrected `createdAt` of its versions (the rebase's
+  `OfflineRebaseCarry`) to the partition's later entries: a removal or an
+  append of a version an earlier offline entry wrote names that version as
+  it landed, and an append's `expect` follows the rewritten metadata. The
+  carry is recorded with the landed entry (`outbox_landed_offline.carry`),
+  so a flush cut off between two entries still remaps the second in a
+  later command; it is kept while the partition has an entry queued
+  offline, past the txnId retention. An entry a cut-off flush landed but
+  never recorded is recorded by the next recovery, its carry read by
+  pairing its queued commit with the one serve holds under its txnId.
+  Without this a removal of a version the checkout renumbered would delete
+  another writer's version that took its queued number.
+- **Latest** ("Latest after a rebase" in `design/primitives/data.md`,
+  `latest_choice.ts`). An offline write becomes latest only when it was
+  observed more than 5 minutes (`LATEST_WINDOW_MS`) after the current
+  latest. It is judged only against versions the offline writer could not
+  have seen: ones that landed after its entry's base and are not this
+  checkout's own offline work, landed by this flush or an earlier one
+  (`outbox_landed_offline`, kept for the txnId retention). A restatement
+  is never the checkout's own, even inside its own commit: it stands for
+  another writer's version and competes with that version's observation
+  time, so every later entry of the flush is judged against it too. Each
+  entry that leaves latest in place restates it, so latest is right after
+  every commit of the flush, including one cut off part-way; deferring one
+  restatement to the last entry would leave the wrong latest readable in
+  between. A write's observation time is its `executedAt` corrected by the
+  recorded offset; a committed version's is the earlier of its
+  serve-stamped commit time and its `createdAt` (once compaction removed
+  the commit, `createdAt` alone, the writer's clock), followed through any
+  restatement to its source. Otherwise the current latest stays: the commit
+  restates it as a new highest version (a put of the same chunk, its
+  metadata with the new version and the reserved tag `_swamp.restates`
+  naming the version whose content it holds, the data-version op and the
+  latest marker), so the highest live version is latest for every reader.
+  A latest that was renamed or has a lifecycle state is not restated. One
+  whose content serve will not let the flusher name (`403
+  chunk_not_provided` on a commit that restates it) is sent again without
+  the restatement: the rebased version then becomes latest and the report
+  says so. Keep-last-N collection does not count restatements.
+- **Under its lease** while serve still holds it. One that lapsed, was
+  released or force-released, or was superseded is sent under no lease,
+  rebased: never applied over what landed meanwhile. Refused because
+  another holder's lease covers the behavior now, it stays `offline` for a
+  later flush.
+- **A removal whose target changed** (its version no longer live, or its
+  record's digest moved) is `rejected`, with the rest of its commit.
+- **Refused for a grant** (`403` with reason `forbidden`) is
+  `quarantined`; refused for its content (`content-refused`, a forwarded
+  run's outputs) is `rejected`.
+- **Serve unreachable again** stops the flush; the rest stays `offline`.
+- **An error of the entry's own** (a chunk missing from the checkout's
+  cache, content that does not check, a commit that cannot be rebuilt)
+  makes it `rejected`, and the flush goes on. Any other local failure (a
+  full disk, a refused permission) stops the flush and the entry stays
+  `offline`, tried again by a later command.
+- An entry that may have reached serve and is still unsettled past the
+  8-day txnId retention (`COMPACTED_TXN_RETENTION_MS`) cannot be settled
+  by txnId: it is `rejected` (possible duplicate), never resent blind.
+- Each command reports once what its flush did: versions rebased, which
+  version holds each name's latest once the flush ends (`latestAtEnd`),
+  entries rejected or quarantined.
+
+**Quarantine.** A quarantined entry is deposited with serve, with its
+chunks: a revoked principal cannot `PUT chunks`, so serve keeps both in the
+control plane under `quarantine/<txnId>`, with the depositing principal and
+the reason. Serve stamps the caller as the principal and runs
+`authorizeCommit` again, taking the deposit only when that refuses it as
+`forbidden`, so the route is not a drop box for anything else; it refuses a
+txnId that already landed (`quarantine_landed`, 409), whose acceptance would
+record another commit's seq against it; and it keeps one only
+when the caller may read the commit's partition, as `GET
+partitions/{p}/commits` decides (`quarantine_not_readable`, 403,
+otherwise): a caller with no stake in a behavior cannot fill the shared
+caps with changes refused by construction. Deposits are capped at 32 MiB of
+chunks per deposit (`MAX_QUARANTINE_DEPOSIT_BYTES`, far below
+`MAX_COMMIT_BODY_BYTES`, since a control-plane put holds the object in
+memory), 32 held and 128 MiB held per principal
+(`MAX_QUARANTINED_BYTES_PER_PRINCIPAL`), and 1024 held in all; an accepted
+or discarded change frees its share. A larger commit stays quarantined in
+the checkout only. `swamp
+datastore status` lists the checkout's `offline`, `rejected` and
+`quarantined` entries; with `--server`, an admin also sees serve's
+quarantine. `swamp datastore quarantine accept <txn_id>` (`admin` only)
+moves the commit's chunks into chunk storage and applies it through the
+normal commit path, rebased, with its content bindings checked again. The
+admin's authority answers only for the write grant the author lacked:
+everything the commit carries or names (expression, vault and data
+references) is judged with the author's access as serve knows it now: the
+principal it is stamped as, with the groups serve itself keeps for it,
+read from the current policy. The identity-provider groups and collectives
+the author's token carried at deposit are kept in the record for the audit
+trail only: serve cannot read them again for someone else, so they are
+never lent from the past. A change the author may not make that way is
+refused (`quarantine_content_refused`, 403, audited) and stays held for an
+admin to discard. A chunk the deposit did not carry is the rebase restating
+the current latest: the author must be able to read it, as a forwarded
+commit's possession is proven, or the accept answers `chunk_not_provided`
+and lands the change without the restatement, its version then latest, as
+a member's own flush does. A non-admin accept is refused and audited, as a
+non-admin discard or forced release is. The commit's principal stays the
+original author; the accepting admin is
+recorded in the quarantine record (kept, marked accepted) and the serve
+audit log, never on the commit: `Commit.fromJSON` refuses unknown fields,
+and older checkouts and followers read commits from the feed. The member's
+next command settles its entry by txnId and says it was accepted at
+serve.
+
+A change that must not land is discarded instead: `swamp datastore
+quarantine discard <txn_id>` (`admin` only, audited as
+`datastore.quarantine.discard` whether it is allowed or refused). Serve
+removes the held content and keeps the record under
+`quarantine-discarded/<txnId>`, marked discarded with the admin and when;
+only held records count against the caps, so a discard frees room for
+other deposits. Discarding twice answers a duplicate; an accepted change
+cannot be discarded (`quarantine_accepted`) and a discarded one cannot be
+accepted (`quarantine_discarded`). Accept and discard run one at a time
+with deposits, so they never both act on one change. The member's next
+command asks serve what became of each quarantined entry
+(`GET quarantine/<txnId>`, answered only to its author or an admin) and
+keeps a discarded one as `rejected` with the reason "discarded at serve by
+an admin": kept, never sent again.
 
 **Limits (later items).**
 
@@ -7548,10 +7843,12 @@ as `lease-superseded`.
   records it now allows only through a reset of the copy (swamp-club#4089,
   "Reset when the caller's read access changes" above): the second command
   after the change, or later within the cooldown.
-- Offline writes are refused, not queued (`p5-offline`).
-- Leases, explicit ones included, live in the leader's memory: a takeover
-  ends every lease, and its holders' runs are cancelled. Keeping them across
-  a takeover is `p5-offline`'s.
+- A command's lease lives in the leader's memory: a takeover ends it and
+  cancels its run. Explicit leases are kept ("Leases kept across a
+  takeover").
+- Recovering an explicit lease from a member who never came back is an
+  admin's forced release; nothing ends it sooner than its hold of up to
+  24 h.
 - Without `managedConfig`, behavior definitions are repository files
   (`models/`), not datastore records. Serve judges a forwarded run's step
   outputs against its own checkout's definitions, so a workflow run on a
@@ -7583,6 +7880,20 @@ as `lease-superseded`.
   part-way, a serve moved after a load and a claimed datastore;
   `integration/serve_datastore_base_test.ts` drives `GET base`'s filtering.
 - The error rules are each red-checked.
+- `integration/serve_v3_offline_flush_test.ts` reaches serve through a
+  proxy it takes down and brings back: a write under a lease lands with its
+  fence; two offline commands never share a version; work without a lease
+  is refused before it starts while reads and read-kind methods run; an
+  offline definition edit is refused; read-only commands never flush; the
+  three `latest` outcomes with serve's clock shifted; a lease ended while
+  offline lands after another member's write, rebased and unleased; a flush
+  cut off after a send resumes without duplicates. Property tests
+  (`offline_rebase_property_test.ts`) check that a rebase never renumbers a
+  committed version, that queued versions never collide, and that two
+  members flushing in either order never leave latest more than 5 minutes
+  behind the newest observation. `integration/serve_v3_team_mode_test.ts`
+  takes over from a leader while a member holds an explicit lease (Workers
+  as machines): the lease survives and its renewal succeeds.
 
 ### Team mode: leader election and followers (datastore rework Phase 5)
 

@@ -108,8 +108,11 @@ export interface ModelLeaseDeps {
   readonly now?: () => number;
 }
 
-/** The longest hold an explicit lease may ask for: serve's own bound. */
-export const MAX_LEASE_HOLD_MS = 3_600_000;
+/**
+ * The longest hold an explicit lease may ask for: serve's own bound, a day,
+ * so a lease can be checked out to work offline (swamp-club#4195).
+ */
+export const MAX_LEASE_HOLD_MS = 86_400_000;
 /** The shortest hold an explicit lease may ask for. */
 export const MIN_LEASE_HOLD_MS = 5_000;
 
@@ -144,7 +147,7 @@ export async function* modelLeaseAcquire(
           kind: "error",
           error: validationFailed(
             `--for must be between ${MIN_LEASE_HOLD_MS / 1000}s and ` +
-              `${MAX_LEASE_HOLD_MS / 60_000}m`,
+              `${MAX_LEASE_HOLD_MS / 3_600_000}h`,
           ),
         };
         return;

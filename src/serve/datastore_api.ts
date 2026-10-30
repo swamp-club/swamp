@@ -36,6 +36,9 @@
  * | `POST locks` | take serve's model or workflow-run lock for the caller: a lease |
  * | `PUT locks/{leaseId}` | renew a lease |
  * | `DELETE locks/{leaseId}` | release a lease |
+ * | `DELETE locks` | `{lockKey}`: end the lease on a lock whoever holds it; admin |
+ * | `POST quarantine` | keep a change serve refuses for a grant its author lacks |
+ * | `POST quarantine/{txnId}/accept` | land a kept change, as its author; admin |
  *
  * Every commit is authorised op by op on its intents
  * ({@link authorizeCommit}), its chunks are hashed as they arrive, the
@@ -48,10 +51,13 @@
 import type { AccessResource } from "../domain/access/access_decision_service.ts";
 import { unresolvedAccessResource } from "../domain/access/access_resources.ts";
 import type { Action } from "../domain/access/action.ts";
-import { parsePrincipal } from "../domain/access/principal.ts";
+import {
+  parsePrincipal,
+  principalToString,
+} from "../domain/access/principal.ts";
 import { restoreNamespace, SOLO_NAMESPACE } from "../domain/data/namespace.ts";
 import type { BlobRef } from "../domain/datastore_v3/blob_ref.ts";
-import { MAX_COMMIT_OPS } from "../domain/datastore_v3/commit.ts";
+import { Commit, MAX_COMMIT_OPS } from "../domain/datastore_v3/commit.ts";
 import {
   ADMIN_RESOURCE,
   type AggregateResourceResolver,
@@ -83,6 +89,32 @@ import {
 } from "../domain/datastore_v3/op.ts";
 import { CommitRejectedError } from "../domain/datastore_v3/partition.ts";
 import {
+  baseOf as quarantineBaseOf,
+  boundedQuarantineReason,
+  carriesExactly as quarantineCarriesExactly,
+  chunksOf as quarantineChunksOf,
+  isQuarantineTxnId,
+  MAX_QUARANTINE_DEPOSIT_BYTES,
+  MAX_RECORDED_MEMBERSHIPS,
+  principalKeyOf,
+  type QuarantineChunk,
+  quarantineHasRoom,
+  type QuarantineRecord,
+  type QuarantineStore,
+} from "../domain/datastore_v3/quarantine.ts";
+import type { DataMetadata } from "../domain/data/data_metadata.ts";
+import { resolveActorIdentity } from "../domain/serve_audit/actor_identity.ts";
+import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
+import { stringify as stringifyYaml } from "@std/yaml";
+import {
+  flushOfflineEntries,
+  type OfflineFlushPort,
+} from "../infrastructure/datastore_v3/offline_flush.ts";
+import {
+  ServeCommitRefusedError,
+  ServeUpstreamError,
+} from "../infrastructure/datastore_v3/serve_upstream_errors.ts";
+import {
   PartitionKey,
   partitionOf,
 } from "../domain/datastore_v3/partition_key.ts";
@@ -91,6 +123,7 @@ import { RecordKey } from "../domain/datastore_v3/record_key.ts";
 import { isControlPlaneModelType } from "../domain/models/control_plane_types.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import { createWorkflowRunId } from "../domain/workflows/workflow_id.ts";
+import type { YamlWorkflowRunRepository } from "../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import {
   ChunkIngestError,
   chunkReadResponse,
@@ -126,6 +159,7 @@ import {
   isCallerAuthorized,
   isCallerAuthorizedForAll,
   replicationErrorForClient,
+  resolveDisplayPrincipal,
 } from "./handlers/shared.ts";
 import {
   commitJSONFor,
@@ -148,12 +182,15 @@ import {
   type DatastoreLockLeases,
   DEFAULT_LOCK_TTL_MS,
   type LeaseBase,
+  LeaseRecordNotRemovedError,
   type LeaseView,
   type LockHolder,
+  lockKeyOf,
   type LockTarget,
   lockTargetOfPartition,
   parseLockKey,
 } from "./datastore_locks.ts";
+import { LEASE_RECORD_NOT_REMOVED_CODE } from "../domain/datastore_v3/persisted_lease.ts";
 import { ServeNotLeaderError } from "../domain/datastore_v3/serve_leader.ts";
 import { notLeaderResponse } from "./leader_link.ts";
 
@@ -168,6 +205,12 @@ export const MAX_ENVELOPE_BYTES = 4 * 1024 * 1024;
 export const MAX_CHUNKS_PER_COMMIT = 1024;
 /** The largest commit request body: envelope and chunks. */
 export const MAX_COMMIT_BODY_BYTES = 1024 * 1024 * 1024;
+/**
+ * The largest quarantine deposit request: its chunks, base64 in JSON, and
+ * its commit (swamp-club#4195).
+ */
+export const MAX_QUARANTINE_REQUEST_BYTES =
+  Math.ceil(MAX_QUARANTINE_DEPOSIT_BYTES / 3) * 4 + MAX_ENVELOPE_BYTES;
 /** The most hashes one `chunks/has` asks about. */
 export const MAX_HAS_HASHES = 1024;
 /** The largest page of commits or changes. */
@@ -196,6 +239,11 @@ export interface DatastoreApiDeps {
   readonly ledger: UploadLedger;
   /** The model and workflow-run locks serve holds for callers. */
   readonly locks: DatastoreLockLeases;
+  /**
+   * Where changes refused for a grant their author lacks are kept for an
+   * admin (swamp-club#4195); absent when serve keeps none.
+   */
+  readonly quarantine?: QuarantineStore;
   readonly now?: () => number;
 }
 
@@ -240,6 +288,12 @@ export async function handleDatastoreRequest(
   // only a caller reaches the leader through it or learns which node leads.
   const notLeader = followerDatastoreRefusal(req, route, sourceIp, deps.ctx);
   if (notLeader !== undefined) return await notLeader;
+  // A leader adopting the explicit leases its predecessor kept takes no
+  // lease request and no commit until it has (swamp-club#4195): either
+  // could otherwise act on a key an adopted lease holds.
+  if (deps.locks.adopting && waitsForAdoption(req, route)) {
+    return notLeaderResponse(new ServeNotLeaderError(undefined), false);
+  }
   // Taken before the reply is answered: a reload while it is answered then
   // shows as a change on the next reply, which rebuilds the copy, never as
   // the access a copy filtered under the old grants was built with.
@@ -256,6 +310,13 @@ export async function handleDatastoreRequest(
   const logId = logIdOf(deps.v3);
   if (logId !== undefined) headers.push([SERVE_DATASTORE_LOG_HEADER, logId]);
   return withHeaders(response, headers);
+}
+
+/** Whether `req` must wait for a new leader to adopt its kept leases. */
+function waitsForAdoption(req: Request, route: DatastoreRoute): boolean {
+  return route.kind === "locks" || route.kind === "lease" ||
+    route.kind === "quarantine-accept" ||
+    (route.kind === "commits" && req.method === "POST");
 }
 
 /**
@@ -420,7 +481,9 @@ async function answerDatastoreRequest(
           ? await api.acquireLock(req)
           : req.method === "GET"
           ? await api.listLocks(req)
-          : methodNotAllowed("GET, POST");
+          : req.method === "DELETE"
+          ? await api.forceReleaseLock(req)
+          : methodNotAllowed("DELETE, GET, POST");
       case "lease":
         if (req.method === "PUT") {
           return await api.renewLock(req, route.leaseId);
@@ -429,6 +492,22 @@ async function answerDatastoreRequest(
           return await api.releaseLock(route.leaseId);
         }
         return methodNotAllowed("DELETE, PUT");
+      case "quarantine":
+        return req.method === "POST"
+          ? await api.depositQuarantine(req)
+          : methodNotAllowed("POST");
+      case "quarantine-accept":
+        return req.method === "POST"
+          ? await api.acceptQuarantine(req, route.txnId)
+          : methodNotAllowed("POST");
+      case "quarantine-discard":
+        return req.method === "POST"
+          ? await api.discardQuarantine(route.txnId)
+          : methodNotAllowed("POST");
+      case "quarantine-change":
+        return req.method === "GET"
+          ? await api.quarantineState(route.txnId)
+          : methodNotAllowed("GET");
     }
   } catch (error) {
     return datastoreErrorResponse(error);
@@ -1170,6 +1249,15 @@ class DatastoreApi {
           "too_many_leases",
           "This caller holds too many locks: release some before taking another",
         );
+      case "not-kept":
+        return withHeaders(
+          failure(
+            503,
+            "lease_not_kept",
+            "Serve could not record the lease where its next leader would find it, so it did not grant it; try again",
+          ),
+          [["Retry-After", "1"]],
+        );
       case "held":
         // Who holds it is said only as far as the caller may know: itself,
         // another caller, or serve's own work. Never another's identity.
@@ -1266,13 +1354,712 @@ class DatastoreApi {
       await this.#deps.locks.release(principal, leaseId);
       return refused;
     }
-    const renewed: LeaseView | undefined = this.#deps.locks.renew(
+    const renewed: LeaseView | undefined = await this.#deps.locks.renew(
       principal,
       leaseId,
       ttlMs,
       holdMs as number | undefined,
     );
     return renewed === undefined ? leaseNotFound() : Response.json(renewed);
+  }
+
+  /**
+   * `DELETE locks`: `{lockKey}`. Ends the lease on a behavior's lock or a
+   * run's claim whoever holds it (swamp-club#4195): how an admin recovers
+   * an explicit lease its holder abandoned. Admin only. The key is parsed
+   * and made canonical once, and that key is both authorised and released.
+   */
+  async forceReleaseLock(req: Request): Promise<Response> {
+    const body = await readJson(req, 16 * 1024);
+    const fields = typeof body === "object" && body !== null &&
+        !Array.isArray(body)
+      ? body as Record<string, unknown>
+      : undefined;
+    const target = parseLockKey(fields?.lockKey);
+    if (target === undefined) {
+      return failure(
+        400,
+        "invalid_request",
+        'Body must be {"lockKey": "data/{type}/{id}/.lock" or "workflow-run-claims/{runId}/.lock"}',
+      );
+    }
+    const lockKey = lockKeyOf(target);
+    if (!this.#writeAuthority().allows("admin", ADMIN_RESOURCE)) {
+      this.#auditAdmin(
+        "datastore.lock.force-release",
+        "lock",
+        lockKey,
+        "failure",
+        "needs admin",
+      );
+      return failure(
+        403,
+        "forbidden",
+        "Force-releasing another caller's lease needs admin",
+      );
+    }
+    let ended;
+    try {
+      ended = await this.#deps.locks.forceRelease(target);
+    } catch (error) {
+      if (!(error instanceof LeaseRecordNotRemovedError)) throw error;
+      // The lease ended here, but a takeover may bring it back: refused as
+      // a temporary failure, so the admin forces the release again.
+      this.#auditAdmin(
+        "datastore.lock.force-release",
+        "lock",
+        lockKey,
+        "failure",
+        "lease ended; its kept record could not be removed",
+      );
+      return failure(503, LEASE_RECORD_NOT_REMOVED_CODE, error.message);
+    }
+    this.#auditAdmin(
+      "datastore.lock.force-release",
+      "lock",
+      ended === undefined ? lockKey : `${lockKey} held by ${ended.principal}`,
+      "success",
+      ended === undefined ? "no lease held" : undefined,
+    );
+    return Response.json(
+      ended === undefined ? { released: false, lockKey } : {
+        released: true,
+        lockKey,
+        heldBy: ended.principal,
+      },
+    );
+  }
+
+  /**
+   * `POST quarantine`: `{commit, base, chunks}`. Keeps a change a member's
+   * offline flush could not land because its author lacks a grant it needs
+   * (swamp-club#4195), for an admin to accept. Serve stamps the caller as
+   * its author and authorises the commit again: only a commit that is
+   * refused for a grant is kept, so the route is no store for anything
+   * else. Bounded per deposit and per author; errors name no detail of
+   * what serve holds.
+   */
+  async depositQuarantine(req: Request): Promise<Response> {
+    const store = this.#deps.quarantine;
+    if (store === undefined) {
+      return failure(
+        409,
+        "quarantine_unavailable",
+        "This server does not keep quarantined changes",
+      );
+    }
+    const body = await readBodyWithLimit(req, MAX_QUARANTINE_REQUEST_BYTES);
+    if (body === null) return quarantineTooLarge();
+    let commit: Commit;
+    let base: { readonly seq: number; readonly txnId?: string };
+    let chunks: QuarantineChunk[];
+    try {
+      const fields = JSON.parse(new TextDecoder().decode(body)) as Record<
+        string,
+        unknown
+      >;
+      commit = await Commit.fromJSON(fields.commit);
+      base = quarantineBaseOf(fields.base);
+      chunks = await quarantineChunksOf(fields.chunks);
+    } catch {
+      return failure(400, "invalid_request", "Malformed quarantine deposit");
+    }
+    const txnId = commit.txnId.toLowerCase();
+    const size = body.byteLength;
+    if (
+      !isQuarantineTxnId(txnId) || commit.namespace !== this.#namespace ||
+      chunks.reduce((sum, chunk) => sum + chunk.bytes.byteLength, 0) >
+        MAX_QUARANTINE_DEPOSIT_BYTES
+    ) {
+      return failure(400, "invalid_request", "Malformed quarantine deposit");
+    }
+    // Only the chunks the commit names are kept, and every one it names
+    // must come with it: serve stores none of an author it no longer trusts.
+    if (
+      !quarantineCarriesExactly(chunks, new Set(referencedChunks(commit.ops)))
+    ) {
+      return failure(
+        400,
+        "invalid_request",
+        "A deposit carries exactly the chunks its commit names",
+      );
+    }
+    await this.#catchUp();
+    // A txnId that already landed names a change serve holds: kept again
+    // it would be accepted against another commit's seq, misleading the
+    // record and the audit trail.
+    if (
+      await this.#v3.commitStore.landedSeq(
+        this.#v3.namespace,
+        commit.partition,
+        commit.txnId,
+      ) !== undefined
+    ) {
+      return failure(
+        409,
+        "quarantine_landed",
+        "A change whose txnId already landed is not kept",
+      );
+    }
+    const refusal = await authorizeCommit(
+      commit.partition,
+      commit.ops,
+      this.#resolver,
+      this.#writeAuthority(),
+      "deferred",
+    );
+    if (refusal.ok || refusal.reason !== "forbidden") {
+      return failure(
+        409,
+        "not_quarantinable",
+        "Only a change refused for a grant its author lacks is kept",
+      );
+    }
+    // Only a caller who may read the partition keeps a change to it, as
+    // GET partitions/{p}/commits decides: a caller with no stake in it
+    // cannot fill the shared caps with changes refused by construction.
+    if (
+      !this.#mayRead(
+        await partitionReadAccessOf(commit.partition, this.#resolver),
+      )
+    ) {
+      return failure(
+        403,
+        "quarantine_not_readable",
+        "Serve keeps a refused change only for a caller who may read its partition",
+      );
+    }
+    const principal = this.#caller.principal;
+    // The caps are checked and the deposit made with no other deposit in
+    // between, so deposits sent together cannot pass them.
+    return await withQuarantineLock(store, async () => {
+      const existing = await store.find(txnId);
+      if (existing !== undefined) {
+        if (existing.principal !== principal) {
+          return failure(
+            409,
+            "not_quarantinable",
+            "Only a change refused for a grant its author lacks is kept",
+          );
+        }
+        return Response.json({ deposited: true, txnId, duplicate: true });
+      }
+      const principalKey = await principalKeyOf(principal);
+      if (
+        !quarantineHasRoom(await store.heldKeys(), principalKey, {
+          held: await store.heldBytesOf(principalKey),
+          deposit: size,
+        })
+      ) {
+        return failure(
+          429,
+          "quarantine_full",
+          "Serve keeps no more quarantined changes from this caller now; an admin must accept or discard some first",
+        );
+      }
+      await store.deposit(
+        {
+          txnId,
+          partition: commit.partition.toString(),
+          principal,
+          // The author's membership as serve sees it now: an accept judges
+          // the content with the author's access, not the admin's.
+          groups: boundedMemberships(this.#caller.access.groups),
+          collectives: boundedMemberships(this.#caller.access.collectives),
+          reason: boundedQuarantineReason(refusal.message),
+          depositedAt: new Date(this.#now()).toISOString(),
+          bytes: size,
+          state: "held",
+        },
+        { commit: commit.toJSON(), base, chunks },
+      );
+      logger
+        .info`Kept a change by ${principal} to ${commit.partition} that it lacks a grant for, for an admin to accept`;
+      return Response.json({ deposited: true, txnId }, { status: 201 });
+    });
+  }
+
+  /**
+   * `POST quarantine/{txnId}/accept`: lands a kept change (swamp-club#4195).
+   * Admin only, checked before anything is read. The change is rebased on
+   * what landed meanwhile, as its author's own flush would rebase it, and
+   * lands under its txnId as its author: the author's next command finds it
+   * landed and settles it. The admin is recorded on the kept record and in
+   * serve's audit log, never on the commit. Runs one at a time with
+   * deposits and discards, so an accept and a discard of one change never
+   * both act.
+   */
+  async acceptQuarantine(req: Request, rawTxnId: string): Promise<Response> {
+    const store = this.#deps.quarantine;
+    if (store === undefined) {
+      return failure(
+        409,
+        "quarantine_unavailable",
+        "This server does not keep quarantined changes",
+      );
+    }
+    const txnId = rawTxnId.toLowerCase();
+    if (!this.#writeAuthority().allows("admin", ADMIN_RESOURCE)) {
+      this.#auditAdmin(
+        "datastore.quarantine.accept",
+        "quarantine",
+        txnId,
+        "failure",
+        "needs admin",
+      );
+      return failure(
+        403,
+        "forbidden",
+        "Accepting a quarantined change needs admin",
+      );
+    }
+    if (!isQuarantineTxnId(txnId)) {
+      return failure(400, "invalid_request", "Not a txnId");
+    }
+    return await withQuarantineLock(
+      store,
+      () => this.#accept(req, store, txnId),
+    );
+  }
+
+  async #accept(
+    req: Request,
+    store: QuarantineStore,
+    txnId: string,
+  ): Promise<Response> {
+    const record = await store.find(txnId);
+    if (record === undefined) {
+      return failure(404, "not_found", "No such quarantined change");
+    }
+    if (record.state === "accepted") {
+      return Response.json({ accepted: true, duplicate: true, ...record });
+    }
+    if (record.state === "discarded") {
+      return failure(
+        409,
+        "quarantine_discarded",
+        "An admin discarded that quarantined change; it cannot be accepted",
+      );
+    }
+    const content = await store.content(txnId);
+    if (content === undefined) {
+      return failure(404, "not_found", "No such quarantined change");
+    }
+    const commit = await Commit.fromJSON(content.commit);
+    // The record and its content are judged by the same canonical txnId and
+    // partition the change lands under, and the content must still carry
+    // every chunk its commit names: the admin's access never vouches for a
+    // chunk the author did not provide.
+    if (
+      commit.txnId.toLowerCase() !== txnId ||
+      commit.partition.toString() !== record.partition ||
+      commit.namespace !== this.#namespace ||
+      !quarantineCarriesExactly(
+        content.chunks,
+        new Set(referencedChunks(commit.ops)),
+      )
+    ) {
+      return failure(
+        409,
+        "quarantine_corrupt",
+        "The quarantined change does not match its record",
+      );
+    }
+    await this.#store(content.chunks, req.signal);
+    const deposited = new Set(content.chunks.map((chunk) => chunk.sha256));
+    const outcome: AcceptOutcome = { landed: false };
+    const report = await flushOfflineEntries(
+      this.#acceptPort(record, deposited, outcome, req.signal),
+      [{
+        commit,
+        unitId: txnId,
+        base: { seq: content.base.seq, txnId: content.base.txnId },
+        sequence: 0,
+        createdAt: Date.parse(record.depositedAt) || this.#now(),
+        state: "offline",
+      }],
+      {
+        writer: { host: "serve", pid: Deno.pid, instance: this.#requestId },
+        fence: this.#v3.writerFence() ?? 0,
+        signal: req.signal,
+      },
+    );
+    if (outcome.contentRefused !== undefined) {
+      // The author's own access refuses what the change carries or names:
+      // an admin's accept overrides the write grant it lacked, never what
+      // the author may read. Kept held, so an admin can discard it.
+      this.#auditAccept(
+        record,
+        "failure",
+        `content refused under ${record.principal}'s access: ${outcome.contentRefused}`,
+      );
+      return failure(
+        403,
+        "quarantine_content_refused",
+        `The quarantined change cannot land: its author ${record.principal} may not use what it carries or names (${outcome.contentRefused}). Discard it with \`swamp datastore quarantine discard ${txnId}\`.`,
+      );
+    }
+    if (!outcome.landed) {
+      this.#auditAccept(record, "failure", outcome.reason ?? outcome.state);
+      return report.waiting > 0
+        ? failure(
+          409,
+          "quarantine_waiting",
+          "A lease covers that behavior now: accept it again once the lease ends",
+        )
+        : failure(
+          409,
+          "quarantine_refused",
+          `The quarantined change cannot land: ${outcome.reason ?? "refused"}`,
+        );
+    }
+    const seq = await this.#v3.commitStore.landedSeq(
+      this.#v3.namespace,
+      commit.partition,
+      commit.txnId,
+    );
+    const accepted = {
+      ...record,
+      state: "accepted" as const,
+      acceptedBy: this.#caller.principal,
+      acceptedAt: new Date(this.#now()).toISOString(),
+      ...(seq === undefined ? {} : { seq }),
+    };
+    await store.markAccepted(accepted);
+    this.#auditAccept(record, "success");
+    const warning = await this.#afterCommit(commit.partition);
+    return Response.json({
+      accepted: true,
+      ...accepted,
+      renumbered: report.renumbered,
+      latest: report.latest,
+      ...(warning === undefined ? {} : { warning }),
+    });
+  }
+
+  /**
+   * `GET quarantine/{txnId}`: whether serve still holds the change
+   * `txnId`, accepted it or discarded it (swamp-club#4195), so its author's
+   * checkout can settle the entry it keeps. Only its author or an admin is
+   * told; anyone else is answered as if serve held none.
+   */
+  async quarantineState(rawTxnId: string): Promise<Response> {
+    const store = this.#deps.quarantine;
+    const txnId = rawTxnId.toLowerCase();
+    if (store === undefined || !isQuarantineTxnId(txnId)) {
+      return failure(404, "not_found", "No such quarantined change");
+    }
+    const record = await store.find(txnId);
+    if (
+      record === undefined ||
+      (record.principal !== this.#caller.principal &&
+        !this.#writeAuthority().allows("admin", ADMIN_RESOURCE))
+    ) {
+      return failure(404, "not_found", "No such quarantined change");
+    }
+    return Response.json({ txnId, state: record.state });
+  }
+
+  /**
+   * `POST quarantine/{txnId}/discard`: discards a kept change so it never
+   * lands (swamp-club#4195). Admin only, checked before anything is read,
+   * and audited either way. The held content is removed and the record kept,
+   * marked discarded with the admin and when: it no longer counts against
+   * any cap, and its author's next command settles its entry as declined.
+   * A change already accepted cannot be discarded.
+   */
+  async discardQuarantine(rawTxnId: string): Promise<Response> {
+    const store = this.#deps.quarantine;
+    if (store === undefined) {
+      return failure(
+        409,
+        "quarantine_unavailable",
+        "This server does not keep quarantined changes",
+      );
+    }
+    const txnId = rawTxnId.toLowerCase();
+    if (!this.#writeAuthority().allows("admin", ADMIN_RESOURCE)) {
+      this.#auditAdmin(
+        "datastore.quarantine.discard",
+        "quarantine",
+        txnId,
+        "failure",
+        "needs admin",
+      );
+      return failure(
+        403,
+        "forbidden",
+        "Discarding a quarantined change needs admin",
+      );
+    }
+    if (!isQuarantineTxnId(txnId)) {
+      return failure(400, "invalid_request", "Not a txnId");
+    }
+    return await withQuarantineLock(store, async () => {
+      const record = await store.find(txnId);
+      if (record === undefined) {
+        return failure(404, "not_found", "No such quarantined change");
+      }
+      if (record.state === "discarded") {
+        return Response.json({ discarded: true, duplicate: true, ...record });
+      }
+      if (record.state === "accepted") {
+        return failure(
+          409,
+          "quarantine_accepted",
+          "That quarantined change was accepted and has landed; it cannot be discarded",
+        );
+      }
+      const discarded: QuarantineRecord = {
+        ...record,
+        state: "discarded",
+        discardedBy: this.#caller.principal,
+        discardedAt: new Date(this.#now()).toISOString(),
+      };
+      await store.markDiscarded(discarded);
+      this.#auditAdmin(
+        "datastore.quarantine.discard",
+        "quarantine",
+        `${record.partition} ${record.txnId} by ${record.principal}`,
+        "success",
+      );
+      logger
+        .info`Discarded the quarantined change ${txnId} by ${record.principal} to ${record.partition}; it never lands`;
+      return Response.json({ discarded: true, duplicate: false, ...discarded });
+    });
+  }
+
+  /**
+   * The flush port an accept lands a kept change through: serve's own log,
+   * read and written directly, with every commit judged as a forwarded one
+   * is: the admin's authority decides the write grant, the author's access
+   * decides the content, and the author is stamped.
+   */
+  #acceptPort(
+    record: QuarantineRecord,
+    deposited: ReadonlySet<string>,
+    outcome: AcceptOutcome,
+    signal: AbortSignal,
+  ): OfflineFlushPort {
+    const v3 = this.#v3;
+    const ns = v3.namespace;
+    return {
+      catchUpPartition: () => this.#catchUp(),
+      partitionState: (_ns, partition) =>
+        v3.commitStore.partitionState(ns, partition),
+      partitionCommits: async (_ns, partition) => {
+        const commits: Commit[] = [];
+        let from = 1;
+        while (true) {
+          let page;
+          try {
+            page = await v3.commitStore.readPartition(ns, partition, from, 500);
+          } catch (error) {
+            // What was compacted is not read: those versions' times are
+            // unknown to the rebase.
+            if (
+              error instanceof CommitsCompactedError &&
+              error.compactedSeq !== undefined && error.compactedSeq >= from
+            ) {
+              from = error.compactedSeq + 1;
+              continue;
+            }
+            throw error;
+          }
+          if (page.length === 0) return commits;
+          for (const change of page) commits.push(change.commit);
+          from = page[page.length - 1].commit.seq + 1;
+        }
+      },
+      head: async (_ns, partition) =>
+        (await v3.commitStore.head(ns, partition)).seq,
+      send: async (commit) => {
+        await this.#landAccepted(commit, record, deposited, outcome, signal);
+      },
+      encodeMetadata: encodeDataMetadata,
+      storeChunks: async (_ns, bytes) => {
+        const batch = v3.chunkStore.beginBatch(namespaceOf(v3));
+        try {
+          const blob = await v3.chunkStore.write(
+            namespaceOf(v3),
+            bytes,
+            signal,
+            batch,
+          );
+          await batch.commit(signal);
+          return blob;
+        } finally {
+          await batch.discard();
+        }
+      },
+      mark: (_keys, state, reason) => {
+        outcome.state = state;
+        if (reason !== undefined) outcome.reason = reason;
+        return Promise.resolve();
+      },
+      settle: () => {
+        outcome.landed = true;
+        return Promise.resolve();
+      },
+    };
+  }
+
+  /**
+   * Lands one rebased commit of a kept change, as `commit` does a forwarded
+   * one: content judged first, then authorised again under the forwarded
+   * lock with the lease that covers the partition, stamped as its author.
+   * The admin's authority answers only for the write grant the author
+   * lacked; everything the commit carries or names (expression, vault and
+   * data references, chunks it did not deposit) is judged with the access
+   * of the author it is stamped as, so an accept never lends the admin's
+   * reads to the author.
+   */
+  async #landAccepted(
+    commit: Commit,
+    record: QuarantineRecord,
+    deposited: ReadonlySet<string>,
+    outcome: AcceptOutcome,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const partition = commit.partition;
+    const ops = commit.ops;
+    await this.#catchUp();
+    const resolver = memoized(serveResolver(this.#deps.ctx, this.#v3));
+    const author = authorAccessOf(record, this.#caller.access.sourceIp);
+    // Proof of possession, as a forwarded commit gives it: a chunk the
+    // deposit did not carry is the rebase restating the current latest,
+    // and the author must be able to read it. Otherwise serve answers as it
+    // answers a member's own flush, chunk_not_provided, and the flush sends
+    // the change again without the restatement; the author is never lent a
+    // read they lack.
+    for (const hash of referencedChunks(ops)) {
+      if (
+        deposited.has(hash) ||
+        (await this.#mayReference(hash, resolver, author))
+      ) {
+        continue;
+      }
+      throw new ServeUpstreamError(
+        403,
+        "chunk_not_provided",
+        `The change names chunk ${hash}, which its author neither deposited nor may read`,
+      );
+    }
+    const content = new ForwardedContentAuthority({
+      ctx: this.#deps.ctx,
+      v3: this.#v3,
+      partition,
+      caller: author,
+      requestId: this.#requestId,
+      resolver,
+      possesses: async (hash) =>
+        deposited.has(hash) ||
+        (await this.#mayReference(hash, resolver, author)),
+      signal,
+    });
+    const checked = await authorizeCommit(
+      partition,
+      ops,
+      resolver,
+      this.#writeAuthority(),
+      content,
+    );
+    if (!checked.ok) {
+      if (checked.reason === "content-refused") {
+        outcome.contentRefused = checked.message;
+      }
+      throw refusedError(checked);
+    }
+    const request = {
+      partition,
+      txnId: commit.txnId,
+      expectedSeq: commit.seq - 1,
+      principal: record.principal,
+      ops,
+    };
+    const landed = await withForwardedLock(this.#v3, async () => {
+      await this.#catchUp();
+      const recheck = await authorizeCommit(
+        partition,
+        ops,
+        memoized(serveResolver(this.#deps.ctx, this.#v3)),
+        this.#writeAuthority(),
+        "deferred",
+      );
+      if (!recheck.ok) return recheck;
+      if (!(await content.unchanged())) return "content-changed" as const;
+      const lease = this.#leaseOpFor(partition, undefined);
+      if (lease === "lost") return "lease-lost" as const;
+      try {
+        return await commitForwarded(this.#v3, request, signal);
+      } catch (error) {
+        if (error instanceof StaleSeqError) return "seq-gap" as const;
+        throw error;
+      }
+    });
+    if (landed === "seq-gap" || landed === "content-changed") {
+      throw new CommitRejectedError(
+        "seq-gap",
+        `Partition ${partition} moved while the change was judged`,
+      );
+    }
+    if (landed === "lease-lost") {
+      throw new CommitRejectedError(
+        "lease-lost",
+        `A lease covers ${partition} now`,
+      );
+    }
+    if ("ok" in landed) throw refusedError(landed);
+    this.#deps.ledger.release(this.#storageNamespace, [...deposited]);
+  }
+
+  #auditAccept(
+    record: QuarantineRecord,
+    outcome: "success" | "failure",
+    detail?: string,
+  ): void {
+    this.#auditAdmin(
+      "datastore.quarantine.accept",
+      "quarantine",
+      `${record.partition} ${record.txnId} by ${record.principal}`,
+      outcome,
+      detail,
+    );
+  }
+
+  /** Records an admin action on serve's datastore in the audit log. */
+  #auditAdmin(
+    action: string,
+    resourceKind: string,
+    resourceName: string,
+    outcome: "success" | "failure",
+    detail?: string,
+  ): void {
+    const emitter = this.#deps.ctx.auditEmitter;
+    if (emitter === undefined) return;
+    const principal = this.#caller.access.principal;
+    emitter.emit(buildAuditEvent({
+      instanceId: this.#deps.ctx.instanceId ?? "unknown",
+      category: "admin",
+      stage: "response",
+      outcome,
+      action,
+      resourceKind,
+      resourceName,
+      principalKind: principal?.kind ?? "anonymous",
+      principalId: principal?.id ?? "anonymous",
+      initiatedBy: principal
+        ? resolveDisplayPrincipal(principal, this.#deps.ctx)
+        : "ghost",
+      actor: resolveActorIdentity(
+        principal,
+        this.#deps.ctx.resolvedUserNames,
+        this.#caller.access.loginIdentity,
+      ),
+      sourceIp: this.#caller.access.sourceIp,
+      requestId: this.#requestId,
+      ...(detail === undefined ? {} : { detail }),
+    }));
   }
 
   /** `DELETE locks/{leaseId}`: releases the caller's lease. */
@@ -1322,37 +2109,11 @@ class DatastoreApi {
    * partition: its fence starts from what this process issued.
    */
   async #leaseBase(target: LockTarget): Promise<LeaseBase> {
-    const partition = await this.#partitionOfLock(target);
-    if (partition === undefined) return { leaseFence: undefined, names: [] };
-    const marks = await this.#v3.commitStore.leaseMarks(
-      this.#namespace,
-      partition,
+    return await leaseBaseOf(
+      this.#v3,
+      this.#deps.ctx.repoContext.workflowRunRepo,
+      target,
     );
-    // A run's partition holds no data versions; only a behavior's floor
-    // is sent.
-    return target.kind === "model"
-      ? marks
-      : { leaseFence: marks.leaseFence, names: [] };
-  }
-
-  /** The partition `target`'s lease covers; undefined for an unknown run. */
-  async #partitionOfLock(
-    target: LockTarget,
-  ): Promise<PartitionKey | undefined> {
-    if (target.kind === "model") {
-      return partitionOf({
-        kind: "model",
-        type: ModelType.create(target.modelType),
-        id: target.modelId,
-      });
-    }
-    const found = await this.#deps.ctx.repoContext.workflowRunRepo
-      .findGlobalById(createWorkflowRunId(target.runId));
-    return found === null ? undefined : partitionOf({
-      kind: "run",
-      workflowId: found.workflowId,
-      runId: target.runId,
-    });
   }
 
   /** A TTL within the leases' bounds, or the 400 refusing it. */
@@ -1472,10 +2233,11 @@ class DatastoreApi {
   async #mayReference(
     sha256: string,
     resolver: AggregateResourceResolver = this.#resolver,
+    as?: AccessCaller,
   ): Promise<boolean> {
     if (
       this.#deps.ledger.holds(
-        this.#caller.principal,
+        as === undefined ? this.#caller.principal : principalLabelOf(as) ?? "",
         this.#storageNamespace,
         sha256,
         this.#now(),
@@ -1497,8 +2259,12 @@ class DatastoreApi {
             identity.name,
             sha256,
             resolver,
+            as,
           )
-          : this.#mayRead(await partitionReadAccessOf(partition, resolver))
+          : this.#mayRead(
+            await partitionReadAccessOf(partition, resolver),
+            as,
+          )
       ) {
         return true;
       }
@@ -1519,6 +2285,7 @@ class DatastoreApi {
     name: string,
     sha256: string,
     resolver: AggregateResourceResolver,
+    as?: AccessCaller,
   ): Promise<boolean> {
     let records;
     try {
@@ -1536,7 +2303,7 @@ class DatastoreApi {
         record.content.blob.chunkHashes().includes(sha256) &&
         this.#mayRead([
           await definitionRecordReadAccessOf(name, record.key, resolver),
-        ])
+        ], as)
       ) {
         return true;
       }
@@ -1553,8 +2320,16 @@ class DatastoreApi {
     );
   }
 
-  /** Decides reads without auditing each one: they filter, not refuse. */
-  #mayRead(required: readonly RequiredAccess[]): boolean {
+  /**
+   * Decides reads without auditing each one: they filter, not refuse. `as`
+   * decides for another caller than the request's: a kept change's author.
+   */
+  #mayRead(required: readonly RequiredAccess[], as?: AccessCaller): boolean {
+    if (as !== undefined) {
+      return required.every(({ action, resource }) =>
+        callerResourceDecider(as, action, this.#deps.ctx)(resource)
+      );
+    }
     return required.every(({ action, resource }) => {
       let decide = this.#readers.get(action);
       if (decide === undefined) {
@@ -1710,6 +2485,28 @@ async function withForwardedLock<T>(
   }
 }
 
+/** Deposits to each quarantine store, one at a time. */
+const quarantineLocks = new WeakMap<QuarantineStore, Promise<unknown>>();
+
+/**
+ * Runs `fn` once every deposit to `store` before it has finished: a
+ * deposit's cap check and its write are not interleaved with another's.
+ */
+async function withQuarantineLock<T>(
+  store: QuarantineStore,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const before = quarantineLocks.get(store) ?? Promise.resolve();
+  const run = before.then(fn);
+  const tail = run.catch(() => {});
+  quarantineLocks.set(store, tail);
+  try {
+    return await run;
+  } finally {
+    if (quarantineLocks.get(store) === tail) quarantineLocks.delete(store);
+  }
+}
+
 /** Runs catch-ups one at a time; a request made during one waits for the next. */
 class CatchUpCoalescer {
   #running: Promise<void> | undefined;
@@ -1839,6 +2636,88 @@ function parsePartition(segment: string): PartitionKey | undefined {
   }
 }
 
+/** A refusal as the flush reads it: the error serve's reply maps to. */
+function refusedError(refusal: CommitRefusal): ServeCommitRefusedError {
+  return new ServeCommitRefusedError(
+    refusal.reason === "forbidden" || refusal.reason === "content-refused"
+      ? "forbidden"
+      : "commit_refused",
+    refusal.reason,
+    refusal.opIndex,
+    refusal.message,
+  );
+}
+
+/**
+ * A version's `metadata.yaml` bytes, as the data repository writes them:
+ * what an accepted change's rebase restates and renumbers.
+ */
+function encodeDataMetadata(metadata: DataMetadata): Uint8Array {
+  return new TextEncoder().encode(
+    stringifyYaml(
+      JSON.parse(JSON.stringify(metadata)) as Record<string, unknown>,
+    ),
+  );
+}
+
+/** What an accept learned while landing a kept change. */
+interface AcceptOutcome {
+  landed: boolean;
+  state?: string;
+  reason?: string;
+  /** Set when the author's own access refused the change's content. */
+  contentRefused?: string;
+}
+
+/** A caller's memberships as a record keeps them: bounded. */
+function boundedMemberships(names: readonly string[]): string[] {
+  return names.slice(0, MAX_RECORDED_MEMBERSHIPS)
+    .filter((name) => name.length > 0 && name.length <= 256);
+}
+
+/**
+ * The access a kept change's content is judged with: its author's, as serve
+ * knows it now. The principal is the one the change is stamped as, so the
+ * identity that decides the content is the identity it lands as, and the
+ * decision adds the groups serve itself keeps for it, read from the current
+ * policy. The identity-provider groups and collectives the deposit recorded
+ * came from the author's token at the time; serve cannot read them again for
+ * someone else, so they are left out, never lent from the past: the record
+ * keeps them for the audit trail only.
+ */
+function authorAccessOf(
+  record: QuarantineRecord,
+  sourceIp: string,
+): AccessCaller {
+  let principal: AccessCaller["principal"] = null;
+  try {
+    principal = parsePrincipal(record.principal);
+  } catch {
+    // An author serve cannot name is granted nothing.
+  }
+  return {
+    principal,
+    collectives: [],
+    groups: [],
+    sourceIp,
+  };
+}
+
+/** The principal as the upload ledger keys it. */
+function principalLabelOf(caller: AccessCaller): string | undefined {
+  return caller.principal === null
+    ? undefined
+    : principalToString(caller.principal);
+}
+
+function quarantineTooLarge(): Response {
+  return failure(
+    413,
+    "quarantine_too_large",
+    `A quarantined change carries at most ${MAX_QUARANTINE_DEPOSIT_BYTES} bytes`,
+  );
+}
+
 /** The 403 a refused commit is answered with. */
 function refusalResponse(refusal: CommitRefusal): Response {
   return Response.json({
@@ -1849,6 +2728,49 @@ function refusalResponse(refusal: CommitRefusal): Response {
     opIndex: refusal.opIndex,
     message: refusal.message,
   }, { status: 403 });
+}
+
+/**
+ * The lease fence and version marks of the partition `target`'s lease
+ * covers, read under its lock. A run serve does not hold yet has no
+ * partition: its fence starts from what this process issued. Also how a
+ * new leader checks a kept lease was not superseded (swamp-club#4195).
+ */
+export async function leaseBaseOf(
+  v3: V3Datastore,
+  workflowRunRepo: Pick<YamlWorkflowRunRepository, "findGlobalById">,
+  target: LockTarget,
+): Promise<LeaseBase> {
+  const partition = await partitionOfLock(workflowRunRepo, target);
+  if (partition === undefined) return { leaseFence: undefined, names: [] };
+  const marks = await v3.commitStore.leaseMarks(v3.namespace, partition);
+  // A run's partition holds no data versions; only a behavior's floor
+  // is sent.
+  return target.kind === "model"
+    ? marks
+    : { leaseFence: marks.leaseFence, names: [] };
+}
+
+/** The partition `target`'s lease covers; undefined for an unknown run. */
+async function partitionOfLock(
+  workflowRunRepo: Pick<YamlWorkflowRunRepository, "findGlobalById">,
+  target: LockTarget,
+): Promise<PartitionKey | undefined> {
+  if (target.kind === "model") {
+    return partitionOf({
+      kind: "model",
+      type: ModelType.create(target.modelType),
+      id: target.modelId,
+    });
+  }
+  const found = await workflowRunRepo.findGlobalById(
+    createWorkflowRunId(target.runId),
+  );
+  return found === null ? undefined : partitionOf({
+    kind: "run",
+    workflowId: found.workflowId,
+    runId: target.runId,
+  });
 }
 
 function namespaceOf(v3: Pick<V3Datastore, "namespace">) {

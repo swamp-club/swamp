@@ -102,6 +102,10 @@ import {
 } from "../../domain/data/repositories.ts";
 import { garbageCollectionToColumn } from "../../domain/data/data_metadata.ts";
 import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
+import {
+  isRestatement,
+  versionsBeyondKeep,
+} from "../../domain/data/keep_last_versions.ts";
 import { currentDiagnosticTally } from "../../domain/diagnostics/diagnostic_phase.ts";
 import {
   describeUnreadableVersionReason,
@@ -3357,10 +3361,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       let versionsToRemove: number[] = [];
 
       if (typeof gc === "number") {
-        // Keep N most recent versions
-        const toKeep = gc;
-        if (versions.length > toKeep) {
-          versionsToRemove = versions.slice(0, versions.length - toKeep);
+        // Keep the N most recent observations; restatements don't count.
+        if (versions.length > gc) {
+          versionsToRemove = await versionsBeyondKeep(
+            versions,
+            gc,
+            this.restatesIn(type, modelId, data.name),
+          );
         }
       } else {
         // Keep versions within duration
@@ -3718,8 +3725,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     );
     const promoted = priorVersions.filter((v) => !pending.has(v));
     if (promoted.length < cap) return;
-    const sorted = [...promoted].sort((a, b) => a - b);
-    const toRemove = sorted.slice(0, sorted.length - cap + 1);
+    // Room for the version being written: cap - 1 prior observations stay,
+    // restatements among them not counted.
+    const toRemove = await versionsBeyondKeep(
+      promoted,
+      cap - 1,
+      this.restatesIn(type, modelId, dataName),
+    );
     for (const version of toRemove) {
       const versionDir = this.getPath(type, modelId, dataName, version);
       await this.staged({ kind: "remove", path: versionDir }, async () => {
@@ -3750,6 +3762,34 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       logger
         .debug`Pruned ${toRemove.length} excess version(s) of ${dataName} (cap: ${cap}, prior: ${priorVersions.length})`;
     }
+  }
+
+  /**
+   * Whether a version of `dataName` is a restatement (swamp-club#4195), read
+   * from its metadata's tags alone. A version that cannot be read (missing,
+   * empty or malformed metadata) counts as an observation, silently: a
+   * write or a collection never fails, nor warns again, over it.
+   */
+  private restatesIn(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): (version: number) => Promise<boolean> {
+    return async (version) => {
+      try {
+        const path = this.getMetadataPath(type, modelId, dataName, version);
+        await this.assertModelReadPath(path, type, modelId);
+        const metadata = parseYaml(await Deno.readTextFile(path)) as
+          | { readonly tags?: unknown }
+          | null;
+        const tags = metadata?.tags;
+        return typeof tags === "object" && tags !== null &&
+          !Array.isArray(tags) &&
+          isRestatement(tags as Readonly<Record<string, string>>);
+      } catch {
+        return false;
+      }
+    };
   }
 
   private assertPathContained(

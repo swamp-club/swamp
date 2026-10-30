@@ -85,8 +85,8 @@ Deno.test("modelLeaseAcquire: a checkout not written through serve has no leases
   ]);
 });
 
-Deno.test("modelLeaseAcquire: a hold outside 5s to 60m, or an unknown behavior, is refused", async () => {
-  for (const holdMs of [1_000, 3_600_001]) {
+Deno.test("modelLeaseAcquire: a hold outside 5s to 24h, or an unknown behavior, is refused", async () => {
+  for (const holdMs of [1_000, 86_400_001]) {
     const events = await collect(
       modelLeaseAcquire(ctx, deps(), { behavior: "web", holdMs }),
     );
@@ -99,6 +99,13 @@ Deno.test("modelLeaseAcquire: a hold outside 5s to 60m, or an unknown behavior, 
   );
   assertEquals(unknown.length, 1);
   assertEquals(unknown[0].kind, "error");
+});
+
+Deno.test("modelLeaseAcquire: a hold of up to 24h is accepted, so a lease can be checked out to work offline", async () => {
+  const events = await collect(
+    modelLeaseAcquire(ctx, deps(), { behavior: "web", holdMs: 86_400_000 }),
+  );
+  assertEquals(events.map((e) => e.kind), ["completed"]);
 });
 
 Deno.test("modelLeaseRelease: reports whether the checkout held a lease on the behavior", async () => {

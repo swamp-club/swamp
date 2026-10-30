@@ -139,6 +139,16 @@ export interface ServeLockOptions {
   readonly now?: () => number;
   /** A monotonic clock in milliseconds, for the lease's local deadline. */
   readonly monotonic?: () => number;
+  /**
+   * The checkout's offline mode (swamp-club#4195): undefined while online.
+   * Offline, the hold never asks serve. It takes the checkout-local lock,
+   * and adopts the explicit lease the checkout recorded on the key, if any,
+   * until that lease's recorded end (by serve's clock, at `clockOffsetMs`)
+   * less `skewMs`, when the work under it is cancelled.
+   */
+  readonly offline?: () =>
+    | { readonly clockOffsetMs?: number; readonly skewMs: number }
+    | undefined;
 }
 
 /** A lock held at serve; see the module documentation. */
@@ -165,6 +175,8 @@ export class ServeLock implements DistributedLock {
   #local: DistributedLock | undefined;
   /** Set while the hold is released: a renewal in flight cannot lapse it. */
   #releasing = false;
+  /** An offline hold of the checkout-local lock alone (swamp-club#4195). */
+  #localOnly = false;
 
   constructor(options: ServeLockOptions) {
     this.#options = options;
@@ -186,7 +198,12 @@ export class ServeLock implements DistributedLock {
    *   command ends before it changes anything
    */
   async acquire(): Promise<void> {
-    if (this.#lease !== undefined) return;
+    if (this.#lease !== undefined || this.#localOnly) return;
+    const offline = this.#options.offline?.();
+    if (offline !== undefined) {
+      await this.#acquireOffline(offline);
+      return;
+    }
     if (await this.#adoptExplicit()) return;
     const client = this.#options.client();
     const hold = new AbortController();
@@ -326,6 +343,60 @@ export class ServeLock implements DistributedLock {
     return true;
   }
 
+  /**
+   * Holds the lock while serve is unreachable (swamp-club#4195): the
+   * checkout-local lock, and the explicit lease the checkout recorded on the
+   * key while it lasts. Nothing is renewed; the lease is still registered,
+   * so what the work queues records it and lands under it.
+   */
+  async #acquireOffline(
+    offline: { readonly clockOffsetMs?: number; readonly skewMs: number },
+  ): Promise<void> {
+    const local = this.#options.localLock?.();
+    await local?.acquire();
+    let held = false;
+    try {
+      const explicit = await this.#options.adopt?.();
+      const remaining = explicit === undefined
+        ? 0
+        : Date.parse(explicit.expiresAt) - (offline.clockOffsetMs ?? 0) -
+          offline.skewMs - this.#now();
+      if (explicit === undefined || !(remaining > 0)) {
+        this.#localOnly = true;
+        this.#local = local;
+        this.#acquiredAt = this.#now();
+        held = true;
+        await this.#settleAcquired();
+        return;
+      }
+      this.#adopted = true;
+      this.#lease = {
+        leaseId: explicit.leaseId,
+        lockKey: explicit.lockKey,
+        ttlMs: explicit.holdMs,
+        expiresAt: explicit.expiresAt,
+        fence: explicit.fence,
+        floor: explicit.floor,
+        holdMs: explicit.holdMs,
+      };
+      this.#acquiredAt = this.#now();
+      this.#lost = false;
+      this.#local = local;
+      held = true;
+      // The recorded end, less the skew allowed for: the work under the
+      // lease is cancelled then, as a lapse online cancels it.
+      this.#deadline = setTimeout(() => {
+        this.#deadline = undefined;
+        logger
+          .warn`The model lease on ${this.#displayKey()} ran out while serve was unreachable`;
+        this.#lapse("it ran out while serve was unreachable");
+      }, remaining);
+      await this.#settleAcquired();
+    } finally {
+      if (!held) await local?.release();
+    }
+  }
+
   /** Runs `onAcquired`, then registers a fenced lease for its commits. */
   async #settleAcquired(): Promise<void> {
     try {
@@ -363,6 +434,14 @@ export class ServeLock implements DistributedLock {
   async #release(): Promise<void> {
     this.#stopHeartbeat();
     this.#clearDeadline();
+    if (this.#localOnly) {
+      this.#localOnly = false;
+      this.#acquiredAt = undefined;
+      const local = this.#local;
+      this.#local = undefined;
+      await local?.release();
+      return;
+    }
     // An adopted explicit lease stays registered: it outlives this hold,
     // and the process's other commits to the behavior still name it.
     const held = this.#lease;
@@ -382,16 +461,17 @@ export class ServeLock implements DistributedLock {
     this.#client = undefined;
     this.#acquiredAt = undefined;
     this.#adopted = false;
-    if (lease === undefined || client === undefined) return;
     // An explicit lease outlives the command that used it: it ends on
     // `swamp model lease release`, or at serve once its hold passes.
-    if (adopted) {
-      client.close?.();
+    // Adopted offline, no client was opened.
+    if (adopted && lease !== undefined) {
+      client?.close?.();
       const local = this.#local;
       this.#local = undefined;
       await local?.release();
       return;
     }
+    if (lease === undefined || client === undefined) return;
     try {
       // Bounded by the client's own per-request timeout.
       await client.releaseLock(lease.leaseId, new AbortController().signal);

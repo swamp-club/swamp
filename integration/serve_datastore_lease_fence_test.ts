@@ -26,7 +26,7 @@
  */
 
 import "../src/domain/models/models.ts";
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { Commit } from "../src/domain/datastore_v3/commit.ts";
 import { dataVersionOp } from "../src/domain/datastore_v3/op.ts";
 import { RecordKey } from "../src/domain/datastore_v3/record_key.ts";
@@ -36,7 +36,12 @@ import {
   ServeDatastoreClient,
 } from "../src/infrastructure/datastore_v3/serve_datastore_client.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import type { AuditEvent } from "../src/domain/serve_audit/audit_event.ts";
+import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import { grant } from "./serve_request_harness.ts";
+import { LeaseRecordNotRemovedError } from "../src/serve/datastore_locks.ts";
+import { LEASE_RECORD_NOT_REMOVED_CODE } from "../src/domain/datastore_v3/persisted_lease.ts";
+import { exitCodeForError } from "../src/presentation/output/error_output.ts";
 import {
   call,
   commitBody,
@@ -382,10 +387,19 @@ Deno.test({
       );
       assertEquals([renewed.status, renewed.json.ttlMs], [200, 1_800_000]);
 
+      // Up to a day, so a lease can be checked out to work offline
+      // (swamp-club#4195).
+      const day = await call(server, "POST", "locks", "bob-token", {
+        lockKey: modelKey(server, crypto.randomUUID()),
+        fenced: true,
+        holdMs: 86_400_000,
+      });
+      assertEquals(day.status, 201, JSON.stringify(day.json));
+
       for (
         const body of [
           { holdMs: 1_800_000 },
-          { fenced: true, holdMs: 3_600_001 },
+          { fenced: true, holdMs: 86_400_001 },
           { fenced: true, holdMs: 10 },
         ]
       ) {
@@ -394,6 +408,187 @@ Deno.test({
           ...body,
         });
         assertEquals(refused.status, 400, JSON.stringify(body));
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore lease fence: an admin force-releases another caller's explicit lease, a member may not, and the holder's next commit naming it is refused",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer([
+      ...twoMembers(),
+      grant({
+        subject: { kind: "user", name: "bob" },
+        actions: ["admin"],
+        resource: { kind: "access", pattern: "*" },
+      }),
+    ], async (server) => {
+      const taken = await call(server, "POST", "locks", "alice-token", {
+        lockKey: modelKey(server),
+        fenced: true,
+        holdMs: 86_400_000,
+      });
+      assertEquals(taken.status, 201, JSON.stringify(taken.json));
+
+      const refused = await call(server, "DELETE", "locks", "alice-token", {
+        lockKey: modelKey(server),
+      });
+      assertEquals([refused.status, refused.json.code], [403, "forbidden"]);
+
+      const ended = await call(server, "DELETE", "locks", "bob-token", {
+        lockKey: modelKey(server),
+      });
+      assertEquals(ended.status, 200, JSON.stringify(ended.json));
+      assertEquals([ended.json.released, ended.json.heldBy], [
+        true,
+        "user:caller",
+      ]);
+
+      // Its holder's commit naming it is refused as lost, and its renewal
+      // finds no lease; nothing raised the partition's fence.
+      const late = await save(server, "alice-token", 1, 0, {
+        lease: taken.json.leaseId as string,
+      });
+      assertEquals([late.status, late.json.code], [409, "commit_lease-lost"]);
+      const renewed = await call(
+        server,
+        "PUT",
+        `locks/${taken.json.leaseId}`,
+        "alice-token",
+        {},
+      );
+      assertEquals(renewed.status, 404);
+      assertEquals(await leaseFence(server), undefined);
+
+      // Nothing left to release.
+      const again = await call(server, "DELETE", "locks", "bob-token", {
+        lockKey: modelKey(server),
+      });
+      assertEquals([again.status, again.json.released], [200, false]);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore lease fence: a forced release is audited with who ended whose lease, and a refused one too",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer([
+      ...twoMembers(),
+      grant({
+        subject: { kind: "user", name: "bob" },
+        actions: ["admin"],
+        resource: { kind: "access", pattern: "*" },
+      }),
+    ], async (server) => {
+      const events: AuditEvent[] = [];
+      (server.ctx as { auditEmitter?: unknown }).auditEmitter = {
+        emit: (event: AuditEvent) => events.push(event),
+        durableStalled: false,
+      } as unknown as ConnectionContext["auditEmitter"];
+      const taken = await call(server, "POST", "locks", "alice-token", {
+        lockKey: modelKey(server),
+        fenced: true,
+        holdMs: 86_400_000,
+      });
+      assertEquals(taken.status, 201, JSON.stringify(taken.json));
+      await call(server, "DELETE", "locks", "alice-token", {
+        lockKey: modelKey(server),
+      });
+      const ended = await call(server, "DELETE", "locks", "bob-token", {
+        lockKey: modelKey(server),
+      });
+      assertEquals(ended.status, 200, JSON.stringify(ended.json));
+
+      const released = events.filter((event) =>
+        event.action === "datastore.lock.force-release"
+      );
+      assertEquals(released.map((event) => event.outcome), [
+        "failure",
+        "success",
+      ]);
+      assertEquals(released[1].principalId, "bob");
+      assertEquals(released[1].resourceKind, "lock");
+      assert(
+        released[1].resourceName.includes(modelKey(server)),
+        released[1].resourceName,
+      );
+      assert(
+        released[1].resourceName.includes("user:caller"),
+        released[1].resourceName,
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore lease fence: a forced release whose kept record cannot be removed is refused as temporary, audited, and the client exits 75 so the admin forces it again",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer([
+      ...twoMembers(),
+      grant({
+        subject: { kind: "user", name: "bob" },
+        actions: ["admin"],
+        resource: { kind: "access", pattern: "*" },
+      }),
+    ], async (server) => {
+      const events: AuditEvent[] = [];
+      (server.ctx as { auditEmitter?: unknown }).auditEmitter = {
+        emit: (event: AuditEvent) => events.push(event),
+        durableStalled: false,
+      } as unknown as ConnectionContext["auditEmitter"];
+      // The lease ends, but its record stays in the control plane.
+      server.locks.forceRelease = () =>
+        Promise.reject(
+          new LeaseRecordNotRemovedError(
+            modelKey(server),
+            new Error("control plane unreachable"),
+          ),
+        );
+
+      const answer = await call(server, "DELETE", "locks", "bob-token", {
+        lockKey: modelKey(server),
+      });
+      assertEquals(
+        [answer.status, answer.json.code],
+        [503, LEASE_RECORD_NOT_REMOVED_CODE],
+      );
+      assert(
+        String(answer.json.message).includes("Force the release again"),
+        String(answer.json.message),
+      );
+      const audited = events.filter((event) =>
+        event.action === "datastore.lock.force-release"
+      );
+      assertEquals(audited.map((event) => event.outcome), ["failure"]);
+
+      const client = new ServeDatastoreClient({
+        baseUrl: new URL(server.url).origin,
+        token: "bob-token",
+      });
+      try {
+        const error = await assertRejects(() =>
+          client.forceReleaseLock(
+            modelKey(server),
+            new AbortController().signal,
+          )
+        );
+        assertEquals(
+          (error as { code?: string }).code,
+          LEASE_RECORD_NOT_REMOVED_CODE,
+        );
+        assertEquals(exitCodeForError(error), 75);
+      } finally {
+        client.close();
       }
     });
   },

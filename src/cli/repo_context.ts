@@ -254,6 +254,20 @@ export function setLockProgressOutputMode(mode: OutputMode): void {
 const writeStderrLine = (line: string): void => console.error(line);
 
 /**
+ * Tells a serve-mode checkout's offline notices the invocation's output mode
+ * (swamp-club#4195): in json mode, where the logger is silent, each is one
+ * JSON object on stderr, as json-mode warnings are; log mode says them
+ * through the logger. Set once per invocation from the CLI's global action.
+ */
+export function setServeOfflineOutputMode(mode: OutputMode): void {
+  setServeOfflineNoticeWriter(
+    mode === "json"
+      ? (notice) => unguardedConsole.error(JSON.stringify(notice))
+      : undefined,
+  );
+}
+
+/**
  * Has a v3 checkout's recovery of an interrupted writer say on stderr that
  * it is running, as lock and sync progress does (swamp-club#3893). Set once
  * per invocation from the CLI's global action.
@@ -292,6 +306,18 @@ import {
   explicitLeaseOn,
   forgetExplicitLease,
 } from "../infrastructure/datastore_v3/explicit_model_leases.ts";
+import {
+  offlineContextAt,
+  registerOfflineReadPartition,
+  serveOfflineAt,
+  setServeOfflineNoticeWriter,
+} from "../infrastructure/datastore_v3/serve_offline.ts";
+import { passOwnLockGate } from "../infrastructure/datastore_v3/own_lock_gate.ts";
+import { unguardedConsole } from "../domain/models/console_guard.ts";
+import { WRITER_LEASE_CLOCK_SKEW_MS } from "../domain/datastore_v3/writer_lease.ts";
+import { decideOfflineWork } from "../domain/datastore_v3/offline_write_policy.ts";
+import { partitionOf } from "../domain/datastore_v3/partition_key.ts";
+import type { MethodKind } from "../domain/models/model.ts";
 import {
   catchUpV3HandlesAt,
   holdV3Writer,
@@ -1384,6 +1410,12 @@ async function adoptManagedConfigOnV3(
   marker: RepoMarkerData | null,
 ): Promise<void> {
   const logger = getSwampLogger(["cli", "managed-config"]);
+  // Offline, a definition cannot be committed (swamp-club#4195): the next
+  // writing command that reaches serve adopts it.
+  if (serveOfflineAt(config.path) !== undefined) {
+    logger.debug`Serve is unreachable: existing config is adopted later`;
+    return;
+  }
   try {
     const plan = await adoptV3Config({
       repoContext,
@@ -2042,6 +2074,17 @@ function serveLockOf(
     // asked for again (`swamp model lease acquire`).
     adopt: () => explicitLeaseOn(root, serveKey),
     forget: (leaseId) => forgetExplicitLease(root, leaseId),
+    // Offline (swamp-club#4195) the hold never asks serve: the checkout's
+    // own lock, and the explicit lease it recorded while that lasts.
+    offline: () => {
+      const state = serveOfflineAt(root);
+      return state === undefined ? undefined : {
+        ...(state.clockOffsetMs !== undefined
+          ? { clockOffsetMs: state.clockOffsetMs }
+          : {}),
+        skewMs: WRITER_LEASE_CLOCK_SKEW_MS,
+      };
+    },
     // Under an explicit lease serve no longer keeps the checkout's own
     // commands apart, so a lock local to the checkout does.
     localLock: () =>
@@ -2052,6 +2095,50 @@ function serveLockOf(
         maxBackoffMs: MODEL_LOCK_MAX_BACKOFF_MS,
       }),
   });
+}
+
+/**
+ * Judges a method run, or a workflow step running one, by the offline
+ * rules before it starts (swamp-club#4195), when `config`'s checkout is
+ * working offline; nothing otherwise. A read or list run is allowed, and
+ * its behavior's partition registered so what it records queues; one that
+ * changes things needs the explicit lease the checkout recorded on the
+ * behavior, live by serve's clock.
+ *
+ * @throws OfflineLeaseRequiredError when the run changes things and the
+ *   checkout holds no live lease on the behavior: nothing ran
+ */
+export async function assertOfflineRunAllowed(
+  config: DatastoreConfig,
+  run: {
+    readonly modelType: string;
+    readonly modelId: string;
+    readonly behaviorName: string;
+    readonly methodName: string;
+    /** The method's resolved kind; undefined counts as one that changes things. */
+    readonly methodKind: MethodKind | undefined;
+  },
+): Promise<void> {
+  // The v3 local root, as the locks and the handle name it.
+  const locking = lockingConfigOf(config);
+  if (isCustomDatastoreConfig(locking)) return;
+  const root = locking.path;
+  if (serveOfflineAt(root) === undefined) return;
+  const type = ModelType.create(run.modelType);
+  const decision = decideOfflineWork({
+    kind: "method",
+    model: { type: type.normalized, id: run.modelId.toLowerCase() },
+    behaviorName: run.behaviorName,
+    method: run.methodName,
+    methodKind: run.methodKind,
+  }, await offlineContextAt(root));
+  if (!decision.allowed) throw decision.error;
+  if (decision.lease === undefined) {
+    registerOfflineReadPartition(
+      root,
+      partitionOf({ kind: "model", type, id: run.modelId }),
+    );
+  }
 }
 
 /** What the holder of a lock at serve is told (swamp-club#4121). */
@@ -2074,6 +2161,23 @@ export interface ServeLockHoldOptions {
  * repository does for the directories it creates (swamp-club#4017), and on
  * a durable v3 one whose checkout may keep data local (swamp-club#4019).
  */
+/**
+ * `create`'s lock, once serve's own run may take the lock for the behavior:
+ * no lease the leader before kept on it is still being adopted
+ * (swamp-club#4195). A CLI process sets no gate, so it never waits.
+ */
+async function ownLockAfterAdoption(
+  modelType: string,
+  modelId: string,
+  create: () => Promise<DistributedLock>,
+): Promise<DistributedLock> {
+  await passOwnLockGate(
+    modelLockKey(undefined, modelType, modelId),
+    resolveLockTimeoutMs(),
+  );
+  return await create();
+}
+
 export async function createModelLock(
   datastoreConfig: DatastoreConfig,
   modelType: string,
@@ -4224,9 +4328,14 @@ export async function acquireModelLocks(
             ? READ_PUBLISH_LOCK_WAIT_MS
             : resolveLockTimeoutMs(),
         })
-        : await createModelLock(config, modelType, modelId, {
-          onLost: (error) => leaseLost.abort(error),
-        });
+        : await ownLockAfterAdoption(
+          modelType,
+          modelId,
+          () =>
+            createModelLock(config, modelType, modelId, {
+              onLost: (error) => leaseLost.abort(error),
+            }),
+        );
       // Unique coordinator key so parallel steps on the same model get
       // separate entries — prevents the second registration from
       // overwriting the first (which would orphan the first lock).

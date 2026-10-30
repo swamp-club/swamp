@@ -112,6 +112,7 @@ export function createOutboxCommitSink(
       settle: (keys) => removeOwing(keys, (owing) => outbox.settle(owing)),
       discard: (keys) => removeOwing(keys, (owing) => outbox.discard(owing)),
       abandon: (keys) => outbox.abandon(keys),
+      queue: (keys) => outbox.markState(keys, "offline"),
       landedSeq: (namespace, partition, txnId) =>
         commitStore.landedSeq(namespace, partition, txnId),
       sweepState: () => outbox.sweepState(clock().getTime()),

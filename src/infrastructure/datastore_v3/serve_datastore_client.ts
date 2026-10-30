@@ -46,6 +46,7 @@ import {
   type ObservedBasePage,
 } from "../../domain/datastore_v3/observed_base.ts";
 import { MAX_INLINE_BYTES } from "../../domain/datastore_v3/op.ts";
+import { chunksToWire } from "../../domain/datastore_v3/quarantine.ts";
 import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { MAX_RECORD_KEY_LENGTH } from "../../domain/datastore_v3/record_key.ts";
 import {
@@ -54,6 +55,7 @@ import {
   encodeCommitBody,
 } from "./chunk_ingest.ts";
 import { isNetworkFailure } from "./network_failure.ts";
+import { recordServeClock } from "./serve_offline.ts";
 import {
   serveErrorFromReply,
   ServeReplyTooLargeError,
@@ -748,6 +750,140 @@ export class ServeDatastoreClient {
   }
 
   /**
+   * Ends the lease serve holds on `lockKey`, whoever holds it
+   * (swamp-club#4195): admin only. Resolves with `released` false when no
+   * lease held the lock, and with who held it when one did.
+   *
+   * @throws ServeUpstreamError for any reply that is not a success: a
+   * caller who is not an admin, or an older serve, which has no such route
+   * and answers 405.
+   */
+  async forceReleaseLock(
+    lockKey: string,
+    signal: AbortSignal,
+  ): Promise<{ readonly released: boolean; readonly heldBy?: string }> {
+    return await this.#exchange(
+      {
+        method: "DELETE",
+        path: "locks",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ lockKey }),
+      },
+      signal,
+      async (response) => {
+        if (!response.ok) throw await this.#refusal(response, "locks");
+        const reply = await readBoundedJson(
+          response,
+          "locks",
+          SERVE_REPLY_MAX_BYTES,
+        );
+        const fields = typeof reply === "object" && reply !== null
+          ? reply as Record<string, unknown>
+          : {};
+        return {
+          released: fields.released === true,
+          ...(typeof fields.heldBy === "string"
+            ? { heldBy: fields.heldBy }
+            : {}),
+        };
+      },
+    );
+  }
+
+  /**
+   * Hands serve a change it refused because this caller lacks a grant it
+   * needs, for an admin to accept (swamp-club#4195): the commit as built,
+   * the head it was built on and every chunk it names.
+   */
+  async depositQuarantine(
+    deposit: {
+      readonly commit: unknown;
+      readonly base: { readonly seq: number; readonly txnId?: string };
+      readonly chunks: readonly CommitChunk[];
+    },
+    signal: AbortSignal,
+  ): Promise<{ readonly duplicate: boolean }> {
+    const body = await this.#json({
+      method: "POST",
+      path: "quarantine",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        commit: deposit.commit,
+        base: deposit.base,
+        chunks: chunksToWire(deposit.chunks),
+      }),
+    }, signal);
+    return { duplicate: body.duplicate === true };
+  }
+
+  /**
+   * Lands the change serve keeps under `txnId`, as its author
+   * (swamp-club#4195): admin only. Resolves with serve's reply: the kept
+   * record, now accepted, and what the rebase renumbered.
+   */
+  async acceptQuarantine(
+    txnId: string,
+    signal: AbortSignal,
+  ): Promise<Record<string, unknown>> {
+    return await this.#json({
+      method: "POST",
+      path: `quarantine/${encodeURIComponent(txnId)}/accept`,
+    }, signal);
+  }
+
+  /**
+   * What serve did with the change this caller deposited under `txnId`
+   * (swamp-club#4195): still `held`, `accepted` or `discarded`; undefined
+   * when serve holds none, or is an older serve without the route.
+   */
+  async quarantineState(
+    txnId: string,
+    signal: AbortSignal,
+  ): Promise<"held" | "accepted" | "discarded" | undefined> {
+    return await this.#exchange(
+      {
+        method: "GET",
+        path: `quarantine/${encodeURIComponent(txnId)}`,
+      },
+      signal,
+      async (response) => {
+        if (response.status === 404 || response.status === 405) {
+          await response.body?.cancel();
+          return undefined;
+        }
+        if (!response.ok) throw await this.#refusal(response, "quarantine");
+        const reply = await readBoundedJson(
+          response,
+          "quarantine",
+          SERVE_REPLY_MAX_BYTES,
+        );
+        const state = typeof reply === "object" && reply !== null
+          ? (reply as Record<string, unknown>).state
+          : undefined;
+        return state === "held" || state === "accepted" ||
+            state === "discarded"
+          ? state
+          : undefined;
+      },
+    );
+  }
+
+  /**
+   * Discards the change serve keeps under `txnId`, so it never lands
+   * (swamp-club#4195): admin only. Resolves with serve's reply: the kept
+   * record, now discarded.
+   */
+  async discardQuarantine(
+    txnId: string,
+    signal: AbortSignal,
+  ): Promise<Record<string, unknown>> {
+    return await this.#json({
+      method: "POST",
+      path: `quarantine/${encodeURIComponent(txnId)}/discard`,
+    }, signal);
+  }
+
+  /**
    * The leases serve holds on locks this caller could take (swamp-club#4121),
    * whose keys start with `prefix`. Undefined from an older serve, which
    * does not list them.
@@ -845,6 +981,7 @@ export class ServeDatastoreClient {
         AbortSignal.timeout(this.#timeoutMs),
       ]);
       let response: Response;
+      const sentAt = Date.now();
       try {
         response = await this.#fetch(url, {
           method: spec.method,
@@ -856,6 +993,15 @@ export class ServeDatastoreClient {
       } catch (error) {
         throw this.#unreachable(error, signal, sentOf(error), true);
       }
+      // Serve's clock, which judges a lease's expiry and corrects an offline
+      // write's time while serve is unreachable (swamp-club#4195). Read
+      // before the 429 retry on purpose: a throttled reply's Date is valid.
+      recordServeClock(
+        this.baseUrl,
+        response.headers.get("date"),
+        sentAt,
+        Date.now(),
+      );
       if (response.status === 429 && attempt < this.#maxAttempts) {
         const wait = retryAfterMs(response.headers.get("retry-after"));
         if (wait !== undefined) {

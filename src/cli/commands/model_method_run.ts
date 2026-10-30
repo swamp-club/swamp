@@ -29,6 +29,7 @@ import {
 import {
   acquireModelLocks,
   acquirePublishLocksOrDefer,
+  assertOfflineRunAllowed,
   cancelOnLeaseLost,
   libSwampContextForRepo,
   type ModelLockResult,
@@ -36,7 +37,10 @@ import {
   requireInitializedRepoUnlocked,
   runUnderModelLocks,
 } from "../repo_context.ts";
-import { methodRunLockMode } from "../../libswamp/models/method_run_lock_mode.ts";
+import {
+  methodKindOf,
+  methodRunLockMode,
+} from "../../libswamp/models/method_run_lock_mode.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -597,6 +601,15 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               modelType: preResult.type.normalized,
               modelId: preResult.definition.id,
             };
+            // A serve-mode checkout working offline judges the run before it
+            // starts: one that changes things needs the behavior's lease
+            // (swamp-club#4195).
+            await assertOfflineRunAllowed(datastoreConfig, {
+              ...model,
+              behaviorName: preResult.definition.name,
+              methodName,
+              methodKind: await methodKindOf(model.modelType, methodName),
+            });
             const lockMode = await methodRunLockMode({
               modelType: model.modelType,
               methodName,

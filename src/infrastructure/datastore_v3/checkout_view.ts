@@ -158,7 +158,10 @@ export class ServeCopyHoldsUnlandedCommitsError extends UserError {
 }
 
 /**
- * Refuses when the outbox beside the serve copy at `root` holds entries.
+ * Refuses when the outbox beside the serve copy at `root` holds entries
+ * that could still land: pending or queued offline. Rejected and
+ * quarantined entries never land, so they do not hold the copy; a reset
+ * keeps them (swamp-club#4195).
  *
  * @throws ServeCopyHoldsUnlandedCommitsError
  */
@@ -171,7 +174,7 @@ export async function assertServeCopySettled(
   );
   let unlanded: boolean;
   try {
-    unlanded = await outbox.hasEntries();
+    unlanded = await outbox.hasUnsettledEntries();
   } finally {
     await outbox.close();
   }

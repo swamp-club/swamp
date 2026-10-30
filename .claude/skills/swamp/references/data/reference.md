@@ -150,6 +150,16 @@ with `version`, `createdAt`, `size`, `checksum`, `isLatest`), and `total`. See
 [references/output-shapes.md](references/output-shapes.md#versions) for the full
 output shape.
 
+`isLatest` is always the highest version. In a checkout that writes through
+serve, work saved offline is renumbered after versions written meanwhile when it
+is sent. It is judged only against versions it could not have seen (written by
+others after it was queued). If it ran more than 5 minutes after the current
+latest it becomes latest; otherwise the current latest is restated as a new
+highest version with the same content and the reserved tag `_swamp.restates`
+naming the version it copies. A restated version is not new data. A version's
+time is the earlier of when serve committed it and its `createdAt`, so a writer
+can only make its own version look older, never newer.
+
 ## Rename Data
 
 Data instance names are permanent once created — deleting and recreating under a

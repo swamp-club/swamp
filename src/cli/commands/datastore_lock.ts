@@ -38,11 +38,15 @@ import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createDatastoreLockReleaseDeps,
   createDatastoreLockStatusDeps,
+  createServeLeaseReleaseDeps,
   type CustomModelLockSource,
   datastoreLockRelease,
   datastoreLockStatus,
+  modelLockKey,
+  modelSpecTypeMatches,
   parseModelSpec,
 } from "../../libswamp/datastores/lock.ts";
+import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import { v3WriterLockHandle } from "../../infrastructure/datastore_v3/v3_writer_lock.ts";
 import { v3DatastoreConfigOf } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
@@ -189,9 +193,8 @@ const datastoreLockReleaseCommand = new Command()
     }
 
     const repoDir = resolveRepoDir(options.repoDir);
-    const { datastoreConfig: config, engine } = await resolveDatastoreForRepo(
-      repoDir,
-    );
+    const resolution = await resolveDatastoreForRepo(repoDir);
+    const { datastoreConfig: config, engine } = resolution;
     const v3 = engine === "v3"
       ? await v3DatastoreConfigOf(repoDir, config)
       : undefined;
@@ -206,6 +209,64 @@ const datastoreLockReleaseCommand = new Command()
           `Invalid --model format: "${modelSpec}". Expected "type/id" ` +
             `(e.g. aws-ec2/my-server, or @org/name/my-server for scoped extension types).`,
         );
+      }
+      // A checkout written through serve asks serve to end the lease it
+      // holds on the behavior, whoever holds it: admin only
+      // (swamp-club#4195).
+      if (resolution.serveUpstream !== undefined) {
+        const binding = serveUpstreamAt(
+          (await v3LocationOf(resolution)).path,
+        );
+        if (binding === undefined) {
+          throw new Error("Internal error: the serve upstream is not bound");
+        }
+        const { repoContext } = await requireInitializedRepoReadOnly({
+          repoDir,
+          outputMode: cliCtx.outputMode,
+        });
+        const found = await findDefinitionByIdOrName(
+          repoContext.definitionRepo,
+          parsed.modelId,
+        );
+        if (found === null || found === undefined) {
+          throw new UserError(`Behavior not found: ${modelSpec}`);
+        }
+        // The type the spec names must be the behavior's: a wrong type
+        // never ends the lease of another behavior with that name.
+        if (!modelSpecTypeMatches(parsed.modelType, found.type.normalized)) {
+          throw new UserError(
+            `Behavior ${parsed.modelId} is of type ${found.type.normalized}, ` +
+              `not ${parsed.modelType}: nothing was released. ` +
+              `Pass --behavior ${found.type.normalized}/${parsed.modelId}.`,
+          );
+        }
+        const lockKey = modelLockKey(
+          undefined,
+          found.type.normalized,
+          found.definition.id,
+        );
+        const ctx = createLibSwampContext({ logger: cliCtx.logger });
+        const renderer = createDatastoreLockReleaseRenderer(cliCtx.outputMode);
+        await consumeStream(
+          datastoreLockRelease(
+            ctx,
+            createServeLeaseReleaseDeps(async () => {
+              const client = binding.client();
+              try {
+                // Bounded by the client's own per-request timeout.
+                return await client.forceReleaseLock(
+                  lockKey,
+                  new AbortController().signal,
+                );
+              } finally {
+                client.close();
+              }
+            }),
+            {},
+          ),
+          renderer.handlers(),
+        );
+        return;
       }
       lock = await createModelLock(config, parsed.modelType, parsed.modelId);
     } else if (v3 !== undefined) {

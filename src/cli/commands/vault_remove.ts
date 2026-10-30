@@ -156,26 +156,30 @@ To delete a single secret, use 'swamp vault delete <vault> <key>'.`,
     const publishes = syncService !== undefined &&
       marker?.datastore?.managedConfig === true;
     try {
-      await runAsUserConfigEdit(() =>
-        runCommandInRootUnit(
-          repoContext,
-          {
-            push: publishes
-              ? () => publishManagedConfigChanges(syncService, datastoreConfig)
-              : undefined,
-            pushWhen: "completed",
-          },
-          () =>
-            consumeStream(vaultRemove(ctx, deps, input), {
-              removing: () => {},
-              completed: (e) => {
-                outcome.removed = e.data;
-              },
-              error: (e) => {
-                throw userErrorFromSwampError(e.error);
-              },
-            }),
-        )
+      await runAsUserConfigEdit(
+        () =>
+          runCommandInRootUnit(
+            repoContext,
+            {
+              push: publishes
+                ? () =>
+                  publishManagedConfigChanges(syncService, datastoreConfig)
+                : undefined,
+              pushWhen: "completed",
+            },
+            () =>
+              consumeStream(vaultRemove(ctx, deps, input), {
+                removing: () => {},
+                completed: (e) => {
+                  outcome.removed = e.data;
+                },
+                error: (e) => {
+                  throw userErrorFromSwampError(e.error);
+                },
+              }),
+          ),
+        `the vault definition "${vaultName}"`,
+        "deleted",
       );
     } catch (error) {
       // The removal is saved locally but unpublished, so its secrets were

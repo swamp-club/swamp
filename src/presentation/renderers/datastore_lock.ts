@@ -110,18 +110,30 @@ class LogDatastoreLockStatusRenderer
 class JsonDatastoreLockStatusRenderer
   implements Renderer<DatastoreLockStatusEvent> {
   handlers(): EventHandlers<DatastoreLockStatusEvent> {
+    // Serve's leases ride on the final document, so a serve-mode checkout's
+    // status stays one JSON document (swamp-club#4195).
+    const serveLeases: ServeLeaseStatusData[] = [];
+    let serveLeasesTruncated = false;
     return {
       completed: (e) => {
-        console.log(JSON.stringify(e.data, null, 2));
+        console.log(JSON.stringify(
+          {
+            ...e.data,
+            ...(serveLeases.length > 0 ? { serveLeases } : {}),
+            ...(serveLeasesTruncated ? { serveLeasesTruncated: true } : {}),
+          },
+          null,
+          2,
+        ));
       },
       model_lock: (e) => {
         console.log(JSON.stringify(e.data, null, 2));
       },
       serve_lease: (e) => {
-        console.log(JSON.stringify({ serveLease: e.data }, null, 2));
+        serveLeases.push(e.data);
       },
-      serve_leases_truncated: (e) => {
-        console.log(JSON.stringify({ serveLeases: e.data }, null, 2));
+      serve_leases_truncated: () => {
+        serveLeasesTruncated = true;
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -159,6 +171,9 @@ class LogDatastoreLockReleaseRenderer
         }
 
         const lines = [bold("Lock Released")];
+        if (data.leaseHolder !== undefined) {
+          lines.push(`  Lease held by: ${data.leaseHolder}`);
+        }
         if (data.previousHolder) {
           lines.push(
             `  Previous holder: ${data.previousHolder.holder} (pid ${data.previousHolder.pid})`,

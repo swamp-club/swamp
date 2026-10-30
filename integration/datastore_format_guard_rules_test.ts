@@ -128,7 +128,9 @@ const GUARDED_PINNED = [
   // already checked: gc, lock, status, serve's maintenance timer and status
   // handler, and the v3 context helpers repo_context calls after its check.
   "src/cli/commands/datastore_gc.ts:datastoreGcCommand",
-  "src/cli/commands/datastore_status.ts:datastoreStatusCommand",
+  // swamp-club#4195: through serve it reads the checkout's copy, resolved
+  // (and so format-checked) by resolveDatastoreForRepo.
+  "src/cli/commands/datastore_status.ts:datastoreStatusCommand (x2)",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:anotherProcessWritesCheckout",
   // swamp-club#3364: the v3 writer lease's datastore-wide store. The bucket
   // binding (swamp-club#3534) calls it with the provider of a config it has
@@ -218,8 +220,9 @@ const GUARDED_PINNED = [
   // handle of the config requireInitializedRepoUnlocked checked; so does the
   // evaluation trust serve gives its repository context (swamp-club#3922),
   // and a follower reading the lease's current fence to trust the leader
-  // record (swamp-club#4120).
-  "src/cli/commands/serve.ts:serveCommand (x7)",
+  // record (swamp-club#4120), and the control plane its explicit leases are
+  // kept in (swamp-club#4195).
+  "src/cli/commands/serve.ts:serveCommand (x8)",
   // swamp-club#3473: the end-of-command retention pass opens the repository
   // through requireInitializedRepo and resolveDatastoreForRepo, then
   // compacts v3 history through that checked config.

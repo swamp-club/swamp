@@ -43,6 +43,7 @@ import type {
   ServeDatastoreClient,
 } from "./serve_datastore_client.ts";
 import { type LandedVersion, raisedFloor } from "./serve_lease_registry.ts";
+import { ServeUnreachableError } from "./serve_upstream_errors.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "lease"]);
 
@@ -287,6 +288,14 @@ export async function renewExplicitLeases(
       }
       renewed.push({ ...lease, expiresAt: reply.expiresAt });
     } catch (error) {
+      // Serve away: no other lease renews either, and each keeps its
+      // record, judged by its recorded end offline (swamp-club#4195). Said
+      // once, without the failure's stack.
+      if (error instanceof ServeUnreachableError) {
+        logger
+          .info`Serve is unreachable, so this checkout's model leases were not renewed; each holds until its recorded end`;
+        break;
+      }
       logger
         .warn`Could not renew the model lease on ${lease.lockKey} at serve: ${error}`;
     }
