@@ -20,6 +20,7 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { dirname, join } from "@std/path";
+import { waitFor } from "@swamp-club/swamp-testing";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import {
   type DefinitionFileSource,
@@ -56,11 +57,16 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
  * clock runs a minute ahead, so every stat the test sets is old enough to
  * trust and only a stat that moved makes it list or read again.
  */
-function fixture(dir: string) {
+function fixture(dir: string, stat?: typeof statRecord) {
   const primary = join(dir, "models");
   const auto = join(dir, ".swamp", "auto-definitions");
   const repo = new YamlDefinitionRepository(dir, undefined, primary, auto);
-  const counter = { reads: 0, failOn: undefined as string | undefined };
+  const counter = {
+    reads: 0,
+    failOn: undefined as string | undefined,
+    /** While set, a read starts and waits for this before it finishes. */
+    hold: undefined as Promise<void> | undefined,
+  };
   const source: DefinitionFileSource = {
     definitionRoots: () => repo.definitionRoots(),
     readDefinitionFile: (path, segments, isSymlink) => {
@@ -68,11 +74,17 @@ function fixture(dir: string) {
       if (path === counter.failOn) {
         return Promise.reject(new Error(`failed to read ${path}`));
       }
+      if (counter.hold) {
+        return counter.hold.then(() =>
+          repo.readDefinitionFile(path, segments, isSymlink)
+        );
+      }
       return repo.readDefinitionFile(path, segments, isSymlink);
     },
   };
   const index = new DefinitionIdIndex(source, {
     now: () => Date.now() + 60_000,
+    stat,
   });
   return { primary, auto, repo, counter, index };
 }
@@ -631,7 +643,13 @@ Deno.test("DefinitionIdIndex: outside a diagnostic area a check exports its vali
 
 Deno.test("DefinitionIdIndex: a check that joins another's listing counts it as joined once and links to the check that ran it", async () => {
   await withTempDir(async (dir) => {
-    const { primary, counter, index } = fixture(dir);
+    const listed = join(dir, "models", "test", "a");
+    let listedStats = 0;
+    const { primary, counter, index } = fixture(dir, async (path) => {
+      const stat = await statRecord(path);
+      if (path === listed) listedStats++;
+      return stat;
+    });
     for (let i = 0; i < 5; i++) {
       await writeDefinition(
         join(primary, "test", "a", `d${i}.yaml`),
@@ -640,11 +658,28 @@ Deno.test("DefinitionIdIndex: a check that joins another's listing counts it as 
       );
     }
     await withObservedSpans(async (spans) => {
-      await Promise.all(
-        [1, 2].map(() =>
-          withDiagnosticArea("step_outputs", () => index.begin())
-        ),
-      );
+      // The first check's reads wait until the second has reached the
+      // directory they list. From its stat to joining is one synchronous run,
+      // so it has joined by the time waitFor next polls.
+      const reads = Promise.withResolvers<void>();
+      counter.hold = reads.promise;
+      const check = () =>
+        withDiagnosticArea("step_outputs", () => index.begin());
+      const checks = [check()];
+      try {
+        await waitFor(
+          () => counter.reads === 5,
+          "the first check to start its reads",
+        );
+        checks.push(check());
+        await waitFor(
+          () => listedStats === 2,
+          "the second check to stat the directory being listed",
+        );
+      } finally {
+        reads.resolve();
+        await Promise.all(checks);
+      }
       assertEquals(counter.reads, 5);
       const validates = spans.filter((s) =>
         s.name === "swamp.serve.definition_index.validate"
@@ -661,7 +696,7 @@ Deno.test("DefinitionIdIndex: a check that joins another's listing counts it as 
         5,
       );
       const joiners = validates.filter((s) => num(s, "dirs_joined") > 0);
-      assert(joiners.length > 0);
+      assertEquals(joiners.length, 1);
       for (const joiner of joiners) {
         const other = validates.find((s) => s !== joiner)!;
         assertEquals(
