@@ -49,9 +49,6 @@ export type { ReplicationHandle } from "./litestream_replicator.ts";
 /** How long a CLI write command's closing sync may take. */
 export const DEFAULT_SYNC_DEADLINE_MS = 60_000;
 
-/** The shortest closing sync serve gets, whatever its drain left. */
-export const MIN_SERVE_SYNC_DEADLINE_MS = 10_000;
-
 /** The longest closing sync: a day, well inside what setTimeout holds. */
 export const MAX_SYNC_DEADLINE_MS = 24 * 60 * 60 * 1000;
 
@@ -64,12 +61,34 @@ export const SERVE_REQUEST_SYNC_DEADLINE_MS = 10_000;
 
 let replicator: LitestreamReplicator | undefined;
 let testDeps: Partial<ReplicatorDeps> | undefined;
+/**
+ * What serve's shutdown has left (swamp-club#3961): the time to its
+ * deadline, capped at `capMs` when given, never below a short floor.
+ */
+export interface V3ClosingDeadline {
+  remaining(capMs?: number): number;
+}
+
 let syncDeadlineMs: number | undefined;
 let requestSyncDeadlineMs: number | undefined;
+let closingDeadline: V3ClosingDeadline | undefined;
 
-/** The deadline of the closing sync: serve's budget, or the CLI default. */
+/**
+ * The deadline of the closing sync: what serve's shutdown has left when the
+ * sync starts, or the CLI default.
+ */
 export function v3SyncDeadlineMs(): number {
+  if (closingDeadline !== undefined) {
+    // Capped below what setTimeout can hold (about 24.8 days), past which
+    // it fires at once.
+    return Math.min(closingDeadline.remaining(), MAX_SYNC_DEADLINE_MS);
+  }
   return syncDeadlineMs ?? DEFAULT_SYNC_DEADLINE_MS;
+}
+
+/** Serve's shutdown deadline while it closes its datastores, if any. */
+export function v3ClosingDeadline(): V3ClosingDeadline | undefined {
+  return closingDeadline;
 }
 
 /** The deadline of the sync confirming a serve write request. */
@@ -78,16 +97,15 @@ export function v3RequestSyncDeadlineMs(): number {
 }
 
 /**
- * Sets the deadline of the next closing sync: serve calls it at shutdown
- * with what its drain left, floored, so a zero drain still syncs. Undefined
- * restores the CLI default.
+ * Sets the deadline the closing of the datastores keeps to: serve calls it
+ * at shutdown with its one shutdown deadline, so the closing sync and the
+ * writer lease release take what is left of it when each starts, not more
+ * (swamp-club#3961). Undefined restores the CLI's own deadlines.
  */
-export function setV3SyncDeadline(ms: number | undefined): void {
-  // Floored so a zero drain still syncs, and capped below what setTimeout
-  // can hold (about 24.8 days), past which it fires at once.
-  syncDeadlineMs = ms === undefined
-    ? undefined
-    : Math.min(Math.max(ms, MIN_SERVE_SYNC_DEADLINE_MS), MAX_SYNC_DEADLINE_MS);
+export function setV3ClosingDeadline(
+  deadline: V3ClosingDeadline | undefined,
+): void {
+  closingDeadline = deadline;
 }
 
 /**
@@ -106,6 +124,7 @@ export function setV3ReplicationForTesting(
   replicator = undefined;
   syncDeadlineMs = options.syncDeadlineMs;
   requestSyncDeadlineMs = options.requestSyncDeadlineMs;
+  closingDeadline = undefined;
 }
 
 /** This process's replicator: one per process, shared by every writer. */

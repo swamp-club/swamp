@@ -123,12 +123,30 @@ export class InstanceHeartbeatService {
       );
       return;
     }
+    // Bounded when a bound is given (serve's shutdown, swamp-club#3961): a
+    // delete that misses leaves the heartbeat to go stale, as a failed one
+    // does. Handled here as well, so one that outlives the bound never
+    // rejects unhandled.
+    const deleted = this.#store.delete(`heartbeats/${this.#instanceId}`);
+    deleted.catch(() => {});
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const bound = options.writeTimeoutMs === undefined
+      ? undefined
+      : new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(new Error(`timed out after ${options.writeTimeoutMs}ms`)),
+          options.writeTimeoutMs,
+        );
+      });
     try {
-      await this.#store.delete(`heartbeats/${this.#instanceId}`);
+      await (bound === undefined ? deleted : Promise.race([deleted, bound]));
     } catch (err) {
       logger.warn("Heartbeat delete on shutdown failed: {error}", {
         error: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      clearTimeout(timer);
     }
   }
 

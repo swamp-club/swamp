@@ -39,6 +39,7 @@ import {
   UNPUSHED_INTERRUPTS_FILE,
 } from "./unpushed_interrupts.ts";
 import type { ActiveRunStatus } from "../domain/models/active_run.ts";
+import type { CommitLogEngine } from "../infrastructure/persistence/repo_unit_of_work.ts";
 
 await initializeLogging({});
 
@@ -581,6 +582,104 @@ Deno.test("interruptShutdownRuns: on a filesystem datastore nothing is reported 
   assertEquals(result, { interrupted: [] });
 });
 
+/**
+ * A v3 commit-log engine whose root runs `fn` and then waits on `commit`,
+ * as a v3 root waits on its chunk uploads before it commits locally.
+ */
+function v3Engine(commit: () => Promise<void>): CommitLogEngine {
+  const view = { stage: () => {}, staged: () => [] } as unknown as Parameters<
+    Parameters<CommitLogEngine["runRoot"]>[1]
+  >[0];
+  return {
+    openUnit: () => {
+      throw new Error("not used");
+    },
+    hasOpenUnit: () => false,
+    checkpointOpenUnit: () => Promise.resolve("no-unit"),
+    committedBeforeThrowing: () => false,
+    runRoot: async (_options, fn) => {
+      const value = await fn(view);
+      await commit();
+      return value;
+    },
+  };
+}
+
+Deno.test("interruptShutdownRuns: a v3 commit held past its bound is cut off and recorded for the next start (swamp-club#3961)", async () => {
+  await withTempDir(async (dir) => {
+    const wf = workflow();
+    const run = runningRun(wf);
+    const { events, repoContext } = harness([run], wf.id);
+    const marker = join(dir, UNPUSHED_INTERRUPTS_FILE);
+    let failLateCommit: (error: Error) => void = () => {};
+    const held = new Promise<void>((_, reject) => {
+      failLateCommit = reject;
+    });
+
+    const result = await interruptShutdownRuns([active(run)], {
+      repoContext: { ...repoContext, commitLog: v3Engine(() => held) },
+      pushTimeoutMs: 20,
+      unpushedMarkerPath: marker,
+    });
+
+    assertEquals(events, ["load", `save ${run.id} interrupted`]);
+    assertEquals(result.interrupted, [run.id]);
+    assertEquals(result.unpushed, [run.id]);
+    assertEquals(result.pushError, "timed out after 20ms");
+    assertEquals(await readUnpushedInterrupts(marker), {
+      present: true,
+      runs: [{ runId: run.id, workflowId: wf.id }],
+    });
+    // The datastore's close aborts the upload: handled, never unhandled.
+    failLateCommit(new Error("Request aborted"));
+    await held.catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+});
+
+Deno.test("interruptShutdownRuns: a v3 commit that lands in time records nothing", async () => {
+  await withTempDir(async (dir) => {
+    const wf = workflow();
+    const run = runningRun(wf);
+    const { repoContext } = harness([run], wf.id);
+    const marker = join(dir, UNPUSHED_INTERRUPTS_FILE);
+
+    const result = await interruptShutdownRuns([active(run)], {
+      repoContext: {
+        ...repoContext,
+        commitLog: v3Engine(() => Promise.resolve()),
+      },
+      pushTimeoutMs: 5_000,
+      unpushedMarkerPath: marker,
+    });
+
+    assertEquals(result, { interrupted: [run.id] });
+    assertEquals(await readUnpushedInterrupts(marker), { present: false });
+  });
+});
+
+Deno.test("interruptShutdownRuns: a v3 commit that fails is reported unpushed, not thrown", async () => {
+  await withTempDir(async (dir) => {
+    const wf = workflow();
+    const run = runningRun(wf);
+    const { repoContext } = harness([run], wf.id);
+    const marker = join(dir, UNPUSHED_INTERRUPTS_FILE);
+
+    const result = await interruptShutdownRuns([active(run)], {
+      repoContext: {
+        ...repoContext,
+        commitLog: v3Engine(() => Promise.reject(new Error("bucket gone"))),
+      },
+      pushTimeoutMs: 5_000,
+      unpushedMarkerPath: marker,
+    });
+
+    assertEquals(result.pushError, "bucket gone");
+    assertEquals(result.unpushed, [run.id]);
+    assertEquals((await readUnpushedInterrupts(marker)).present, true);
+  });
+});
+
 function recordingStore(events: string[]): ControlPlaneStore {
   return {
     put: (key) => {
@@ -609,7 +708,11 @@ Deno.test("stopHeartbeatAtShutdown: with nothing unpushed the heartbeat is delet
   await stopHeartbeatAtShutdown(
     {
       stop: (options) => {
-        events.push(`stop ${options?.leaveStoppedRecord ?? false}`);
+        events.push(
+          `stop ${
+            options?.leaveStoppedRecord ?? false
+          } ${options?.writeTimeoutMs}`,
+        );
         return Promise.resolve();
       },
     },
@@ -618,9 +721,11 @@ Deno.test("stopHeartbeatAtShutdown: with nothing unpushed the heartbeat is delet
       instanceId: "inst",
       aborted: [ABORTED],
       unpushed: [],
+      writeTimeoutMs: 1_234,
     },
   );
-  assertEquals(events, ["stop false"]);
+  // The delete is bounded as the stopped record is (swamp-club#3961).
+  assertEquals(events, ["stop false 1234"]);
 });
 
 Deno.test("stopHeartbeatAtShutdown: writes the unpushed runs' active-run records back before leaving a stopped heartbeat (swamp-club#3958)", async () => {

@@ -1429,7 +1429,14 @@ The fence covers the top-level runs shutdown interrupts, not the child runs of
 nested workflows, which shutdown does not track. One 5 s deadline bounds the
 gate wait and the push together;
 a push that fails or misses it is logged as a warning, and the datastore keeps
-the run's last pushed status until a later write settles it. Shutdown completes
+the run's last pushed status until a later write settles it. On a v3
+datastore the interrupted records are committed rather than pushed, and a
+commit stores its content in the bucket before it commits locally, so the
+same 5 s bounds it (swamp-club#3961). A commit that misses is left to land
+until the datastore closes, and is handled as a failed push: the runs are
+recorded for the next start, which commits them in its boot reap and then
+clears the record, and the stopped heartbeat lets a leader instance settle
+them meanwhile (swamp-club#3962). Shutdown completes
 those runs' tracker rows as `interrupted` (`server_shutdown`), so the next boot
 does not skip them as still running. When the push fails, the runs are recorded
 in `.swamp/serve-unpushed-interrupts.json` for the next start in this checkout
@@ -1442,10 +1449,22 @@ ended in the abort grace deleted its own and a peer finds the runs through them
 heartbeat write fails, the last heartbeat is left to go stale
 (swamp-club#3958). A step the abort stopped in flight is recorded `unknown` on
 the interrupted run, so `swamp workflow recover` reopens it (swamp-club#3369).
-Otherwise it deletes its heartbeat, and it exits. Set the pod's
-`terminationGracePeriodSeconds` above the drain timeout plus about 25 s (the 5 s
-abort grace, up to 2 s for the write fence, the 5 s interrupt push and, when that push fails, 5 s each for the
-active-run records and the stopped heartbeat), and
+Otherwise it deletes its heartbeat. On v3 it then stops its sidecar upkeep,
+syncs the replica one last time and releases its writer lease
+(`design/enablers/datastore-litestream.md`), and it exits.
+
+Every one of these stages that waits on the datastore's storage takes its
+bound from one shutdown deadline: the drain timeout plus 23 s from SIGTERM
+(`ShutdownDeadline` in `src/serve/shutdown_deadline.ts`, swamp-club#3961).
+Each gets the smaller of its own bound and what is left, and at least 0.5 s,
+so a slow or stalled bucket cannot hold the process past its grace period:
+before it, a bucket that held each write 15 s kept a v3 serve shutting down
+for 97 s with the default 30 s drain. Set the pod's
+`terminationGracePeriodSeconds` above the drain timeout plus about 25 s (the
+23 s shutdown deadline after the drain, covering the 5 s abort grace, up to 2 s
+for the write fence, the 5 s interrupt push or commit and, when that misses,
+5 s each for the active-run records and the stopped heartbeat, and on v3 the
+closing sync and lease release from what is left, plus the 0.5 s floors), and
 use a `preStop` sleep so traffic leaves the Service endpoints before SIGTERM:
 senders that do not retry on 503 lose deliveries that arrive while the
 instance drains. After a stop that pushed everything, peers see no heartbeat,
