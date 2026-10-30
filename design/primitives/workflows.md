@@ -4044,8 +4044,10 @@ asks before re-running them.
 Every save goes through the executor's `saveRun`, which honours a run write
 fence (`RunWriteFence`, `src/domain/workflows/run_write_fence.ts`): once another
 owner closes it for a run, as serve's shutdown does for the runs it interrupts,
-the executor saves that run's record no more, so a step that answers after the
+the executor stops saving that run's record, so a step that answers after the
 abort cannot put the interrupted record back to `running` (swamp-club#4101).
+A nested workflow's child service shares the parent's fence, but only run ids
+that were closed are refused, and shutdown closes only the top-level runs.
 
 **Run plan identity:** at run start, the run plan records two fingerprints: one
 of the definition as loaded from disk (`definitionFingerprint`), and one of the

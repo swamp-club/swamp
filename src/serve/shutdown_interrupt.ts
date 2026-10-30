@@ -27,11 +27,12 @@
  * The push is bounded by one short deadline, so it can miss. Each run's
  * tracker row is settled whatever happens, so the next boot's reaper does
  * not skip the run as still running, and the runs not pushed are reported
- * and recorded for the next start (swamp-club#3958). The runs' write fence is
- * closed first, so their executors save nothing over the interrupt
- * (swamp-club#4101). A push that resolves
- * having sent no files counts as not pushed: the interrupted records changed,
- * so it sent nothing it had to (swamp-club#4101).
+ * and recorded for the next start (swamp-club#3958).
+ *
+ * Before the runs are loaded, serve's run write fence is closed for them.
+ * An executor that outlived the drain's abort grace can then no longer save
+ * its own `running` copy of a run over the interrupted record, which would
+ * otherwise be what the push uploads (swamp-club#4101).
  */
 
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
@@ -61,9 +62,6 @@ const logger = getSwampLogger(["serve", "shutdown"]);
  * process past its termination grace period.
  */
 export const SHUTDOWN_PUSH_TIMEOUT_MS = 5_000;
-
-/** The push error a shutdown push that sent no files is reported with. */
-export const SHUTDOWN_PUSH_SENT_NOTHING = "the push sent no files";
 
 export interface ShutdownInterruptDeps {
   readonly repoContext:
@@ -102,16 +100,13 @@ export interface ShutdownInterruptDeps {
 
 export interface ShutdownInterruptResult {
   readonly interrupted: readonly string[];
-  /**
-   * Why the push of the interrupted runs failed, when it did, or
-   * {@link SHUTDOWN_PUSH_SENT_NOTHING} when it resolved having sent no files.
-   */
+  /** Why the push of the interrupted runs failed, when it did. */
   readonly pushError?: string;
   /**
    * The aborted workflow runs whose interrupted record is not known to have
-   * reached the datastore: every interrupted run when the push failed or
-   * sent no files, and each run that could not be loaded or saved. Set only
-   * on a synced datastore, and only when not empty.
+   * reached the datastore: every interrupted run when the push failed, and
+   * each run that could not be loaded or saved. Set only on a synced
+   * datastore, and only when not empty.
    */
   readonly unpushed?: readonly string[];
 }
@@ -203,7 +198,7 @@ export async function interruptShutdownRuns(
             // shutdown has moved on to tearing down.
             async () => {
               if (controller.signal.aborted) return;
-              return await pushNamespaceCounted(
+              await pushNamespaceCounted(
                 syncService,
                 deps.namespace,
                 controller.signal,
@@ -214,10 +209,7 @@ export async function interruptShutdownRuns(
           // rejects unhandled.
           push.catch(() => {});
           try {
-            // A count of 0 is a push that sent nothing, though the records
-            // changed; one that reports no count is taken at its word.
-            const pushed = await Promise.race([push, deadline]);
-            if (pushed === 0) throw new Error(SHUTDOWN_PUSH_SENT_NOTHING);
+            await Promise.race([push, deadline]);
           } catch (err) {
             pushError = err instanceof Error ? err.message : String(err);
             logger.warn(

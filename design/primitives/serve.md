@@ -1421,15 +1421,17 @@ aborted and gets 5 s more. It marks aborted API workflow runs
 runs end `cancelled`) and, on a remote datastore, pushes those records under the
 shared sync gate (`interruptShutdownRuns` in `src/serve/shutdown_interrupt.ts`,
 swamp-club#3252). Before it loads them it closes their run write fence
-(`ServeRunWriteFence`, `src/serve/run_write_fence.ts`), waiting up to 2 s for a
-save already under way: an executor that outlived the abort grace, as one whose
-remote step answers after the abort does, then saves its `running` copy over
-the interrupt no more (swamp-club#4101). One 5 s deadline bounds the gate wait and the push together;
+(`ServeRunWriteFence`, `src/serve/run_write_fence.ts`) and waits up to 2 s for
+a save already under way. An executor can outlive the abort grace, as one whose
+remote step answers after the abort does; with the fence closed it can no
+longer save its `running` copy over the interrupted record (swamp-club#4101).
+The fence covers the top-level runs shutdown interrupts, not the child runs of
+nested workflows, which shutdown does not track. One 5 s deadline bounds the
+gate wait and the push together;
 a push that fails or misses it is logged as a warning, and the datastore keeps
 the run's last pushed status until a later write settles it. Shutdown completes
 those runs' tracker rows as `interrupted` (`server_shutdown`), so the next boot
-does not skip them as still running. When the push fails, or resolves having
-sent no files, the runs are recorded
+does not skip them as still running. When the push fails, the runs are recorded
 in `.swamp/serve-unpushed-interrupts.json` for the next start in this checkout
 to push, `--json` mode prints
 `{"status":"interrupt_push_failed","runIds":[…]}`, and the instance writes a
@@ -1442,7 +1444,7 @@ heartbeat write fails, the last heartbeat is left to go stale
 the interrupted run, so `swamp workflow recover` reopens it (swamp-club#3369).
 Otherwise it deletes its heartbeat, and it exits. Set the pod's
 `terminationGracePeriodSeconds` above the drain timeout plus about 20 s (the 5 s
-abort grace, the 5 s interrupt push and, when that push fails, 5 s each for the
+abort grace, up to 2 s for the write fence, the 5 s interrupt push and, when that push fails, 5 s each for the
 active-run records and the stopped heartbeat), and
 use a `preStop` sleep so traffic leaves the Service endpoints before SIGTERM:
 senders that do not retry on 503 lose deliveries that arrive while the

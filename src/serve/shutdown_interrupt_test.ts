@@ -28,7 +28,6 @@ import type { ActiveRun } from "./active_run_registry.ts";
 import { createSyncGate } from "./sync_gate.ts";
 import {
   interruptShutdownRuns,
-  SHUTDOWN_PUSH_SENT_NOTHING,
   type ShutdownInterruptDeps,
   stopHeartbeatAtShutdown,
 } from "./shutdown_interrupt.ts";
@@ -455,38 +454,7 @@ Deno.test("interruptShutdownRuns: a pushed run records nothing for the next star
   });
 });
 
-Deno.test("interruptShutdownRuns: a push that sent no files is reported unpushed and recorded for the next start (swamp-club#4101)", async () => {
-  await withTempDir(async (dir) => {
-    const wf = workflow();
-    const run = runningRun(wf);
-    const { events, repoContext } = harness([run], wf.id);
-    const marker = join(dir, UNPUSHED_INTERRUPTS_FILE);
-
-    const result = await interruptShutdownRuns([active(run)], {
-      repoContext,
-      syncService: {
-        pushChanged: () => {
-          events.push("push");
-          return Promise.resolve(0);
-        },
-      },
-      unpushedMarkerPath: marker,
-    });
-
-    assertEquals(result, {
-      interrupted: [run.id],
-      pushError: SHUTDOWN_PUSH_SENT_NOTHING,
-      unpushed: [run.id],
-    });
-    assertEquals(events, ["load", `save ${run.id} interrupted`, "push"]);
-    assertEquals(await readUnpushedInterrupts(marker), {
-      present: true,
-      runs: [{ runId: run.id, workflowId: wf.id }],
-    });
-  });
-});
-
-Deno.test("interruptShutdownRuns: a push that reports no count is taken as pushed", async () => {
+Deno.test("interruptShutdownRuns: a push that sent no files is taken as pushed, since the record may have gone already or run records may not sync", async () => {
   await withTempDir(async (dir) => {
     const wf = workflow();
     const run = runningRun(wf);
@@ -495,7 +463,7 @@ Deno.test("interruptShutdownRuns: a push that reports no count is taken as pushe
 
     const result = await interruptShutdownRuns([active(run)], {
       repoContext,
-      syncService: { pushChanged: () => Promise.resolve() },
+      syncService: { pushChanged: () => Promise.resolve(0) },
       unpushedMarkerPath: marker,
     });
 
