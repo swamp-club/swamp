@@ -48,7 +48,10 @@ import {
   UNREADABLE_VERSIONS_LISTED,
   type V3ContentSummary,
 } from "./doctor_datastores.ts";
-import type { UnpushedFilesSummary } from "../../domain/datastore/datastore_sync_service.ts";
+import {
+  SyncTimeoutError,
+  type UnpushedFilesSummary,
+} from "../../domain/datastore/datastore_sync_service.ts";
 import type { UnreadableDataVersion } from "../../domain/data/unreadable_data_version.ts";
 import {
   repairDatastoreFormatMarker,
@@ -2732,4 +2735,73 @@ Deno.test("repairDatastoreContamination: a failed index invalidation still inval
     ),
   );
   assertEquals(callLog, ["indexes", "catalog"]);
+});
+
+Deno.test("repairDatastoreContamination: a re-pull timeout puts the wipe's recovery instruction on its own line", async () => {
+  const events = await collect<RepairDatastoresEvent>(
+    repairDatastoreContamination(
+      createLibSwampContext(),
+      makeRepairDeps({
+        pullScoped: () =>
+          Promise.reject(
+            new SyncTimeoutError("@swamp/s3-datastore", "pull", 300000),
+          ),
+      }),
+      { confirm: true },
+    ),
+  );
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    const lines = last.error.message.split("\n");
+    assertEquals(
+      lines.at(-1),
+      "Local cache was wiped — run 'swamp datastore sync --pull' to restore.",
+    );
+    assertStringIncludes(lines.at(-2)!, "for a specific behavior lock).");
+  }
+});
+
+Deno.test("repairDatastoreContamination: a one-line failure reads as one sentence, with control characters escaped", async () => {
+  const events = await collect<RepairDatastoresEvent>(
+    repairDatastoreContamination(
+      createLibSwampContext(),
+      makeRepairDeps({
+        pullScoped: () => Promise.reject(new Error("failed ns/a\u001b[2Jb.")),
+      }),
+      { confirm: true },
+    ),
+  );
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertEquals(
+      last.error.message,
+      "Repair failed at step 3/5: failed ns/a\\x1b[2Jb. Local cache was wiped — run 'swamp datastore sync --pull' to restore.",
+    );
+  }
+});
+
+Deno.test("repairDatastoreContamination: a wipe check that times out puts what did not happen on its own line", async () => {
+  const events = await collect<RepairDatastoresEvent>(
+    repairDatastoreContamination(
+      createLibSwampContext(),
+      makeRepairDeps({
+        checkCacheSafeToWipe: () =>
+          Promise.reject(
+            new SyncTimeoutError("@swamp/s3-datastore", "pull", 300000),
+          ),
+      }),
+      { confirm: true },
+    ),
+  );
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertEquals(last.error.code, "repair_refused");
+    assertEquals(
+      last.error.message.split("\n").at(-1),
+      "The cache was not wiped and no foreign objects were deleted.",
+    );
+  }
 });

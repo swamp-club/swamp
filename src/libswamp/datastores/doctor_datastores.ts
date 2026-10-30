@@ -951,8 +951,9 @@ export async function* repairDatastoreContamination(
           kind: "error",
           error: {
             code: "repair_refused",
-            message:
-              `${refusal} The cache was not wiped and no foreign objects were deleted.`,
+            message: `${
+              refusal.includes("\n") ? `${refusal}\n` : `${refusal} `
+            }The cache was not wiped and no foreign objects were deleted.`,
           },
         };
         return;
@@ -1023,7 +1024,6 @@ export async function* repairDatastoreContamination(
           namespace: config.namespace,
         };
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
         // After the wipe a re-run finds nothing to repair, so it would never
         // reach the invalidation steps. Each is tried here on its own.
         const invalidations: Array<[string, () => Promise<unknown>]> = [];
@@ -1053,7 +1053,7 @@ export async function* repairDatastoreContamination(
             message:
               `Repair failed at step ${
                 lastCompletedStep + 1
-              }/${REPAIR_STEPS}: ${message}. ` +
+              }/${REPAIR_STEPS}: ${errorText(err)}` +
               (lastCompletedStep >= 2
                 ? `Local cache was wiped — run 'swamp datastore sync --pull' to restore.${invalidationFailure}`
                 : lastCompletedStep >= 1
