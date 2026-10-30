@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
@@ -1168,6 +1173,80 @@ Deno.test("serverCancelFailure: other failures are reported as a connection erro
 
   assertEquals(error.message.startsWith("Could not connect to "), true);
   assertEquals(error.message.endsWith(": connection refused"), true);
+});
+
+/** A fetch rejection as Deno raises it: the reason sits in `cause`. */
+function fetchFailure(url: string, reason: string): TypeError {
+  return new TypeError("fetch failed", {
+    cause: new Error(
+      `error sending request for url (${url}): client error (Connect): ${reason}`,
+    ),
+  });
+}
+
+Deno.test("serverCancelFailure: an untrusted issuer points at --ca-cert", () => {
+  const error = serverCancelFailure(
+    "https://localhost:9000",
+    "run-1",
+    fetchFailure(
+      "https://localhost:9000/api/v1/cancel/workflow-run/run-1",
+      "invalid peer certificate: UnknownIssuer",
+    ),
+  );
+
+  assertEquals(error instanceof UserError, true);
+  assertStringIncludes(error.message, "TLS certificate rejected");
+  assertStringIncludes(error.message, "--ca-cert");
+  assertStringIncludes(error.message, "SWAMP_CA_CERT");
+});
+
+Deno.test("serverCancelFailure: another certificate failure keeps its reason", () => {
+  const error = serverCancelFailure(
+    "https://localhost:9000",
+    "run-1",
+    fetchFailure(
+      "https://localhost:9000/api/v1/cancel/workflow-run/run-1",
+      "invalid peer certificate: BadSignature",
+    ),
+  );
+
+  assertStringIncludes(error.message, "TLS certificate rejected");
+  assertStringIncludes(error.message, "BadSignature");
+});
+
+Deno.test("serverCancelFailure: a run id that reads like a TLS failure stays a connection error", () => {
+  const error = serverCancelFailure(
+    "https://localhost:9000",
+    "expired-1",
+    fetchFailure(
+      "https://localhost:9000/api/v1/cancel/workflow-run/expired-1",
+      "tcp connect error: Connection refused",
+    ),
+  );
+
+  assertEquals(
+    error.message.startsWith("Could not connect to https://localhost:9000: "),
+    true,
+    error.message,
+  );
+  assertStringIncludes(error.message, "Connection refused");
+  assertEquals(error.message.includes("TLS certificate rejected"), false);
+});
+
+Deno.test("serverCancelFailure: shows the cause and no credentials from --server", () => {
+  const server = "https://alice:hunter2@localhost:9000/?token=abc.s3cret";
+  const error = serverCancelFailure(
+    server,
+    "run-1",
+    fetchFailure(
+      buildCancelUrl(server, "run-1"),
+      "tcp connect error: Connection refused",
+    ),
+  );
+
+  assertStringIncludes(error.message, "Connection refused");
+  assertEquals(error.message.includes("hunter2"), false);
+  assertEquals(error.message.includes("s3cret"), false);
 });
 
 Deno.test("serverCancelRejection: shows the message of a JSON refusal on its own", () => {

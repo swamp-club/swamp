@@ -19,11 +19,36 @@
 
 import { assertEquals, assertStrictEquals } from "@std/assert";
 import {
+  describeCauses,
   errorPaths,
   markErrorPaths,
   UserError,
   userErrorCode,
 } from "./errors.ts";
+
+Deno.test("describeCauses: joins a message with its nested causes", () => {
+  const error = new TypeError("fetch failed", {
+    cause: new Error("client error", { cause: new Error("UnknownIssuer") }),
+  });
+  assertEquals(
+    describeCauses(error),
+    "fetch failed: client error: UnknownIssuer",
+  );
+});
+
+Deno.test("describeCauses: appends a cause that is not an Error", () => {
+  assertEquals(
+    describeCauses(new Error("fetch failed", { cause: "refused" })),
+    "fetch failed: refused",
+  );
+  assertEquals(describeCauses("not an error"), "not an error");
+});
+
+Deno.test("describeCauses: stops at five messages on a cause cycle", () => {
+  const error = new Error("loop");
+  error.cause = error;
+  assertEquals(describeCauses(error), "loop: loop: loop: loop: loop");
+});
 
 Deno.test("markErrorPaths: returns the same error with its paths marked", () => {
   const error = new UserError("Failed to read /opt/acme/final report.yaml");

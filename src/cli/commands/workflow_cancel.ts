@@ -30,7 +30,7 @@ import {
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import type { WorkflowRunClaims } from "../../domain/workflows/run_claim.ts";
 import { renderNestedCascade } from "./nested_run_hints.ts";
-import { UserError } from "../../domain/errors.ts";
+import { describeCauses, UserError } from "../../domain/errors.ts";
 import {
   normalizeServerUrl,
   redactServerUrl,
@@ -77,6 +77,9 @@ import {
   warnUnsettledMethodRuns,
 } from "../../domain/workflows/orphaned_run_reaper.ts";
 import {
+  createTlsHttpClient,
+  diagnoseTlsMessage,
+  getEnvCaCerts,
   resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
@@ -176,11 +179,46 @@ export function serverCancelFailure(
       }s. The cancel may still complete on the server; check it with 'swamp workflow history get ${runId} --server ${shown}'.`,
     );
   }
-  return new UserError(
-    `Could not connect to ${shown}: ${
-      error instanceof Error ? error.message : String(error)
-    }`,
-  );
+  const reason = describeCauses(error);
+  // The cause text embeds the request URL, run id included, and the diagnosis
+  // matches bare substrings, so only a certificate failure may reach it.
+  const diagnosis = reason.includes("invalid peer certificate")
+    ? diagnoseTlsMessage(reason)
+    : undefined;
+  return new UserError(diagnosis ?? `Could not connect to ${shown}: ${reason}`);
+}
+
+/**
+ * Posts a `--server` cancel and returns the server's JSON answer. `caCerts` are
+ * the certificates from `--ca-cert` / `SWAMP_CA_CERT`; the client that trusts
+ * them stays open until the answer has been read.
+ */
+export async function sendServerCancel(
+  server: string,
+  runId: string,
+  request: Request,
+  caCerts: string[] | undefined,
+): Promise<Record<string, unknown>> {
+  const client = caCerts?.length ? createTlsHttpClient({ caCerts }) : undefined;
+  try {
+    const response = await fetch(request, {
+      ...(client ? { client } : {}),
+      signal: AbortSignal.timeout(SERVER_CANCEL_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      throw serverCancelRejection(
+        response.status,
+        response.statusText,
+        await response.text(),
+      );
+    }
+    return await response.json();
+  } catch (error) {
+    if (error instanceof UserError) throw error;
+    throw serverCancelFailure(server, runId, error);
+  } finally {
+    client?.close();
+  }
 }
 
 /**
@@ -983,23 +1021,12 @@ export const workflowCancelCommand = withRemoteOptions(
         token,
         options.reason as string | undefined,
       );
-      let body: Record<string, unknown>;
-      try {
-        const response = await fetch(request, {
-          signal: AbortSignal.timeout(SERVER_CANCEL_TIMEOUT_MS),
-        });
-        if (!response.ok) {
-          throw serverCancelRejection(
-            response.status,
-            response.statusText,
-            await response.text(),
-          );
-        }
-        body = await response.json();
-      } catch (error) {
-        if (error instanceof UserError) throw error;
-        throw serverCancelFailure(server, options.run as string, error);
-      }
+      const body = await sendServerCancel(
+        server,
+        options.run as string,
+        request,
+        getEnvCaCerts(),
+      );
       if (
         body.status !== "cancelled" &&
         body.status !== "cancellation_requested"
