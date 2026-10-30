@@ -25,7 +25,7 @@
  * resumed, lands nothing and follows.
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { SERVE_NOT_LEADER_CODE } from "../src/domain/datastore_v3/serve_leader.ts";
@@ -43,8 +43,21 @@ const OWNER = "http://serve.example:9090";
 /** Expiry of a 1.5 s lease, with the 10 s clock skew. */
 const STALL_MS = 14_000;
 
+/**
+ * How long a node may take to answer one request, beyond a pause's own
+ * length (swamp-club#4152). deno test has no per-test timeout and waitFor
+ * awaits its condition before it looks at its deadline, so without this a
+ * worker that never answers hangs the whole run instead of failing it. The
+ * timer runs on the test's thread: it bounds a stalled or spinning worker,
+ * not a spin on that thread, which only runs waitFor and the send queue.
+ */
+const REQUEST_TIMEOUT_MS = 60_000;
+
 interface Node {
-  send(request: TeamNodeRequest): Promise<unknown>;
+  send(
+    request: TeamNodeRequest,
+    options?: { readonly timeoutMs?: number },
+  ): Promise<unknown>;
   state(): Promise<TeamNodeState>;
 }
 
@@ -72,8 +85,23 @@ async function withTeam(
         );
         workers.push(worker);
         let queue: Promise<unknown> = Promise.resolve();
-        const call = (request: TeamNodeRequest) =>
-          new Promise<unknown>((done, fail) => {
+        // Set once a request misses its deadline: the worker is terminated,
+        // and every later request, cleanup's close among them, is refused
+        // at once rather than queued behind the one that never answered.
+        let dead: Error | undefined;
+        const call = (request: TeamNodeRequest, timeoutMs: number) => {
+          if (dead !== undefined) return Promise.reject(dead);
+          const limit = timeoutMs +
+            (request.kind === "pause" ? request.ms : 0);
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          return new Promise<unknown>((done, fail) => {
+            timer = setTimeout(() => {
+              dead = new Error(
+                `node-${name}: ${request.kind} did not answer within ${limit}ms`,
+              );
+              worker.terminate();
+              fail(dead);
+            }, limit);
             worker.onmessage = (event: MessageEvent<TeamNodeResponse>) => {
               const response = event.data;
               if (response.ok) done(response.value);
@@ -84,9 +112,14 @@ async function withTeam(
               fail(new Error(event.message));
             };
             worker.postMessage(request);
-          });
-        const send = (request: TeamNodeRequest) => {
-          const next = queue.then(() => call(request));
+          }).finally(() => clearTimeout(timer));
+        };
+        const send = (
+          request: TeamNodeRequest,
+          { timeoutMs = REQUEST_TIMEOUT_MS }: { readonly timeoutMs?: number } =
+            {},
+        ) => {
+          const next = queue.then(() => call(request, timeoutMs));
           queue = next.catch(() => {});
           return next;
         };
@@ -239,5 +272,22 @@ Deno.test("serve team mode: a node that follows commits nothing even before its 
     const b = await team.node("b");
     assertEquals(await b.send({ kind: "hold" }), "follower");
     assertEquals(await b.send({ kind: "commit" }), SERVE_NOT_LEADER_CODE);
+  });
+});
+
+Deno.test("serve team mode: a node that never answers fails its request, naming it, and the team still tears down (swamp-club#4152)", async () => {
+  await withTeam(async (team) => {
+    const a = await team.node("a");
+    // Spins well past the deadline: only the deadline ends the request.
+    await assertRejects(
+      () => a.send({ kind: "spin", ms: 30_000 }, { timeoutMs: 500 }),
+      Error,
+      "node-a: spin did not answer within 500ms",
+    );
+    await assertRejects(
+      () => a.send({ kind: "state" }),
+      Error,
+      "node-a: spin did not answer",
+    );
   });
 });
