@@ -271,6 +271,12 @@ const ALL_ROUND_TRIP_CASES = [
   "bulk-between-prepare-and-commit",
   "vanish-during-walk",
   "clear-dirty",
+  "repair-unpushed",
+  "repair-unpushed-keeps-pending",
+  "repair-unpushed-keeps-fingerprint",
+  "repair-unpushed-classifies",
+  "repair-unpushed-peer-deleted",
+  "repair-unpushed-already-present",
 ];
 
 /** Cases that skip on this OS whatever the fixture. */
@@ -333,6 +339,28 @@ Deno.test("assertSyncServiceRoundTripConformance: skips every fetch-content case
     { name: "fetch-content-namespace", reason },
   ]);
   assertEquals(result.skipped[0].name, "pull-deletes");
+});
+
+Deno.test("assertSyncServiceRoundTripConformance: skips every repair-unpushed case for a service without repairUnpushedFiles", async () => {
+  const result = await assertSyncServiceRoundTripConformance(
+    inMemoryRemoteFactory(undefined, true, (fixture) => {
+      const { repairUnpushedFiles: _repair, ...service } =
+        fixture.first.service;
+      return withFirst(fixture, service);
+    }),
+  );
+  const reason = "first.service has no repairUnpushedFiles";
+  assertEquals(
+    result.skipped.filter((s) => s.name.startsWith("repair-unpushed")),
+    [
+      { name: "repair-unpushed", reason },
+      { name: "repair-unpushed-keeps-pending", reason },
+      { name: "repair-unpushed-keeps-fingerprint", reason },
+      { name: "repair-unpushed-classifies", reason },
+      { name: "repair-unpushed-peer-deleted", reason },
+      { name: "repair-unpushed-already-present", reason },
+    ],
+  );
 });
 
 Deno.test("assertSyncServiceRoundTripConformance: a fetchContent that returns a Buffer passes every fetch-content case", async () => {
@@ -870,6 +898,124 @@ const BROKEN_IMPLEMENTATIONS: BrokenImplementation[] = [
         ...fixture.first.service,
         clearDirty: () => Promise.resolve(),
       }),
+  },
+  {
+    caseName: "repair-unpushed",
+    bug: "repairUnpushedFiles never uploads",
+    breakFixture: (fixture) => {
+      const { service } = fixture.first;
+      return withFirst(fixture, {
+        ...service,
+        repairUnpushedFiles: (options) =>
+          service.repairUnpushedFiles!({ ...options, dryRun: true }),
+      });
+    },
+  },
+  {
+    caseName: "repair-unpushed-keeps-pending",
+    bug:
+      "repairUnpushedFiles uploads through a helper that marks the cache dirty",
+    breakFixture: (fixture) => {
+      const { service } = fixture.first;
+      return withFirst(fixture, {
+        ...service,
+        // Caught because a bulk mark makes the next push a walk that
+        // deletes nothing (the fake's default bulkDisablesDeletes), so the
+        // recorded delete never reaches the remote.
+        repairUnpushedFiles: async (options) => {
+          const summary = await service.repairUnpushedFiles!(options);
+          if (!options?.dryRun) await service.markDirty();
+          return summary;
+        },
+      });
+    },
+  },
+  {
+    caseName: "repair-unpushed-keeps-fingerprint",
+    bug: "repairUnpushedFiles advances the sync fingerprint",
+    breakFixture: (fixture) => {
+      const { service } = fixture.first;
+      // Stamping the commit sequence after the repair's commit sends the
+      // next pull down the fast path, which fetches nothing.
+      let stamped = false;
+      return withFirst(fixture, {
+        ...service,
+        repairUnpushedFiles: async (options) => {
+          const summary = await service.repairUnpushedFiles!(options);
+          if (!options?.dryRun) stamped = true;
+          return summary;
+        },
+        pullChanged: (options) => {
+          if (!stamped) return service.pullChanged(options);
+          stamped = false;
+          return Promise.resolve(0);
+        },
+      });
+    },
+  },
+  {
+    caseName: "repair-unpushed-classifies",
+    bug: "repairUnpushedFiles uploads the files it reports as locally modified",
+    breakFixture: (fixture) => {
+      const { service } = fixture.first;
+      return withFirst(fixture, {
+        ...service,
+        repairUnpushedFiles: async (options) => {
+          const summary = await service.repairUnpushedFiles!(options);
+          if (options?.dryRun || summary.locallyModified === 0) return summary;
+          for (const relPath of summary.sampleModified) {
+            await service.markDirty({ relPath });
+          }
+          await service.pushChanged();
+          return summary;
+        },
+      });
+    },
+  },
+  {
+    caseName: "repair-unpushed-peer-deleted",
+    bug: "repairUnpushedFiles uploads a copy a peer deleted",
+    breakFixture: (fixture) => {
+      const { service } = fixture.first;
+      return withFirst(fixture, {
+        ...service,
+        repairUnpushedFiles: async (options) => {
+          const summary = await service.repairUnpushedFiles!(options);
+          const resurrected = {
+            ...summary,
+            unpushed: summary.unpushed + summary.peerDeleted,
+            samplePaths: [...summary.samplePaths, ...summary.samplePeerDeleted],
+            peerDeleted: 0,
+            samplePeerDeleted: [],
+          };
+          if (options?.dryRun || summary.peerDeleted === 0) return resurrected;
+          for (const relPath of summary.samplePeerDeleted) {
+            await service.markDirty({ relPath });
+          }
+          await service.pushChanged();
+          return resurrected;
+        },
+      });
+    },
+  },
+  {
+    caseName: "repair-unpushed-already-present",
+    bug: "repairUnpushedFiles overwrites a key the remote holds",
+    breakFixture: (fixture) => {
+      const { service } = fixture.first;
+      return withFirst(fixture, {
+        ...service,
+        repairUnpushedFiles: async (options) => {
+          const summary = await service.repairUnpushedFiles!(options);
+          if (options?.dryRun || summary.alreadyPresent === 0) return summary;
+          for (const relPath of summary.sampleAlreadyPresent) {
+            await service.markDirty({ relPath });
+          }
+          await service.pushChanged();
+          return summary;
+        },
+      });
+    },
   },
 ];
 

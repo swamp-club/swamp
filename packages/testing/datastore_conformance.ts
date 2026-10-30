@@ -671,6 +671,15 @@ function fetchContentOf(
 
 const NO_FETCH_CONTENT = "second.service has no fetchContent";
 const NO_CLEAR_DIRTY = "first.service has no clearDirty";
+const NO_REPAIR_UNPUSHED = "first.service has no repairUnpushedFiles";
+
+function skipWithoutRepairUnpushed(
+  fixture: SyncServiceRoundTripFixture,
+): string | undefined {
+  return typeof fixture.first.service.repairUnpushedFiles === "function"
+    ? undefined
+    : NO_REPAIR_UNPUSHED;
+}
 const NO_TWO_PHASE = "the sync service has no preparePush/commitPush";
 
 function skipWithoutTwoPhase(
@@ -1379,6 +1388,262 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
       );
     },
   },
+  {
+    name: "repair-unpushed",
+    skip: skipWithoutRepairUnpushed,
+    run: async ({ first, second }) => {
+      const rel = `${ROOT}/repair-unpushed/raw`;
+      const bytes = sampleBytes("repair-unpushed");
+      // Written behind the sync service, so no push will ever send it.
+      await writeLocal(first.cacheDir, rel, bytes);
+      assertUnchanged(
+        await first.service.pushChanged(),
+        "first pushChanged() of a file that was never marked",
+      );
+
+      const preview = await first.service.repairUnpushedFiles!({
+        dryRun: true,
+      });
+      assertEquals(
+        preview.samplePaths.includes(rel),
+        true,
+        "a dry run must report a cache file the remote never received",
+      );
+      assertEquals(
+        preview.unpushed >= 1,
+        true,
+        "a dry run must count a cache file the remote never received as unpushed",
+      );
+      assertEquals(preview.uploaded, 0, "a dry run must upload nothing");
+      assertUnchanged(
+        await second.service.pullChanged(),
+        "second pullChanged() after a dry run",
+      );
+
+      const summary = await first.service.repairUnpushedFiles!();
+      assertEquals(
+        summary.uploaded >= 1,
+        true,
+        "repairUnpushedFiles must upload the unpushed file",
+      );
+      assertEquals(
+        summary.samplePaths.includes(rel),
+        false,
+        "a real run reports only the files it left unuploaded",
+      );
+      assertChanged(await second.service.pullChanged(), "second pullChanged()");
+      await assertHasBytes(
+        second,
+        rel,
+        bytes,
+        "a file repairUnpushedFiles uploaded must pull on second",
+      );
+    },
+  },
+  {
+    name: "repair-unpushed-keeps-pending",
+    skip: skipWithoutRepairUnpushed,
+    run: async ({ first, second }) => {
+      const gone = `${ROOT}/repair-keeps-pending/gone/raw`;
+      const stranded = `${ROOT}/repair-keeps-pending/stranded/raw`;
+      await markAndWrite(first, gone, sampleBytes("repair-gone"));
+      assertChanged(await first.service.pushChanged(), "first pushChanged()");
+      await markAndDelete(first, gone);
+      await writeLocal(first.cacheDir, stranded, sampleBytes("repair-pend"));
+
+      const preview = await first.service.repairUnpushedFiles!({
+        dryRun: true,
+      });
+      assertEquals(
+        preview.pendingChanges,
+        true,
+        "a recorded delete not yet pushed is a pending change",
+      );
+      await first.service.repairUnpushedFiles!();
+      assertChanged(
+        await first.service.pushChanged(),
+        "first pushChanged() of the recorded delete",
+      );
+      // second never pulled gone, so it only appears if the remote still
+      // holds it.
+      assertChanged(await second.service.pullChanged(), "second pullChanged()");
+      await assertAbsent(
+        second,
+        gone,
+        "repairUnpushedFiles must leave a recorded delete for the next push (contract rule 8)",
+      );
+    },
+  },
+  {
+    name: "repair-unpushed-keeps-fingerprint",
+    skip: skipWithoutRepairUnpushed,
+    run: async ({ first, second }) => {
+      const peers = `${ROOT}/repair-keeps-fingerprint/peers/raw`;
+      const stranded = `${ROOT}/repair-keeps-fingerprint/stranded/raw`;
+      const bytes = sampleBytes("repair-fingerprint-peer");
+      await markAndWrite(second, peers, bytes);
+      assertChanged(await second.service.pushChanged(), "second pushChanged()");
+      await writeLocal(first.cacheDir, stranded, sampleBytes("repair-fp"));
+
+      await first.service.repairUnpushedFiles!();
+      await first.service.pullChanged();
+      await assertHasBytes(
+        first,
+        peers,
+        bytes,
+        "a repair must not advance the sync fingerprint, or the next pull skips a peer's earlier commit (contract rule 8)",
+      );
+    },
+  },
+  {
+    name: "repair-unpushed-classifies",
+    skip: skipWithoutRepairUnpushed,
+    run: async ({ first, second }) => {
+      const dir = `${ROOT}/repair-classifies`;
+      const edited = `${dir}/edited/raw`;
+      const stale = `${dir}/stale/raw`;
+      const both = `${dir}/both/raw`;
+      const peerDeleted = `${dir}/peer-deleted/raw`;
+      const editedV1 = sampleBytes("edited-v1");
+      const staleV2 = sampleBytes("stale-v2");
+      const bothV2 = sampleBytes("both-v2");
+      await markAndWrite(second, edited, editedV1);
+      for (const rel of [stale, both, peerDeleted]) {
+        await markAndWrite(second, rel, sampleBytes(`v1-${rel}`));
+      }
+      assertChanged(await second.service.pushChanged(), "second pushChanged()");
+      assertChanged(await first.service.pullChanged(), "first pullChanged()");
+      await writeLocal(first.cacheDir, edited, sampleBytes("edited-local"));
+      await writeLocal(first.cacheDir, both, sampleBytes("both-local"));
+      await markAndWrite(second, stale, staleV2);
+      await markAndWrite(second, both, bothV2);
+      await markAndDelete(second, peerDeleted);
+      assertChanged(await second.service.pushChanged(), "second pushChanged()");
+
+      const preview = await first.service.repairUnpushedFiles!({
+        dryRun: true,
+        exact: true,
+      });
+      assertEquals(
+        [edited, both].every((rel) => preview.sampleModified.includes(rel)),
+        true,
+        "a file edited since the last sync must be locallyModified, even when the remote moved on too",
+      );
+      assertEquals(
+        preview.sampleModified.includes(stale),
+        false,
+        "a stale copy of a file a peer changed is not a local change",
+      );
+      assertEquals(
+        preview.remoteMovedOn >= 2,
+        true,
+        "files a peer changed since the last sync must count as remoteMovedOn",
+      );
+      assertEquals(
+        preview.samplePaths.includes(peerDeleted),
+        false,
+        "a file a peer deleted after the last sync is not unpushed",
+      );
+      await first.service.repairUnpushedFiles!();
+      assertCount(await second.service.pullChanged(), "second pullChanged()");
+      await assertAbsent(
+        second,
+        peerDeleted,
+        "repairUnpushedFiles must not bring back a file a peer deleted",
+      );
+      const peersBytes = [
+        [edited, editedV1],
+        [stale, staleV2],
+        [both, bothV2],
+      ] as const;
+      for (const [rel, bytes] of peersBytes) {
+        await assertHasBytes(
+          second,
+          rel,
+          bytes,
+          "a real repair reports a local edit or stale copy and never uploads it (contract rule 2)",
+        );
+      }
+    },
+  },
+  {
+    name: "repair-unpushed-peer-deleted",
+    skip: skipWithoutRepairUnpushed,
+    run: async ({ first, second }) => {
+      const dir = `${ROOT}/repair-peer-deleted`;
+      const kept = `${dir}/kept/raw`;
+      const other = `${dir}/other/raw`;
+      // other keeps the remote non-empty, so a pull is free to remove an
+      // unchanged copy; kept is edited, so every pull keeps it.
+      for (const rel of [kept, other]) {
+        await markAndWrite(second, rel, sampleBytes(`v1-${rel}`));
+      }
+      assertChanged(await second.service.pushChanged(), "second pushChanged()");
+      assertChanged(await first.service.pullChanged(), "first pullChanged()");
+      await writeLocal(first.cacheDir, kept, sampleBytes("kept-edited"));
+      await markAndDelete(second, kept);
+      assertChanged(await second.service.pushChanged(), "second pushChanged()");
+      assertCount(await first.service.pullChanged(), "first pullChanged()");
+
+      const preview = await first.service.repairUnpushedFiles!({
+        dryRun: true,
+      });
+      assertEquals(
+        preview.samplePaths.includes(kept),
+        false,
+        "a copy a pull kept after a peer deleted its key is not unpushed (contract rule 10)",
+      );
+      // A pull that removes even an edited copy leaves nothing to classify,
+      // so only the final check, that second never gets it back, applies.
+      if (await readLocalFile(first.cacheDir, kept)) {
+        assertEquals(
+          preview.samplePeerDeleted.includes(kept),
+          true,
+          "a copy a pull kept after a peer deleted its key is peerDeleted",
+        );
+        assertEquals(
+          preview.peerDeleted >= 1,
+          true,
+          "a copy a pull kept after a peer deleted its key counts as peerDeleted",
+        );
+      }
+      await first.service.repairUnpushedFiles!();
+      assertCount(await second.service.pullChanged(), "second pullChanged()");
+      await assertAbsent(
+        second,
+        kept,
+        "repairUnpushedFiles must not bring back a file a peer deleted before the last pull",
+      );
+    },
+  },
+  {
+    name: "repair-unpushed-already-present",
+    skip: skipWithoutRepairUnpushed,
+    run: async ({ first, second }) => {
+      const rel = `${ROOT}/repair-already-present/raw`;
+      await writeLocal(first.cacheDir, rel, sampleBytes("repair-ours"));
+      const theirs = sampleBytes("repair-theirs");
+      await markAndWrite(second, rel, theirs);
+      assertChanged(await second.service.pushChanged(), "second pushChanged()");
+
+      const summary = await first.service.repairUnpushedFiles!();
+      assertEquals(
+        summary.sampleAlreadyPresent.includes(rel),
+        true,
+        "a local file whose key a peer pushed with other bytes is alreadyPresent",
+      );
+      assertUnchanged(
+        await second.service.pullChanged(),
+        "second pullChanged() after the repair",
+      );
+      await assertHasBytes(
+        second,
+        rel,
+        theirs,
+        "repairUnpushedFiles must never overwrite a key the remote holds",
+      );
+    },
+  },
 ];
 
 /**
@@ -1437,6 +1702,23 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
  *   neither deletes a peer's file under it nor sends anything, and a mark
  *   made after it is still pushed. Skipped when `first.service` has no
  *   `clearDirty`.
+ * - `repair-unpushed`: a file written into the cache without a mark, which
+ *   no push sends, is reported by a `repairUnpushedFiles` dry run and
+ *   uploaded by a real run. Skipped, like the five cases below, when
+ *   `first.service` has no `repairUnpushedFiles`.
+ * - `repair-unpushed-keeps-pending`: a recorded delete is reported as
+ *   pending, survives the repair, and is applied by the next push.
+ * - `repair-unpushed-keeps-fingerprint`: after a real repair, the next pull
+ *   still receives a peer's commit made before it.
+ * - `repair-unpushed-classifies`: against the last sync, a local edit is
+ *   `locallyModified` (also when a peer changed the file too), a stale copy
+ *   is not, files a peer changed count as `remoteMovedOn`, and a file a peer
+ *   deleted is neither reported nor brought back. A real run uploads none
+ *   of them.
+ * - `repair-unpushed-peer-deleted`: an edited copy a pull kept after a peer
+ *   deleted its key is `peerDeleted`, not unpushed, and is never uploaded.
+ * - `repair-unpushed-already-present`: a local file whose key a peer pushed
+ *   with other bytes is `alreadyPresent`, and the peer's bytes stay.
  *
  * Counts may be void ("unknown") everywhere. A failing case rejects with an
  * error naming it; skipped cases are returned so callers can assert on them.

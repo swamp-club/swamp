@@ -509,6 +509,92 @@ export interface DatastoreSyncService {
   ): Promise<NamespaceContaminationSummary>;
 
   /**
+   * Find cache files the remote has never received, and with `dryRun:
+   * false` upload them. Recovers files written into the cache behind the
+   * sync service and never marked, such as those an earlier
+   * `datastore setup extension` migration left (swamp-club#4100, #4112).
+   *
+   * Contract — implementations MUST obey these rules:
+   *
+   * 1. **What is unpushed.** A file is unpushed when it is a regular file
+   *    (checked with `lstat`; a symlink is never followed), passes exactly
+   *    the filter the push walk applies (internal sidecar and index files,
+   *    the catalog, `.namespace.json`, `_index/`, `_control/`, stray
+   *    doubled-namespace paths), lies under `{namespace}/` (or, with no
+   *    namespace, anywhere outside a foreign namespace's directory), is
+   *    absent from both the live remote index and the last-synced index,
+   *    and is not recorded as peer-deleted (rule 10).
+   * 2. **Local versions the remote lacks are reported, never uploaded.**
+   *    `alreadyPresent` counts files absent from the last-synced index whose
+   *    key the remote holds, as an index entry or an unindexed object, with
+   *    other bytes. `locallyModified` counts files whose content differs
+   *    from their last-synced entry, and `unknown` those whose entry has no
+   *    sha256, whose size matches and whose mtime does not, when `exact`
+   *    cannot settle them (rule 4). Both compare with the last-synced
+   *    index, never the live remote, so a stale copy is not a local change;
+   *    `peerDeleted` counts files recorded as peer-deleted (rule 10), and
+   *    `remoteMovedOn` last-synced keys the remote now holds with other
+   *    content, for information only. Each count is computed on its
+   *    own: a file can be in more than one.
+   * 3. **`dryRun` mutates nothing.** It finds unindexed objects with one
+   *    listing of the namespace prefix, never a request per key.
+   * 4. **`exact`.** Hash a file whose mtime differs from its last-synced
+   *    `localMtime`, never one whose mtime equals it. Settle an `unknown`
+   *    entry by comparing the local sha256 with a streamed sha256 of the
+   *    remote object when the remote entry is unchanged since last-synced.
+   * 5. **Shard index only.** Reject a remote whose index is a v1 monolith,
+   *    telling the user to run `swamp datastore sync --pull` and then
+   *    `swamp datastore migrate-index`.
+   * 6. **Create-only uploads.** Without `dryRun`, run the push preflight
+   *    (namespace binding, migration gates), upload each unpushed file with
+   *    a conditional create that records its sha256 (S3 `If-None-Match: *`,
+   *    GCS `ifGenerationMatch=0`), and commit index entries for the files
+   *    created, in batches, through the shard compare-and-swap, with the
+   *    size, mtime and sha256 a push writes. Never fall back to an
+   *    unconditional write: an endpoint without conditional create rejects.
+   *    Retry a conflicting create (HTTP 409) and a refused create that left
+   *    no object, up to a fixed attempt limit, then reject.
+   * 7. **Refused creates are settled in the same run.** When a create is
+   *    refused or an unindexed object already holds the key, compare its
+   *    recorded sha256 (or a streamed sha256) with the local file: equal is
+   *    an earlier upload of ours, indexed and counted as uploaded; other is
+   *    `alreadyPresent`, and the remote object is left as it is.
+   * 8. **Pending work is untouched.** Delete nothing, locally or remotely.
+   *    Never set or clear dirty state, so never reuse an upload helper that
+   *    marks the cache dirty; read it only to report `pendingChanges`.
+   *    Never advance the sync fingerprint (commit sequence, index ETag,
+   *    last-verified time). Merge the uploaded entries into the on-disk
+   *    last-synced index.
+   * 9. **Failures.** With no last-synced index, reject rather than guess.
+   *    Any other failure rejects, honoring `options.signal`; batches already
+   *    committed stay committed.
+   * 10. **Peer deletions are recorded.** A pull drops a key a peer deleted
+   *    from the last-synced index, and may keep the local copy (a release
+   *    that never removed copies, an edited or marked copy). That copy is
+   *    then absent from both indexes, like a file written behind the sync
+   *    service, and uploading it would bring the peer's delete back. So an
+   *    implementation that provides this method MUST, whenever any
+   *    operation drops a key from the last-synced index while a regular
+   *    file stays at its path, record the key in a peer-deleted record
+   *    persisted in the cache (an internal file the push walk skips), and
+   *    forget a recorded key once the remote holds it again or its local
+   *    file is gone. A path under a file that replaced its directory has no
+   *    file: treat that error as absence, never as a failure, or every
+   *    later pull fails on it. Report a recorded file in `peerDeleted`,
+   *    never in `unpushed`, and never upload it. A delete this cache pushed
+   *    leaves no local file, so it is not recorded, unless the push deleted
+   *    a file still on disk (a directory taken as absent). A delete pulled
+   *    before the implementation kept the record left none, so such a copy
+   *    still reads as unpushed.
+   *
+   * Optional — core treats the method's presence as the capability, and
+   * checks for it before calling.
+   */
+  repairUnpushedFiles?(
+    options?: RepairUnpushedFilesOptions,
+  ): Promise<UnpushedFilesSummary>;
+
+  /**
    * Migrate the remote index from monolithic format to shard-first.
    *
    * Reads the existing monolithic `.datastore-index.json`, partitions all
@@ -547,6 +633,51 @@ export interface RepairNamespaceContaminationOptions {
    * When `false`, delete foreign objects and rebuild the namespace index.
    */
   dryRun?: boolean;
+}
+
+/** Options for {@link DatastoreSyncService.repairUnpushedFiles}. */
+export interface RepairUnpushedFilesOptions {
+  signal?: AbortSignal;
+  namespace?: string;
+  /** When `true`, report without uploading anything. */
+  dryRun?: boolean;
+  /**
+   * When `true`, compare content by sha256 where size and mtime cannot
+   * decide. Costlier; the default compares size and mtime only.
+   */
+  exact?: boolean;
+}
+
+/** Summary of {@link DatastoreSyncService.repairUnpushedFiles}. */
+export interface UnpushedFilesSummary {
+  /**
+   * Files the remote has never received: every one found on a dry run, and
+   * those still not uploaded on a real run.
+   */
+  unpushed: number;
+  /** Up to 20 of them, cache-relative with forward slashes. */
+  samplePaths: readonly string[];
+  /** Local files whose key the remote holds with other bytes. */
+  alreadyPresent: number;
+  sampleAlreadyPresent: readonly string[];
+  /** Local files whose content differs from their last-synced entry. */
+  locallyModified: number;
+  sampleModified: readonly string[];
+  /** Local files that may differ from a last-synced entry with no sha256. */
+  unknown: number;
+  sampleUnknown: readonly string[];
+  /**
+   * Local files whose key a peer deleted after this cache synced it, which
+   * the cache kept and recorded as peer-deleted. Never uploaded.
+   */
+  peerDeleted: number;
+  samplePeerDeleted: readonly string[];
+  /** Last-synced keys the remote now holds with other content. */
+  remoteMovedOn: number;
+  /** Files uploaded and indexed. Zero when `dryRun` is `true`. */
+  uploaded: number;
+  /** Whether the cache holds marks a push has not sent yet. */
+  pendingChanges: boolean;
 }
 
 /** Result of a shard-first index migration. */

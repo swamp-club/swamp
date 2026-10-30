@@ -126,6 +126,14 @@
  * path that starts with a namespace reads that key, and it rejects a path
  * that is absolute or has a `..` segment.
  *
+ * `repairUnpushedFiles` compares the cache with the committed index, the
+ * objects stored and what the cache last synced, bytes for bytes. Every pull
+ * and committed push records a key it drops from the last-synced index while
+ * the cache keeps a file at that path, and the repair reports such a file as
+ * `peerDeleted` instead of uploading it. A real run
+ * stores and commits the unpushed files at once, touching neither the
+ * sidecar nor the commit sequence it last saw.
+ *
  * No method looks at `options.signal`, so a test of cancellation needs a
  * service of its own.
  *
@@ -168,9 +176,11 @@ import type {
   DatastoreStorage,
   DatastoreSyncOptions,
   DatastoreSyncService,
+  RepairUnpushedFilesOptions,
   ReplicaPathStore,
   StoredChunk,
   SyncCapabilities,
+  UnpushedFilesSummary,
   V3ReplicaTarget,
   WritableDatastoreControlPlaneStore,
 } from "./datastore_types.ts";
@@ -323,6 +333,16 @@ export interface InMemoryRemoteOptions {
    * so a fence with more exercises its paging. Default false.
    */
   replicaPaths?: boolean;
+  /**
+   * Makes the remote index a v1 monolith, which `repairUnpushedFiles`
+   * rejects. Nothing else changes. Default false.
+   */
+  monolithIndex?: boolean;
+  /**
+   * Whether the remote can create an object only if its key is free, which
+   * `repairUnpushedFiles` needs to upload. Default true.
+   */
+  conditionalCreate?: boolean;
 }
 
 /** A remote operation a failure can be injected into. */
@@ -332,6 +352,7 @@ export type InMemoryRemoteFailure =
   | "prepare"
   | "commit"
   | "fetch"
+  | "repair"
   | "controlPlane"
   | "replicaPaths";
 
@@ -358,6 +379,7 @@ export interface InMemoryRemoteOpRecord {
     | "prepare"
     | "commit"
     | "fetch"
+    | "repair"
     | "controlPlane";
   /** Paths marked, cleared, uploaded, downloaded or fetched, sorted. */
   paths: string[];
@@ -410,6 +432,11 @@ export interface ConnectOptions {
    * (swamp-club#4091).
    */
   clearDirty?: boolean;
+  /**
+   * Whether the service has `repairUnpushedFiles`. Default true; false
+   * leaves the method out, as an extension that predates it would.
+   */
+  repairUnpushedFiles?: boolean;
 }
 
 /** A remote datastore shared by any number of simulated machines. */
@@ -418,6 +445,11 @@ export interface InMemoryRemote {
   connect(cacheDir: string, options?: ConnectOptions): InMemorySyncService;
   /** The committed content other machines can pull. */
   files(): ReadonlyMap<string, Uint8Array>;
+  /**
+   * Stores an object at `key` without indexing it, as an upload whose
+   * index commit never ran leaves one. Other machines cannot pull it.
+   */
+  storeObject(key: string, bytes: Uint8Array): void;
   /** Fails the next matching operation with `error`. */
   failNext(
     op: InMemoryRemoteFailure,
@@ -727,6 +759,19 @@ async function readLocal(
   }
 }
 
+async function isRegularFile(cacheDir: string, rel: string): Promise<boolean> {
+  try {
+    return (await Deno.lstat(join(cacheDir, ...rel.split("/")))).isFile;
+  } catch (error) {
+    // A file now stands where a parent directory was.
+    if (
+      error instanceof Deno.errors.NotFound ||
+      error instanceof Deno.errors.NotADirectory
+    ) return false;
+    throw error;
+  }
+}
+
 async function statLocal(
   cacheDir: string,
   rel: string,
@@ -810,6 +855,8 @@ export function createInMemoryRemote(
     ...options?.semantics,
   };
   const dirtyPathsCap = options?.dirtyPathsCap ?? 2000;
+  const monolithIndex = options?.monolithIndex ?? false;
+  const conditionalCreate = options?.conditionalCreate ?? true;
   const controlPlane = options?.controlPlane ?? false;
   const capabilities: SyncCapabilities = {
     ...(options?.capabilities ?? { twoPhaseSync: true }),
@@ -837,6 +884,10 @@ export function createInMemoryRemote(
   // for the extensions' on-disk `.datastore-index.json`, which is written
   // when they write it and, unlike the sidecar, `resetSidecar` keeps.
   const syncedIndexes = new Map<string, Map<string, Uint8Array>>();
+  // Keys a peer deleted after a cache synced them while the cache kept its
+  // copy, which `repairUnpushedFiles` must never upload. Like the synced
+  // index, `resetSidecar` keeps it.
+  const peerDeletedKeys = new Map<string, Set<string>>();
   const log: InMemoryRemoteOpRecord[] = [];
   const reads: InMemoryControlPlaneRead[] = [];
   const failures: PendingFailure[] = [];
@@ -1201,23 +1252,62 @@ export function createInMemoryRemote(
      * the index it read plus its changes, or, for a push of marked paths,
      * only its changes merged into the last record.
      */
-    function recordPushed(
+    async function recordPushed(
       scoped: boolean,
       index: ReadonlyMap<string, Uint8Array>,
       uploads: ReadonlyMap<string, Uint8Array>,
       deletes: readonly string[],
-    ): void {
+    ): Promise<void> {
       if (!scoped) {
         const next = new Map(index);
         for (const [rel, bytes] of uploads) next.set(rel, bytes);
         for (const rel of deletes) next.delete(rel);
+        await recordPeerDeleted(next);
         syncedIndexes.set(key, next);
         return;
       }
       const synced = syncedIndexes.get(key);
       if (!synced) return;
-      for (const [rel, bytes] of uploads) synced.set(rel, bytes);
-      for (const rel of deletes) synced.delete(rel);
+      const recorded = peerDeletedKeys.get(key) ?? new Set<string>();
+      for (const [rel, bytes] of uploads) {
+        synced.set(rel, bytes);
+        recorded.delete(rel);
+      }
+      for (const rel of deletes) {
+        // A directory taken as absent deletes files still on disk.
+        if (
+          synced.delete(rel) && !isInternalCacheFile(rel) &&
+          await isRegularFile(cacheDir, rel)
+        ) {
+          recorded.add(rel);
+        }
+      }
+      for (const rel of [...recorded]) {
+        if (!(await isRegularFile(cacheDir, rel))) recorded.delete(rel);
+      }
+      peerDeletedKeys.set(key, recorded);
+    }
+
+    /**
+     * Records each key `next` drops from the last-synced index while a
+     * regular file stays at its path, and forgets the keys `next` holds
+     * again or whose file is gone. A delete this cache pushed leaves no
+     * file, so it is recorded only when the push deleted a file still on
+     * disk.
+     */
+    async function recordPeerDeleted(
+      next: ReadonlyMap<string, Uint8Array>,
+    ): Promise<void> {
+      const recorded = peerDeletedKeys.get(key) ?? new Set<string>();
+      for (const rel of syncedIndexes.get(key)?.keys() ?? []) {
+        if (!next.has(rel) && !isInternalCacheFile(rel)) recorded.add(rel);
+      }
+      for (const rel of [...recorded]) {
+        if (next.has(rel) || !(await isRegularFile(cacheDir, rel))) {
+          recorded.delete(rel);
+        }
+      }
+      peerDeletedKeys.set(key, recorded);
     }
 
     async function pushChanged(
@@ -1267,7 +1357,7 @@ export function createInMemoryRemote(
         overflowed,
         marks,
       });
-      recordPushed(plan.scoped, snapshot, plan.uploads, plan.deletes);
+      await recordPushed(plan.scoped, snapshot, plan.uploads, plan.deletes);
       record({
         instance,
         op: "push",
@@ -1338,7 +1428,7 @@ export function createInMemoryRemote(
         index: index.keys(),
         marks: internal[PLAN_MARKS],
       });
-      recordPushed(scoped, index, manifest.uploads, manifest.deletes);
+      await recordPushed(scoped, index, manifest.uploads, manifest.deletes);
       record({
         instance,
         op: "commit",
@@ -1404,8 +1494,11 @@ export function createInMemoryRemote(
       for (const rel of committed.keys()) {
         if (!scoped || isInSubdirs(rel, subdirs)) state.pulledKeys.add(rel);
       }
-      // A subdir-scoped pull saves the whole index too.
-      syncedIndexes.set(key, new Map(committed));
+      // A subdir-scoped pull saves the whole index too. One snapshot feeds
+      // both, so a peer's delete during the record's awaits is not lost.
+      const next = new Map(committed);
+      await recordPeerDeleted(next);
+      syncedIndexes.set(key, next);
       if (!scoped) {
         if (semantics.pullClearsPendingPush) state.localDirty = false;
         state.commitSeq = commitSeq;
@@ -1509,6 +1602,128 @@ export function createInMemoryRemote(
     }
 
     /**
+     * Models the `repairUnpushedFiles` contract, which no released extension
+     * implements yet. The fake compares bytes, so `exact` changes nothing
+     * and `unknown` is always 0. Its index is never split into shards, so
+     * the created files are committed in one batch. With no namespace every
+     * cache file is in scope: the fake keeps no foreign namespace
+     * directories to leave out.
+     */
+    async function repairUnpushedFiles(
+      options?: RepairUnpushedFilesOptions,
+    ): Promise<UnpushedFilesSummary> {
+      const dryRun = options?.dryRun ?? false;
+      bindNamespace(options?.namespace);
+      checkReachable("repair", instance);
+      if (monolithIndex) {
+        throw new Error(
+          "The remote index is a v1 monolith. Run `swamp datastore sync " +
+            "--pull` and then `swamp datastore migrate-index` first.",
+        );
+      }
+      const synced = syncedIndexes.get(key);
+      if (!synced) {
+        throw new Error(
+          "This cache has no last-synced index, so unpushed files cannot " +
+            "be told apart from files a peer deleted. Pull first.",
+        );
+      }
+      if (!dryRun && !conditionalCreate) {
+        throw new Error(
+          "The remote does not support create-only writes, so unpushed " +
+            "files cannot be uploaded without risking a peer's object.",
+        );
+      }
+      const inScope = (rel: string) => !namespace || isUnder(rel, namespace);
+
+      const peerDeletedHere = peerDeletedKeys.get(key) ?? new Set<string>();
+      const unpushed: Array<[string, Uint8Array]> = [];
+      const alreadyPresent: string[] = [];
+      const modified: string[] = [];
+      const peerDeleted: string[] = [];
+      for (const rel of filesOf(await walkLocalEntries(cacheDir, ""))) {
+        if (!inScope(rel)) continue;
+        const bytes = await readLocal(cacheDir, rel);
+        if (!bytes) continue;
+        const syncedBytes = synced.get(rel);
+        if (syncedBytes) {
+          if (!sameBytes(bytes, syncedBytes)) modified.push(rel);
+          continue;
+        }
+        if (committed.has(rel)) {
+          if (!sameBytes(bytes, committed.get(rel))) alreadyPresent.push(rel);
+          continue;
+        }
+        if (peerDeletedHere.has(rel)) {
+          peerDeleted.push(rel);
+          continue;
+        }
+        // An unindexed object with these bytes is an upload of ours whose
+        // commit never ran; one with other bytes is a peer's.
+        const object = objects.get(rel);
+        if (object && !sameBytes(bytes, object)) {
+          alreadyPresent.push(rel);
+        } else {
+          unpushed.push([rel, bytes]);
+        }
+      }
+      let remoteMovedOn = 0;
+      for (const [rel, bytes] of synced) {
+        if (!inScope(rel) || isInternalCacheFile(rel)) continue;
+        const remote = committed.get(rel);
+        if (remote && !sameBytes(remote, bytes)) remoteMovedOn++;
+      }
+
+      const created = new Map<string, Uint8Array>();
+      const refused = new Set<string>();
+      if (!dryRun) {
+        for (const [rel, bytes] of unpushed) {
+          // A peer may have committed or stored the key while the walk
+          // read files: the create is refused, and other bytes are
+          // alreadyPresent.
+          const current = committed.get(rel) ?? objects.get(rel);
+          if (current && !sameBytes(bytes, current)) {
+            alreadyPresent.push(rel);
+            refused.add(rel);
+            continue;
+          }
+          if (!objects.has(rel)) objects.set(rel, bytes);
+          created.set(rel, bytes);
+        }
+        // Commits the entries and leaves the sidecar alone: the dirty state
+        // and the commit sequence this cache last saw are not touched.
+        publish(created, []);
+        for (const [rel, bytes] of created) synced.set(rel, bytes);
+        record({
+          instance,
+          op: "repair",
+          paths: [...created.keys()],
+          deleted: [],
+        });
+      }
+      // A refused create is settled as alreadyPresent, not left unpushed.
+      const remaining = unpushed.map(([rel]) => rel).filter((rel) =>
+        !created.has(rel) && !refused.has(rel)
+      );
+      const sample = (paths: string[]) => paths.sort().slice(0, SAMPLE_LIMIT);
+      return {
+        unpushed: remaining.length,
+        samplePaths: sample(remaining),
+        alreadyPresent: alreadyPresent.length,
+        sampleAlreadyPresent: sample(alreadyPresent),
+        locallyModified: modified.length,
+        sampleModified: sample(modified),
+        unknown: 0,
+        sampleUnknown: [],
+        peerDeleted: peerDeleted.length,
+        samplePeerDeleted: sample(peerDeleted),
+        remoteMovedOn,
+        uploaded: created.size,
+        pendingChanges: loadSidecar()?.localDirty ?? false,
+      };
+    }
+
+    /**
      * The extensions' store: a service that has not bound a namespace binds
      * none on its first call, so its keys are datastore-wide from then on.
      */
@@ -1603,6 +1818,9 @@ export function createInMemoryRemote(
       capabilities: () => ({ ...capabilities }),
       ...(connectOptions?.fetchContent === false ? {} : { fetchContent }),
       ...(connectOptions?.clearDirty === false ? {} : { clearDirty }),
+      ...(connectOptions?.repairUnpushedFiles === false
+        ? {}
+        : { repairUnpushedFiles }),
       ...(controlPlane ? { controlPlaneStore } : {}),
     };
   }
@@ -1736,6 +1954,9 @@ export function createInMemoryRemote(
   return {
     connect,
     files: () => new Map(committed),
+    storeObject(key, bytes) {
+      objects.set(key, bytes.slice());
+    },
     failNext(op, error, failOptions) {
       failures.push({
         op,
@@ -1827,6 +2048,9 @@ export function createInMemoryRemote(
     },
   };
 }
+
+/** Paths a `repairUnpushedFiles` summary lists per category. */
+const SAMPLE_LIMIT = 20;
 
 /** Where the in-memory remote keeps replica objects. */
 const REPLICA_ROOT = "_litestream/";

@@ -122,6 +122,48 @@ export interface DatastoreSyncOptions {
   subdirs?: readonly string[];
 }
 
+/** Options for `DatastoreSyncService.repairUnpushedFiles`. */
+export interface RepairUnpushedFilesOptions {
+  signal?: AbortSignal;
+  namespace?: string;
+  /** When `true`, report without uploading anything. */
+  dryRun?: boolean;
+  /** When `true`, compare content by sha256 where size and mtime cannot. */
+  exact?: boolean;
+}
+
+/** Summary of `DatastoreSyncService.repairUnpushedFiles`. */
+export interface UnpushedFilesSummary {
+  /**
+   * Files the remote has never received: every one found on a dry run, and
+   * those still not uploaded on a real run.
+   */
+  unpushed: number;
+  /** Up to 20 of them, cache-relative with forward slashes. */
+  samplePaths: readonly string[];
+  /** Local files whose key the remote holds with other bytes. */
+  alreadyPresent: number;
+  sampleAlreadyPresent: readonly string[];
+  /** Local files whose content differs from their last-synced entry. */
+  locallyModified: number;
+  sampleModified: readonly string[];
+  /** Local files that may differ from a last-synced entry with no sha256. */
+  unknown: number;
+  sampleUnknown: readonly string[];
+  /**
+   * Local files whose key a peer deleted after this cache synced it, which
+   * the cache kept and recorded as peer-deleted. Never uploaded.
+   */
+  peerDeleted: number;
+  samplePeerDeleted: readonly string[];
+  /** Last-synced keys the remote now holds with other content. */
+  remoteMovedOn: number;
+  /** Files uploaded and indexed. Zero when `dryRun` is `true`. */
+  uploaded: number;
+  /** Whether the cache holds marks a push has not sent yet. */
+  pendingChanges: boolean;
+}
+
 /** Interface for datastore synchronization services. */
 export interface DatastoreSyncService {
   pullChanged(options?: DatastoreSyncOptions): Promise<number | void>;
@@ -158,6 +200,16 @@ export interface DatastoreSyncService {
     relPath: string,
     options?: DatastoreSyncOptions,
   ): Promise<Uint8Array | null>;
+  /**
+   * Find cache files the remote has never received and, unless `dryRun`,
+   * upload them with create-only writes. Reports local versions the remote
+   * lacks without uploading them, deletes nothing, and leaves dirty state
+   * and the sync fingerprint alone. See the canonical
+   * `DatastoreSyncService.repairUnpushedFiles` JSDoc for the full contract.
+   */
+  repairUnpushedFiles?(
+    options?: RepairUnpushedFilesOptions,
+  ): Promise<UnpushedFilesSummary>;
   /**
    * Return a store for small control-plane records, read and written in
    * the datastore directly. Required when `capabilities().controlPlane` is

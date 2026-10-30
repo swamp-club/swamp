@@ -1820,3 +1820,380 @@ Deno.test("createInMemoryRemote: clearDirty on a cache with no marks is a no-op,
     );
   });
 });
+
+/** A cache that pulled once, then gained a file it never marked. */
+async function strandedCache(
+  dir: string,
+  options?: Parameters<typeof createInMemoryRemote>[0],
+) {
+  const machines = await twoMachines(dir, options);
+  await write(machines.aCache, "data/m/stranded", "mine");
+  return machines;
+}
+
+Deno.test("repairUnpushedFiles: uploads a file that was never marked, so a peer pulls it", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, b, bCache } = await strandedCache(dir);
+    assertEquals(await a.pushChanged(), 0);
+
+    const summary = await a.repairUnpushedFiles!();
+
+    assertEquals(summary.uploaded, 1);
+    assertEquals(summary.unpushed, 0);
+    assertEquals(remoteText(remote, "data/m/stranded"), "mine");
+    await b.pullChanged();
+    assertEquals(await read(bCache, "data/m/stranded"), "mine");
+  });
+});
+
+Deno.test("repairUnpushedFiles: a dry run reports the file and changes nothing", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, aCache } = await strandedCache(dir);
+    const pending = await remote.pendingPush(aCache);
+
+    const summary = await a.repairUnpushedFiles!({ dryRun: true });
+
+    assertEquals(summary.unpushed, 1);
+    assertEquals(summary.samplePaths, ["data/m/stranded"]);
+    assertEquals(summary.uploaded, 0);
+    assertEquals(remote.files().has("data/m/stranded"), false);
+    assertEquals(await remote.pendingPush(aCache), pending);
+    assertEquals(remote.ops().some((op) => op.op === "repair"), false);
+  });
+});
+
+Deno.test("repairUnpushedFiles: keeps a pending delete, which the next push applies", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, b, aCache, bCache } = await twoMachines(dir);
+    await write(bCache, "data/m/old", "old");
+    await b.markDirty({ relPath: "data/m/old" });
+    await b.pushChanged();
+    await a.pullChanged();
+    await remove(aCache, "data/m/old");
+    await a.markDirty({ relPath: "data/m/old" });
+    await write(aCache, "data/m/stranded", "mine");
+
+    const summary = await a.repairUnpushedFiles!();
+
+    assertEquals(summary.pendingChanges, true);
+    assertEquals(remote.files().has("data/m/old"), true);
+    assertEquals((await remote.pendingPush(aCache)).marked, ["data/m/old"]);
+    await a.pushChanged();
+    assertEquals(remote.files().has("data/m/old"), false);
+    assertEquals(remoteText(remote, "data/m/stranded"), "mine");
+  });
+});
+
+Deno.test("repairUnpushedFiles: tells a local edit from a stale copy, counting a file in both", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, b, aCache, bCache } = await twoMachines(dir);
+    for (const name of ["edited", "stale", "both"]) {
+      await write(bCache, `data/m/${name}`, "v1");
+      await b.markDirty({ relPath: `data/m/${name}` });
+    }
+    await b.pushChanged();
+    await a.pullChanged();
+    await write(aCache, "data/m/edited", "local");
+    await write(aCache, "data/m/both", "local");
+    for (const name of ["stale", "both"]) {
+      await write(bCache, `data/m/${name}`, "v2");
+      await b.markDirty({ relPath: `data/m/${name}` });
+    }
+    await b.pushChanged();
+
+    const summary = await a.repairUnpushedFiles!({ dryRun: true });
+
+    assertEquals(summary.sampleModified, ["data/m/both", "data/m/edited"]);
+    assertEquals(summary.remoteMovedOn, 2);
+    assertEquals(summary.unpushed, 0);
+    assertEquals(remoteText(remote, "data/m/stale"), "v2");
+  });
+});
+
+Deno.test("repairUnpushedFiles: a copy a pull kept after a peer's delete is peerDeleted and never uploaded", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(
+      dir,
+      { "data/m/x": "v1", "data/m/keep": "k" },
+      { semantics: EXTENSION_2026_10_01_SEMANTICS },
+    );
+    const { remote, b, bCache } = machines;
+    await peerDeletes(machines, ["data/m/x"]);
+    await b.pullChanged();
+    assertEquals(await exists(bCache, "data/m/x"), true);
+
+    const summary = await b.repairUnpushedFiles!();
+
+    assertEquals(summary.samplePeerDeleted, ["data/m/x"]);
+    assertEquals(summary.peerDeleted, 1);
+    assertEquals(summary.unpushed, 0);
+    assertEquals(summary.uploaded, 0);
+    assertEquals(remote.files().has("data/m/x"), false);
+  });
+});
+
+Deno.test("repairUnpushedFiles: forgets a peer-deleted key once the remote holds it again or its copy is gone", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(
+      dir,
+      { "data/m/x": "v1", "data/m/y": "v1", "data/m/keep": "k" },
+      { semantics: EXTENSION_2026_10_01_SEMANTICS },
+    );
+    const { a, aCache, b, bCache } = machines;
+    await peerDeletes(machines, ["data/m/x", "data/m/y"]);
+    await b.pullChanged();
+    await write(aCache, "data/m/x", "v2");
+    await a.markDirty({ relPath: "data/m/x" });
+    await a.pushChanged();
+    await remove(bCache, "data/m/y");
+    await b.pullChanged();
+    // Written behind the sync service after the record was dropped.
+    await write(bCache, "data/m/y", "new");
+
+    const summary = await b.repairUnpushedFiles!({ dryRun: true });
+
+    assertEquals(summary.peerDeleted, 0);
+    assertEquals(summary.samplePaths, ["data/m/y"]);
+    assertEquals(await read(bCache, "data/m/x"), "v2");
+  });
+});
+
+Deno.test("repairUnpushedFiles: a marked-path push forgets a peer-deleted key whose copy is gone", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(
+      dir,
+      { "data/m/x": "v1", "data/m/keep": "k" },
+      { semantics: EXTENSION_2026_10_01_SEMANTICS },
+    );
+    const { b, bCache } = machines;
+    await peerDeletes(machines, ["data/m/x"]);
+    await b.pullChanged();
+    await remove(bCache, "data/m/x");
+    await b.markDirty({ relPath: "data/m/x" });
+    await write(bCache, "data/m/other", "o");
+    await b.markDirty({ relPath: "data/m/other" });
+    await b.pushChanged();
+    // Written behind the sync service after the record was dropped.
+    await write(bCache, "data/m/x", "new");
+
+    const summary = await b.repairUnpushedFiles!({ dryRun: true });
+
+    assertEquals(summary.peerDeleted, 0);
+    assertEquals(summary.samplePaths, ["data/m/x"]);
+  });
+});
+
+Deno.test("repairUnpushedFiles: a delete this cache pushed is not recorded, so a file written there later is unpushed", async () => {
+  await withTempDir(async (dir) => {
+    const { b, bCache } = await syncedPair(dir, {
+      "data/m/x": "v1",
+      "data/m/keep": "k",
+    });
+    await remove(bCache, "data/m/x");
+    await b.markDirty({ relPath: "data/m/x" });
+    await b.pushChanged();
+    await write(bCache, "data/m/x", "new");
+
+    const summary = await b.repairUnpushedFiles!({ dryRun: true });
+
+    assertEquals(summary.peerDeleted, 0);
+    assertEquals(summary.samplePaths, ["data/m/x"]);
+  });
+});
+
+Deno.test({
+  name:
+    "repairUnpushedFiles: records a file a marked-path push deleted while it stays on disk, with extensions through 2026.10.20.2",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const { remote, a, aCache } = await twoMachines(dir, {
+        semantics: EXTENSION_2026_10_20_SEMANTICS,
+      });
+      await write(aCache, "d/live", "l");
+      await a.markDirty({ relPath: "d/live" });
+      await a.pushChanged();
+      await a.markDirty({ relPath: "d" });
+      await write(aCache, "d/z-added", "z");
+      await Deno.symlink(join(aCache, "d", "nowhere"), join(aCache, "d", "m"), {
+        type: "file",
+      });
+      await a.pushChanged();
+      assertEquals(remote.files().has("d/live"), false);
+
+      const summary = await a.repairUnpushedFiles!();
+
+      assertEquals(summary.samplePeerDeleted, ["d/live"]);
+      assertEquals(summary.peerDeleted, 1);
+      assertEquals(summary.uploaded, 1);
+      assertEquals(remote.files().has("d/live"), false);
+      assertEquals(remoteText(remote, "d/z-added"), "z");
+    });
+  },
+});
+
+Deno.test("createInMemoryRemote: a file a peer put where a deleted directory was leaves later pulls working", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(dir, {
+      "data/m/d/x": "v1",
+      "data/m/keep": "k",
+    });
+    const { a, aCache, b, bCache } = machines;
+    await peerDeletes(machines, ["data/m/d/x"]);
+    await remove(aCache, "data/m/d");
+    await write(aCache, "data/m/d", "file");
+    await a.markDirty({ relPath: "data/m/d" });
+    await a.pushChanged();
+    await b.pullChanged();
+    assertEquals(await read(bCache, "data/m/d"), "file");
+
+    await write(aCache, "data/m/later", "l");
+    await a.markDirty({ relPath: "data/m/later" });
+    await a.pushChanged();
+    await b.pullChanged();
+    assertEquals(await read(bCache, "data/m/later"), "l");
+    assertEquals(
+      (await b.repairUnpushedFiles!({ dryRun: true })).peerDeleted,
+      0,
+    );
+  });
+});
+
+Deno.test("repairUnpushedFiles: a key a peer committed first is alreadyPresent and keeps the peer's bytes", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, b, bCache } = await strandedCache(dir);
+    await write(bCache, "data/m/stranded", "theirs");
+    await b.markDirty({ relPath: "data/m/stranded" });
+    await b.pushChanged();
+
+    const summary = await a.repairUnpushedFiles!();
+
+    assertEquals(summary.alreadyPresent, 1);
+    assertEquals(summary.uploaded, 0);
+    assertEquals(remoteText(remote, "data/m/stranded"), "theirs");
+    const again = await a.repairUnpushedFiles!({ dryRun: true });
+    assertEquals(again.sampleAlreadyPresent, ["data/m/stranded"]);
+    assertEquals(again.unpushed, 0);
+  });
+});
+
+Deno.test("repairUnpushedFiles: a key a peer commits while the repair reads files stays the peer's", async () => {
+  // Under any interleaving the peer's bytes win: committed before the
+  // repair reads the key, it is alreadyPresent; after the repair commits,
+  // the peer's push replaces it; in between, the create is refused
+  // (contract rule 7). Either way the key is counted once and never left
+  // unpushed. The peer walks its whole cache and the repair has more files
+  // to read after the key, so the commit tends to land in between.
+  const synced: Record<string, string> = {};
+  for (let i = 0; i < 100; i++) synced[`data/m/s${i}`] = "v1";
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await withTempDir(async (dir) => {
+      const { remote, a, aCache, b, bCache } = await syncedPair(dir, synced);
+      await write(aCache, "data/m/k", "ours");
+      for (let i = 0; i < 200; i++) await write(aCache, `data/m/u${i}`, "u");
+      await write(bCache, "data/m/k", "theirs");
+      await b.markDirty();
+
+      const [summary] = await Promise.all([
+        a.repairUnpushedFiles!(),
+        b.pushChanged(),
+      ]);
+
+      assertEquals(
+        remoteText(remote, "data/m/k"),
+        "theirs",
+        `attempt ${attempt}`,
+      );
+      assertEquals(summary.unpushed, 0, `attempt ${attempt}`);
+    });
+  }
+});
+
+Deno.test("repairUnpushedFiles: indexes an unindexed object holding its bytes, and leaves one holding other bytes", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, aCache } = await strandedCache(dir);
+    await write(aCache, "data/m/other", "mine");
+    const encode = (text: string) => new TextEncoder().encode(text);
+    remote.storeObject("data/m/stranded", encode("mine"));
+    remote.storeObject("data/m/other", encode("theirs"));
+
+    const summary = await a.repairUnpushedFiles!();
+
+    assertEquals(summary.uploaded, 1);
+    assertEquals(remoteText(remote, "data/m/stranded"), "mine");
+    assertEquals(summary.sampleAlreadyPresent, ["data/m/other"]);
+    assertEquals(remote.files().has("data/m/other"), false);
+  });
+});
+
+Deno.test("repairUnpushedFiles: reports only files under the bound namespace", async () => {
+  await withTempDir(async (dir) => {
+    const remote = createInMemoryRemote();
+    const cache = join(dir, "cache");
+    await Deno.mkdir(cache);
+    const service = remote.connect(cache);
+    await service.pullChanged({ namespace: "infra" });
+    await write(cache, "infra/data/m/stranded", "mine");
+    await write(cache, "other/data/m/foreign", "theirs");
+
+    const summary = await service.repairUnpushedFiles!({
+      namespace: "infra",
+      dryRun: true,
+    });
+
+    assertEquals(summary.samplePaths, ["infra/data/m/stranded"]);
+  });
+});
+
+Deno.test("repairUnpushedFiles: rejects without a last-synced index, on a monolith index, and without create-only writes", async () => {
+  await withTempDir(async (dir) => {
+    const fresh = createInMemoryRemote();
+    const cache = join(dir, "fresh");
+    await Deno.mkdir(cache);
+    await assertRejects(
+      () => fresh.connect(cache).repairUnpushedFiles!({ dryRun: true }),
+      Error,
+      "no last-synced index",
+    );
+
+    await Deno.mkdir(join(dir, "monolith"));
+    const monolith = await strandedCache(join(dir, "monolith"), {
+      monolithIndex: true,
+    });
+    await assertRejects(
+      () => monolith.a.repairUnpushedFiles!({ dryRun: true }),
+      Error,
+      "migrate-index",
+    );
+
+    await Deno.mkdir(join(dir, "plain"));
+    const plain = await strandedCache(join(dir, "plain"), {
+      conditionalCreate: false,
+    });
+    assertEquals(
+      (await plain.a.repairUnpushedFiles!({ dryRun: true })).unpushed,
+      1,
+    );
+    await assertRejects(
+      () => plain.a.repairUnpushedFiles!(),
+      Error,
+      "create-only",
+    );
+    assertEquals(plain.remote.files().has("data/m/stranded"), false);
+  });
+});
+
+Deno.test("repairUnpushedFiles: is left out when asked, and takes an injected failure", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, aCache } = await strandedCache(dir);
+    assertEquals(
+      remote.connect(aCache, { repairUnpushedFiles: false })
+        .repairUnpushedFiles,
+      undefined,
+    );
+    const service = remote.connect(aCache, { instance: "c" });
+    remote.failNext("repair", new Error("boom"));
+    await assertRejects(() => service.repairUnpushedFiles!(), Error, "boom");
+    assertEquals(remote.files().has("data/m/stranded"), false);
+  });
+});

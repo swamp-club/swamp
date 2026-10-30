@@ -155,11 +155,13 @@ export type {
   DistributedLock,
   LockInfo,
   LockOptions,
+  RepairUnpushedFilesOptions,
   ReplicaPathStore,
   StorageCapabilities,
   StoredChunk,
   SyncCapabilities,
   SyncContext,
+  UnpushedFilesSummary,
   V3ReplicaTarget,
   WritableDatastoreControlPlaneStore,
 } from "./datastore_types.ts";

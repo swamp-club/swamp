@@ -119,9 +119,19 @@ function _checkDatastoreSyncServiceFields(sync: TestingDatastoreSyncService) {
   const _testingFetchContent: TestingDatastoreSyncService["fetchContent"] = (
     {} as CanonicalDatastoreSyncService
   ).fetchContent;
+  // repairUnpushedFiles has one signature in both packages, in both
+  // directions.
+  const _repairUnpushed: CanonicalDatastoreSyncService["repairUnpushedFiles"] =
+    sync.repairUnpushedFiles;
+  const _testingRepairUnpushed:
+    TestingDatastoreSyncService["repairUnpushedFiles"] = (
+      {} as CanonicalDatastoreSyncService
+    ).repairUnpushedFiles;
   void [
     _fetchContent,
     _testingFetchContent,
+    _repairUnpushed,
+    _testingRepairUnpushed,
     _pull,
     _push,
     _markDirty,

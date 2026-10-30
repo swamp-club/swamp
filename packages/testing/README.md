@@ -224,6 +224,17 @@ of one file, or `null`, and touches neither the cache nor its dirty state. Pass
 `clearDirty(relPaths)` drops the marks whose keys equal `relPaths`, keeping a
 parent's or child's mark and the bulk flag; no released S3 or GCS extension has
 it yet, so pass `{ clearDirty: false }` to model one without it.
+`repairUnpushedFiles(options)` reports cache files the remote never received,
+and local versions it lacks, against what the cache last synced, and without
+`dryRun` uploads the unpushed ones, leaving dirty state alone. Every pull and
+committed push records a key it drops from the last-synced index while the cache
+keeps a file there, and the repair reports that file as `peerDeleted` rather
+than uploading it. It compares bytes, so `exact` changes nothing and `unknown`
+is always 0. Pass `{ repairUnpushedFiles: false }` to `connect` for a service
+without it. On the remote, `monolithIndex: true` makes it reject as a v1 index
+does, `conditionalCreate: false` makes a real run reject as an endpoint without
+create-only writes does, and `storeObject(key, bytes)` leaves an object no index
+lists, as an upload whose commit never ran would.
 
 ```typescript
 import { createInMemoryRemote } from "@swamp-club/swamp-testing";
@@ -505,26 +516,32 @@ Litestream would; its `removePath` deletes two objects per listing page.
 Holds a `DatastoreSyncService` to the `markDirty` contract, delete propagation
 and two-phase push. The factory returns two services bound to two different
 cache directories on **one** fresh backend, plus a cleanup. The suite calls it
-once per case (fifteen fixtures), pulls on both caches, then runs:
+once per case (twenty-one fixtures), pulls on both caches, then runs:
 
-| Case                                | Asserts                                                                                                                                             |
-| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `round-trip`                        | A path-marked file pushed by `first` pulls on `second` with identical bytes                                                                         |
-| `push-deletes`                      | A marked path that is absent on disk deletes the remote file                                                                                        |
-| `pull-deletes`                      | A pull removes a local file the remote deleted                                                                                                      |
-| `bulk-mark`                         | A bare `markDirty()` pushes every changed file                                                                                                      |
-| `failed-push-retry`                 | A failed push leaves the path dirty, and the next push uploads it                                                                                   |
-| `two-phase`                         | `preparePush` publishes nothing and keeps dirty; `commitPush` publishes and clears                                                                  |
-| `pull-nothing-new`                  | A pull with nothing new returns 0 or void and leaves bytes and mtimes alone                                                                         |
-| `forward-slash-paths`               | A forward-slash `relPath` lands at the native path                                                                                                  |
-| `fetch-content`                     | `fetchContent` returns the remote's bytes or `null`, rejects a `..` or absolute path, and leaves the cache and a pending push alone                 |
-| `fetch-content-error`               | A `fetchContent` that cannot read the remote rejects, never resolving to `null`                                                                     |
-| `fetch-content-namespace`           | A cache-relative path that starts with the namespace is read without the namespace being added again                                                |
-| `mark-between-prepare-and-commit`   | A path marked after `preparePush` stays dirty through `commitPush`, and the next push sends it                                                      |
-| `remark-between-prepare-and-commit` | A prepared path marked and rewritten before `commitPush` stays dirty, and the next push sends its new bytes                                         |
-| `bulk-between-prepare-and-commit`   | A bare `markDirty()` after `preparePush` stays set through `commitPush`, and the next push sends a later write                                      |
-| `vanish-during-walk`                | A marked directory holding an entry the push cannot stat (a dangling symlink) still pushes its changes and deletes none of its other files remotely |
-| `clear-dirty`                       | A directory mark `clearDirty` dropped makes the next push delete and send nothing, and a mark made after it is still pushed                         |
+| Case                                | Asserts                                                                                                                                                                               |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `round-trip`                        | A path-marked file pushed by `first` pulls on `second` with identical bytes                                                                                                           |
+| `push-deletes`                      | A marked path that is absent on disk deletes the remote file                                                                                                                          |
+| `pull-deletes`                      | A pull removes a local file the remote deleted                                                                                                                                        |
+| `bulk-mark`                         | A bare `markDirty()` pushes every changed file                                                                                                                                        |
+| `failed-push-retry`                 | A failed push leaves the path dirty, and the next push uploads it                                                                                                                     |
+| `two-phase`                         | `preparePush` publishes nothing and keeps dirty; `commitPush` publishes and clears                                                                                                    |
+| `pull-nothing-new`                  | A pull with nothing new returns 0 or void and leaves bytes and mtimes alone                                                                                                           |
+| `forward-slash-paths`               | A forward-slash `relPath` lands at the native path                                                                                                                                    |
+| `fetch-content`                     | `fetchContent` returns the remote's bytes or `null`, rejects a `..` or absolute path, and leaves the cache and a pending push alone                                                   |
+| `fetch-content-error`               | A `fetchContent` that cannot read the remote rejects, never resolving to `null`                                                                                                       |
+| `fetch-content-namespace`           | A cache-relative path that starts with the namespace is read without the namespace being added again                                                                                  |
+| `mark-between-prepare-and-commit`   | A path marked after `preparePush` stays dirty through `commitPush`, and the next push sends it                                                                                        |
+| `remark-between-prepare-and-commit` | A prepared path marked and rewritten before `commitPush` stays dirty, and the next push sends its new bytes                                                                           |
+| `bulk-between-prepare-and-commit`   | A bare `markDirty()` after `preparePush` stays set through `commitPush`, and the next push sends a later write                                                                        |
+| `vanish-during-walk`                | A marked directory holding an entry the push cannot stat (a dangling symlink) still pushes its changes and deletes none of its other files remotely                                   |
+| `clear-dirty`                       | A directory mark `clearDirty` dropped makes the next push delete and send nothing, and a mark made after it is still pushed                                                           |
+| `repair-unpushed`                   | A file written into the cache without a mark is reported by a `repairUnpushedFiles` dry run and uploaded by a real run                                                                |
+| `repair-unpushed-keeps-pending`     | A recorded delete is reported as pending, survives `repairUnpushedFiles`, and is applied by the next push                                                                             |
+| `repair-unpushed-keeps-fingerprint` | After a real `repairUnpushedFiles`, the next pull still receives a peer's commit made before it                                                                                       |
+| `repair-unpushed-classifies`        | A local edit is `locallyModified`, a stale copy is not, a peer's change is `remoteMovedOn`, a peer's delete is neither reported nor brought back, and a real run uploads none of them |
+| `repair-unpushed-peer-deleted`      | An edited copy a pull kept after a peer deleted its key is `peerDeleted`, never unpushed, and is never uploaded                                                                       |
+| `repair-unpushed-already-present`   | A local file whose key a peer pushed with other bytes is `alreadyPresent`, and the peer's bytes stay                                                                                  |
 
 The suite marks before it writes or deletes, as swamp core does. Counts may
 resolve to `void` everywhere.
@@ -549,7 +566,9 @@ a reason:
   service has no `preparePush` and `commitPush`;
 - `vanish-during-walk` on Windows, where creating a symlink may need Developer
   Mode;
-- `clear-dirty` when `first.service` has no `clearDirty`.
+- `clear-dirty` when `first.service` has no `clearDirty`;
+- every `repair-unpushed` case when `first.service` has no
+  `repairUnpushedFiles`.
 
 A failing case rejects with an error that names it, such as
 `sync round-trip case "push-deletes" failed: ...`.
