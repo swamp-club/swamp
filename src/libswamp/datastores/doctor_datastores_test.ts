@@ -22,6 +22,7 @@ import { join, SEPARATOR } from "@std/path";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
+  cacheWipeRefusal,
   type CatalogCompletenessSummary,
   doctorDatastores,
   type DoctorDatastoresDeps,
@@ -36,12 +37,18 @@ import {
   repairUnmigratedData,
   type RepairUnmigratedDataDeps,
   type RepairUnmigratedDataEvent,
+  repairUnpushedCacheFiles,
+  type RepairUnpushedFilesDeps,
+  type RepairUnpushedFilesEvent,
   repairUnreadableVersions,
   type RepairUnreadableVersionsDeps,
   type RepairUnreadableVersionsEvent,
+  unpushedFilesClear,
+  unpushedRepairUnsupportedMessage,
   UNREADABLE_VERSIONS_LISTED,
   type V3ContentSummary,
 } from "./doctor_datastores.ts";
+import type { UnpushedFilesSummary } from "../../domain/datastore/datastore_sync_service.ts";
 import type { UnreadableDataVersion } from "../../domain/data/unreadable_data_version.ts";
 import {
   repairDatastoreFormatMarker,
@@ -2196,4 +2203,379 @@ Deno.test("repairUnreadableVersions: a delete that throws yields an error, and t
   assertEquals(error.error.code, "unreadable_versions_repair_failed");
   assertStringIncludes(error.error.message, "disk full");
   assertEquals(calls, ["lock", "release"]);
+});
+
+// ============================================================================
+// Unpushed cache files (swamp-club#4112)
+// ============================================================================
+
+function unpushedSummary(
+  overrides: Partial<UnpushedFilesSummary> = {},
+): UnpushedFilesSummary {
+  return {
+    unpushed: 0,
+    samplePaths: [],
+    alreadyPresent: 0,
+    sampleAlreadyPresent: [],
+    locallyModified: 0,
+    sampleModified: [],
+    unknown: 0,
+    sampleUnknown: [],
+    peerDeleted: 0,
+    samplePeerDeleted: [],
+    remoteMovedOn: 0,
+    uploaded: 0,
+    pendingChanges: false,
+    ...overrides,
+  };
+}
+
+function makeUnpushedDeps(
+  overrides: Partial<RepairUnpushedFilesDeps> = {},
+): RepairUnpushedFilesDeps {
+  return {
+    detect: () =>
+      Promise.resolve(
+        unpushedSummary({ unpushed: 2, samplePaths: ["ns/a", "ns/b"] }),
+      ),
+    repair: () => Promise.resolve(unpushedSummary({ uploaded: 2 })),
+    ...overrides,
+  };
+}
+
+Deno.test("repairUnpushedCacheFiles: previews without uploading", async () => {
+  let repaired = false;
+  const events = await collect<RepairUnpushedFilesEvent>(
+    repairUnpushedCacheFiles(
+      createLibSwampContext(),
+      makeUnpushedDeps({
+        repair: () => {
+          repaired = true;
+          return Promise.resolve(unpushedSummary());
+        },
+      }),
+      { confirm: false },
+    ),
+  );
+  assertEquals(events.map((e) => e.kind), ["scanning", "preview"]);
+  assertEquals(repaired, false);
+});
+
+Deno.test("repairUnpushedCacheFiles: uploads with confirm, without a dry run first", async () => {
+  let detected = false;
+  const events = await collect<RepairUnpushedFilesEvent>(
+    repairUnpushedCacheFiles(
+      createLibSwampContext(),
+      makeUnpushedDeps({
+        detect: () => {
+          detected = true;
+          return Promise.resolve(unpushedSummary());
+        },
+      }),
+      { confirm: true },
+    ),
+  );
+  assertEquals(events.map((e) => e.kind), ["scanning", "step", "completed"]);
+  assertEquals(detected, false);
+  const completed = events.at(-1);
+  if (completed?.kind === "completed") {
+    assertEquals(completed.summary.uploaded, 2);
+  }
+});
+
+Deno.test("repairUnpushedCacheFiles: not needed when nothing is unpushed or local-only, even with stale copies", async () => {
+  for (const confirm of [false, true]) {
+    const clear = unpushedSummary({ remoteMovedOn: 4, pendingChanges: true });
+    const events = await collect<RepairUnpushedFilesEvent>(
+      repairUnpushedCacheFiles(
+        createLibSwampContext(),
+        makeUnpushedDeps({
+          detect: () => Promise.resolve(clear),
+          repair: () => Promise.resolve(clear),
+        }),
+        { confirm },
+      ),
+    );
+    assertEquals(events.at(-1)?.kind, "not_needed");
+  }
+});
+
+Deno.test("repairUnpushedCacheFiles: reports local-only versions as completed, never as not needed", async () => {
+  const events = await collect<RepairUnpushedFilesEvent>(
+    repairUnpushedCacheFiles(
+      createLibSwampContext(),
+      makeUnpushedDeps({
+        repair: () =>
+          Promise.resolve(
+            unpushedSummary({ locallyModified: 1, sampleModified: ["ns/m"] }),
+          ),
+      }),
+      { confirm: true },
+    ),
+  );
+  assertEquals(events.at(-1)?.kind, "completed");
+});
+
+Deno.test("repairUnpushedCacheFiles: reports an unsupported datastore without calling it", async () => {
+  const events = await collect<RepairUnpushedFilesEvent>(
+    repairUnpushedCacheFiles(
+      createLibSwampContext(),
+      makeUnpushedDeps({
+        unsupported: "too old",
+        detect: () => Promise.reject(new Error("must not be called")),
+        repair: () => Promise.reject(new Error("must not be called")),
+      }),
+      { confirm: true },
+    ),
+  );
+  assertEquals(events.map((e) => e.kind), ["scanning", "not_supported"]);
+});
+
+Deno.test("repairUnpushedCacheFiles: a rejected repair is an error that says nothing was deleted", async () => {
+  const events = await collect<RepairUnpushedFilesEvent>(
+    repairUnpushedCacheFiles(
+      createLibSwampContext(),
+      makeUnpushedDeps({ repair: () => Promise.reject(new Error("boom")) }),
+      { confirm: true },
+    ),
+  );
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertStringIncludes(last.error.message, "boom");
+    assertStringIncludes(last.error.message, "nothing was deleted");
+  }
+});
+
+Deno.test("cacheWipeRefusal: allows a wipe that loses only stale copies", () => {
+  assertEquals(
+    cacheWipeRefusal(unpushedSummary({ remoteMovedOn: 3 }), "/cache"),
+    undefined,
+  );
+});
+
+Deno.test("cacheWipeRefusal: refuses for unpushed files, local-only versions and pending changes", () => {
+  const unpushed = cacheWipeRefusal(
+    unpushedSummary({ unpushed: 1, samplePaths: ["ns/a"] }),
+    "/cache",
+  );
+  assertStringIncludes(unpushed!, "ns/a");
+  const localOnly = cacheWipeRefusal(
+    unpushedSummary({
+      alreadyPresent: 1,
+      sampleAlreadyPresent: ["ns/p"],
+      locallyModified: 1,
+      sampleModified: ["ns/m"],
+      unknown: 1,
+      sampleUnknown: ["ns/u"],
+    }),
+    "/cache",
+  );
+  assertStringIncludes(localOnly!, "3 local version(s)");
+  assertStringIncludes(localOnly!, "/cache");
+  assertStringIncludes(localOnly!, "do not pull first");
+  const pending = cacheWipeRefusal(
+    unpushedSummary({ pendingChanges: true }),
+    "/cache",
+  );
+  assertStringIncludes(pending!, "swamp datastore sync --push");
+});
+
+Deno.test("repairDatastoreContamination: a refused wipe changes nothing", async () => {
+  const callLog: string[] = [];
+  const deps = makeRepairDeps({
+    checkCacheSafeToWipe: () => Promise.resolve("Refusing to wipe."),
+    deleteContamination: () => {
+      callLog.push("deleteContamination");
+      return Promise.reject(new Error("must not be called"));
+    },
+    wipeLocalCache: () => {
+      callLog.push("wipeLocalCache");
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<RepairDatastoresEvent>(
+    repairDatastoreContamination(createLibSwampContext(), deps, {
+      confirm: true,
+    }),
+  );
+
+  assertEquals(callLog, []);
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertEquals(last.error.code, "repair_refused");
+    assertStringIncludes(last.error.message, "No changes were made.");
+  }
+});
+
+Deno.test("repairDatastoreContamination: a wipe check that rejects refuses, and changes nothing", async () => {
+  const callLog: string[] = [];
+  const deps = makeRepairDeps({
+    checkCacheSafeToWipe: () =>
+      Promise.reject(new Error("timed out\u001b[31m on ns/a")),
+    deleteContamination: () => {
+      callLog.push("deleteContamination");
+      return Promise.reject(new Error("must not be called"));
+    },
+    wipeLocalCache: () => {
+      callLog.push("wipeLocalCache");
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<RepairDatastoresEvent>(
+    repairDatastoreContamination(createLibSwampContext(), deps, {
+      confirm: true,
+    }),
+  );
+
+  assertEquals(callLog, []);
+  assertEquals(events.some((e) => e.kind === "step"), false);
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertEquals(last.error.code, "repair_refused");
+    assertStringIncludes(last.error.message, "timed out\\x1b[31m on ns/a");
+    assertStringIncludes(last.error.message, "No changes were made.");
+  }
+});
+
+Deno.test("repairDatastoreContamination: the preview never checks the wipe", async () => {
+  let checked = false;
+  const events = await collect<RepairDatastoresEvent>(
+    repairDatastoreContamination(
+      createLibSwampContext(),
+      makeRepairDeps({
+        checkCacheSafeToWipe: () => {
+          checked = true;
+          return Promise.resolve("Refusing to wipe.");
+        },
+      }),
+      { confirm: false },
+    ),
+  );
+  assertEquals(events.at(-1)?.kind, "preview");
+  assertEquals(checked, false);
+});
+
+Deno.test("doctorDatastores: reports unpushed cache files as an advisory that does not fail", async () => {
+  const deps: DoctorDatastoresDeps = {
+    ...makeDeps(customConfig, {
+      healthy: true,
+      message: "ok",
+      latencyMs: 1,
+    }, []),
+    checkUnpushedFiles: () =>
+      Promise.resolve(
+        unpushedSummary({ unpushed: 3, samplePaths: ["a", "b", "c"] }),
+      ),
+  };
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") throw new Error("no completed event");
+  assertEquals(completed.data.unpushedFilesFinding, {
+    unpushed: 3,
+    samplePaths: ["a", "b", "c"],
+  });
+  assertEquals(completed.data.healthFindings.every((f) => f.passed), true);
+});
+
+Deno.test("doctorDatastores: an unpushed files check that fails is reported and the scan goes on", async () => {
+  const deps: DoctorDatastoresDeps = {
+    ...makeDeps(customConfig, {
+      healthy: true,
+      message: "ok",
+      latencyMs: 1,
+    }, [{ name: "v", type: "local_encryption" }]),
+    checkUnpushedFiles: () => Promise.reject(new Error("unreachable")),
+  };
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") throw new Error("no completed event");
+  assertEquals(completed.data.unpushedFilesFinding?.error, "unreachable");
+  assertEquals(completed.data.vaultMismatchFindings.length, 1);
+});
+
+Deno.test("doctorDatastores: no unpushed files finding when none are found", async () => {
+  const deps: DoctorDatastoresDeps = {
+    ...makeDeps(customConfig, {
+      healthy: true,
+      message: "ok",
+      latencyMs: 1,
+    }, []),
+    checkUnpushedFiles: () => Promise.resolve(unpushedSummary()),
+  };
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") throw new Error("no completed event");
+  assertEquals(completed.data.unpushedFilesFinding, undefined);
+});
+
+Deno.test("repairUnpushedCacheFiles: previews a copy a peer deleted, never as not needed", async () => {
+  const summary = unpushedSummary({
+    peerDeleted: 1,
+    samplePeerDeleted: ["ns/gone"],
+  });
+  const events = await collect<RepairUnpushedFilesEvent>(
+    repairUnpushedCacheFiles(createLibSwampContext(), {
+      detect: () => Promise.resolve(summary),
+      repair: () => Promise.reject(new Error("must not be called")),
+    }, { confirm: false }),
+  );
+  assertEquals(events.at(-1), { kind: "preview", summary });
+});
+
+Deno.test("repairUnpushedCacheFiles: a failure escapes the extension's message and says a re-run continues", async () => {
+  const events = await collect<RepairUnpushedFilesEvent>(
+    repairUnpushedCacheFiles(createLibSwampContext(), {
+      detect: () => Promise.reject(new Error("must not be called")),
+      repair: () => Promise.reject(new Error("failed ns/a\u001b[2Jb")),
+    }, { confirm: true }),
+  );
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertStringIncludes(last.error.message, "failed ns/a\\x1b[2Jb");
+    assertStringIncludes(last.error.message, "running the repair again");
+  }
+});
+
+Deno.test("unpushedFilesClear: a copy a peer deleted is still something to report", () => {
+  assertEquals(unpushedFilesClear(unpushedSummary()), true);
+  assertEquals(unpushedFilesClear(unpushedSummary({ peerDeleted: 1 })), false);
+  assertEquals(unpushedFilesClear(unpushedSummary({ remoteMovedOn: 1 })), true);
+});
+
+Deno.test("cacheWipeRefusal: escapes control characters in the paths it names", () => {
+  const refusal = cacheWipeRefusal(
+    unpushedSummary({ unpushed: 1, samplePaths: ["ns/a\u001b[2Jb"] }),
+    "/cache",
+  );
+  assertStringIncludes(refusal!, "ns/a\\x1b[2Jb");
+  assertEquals(refusal!.includes("\u001b"), false);
+});
+
+Deno.test("unpushedRepairUnsupportedMessage: names the minimum version and update command for s3 and gcs", () => {
+  for (const type of ["@swamp/s3-datastore", "@swamp/gcs-datastore"]) {
+    const message = unpushedRepairUnsupportedMessage(type, type);
+    assertStringIncludes(message, "2026.10.30.1 or later");
+    assertStringIncludes(message, `swamp extension update ${type}`);
+  }
+});
+
+Deno.test("unpushedRepairUnsupportedMessage: any other extension is not told to update", () => {
+  const message = unpushedRepairUnsupportedMessage(
+    "@acme/mongo-datastore",
+    "@acme/mongo-datastore",
+  );
+  assertStringIncludes(message, "does not implement repairUnpushedFiles");
+  assertEquals(message.includes("swamp extension update"), false);
 });

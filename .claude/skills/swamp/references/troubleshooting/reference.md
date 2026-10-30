@@ -43,27 +43,28 @@ reach for it last.
 
 ## Symptom → tier index
 
-| Symptom                                              | Start at                                                  |
-| ---------------------------------------------------- | --------------------------------------------------------- |
-| Extension or binary misbehaves unexpectedly          | Before you start → version-drift check                    |
-| "This used to work" / suspected regression           | Before you start → version-drift check                    |
-| Audit log empty / hooks not firing                   | Tier 1 → `swamp doctor audit`                             |
-| Extension behavior/vault/datastore/report not loaded | Tier 1 → `swamp doctor extensions`                        |
-| `swamp-warning:` line on stderr                      | Tier 1 → `swamp doctor extensions`                        |
-| CI preflight needs to gate on integration health     | Tier 1 → either doctor with `--json`                      |
-| v3 record unreadable / marker lost after crash       | Tier 1 → `swamp doctor datastores`                        |
-| Record reads `content: {}` / not found after crash   | Tier 1 → `swamp doctor datastores --repair`               |
-| Run stuck in "running" / orphaned after crash        | Tier 1 → `swamp run doctor --fix`                         |
-| "Is anything running right now?"                     | Tier 1 → `swamp run history --active`                     |
-| Command errored — message is clear                   | Tier 2 → read it, fix the named issue                     |
-| Command errored — message is vague or unhelpful      | Tier 2 → re-run with `--json`, then escalate              |
-| Item "not found" / "not in search results"           | Tier 2 → check stderr for `swamp-warning:`                |
-| Method failed `Pre-flight check failed: …`           | Tier 2 → see [references/checks.md](references/checks.md) |
-| Method or workflow run failed                        | Tier 2 → inspect generated reports                        |
-| Workflow / method / sync is slow                     | Tier 3 → enable tracing                                   |
-| "Where is this spending its time?"                   | Tier 3 → enable tracing                                   |
-| Need to understand a command's internals             | Tier 4 → fetch source                                     |
-| Tier-1-clean integration that still misbehaves       | Tier 4 → fetch source                                     |
+| Symptom                                              | Start at                                                    |
+| ---------------------------------------------------- | ----------------------------------------------------------- |
+| Extension or binary misbehaves unexpectedly          | Before you start → version-drift check                      |
+| "This used to work" / suspected regression           | Before you start → version-drift check                      |
+| Audit log empty / hooks not firing                   | Tier 1 → `swamp doctor audit`                               |
+| Extension behavior/vault/datastore/report not loaded | Tier 1 → `swamp doctor extensions`                          |
+| `swamp-warning:` line on stderr                      | Tier 1 → `swamp doctor extensions`                          |
+| CI preflight needs to gate on integration health     | Tier 1 → either doctor with `--json`                        |
+| v3 record unreadable / marker lost after crash       | Tier 1 → `swamp doctor datastores`                          |
+| Record reads `content: {}` / not found after crash   | Tier 1 → `swamp doctor datastores --repair`                 |
+| Data `datastore setup` migrated never reached S3/GCS | Tier 1 → `swamp doctor datastores --repair` (preview, `-y`) |
+| Run stuck in "running" / orphaned after crash        | Tier 1 → `swamp run doctor --fix`                           |
+| "Is anything running right now?"                     | Tier 1 → `swamp run history --active`                       |
+| Command errored — message is clear                   | Tier 2 → read it, fix the named issue                       |
+| Command errored — message is vague or unhelpful      | Tier 2 → re-run with `--json`, then escalate                |
+| Item "not found" / "not in search results"           | Tier 2 → check stderr for `swamp-warning:`                  |
+| Method failed `Pre-flight check failed: …`           | Tier 2 → see [references/checks.md](references/checks.md)   |
+| Method or workflow run failed                        | Tier 2 → inspect generated reports                          |
+| Workflow / method / sync is slow                     | Tier 3 → enable tracing                                     |
+| "Where is this spending its time?"                   | Tier 3 → enable tracing                                     |
+| Need to understand a command's internals             | Tier 4 → fetch source                                       |
+| Tier-1-clean integration that still misbehaves       | Tier 4 → fetch source                                       |
 
 ## Diagnostic playbook
 

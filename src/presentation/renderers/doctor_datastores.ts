@@ -27,12 +27,15 @@ import type {
   RepairDatastoresEvent,
   RepairPreV3RecordsEvent,
   RepairUnmigratedDataEvent,
+  RepairUnpushedFilesEvent,
   RepairUnreadableVersionsEvent,
   UnreadableRecordRepair,
   UnreadableVersionsSummary,
   V3ContentSummary,
 } from "../../libswamp/datastores/doctor_datastores.ts";
 import { describeUnreadableVersionReason } from "../../domain/data/unreadable_data_version.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
+import type { UnpushedFilesSummary } from "../../domain/datastore/datastore_sync_service.ts";
 import type { EventHandlers } from "../../libswamp/stream.ts";
 import type { RetentionCheckSummary } from "../../libswamp/datastores/retention_check.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -214,6 +217,85 @@ export function unreadableVersionsDetailLines(
   return lines;
 }
 
+/**
+ * Up to `shown.length` paths, indented, and how many more there are. The
+ * extension builds these from file names on disk, so control characters (an
+ * escape sequence among them) are escaped (swamp-club#4112).
+ */
+function pathLines(
+  shown: readonly string[],
+  total: number,
+  indent: string,
+): string[] {
+  const lines = shown.map((path) =>
+    `${indent}${escapeControlCharacters(path)}`
+  );
+  if (total > shown.length) {
+    lines.push(dim(`${indent}… and ${total - shown.length} more`));
+  }
+  return lines;
+}
+
+/**
+ * The lines of a `repairUnpushedFiles` summary in log mode: files still to
+ * upload, then local versions the remote does not hold, which are never
+ * uploaded.
+ */
+export function unpushedFilesDetailLines(
+  summary: UnpushedFilesSummary,
+): string[] {
+  const lines: string[] = [];
+  if (summary.unpushed > 0) {
+    lines.push(
+      `  ${summary.unpushed.toLocaleString()} file(s) the remote never received:`,
+    );
+    for (
+      const line of pathLines(summary.samplePaths, summary.unpushed, "    ")
+    ) lines.push(line);
+  }
+  const localOnly: Array<[string, readonly string[], number]> = [
+    [
+      "already on the remote with other content",
+      summary.sampleAlreadyPresent,
+      summary.alreadyPresent,
+    ],
+    [
+      "changed locally since the last sync",
+      summary.sampleModified,
+      summary.locallyModified,
+    ],
+    [
+      "possibly changed locally (no hash to compare)",
+      summary.sampleUnknown,
+      summary.unknown,
+    ],
+  ];
+  for (const [what, shown, total] of localOnly) {
+    if (total === 0) continue;
+    lines.push(
+      `  ${
+        yellow("⚠")
+      } ${total.toLocaleString()} file(s) ${what}, left as they are:`,
+    );
+    for (const line of pathLines(shown, total, "    ")) lines.push(line);
+  }
+  if (summary.peerDeleted > 0) {
+    lines.push(
+      `  ${
+        yellow("⚠")
+      } ${summary.peerDeleted.toLocaleString()} file(s) a peer deleted and this cache kept, never uploaded. A namespace contamination repair's wipe removes them:`,
+    );
+    for (
+      const line of pathLines(
+        summary.samplePeerDeleted,
+        summary.peerDeleted,
+        "    ",
+      )
+    ) lines.push(line);
+  }
+  return lines;
+}
+
 export type DoctorDatastoresStatus = "pass" | "fail";
 
 export interface DoctorDatastoresRenderer {
@@ -265,6 +347,34 @@ class LogDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
               "\n  Run 'swamp doctor datastores --repair' to preview cleanup.",
             ),
           );
+        }
+
+        // Advisory: never fails the scan (swamp-club#4112).
+        if (data.unpushedFilesFinding) {
+          const uf = data.unpushedFilesFinding;
+          if (uf.error !== undefined) {
+            writeOutput(
+              `\n${yellow("⚠")} Could not check for unpushed cache files: ${
+                escapeControlCharacters(uf.error)
+              }`,
+            );
+          } else {
+            writeOutput(
+              `\n${yellow("⚠")} ${
+                bold(
+                  `${uf.unpushed.toLocaleString()} cache file(s) the remote never received`,
+                )
+              }`,
+            );
+            writeOutput(
+              pathLines(uf.samplePaths, uf.unpushed, "    ").join("\n"),
+            );
+            writeOutput(
+              dim(
+                "\n  No push sends these. Run 'swamp doctor datastores --repair' to preview uploading them.",
+              ),
+            );
+          }
         }
 
         // Render catalog shortfall details when present
@@ -352,6 +462,7 @@ class JsonDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
               healthFindings: data.healthFindings,
               vaultMismatchFindings: data.vaultMismatchFindings,
               contaminationFinding: data.contaminationFinding ?? null,
+              unpushedFilesFinding: data.unpushedFilesFinding ?? null,
               catalogCompletenessFinding: data.catalogCompletenessFinding ??
                 null,
               unreadableVersionsFinding: data.unreadableVersionsFinding ??
@@ -395,6 +506,7 @@ export type DatastoreRepairStage =
   | "unreadableVersions"
   | "catalog"
   | "duplicateLatest"
+  | "unpushed"
   | "contamination";
 
 /**
@@ -413,6 +525,7 @@ export class DatastoreRepairJsonReport {
     unreadableVersions: null,
     catalog: null,
     duplicateLatest: null,
+    unpushed: null,
     contamination: null,
   };
 
@@ -574,6 +687,148 @@ export function createRepairDatastoresRenderer(
       return new JsonRepairDatastoresRenderer(report);
     case "log":
       return new LogRepairDatastoresRenderer();
+  }
+}
+
+// ============================================================================
+// Unpushed cache files repair renderer (swamp-club#4112)
+// ============================================================================
+
+export type UnpushedFilesRepairStatus =
+  | "pass"
+  | "fail"
+  | "preview"
+  | "not_supported";
+
+export interface UnpushedFilesRepairRenderer {
+  handlers(): EventHandlers<RepairUnpushedFilesEvent>;
+  readonly overallStatus: UnpushedFilesRepairStatus;
+}
+
+/** A repair that left files it should have uploaded failed. */
+function repairedStatus(
+  summary: UnpushedFilesSummary,
+): UnpushedFilesRepairStatus {
+  return summary.unpushed > 0 ? "fail" : "pass";
+}
+
+class LogUnpushedFilesRepairRenderer implements UnpushedFilesRepairRenderer {
+  overallStatus: UnpushedFilesRepairStatus = "pass";
+
+  handlers(): EventHandlers<RepairUnpushedFilesEvent> {
+    return {
+      scanning: () => {
+        writeOutput(dim("Scanning for cache files the remote never received…"));
+      },
+      preview: (e) => {
+        this.overallStatus = "preview";
+        writeOutput(`\n${bold("Unpushed cache files:")}`);
+        writeOutput(unpushedFilesDetailLines(e.summary).join("\n"));
+        if (e.summary.unpushed > 0) {
+          writeOutput(
+            dim(
+              "\n  Run with -y to upload them. Uploads only create files the remote lacks; nothing is deleted.",
+            ),
+          );
+        }
+      },
+      step: (e) => {
+        writeOutput(`  ${e.description}`);
+      },
+      completed: (e) => {
+        this.overallStatus = repairedStatus(e.summary);
+        writeOutput(
+          this.overallStatus === "pass"
+            ? `\n${green("✓")} ${bold("Unpushed cache files repair complete:")}`
+            : `\n${red("✗")} ${
+              bold("Unpushed cache files repair incomplete:")
+            }`,
+        );
+        writeOutput(
+          `  Uploaded ${e.summary.uploaded.toLocaleString()} file(s)`,
+        );
+        writeOutput(unpushedFilesDetailLines(e.summary).join("\n"));
+        if (e.summary.unpushed > 0) {
+          writeOutput(
+            dim(
+              "\n  The datastore could not index the files still listed, so repeating the repair does not clear them. Copy them out of the datastore cache and remove them.",
+            ),
+          );
+        }
+      },
+      not_needed: () => {
+        this.overallStatus = "pass";
+        writeOutput(dim("No cache files the remote never received."));
+      },
+      not_supported: (e) => {
+        this.overallStatus = "not_supported";
+        writeOutput(`${yellow("⚠")} ${e.message}`);
+      },
+      error: (e) => {
+        this.overallStatus = "fail";
+        throw new UserError(e.error.message);
+      },
+    };
+  }
+}
+
+class JsonUnpushedFilesRepairRenderer implements UnpushedFilesRepairRenderer {
+  overallStatus: UnpushedFilesRepairStatus = "pass";
+
+  readonly #report: DatastoreRepairJsonReport;
+
+  constructor(report: DatastoreRepairJsonReport) {
+    this.#report = report;
+  }
+
+  handlers(): EventHandlers<RepairUnpushedFilesEvent> {
+    return {
+      scanning: () => {},
+      preview: (e) => {
+        this.overallStatus = "preview";
+        this.#report.record("unpushed", {
+          status: "unpushed_preview",
+          summary: e.summary,
+        });
+      },
+      step: () => {},
+      completed: (e) => {
+        this.overallStatus = repairedStatus(e.summary);
+        this.#report.record("unpushed", {
+          status: this.overallStatus === "pass"
+            ? "unpushed_completed"
+            : "unpushed_incomplete",
+          summary: e.summary,
+        });
+      },
+      not_needed: () => {
+        this.overallStatus = "pass";
+        this.#report.record("unpushed", { status: "unpushed_not_needed" });
+      },
+      not_supported: (e) => {
+        this.overallStatus = "not_supported";
+        this.#report.record("unpushed", {
+          status: "unpushed_not_supported",
+          message: e.message,
+        });
+      },
+      error: (e) => {
+        this.overallStatus = "fail";
+        throw new UserError(e.error.message);
+      },
+    };
+  }
+}
+
+export function createUnpushedFilesRepairRenderer(
+  mode: OutputMode,
+  report: DatastoreRepairJsonReport,
+): UnpushedFilesRepairRenderer {
+  switch (mode) {
+    case "json":
+      return new JsonUnpushedFilesRepairRenderer(report);
+    case "log":
+      return new LogUnpushedFilesRepairRenderer();
   }
 }
 

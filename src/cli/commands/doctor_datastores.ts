@@ -19,6 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import {
+  cacheWipeRefusal,
   type CatalogCompletenessSummary,
   type CatalogShortfall,
   doctorDatastores,
@@ -34,8 +35,11 @@ import {
   repairPreV3Records,
   repairUnmigratedData,
   type RepairUnmigratedDataDeps,
+  repairUnpushedCacheFiles,
+  type RepairUnpushedFilesDeps,
   repairUnreadableVersions,
   type RepairUnreadableVersionsDeps,
+  unpushedRepairUnsupportedMessage,
 } from "../../libswamp/datastores/doctor_datastores.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
@@ -50,11 +54,17 @@ import {
   createPreV3RecordsRepairRenderer,
   createRepairDatastoresRenderer,
   createUnmigratedDataRepairRenderer,
+  createUnpushedFilesRepairRenderer,
   createUnreadableVersionsRepairRenderer,
   type DatastoreFormatMarkerRepairStatus,
   DatastoreRepairJsonReport,
   type PreV3RecordsRepairStatus,
+  type UnpushedFilesRepairStatus,
 } from "../../presentation/renderers/doctor_datastores.ts";
+import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
+import { datastoreGlobalLock } from "../../infrastructure/persistence/datastore_global_lock.ts";
+import { loadedDatastoreExtension } from "../../infrastructure/persistence/datastore_extension_version.ts";
+import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync_service.ts";
 import {
   type CommandContext,
   createContext,
@@ -88,6 +98,7 @@ import {
   DEFAULT_DATASTORE_SUBDIRS,
   getDatastoreDirectories,
   isCustomDatastoreConfig,
+  resolveSyncTimeoutMs,
 } from "../../domain/datastore/datastore_config.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import { namespaceCollidesWithLayout } from "../../domain/data/namespace.ts";
@@ -352,6 +363,18 @@ async function createDoctorDatastoresDeps(
 
       return await syncService.repairNamespaceContamination({
         namespace: config.namespace,
+        dryRun: true,
+      });
+    },
+    // A dry run on size and mtime only, bounded (swamp-club#4112).
+    checkUnpushedFiles: async (config) => {
+      if (!isCustomDatastoreConfig(config) || config.format === 3) return null;
+      const provider = await resolveProvider(config);
+      const cachePath = provider.resolveCachePath?.(repoDir) ??
+        config.cachePath ?? config.datastorePath;
+      const syncService = provider.createSyncService?.(repoDir, cachePath);
+      if (!syncService?.repairUnpushedFiles) return null;
+      return await boundedRepairUnpushed(syncService, config, "pull", {
         dryRun: true,
       });
     },
@@ -629,6 +652,7 @@ async function createRepairDeps(
   }
 
   const namespace = config.namespace;
+  const timeoutMs = resolveSyncTimeoutMs(config);
 
   return {
     getDatastoreConfig: () => Promise.resolve(config),
@@ -637,11 +661,20 @@ async function createRepairDeps(
         namespace,
         dryRun: true,
       }),
+    // Bounded: with -y it runs under the datastore lock the unpushed files
+    // stage takes (swamp-club#4112), which a hung call would hold.
     deleteContamination: () =>
-      syncService.repairNamespaceContamination!({
-        namespace,
-        dryRun: false,
-      }),
+      runBoundedSync(
+        config.type,
+        "push",
+        timeoutMs,
+        (signal) =>
+          syncService.repairNamespaceContamination!({
+            namespace,
+            dryRun: false,
+            signal,
+          }),
+      ),
     wipeLocalCache: async () => {
       for (const subdir of DEFAULT_DATASTORE_SUBDIRS) {
         const dir = join(cachePath, namespace, subdir);
@@ -653,7 +686,12 @@ async function createRepairDeps(
       }
     },
     pullScoped: async () => {
-      const count = await syncService.pullChanged({ namespace });
+      const count = await runBoundedSync(
+        config.type,
+        "pull",
+        timeoutMs,
+        (signal) => syncService.pullChanged({ namespace, signal }),
+      );
       return count ?? 0;
     },
     invalidateWorkflowRunIndexes: async () => {
@@ -722,6 +760,75 @@ async function listFilesRecursive(
   return files;
 }
 
+/** A datastore's `repairUnpushedFiles`, scoped to its namespace and bounded. */
+function boundedRepairUnpushed(
+  syncService: DatastoreSyncService,
+  config: CustomDatastoreConfig,
+  direction: "push" | "pull",
+  options: { dryRun?: boolean; exact?: boolean },
+) {
+  return runBoundedSync(
+    config.type,
+    direction,
+    resolveSyncTimeoutMs(config),
+    (signal) =>
+      syncService.repairUnpushedFiles!({
+        ...options,
+        signal,
+        ...(config.namespace ? { namespace: config.namespace } : {}),
+      }),
+  );
+}
+
+/** What the unpushed cache files stage needs (swamp-club#4112). */
+interface UnpushedRepairSetup {
+  deps: RepairUnpushedFilesDeps;
+  cachePath: string;
+  /** The datastore lock a confirmed run holds; absent when unsupported. */
+  lock?: ReturnType<typeof datastoreGlobalLock>;
+}
+
+/**
+ * The unpushed cache files stage for a format 2 extension datastore with a
+ * sync service, or null for any other datastore.
+ */
+async function createUnpushedRepairSetup(
+  repoDir: string,
+): Promise<UnpushedRepairSetup | null> {
+  await datastoreTypeRegistry.ensureLoaded();
+  const marker = await new RepoMarkerRepository().read(
+    RepoPath.create(repoDir),
+  );
+  const config = await resolveDatastoreConfig(marker, undefined, repoDir);
+  if (!isCustomDatastoreConfig(config) || config.format === 3) return null;
+  const provider = await resolveProvider(config);
+  const cachePath = provider.resolveCachePath?.(repoDir) ??
+    config.cachePath ?? config.datastorePath;
+  const syncService = provider.createSyncService?.(repoDir, cachePath);
+  if (!syncService) return null;
+
+  if (!syncService.repairUnpushedFiles) {
+    const unsupported = unpushedRepairUnsupportedMessage(
+      config.type,
+      loadedDatastoreExtension(repoDir, config.type)?.name ?? config.type,
+    );
+    const refuse = () => Promise.reject(new Error(unsupported));
+    return { cachePath, deps: { unsupported, detect: refuse, repair: refuse } };
+  }
+  return {
+    cachePath,
+    lock: datastoreGlobalLock(config),
+    deps: {
+      detect: () =>
+        boundedRepairUnpushed(syncService, config, "pull", {
+          dryRun: true,
+          exact: true,
+        }),
+      repair: () => boundedRepairUnpushed(syncService, config, "push", {}),
+    },
+  };
+}
+
 async function createUnmigratedRepairDeps(
   repoDir: string,
 ): Promise<RepairUnmigratedDataDeps> {
@@ -775,6 +882,7 @@ async function runDatastoreRepairs(
   v2Filesystem: boolean,
 ): Promise<boolean> {
   let failed = false;
+  let unmigratedFailed = false;
 
   let unmigratedDeps: RepairUnmigratedDataDeps | null = null;
   try {
@@ -799,6 +907,7 @@ async function runDatastoreRepairs(
     cliCtx.logger
       .warn`Skipping unmigrated data repair: namespace ${unmigratedDeps.getNamespace()} has the same name as a datastore layout directory. Run 'swamp doctor datastores' for how to move it.`;
     failed = true;
+    unmigratedFailed = true;
     unmigratedDeps = null;
   }
 
@@ -815,6 +924,7 @@ async function runDatastoreRepairs(
 
     if (unmigratedRenderer.overallStatus === "fail") {
       failed = true;
+      unmigratedFailed = true;
     }
   }
 
@@ -870,26 +980,95 @@ async function runDatastoreRepairs(
     failed = true;
   }
 
-  let contaminationDeps: RepairDatastoresDeps | null = null;
+  // Unpushed cache files run just before contamination repair, whose wipe
+  // would destroy them (swamp-club#4112). A confirmed run holds the
+  // datastore lock from here through that wipe, and no longer.
+  let unpushed: UnpushedRepairSetup | null = null;
   try {
-    contaminationDeps = await createRepairDeps(repoDir);
+    unpushed = await createUnpushedRepairSetup(repoDir);
   } catch (error) {
     if (error instanceof UserError) {
       cliCtx.logger
-        .debug`Skipping namespace contamination repair: ${error.message}`;
+        .debug`Skipping the unpushed cache files repair: ${error.message}`;
     } else {
       throw error;
     }
   }
+  const lock = confirm ? unpushed?.lock : undefined;
+  await lock?.acquire();
+  try {
+    let unpushedStatus: UnpushedFilesRepairStatus | "skipped" | undefined;
+    if (unpushed && unmigratedFailed) {
+      cliCtx.logger
+        .warn`Skipping the unpushed cache files repair: the root-level unmigrated data repair did not complete.`;
+      unpushedStatus = "skipped";
+      failed = true;
+    } else if (unpushed) {
+      const unpushedRenderer = createUnpushedFilesRepairRenderer(
+        cliCtx.outputMode,
+        report,
+      );
+      await consumeStream(
+        repairUnpushedCacheFiles(libCtx, unpushed.deps, { confirm }),
+        unpushedRenderer.handlers(),
+      );
+      unpushedStatus = unpushedRenderer.overallStatus;
+      if (unpushedStatus === "fail") failed = true;
+    }
 
-  if (!contaminationDeps) return failed;
+    let contaminationDeps: RepairDatastoresDeps | null = null;
+    try {
+      contaminationDeps = await createRepairDeps(repoDir);
+    } catch (error) {
+      if (error instanceof UserError) {
+        cliCtx.logger
+          .debug`Skipping namespace contamination repair: ${error.message}`;
+      } else {
+        throw error;
+      }
+    }
 
-  const renderer = createRepairDatastoresRenderer(cliCtx.outputMode, report);
-  await consumeStream(
-    repairDatastoreContamination(libCtx, contaminationDeps, { confirm }),
-    renderer.handlers(),
-  );
-  return failed || renderer.overallStatus === "fail";
+    if (!contaminationDeps) return failed;
+
+    // The wipe is checked under the held lock, from a fresh dry run.
+    const checkCacheSafeToWipe = async (): Promise<string | undefined> => {
+      // Contamination repair needs the sync service this stage is built
+      // from, so with no stage the check could not be set up.
+      if (!unpushed) {
+        return "Refusing to wipe the local cache: could not check what it holds.";
+      }
+      if (unpushed.deps.unsupported !== undefined) {
+        return `Refusing to wipe the local cache: ${unpushed.deps.unsupported}`;
+      }
+      if (unpushedStatus !== "pass") {
+        return "Refusing to wipe the local cache: the unpushed cache files " +
+          `repair did not complete, so ${unpushed.cachePath} may hold files ` +
+          "the remote never received. See that stage's result: run it again, " +
+          "or copy out and remove the files it could not upload.";
+      }
+      return cacheWipeRefusal(await unpushed.deps.detect(), unpushed.cachePath);
+    };
+
+    const renderer = createRepairDatastoresRenderer(cliCtx.outputMode, report);
+    await consumeStream(
+      repairDatastoreContamination(
+        libCtx,
+        { ...contaminationDeps, checkCacheSafeToWipe },
+        { confirm },
+      ),
+      renderer.handlers(),
+    );
+    return failed || renderer.overallStatus === "fail";
+  } finally {
+    // A failed release must not replace how the repair went.
+    try {
+      await lock?.release();
+    } catch (error) {
+      cliCtx.logger.warn`Could not release the datastore lock: ${
+        error instanceof Error ? error.message : String(error)
+      }. It expires after its TTL.`;
+    }
+  }
 }
 
 export const doctorDatastoresCommand = withRemoteOptions(
@@ -918,7 +1097,7 @@ export const doctorDatastoresCommand = withRemoteOptions(
     )
     .option(
       "--repair",
-      "Preview and repair datastore issues: unreadable data versions, catalog index completeness, root-level unmigrated data, and foreign namespace contamination (add -y to execute).",
+      "Preview and repair datastore issues: unreadable data versions, catalog index completeness, root-level unmigrated data, cache files the remote never received, and foreign namespace contamination (add -y to execute).",
     )
     .option(
       "-y, --yes",

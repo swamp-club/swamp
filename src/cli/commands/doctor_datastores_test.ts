@@ -635,6 +635,7 @@ Deno.test("doctor datastores --repair --json: prints every stage's result as one
       unreadableVersions: { status: "unreadable_versions_not_needed" },
       catalog: { status: "catalog_not_needed" },
       duplicateLatest: { status: "duplicate_latest_not_needed" },
+      unpushed: null,
       contamination: null,
     };
     assertEquals(JSON.parse(await repair(repoDir, "--json")), expected);
@@ -650,6 +651,7 @@ Deno.test("doctor datastores --repair --json: a namespaced datastore's unmigrate
       unreadableVersions: { status: "unreadable_versions_not_needed" },
       catalog: { status: "catalog_not_needed" },
       duplicateLatest: { status: "duplicate_latest_not_needed" },
+      unpushed: null,
       contamination: null,
     });
   });
@@ -711,6 +713,7 @@ Deno.test("doctor datastores --repair --json: a stage that fails still leaves th
       unreadableVersions: null,
       catalog: null,
       duplicateLatest: null,
+      unpushed: null,
       contamination: null,
     });
   });

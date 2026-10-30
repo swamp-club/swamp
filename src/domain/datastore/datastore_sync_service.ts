@@ -635,6 +635,19 @@ export interface RepairNamespaceContaminationOptions {
   dryRun?: boolean;
 }
 
+/**
+ * The first releases of {@link UNPUSHED_REPAIR_EXTENSIONS} that implement
+ * {@link DatastoreSyncService.repairUnpushedFiles}. Core checks for the method,
+ * never this version; it only tells the user what to update to.
+ */
+export const UNPUSHED_REPAIR_MIN_EXTENSION_VERSION = "2026.10.30.1";
+
+/** The datastore extensions that have a release implementing the repair. */
+export const UNPUSHED_REPAIR_EXTENSIONS: readonly string[] = [
+  "@swamp/s3-datastore",
+  "@swamp/gcs-datastore",
+];
+
 /** Options for {@link DatastoreSyncService.repairUnpushedFiles}. */
 export interface RepairUnpushedFilesOptions {
   signal?: AbortSignal;

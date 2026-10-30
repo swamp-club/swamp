@@ -208,8 +208,12 @@ const GUARDED_PINNED = [
   "src/cli/commands/datastore_lock.ts:datastoreLockStatusCommand (x4)",
   "src/cli/commands/datastore_namespace.ts:buildMigrateDeps",
   "src/cli/commands/datastore_sync.ts:datastoreSyncCommand",
-  "src/cli/commands/doctor_datastores.ts:createDoctorDatastoresDeps",
+  // swamp-club#4112: the unpushed cache files check and repair build the
+  // sync service and take the datastore lock after the command's
+  // resolveDatastoreForRepo check, as contamination repair does.
+  "src/cli/commands/doctor_datastores.ts:createDoctorDatastoresDeps (x2)",
   "src/cli/commands/doctor_datastores.ts:createRepairDeps",
+  "src/cli/commands/doctor_datastores.ts:createUnpushedRepairSetup",
   // swamp-club#3473: serve's retention pass compacts v3 history through the
   // handle of the config requireInitializedRepoUnlocked checked; so does the
   // evaluation trust serve gives its repository context (swamp-club#3922),

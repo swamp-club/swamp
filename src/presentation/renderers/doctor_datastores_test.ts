@@ -36,10 +36,13 @@ import {
   createPreV3RecordsRepairRenderer,
   createRepairDatastoresRenderer,
   createUnmigratedDataRepairRenderer,
+  createUnpushedFilesRepairRenderer,
   createUnreadableVersionsRepairRenderer,
   DatastoreRepairJsonReport,
+  unpushedFilesDetailLines,
   unreadableVersionsDetailLines,
 } from "./doctor_datastores.ts";
+import type { UnpushedFilesSummary } from "../../domain/datastore/datastore_sync_service.ts";
 import type {
   UnreadableRecordRepair,
   UnreadableVersionsSummary,
@@ -465,6 +468,7 @@ Deno.test("DatastoreRepairJsonReport: the json repair renderers record their sta
     unreadableVersions: null,
     catalog: { status: "catalog_not_needed" },
     duplicateLatest: { status: "duplicate_latest_preview", duplicateCount: 2 },
+    unpushed: null,
     contamination: null,
   });
 });
@@ -481,6 +485,7 @@ Deno.test("DatastoreRepairJsonReport: log mode renderers leave the report empty 
     unreadableVersions: null,
     catalog: null,
     duplicateLatest: null,
+    unpushed: null,
     contamination: null,
   });
 });
@@ -659,4 +664,240 @@ Deno.test("createUnreadableVersionsRepairRenderer: json mode records its stage i
     JSON.parse(captureStdout(() => notNeeded.print())).unreadableVersions,
     { status: "unreadable_versions_not_needed" },
   );
+});
+
+// ============================================================================
+// Unpushed cache files (swamp-club#4112)
+// ============================================================================
+
+function unpushed(
+  overrides: Partial<UnpushedFilesSummary> = {},
+): UnpushedFilesSummary {
+  return {
+    unpushed: 0,
+    samplePaths: [],
+    alreadyPresent: 0,
+    sampleAlreadyPresent: [],
+    locallyModified: 0,
+    sampleModified: [],
+    unknown: 0,
+    sampleUnknown: [],
+    peerDeleted: 0,
+    samplePeerDeleted: [],
+    remoteMovedOn: 0,
+    uploaded: 0,
+    pendingChanges: false,
+    ...overrides,
+  };
+}
+
+Deno.test("unpushedFilesDetailLines: escapes control characters in paths", () => {
+  const lines = unpushedFilesDetailLines(
+    unpushed({ unpushed: 1, samplePaths: ["ns/a\u001b[31mred\nb"] }),
+  ).join("\n");
+  assertStringIncludes(lines, "ns/a\\x1b[31mred\\x0ab");
+  assertEquals(lines.includes("\u001b"), false);
+});
+
+Deno.test("unpushedFilesDetailLines: a copy a peer deleted is named, and what a wipe does to it", () => {
+  const lines = stripAnsiCode(
+    unpushedFilesDetailLines(
+      unpushed({ peerDeleted: 1, samplePeerDeleted: ["ns/gone"] }),
+    ).join("\n"),
+  );
+  assertStringIncludes(lines, "1 file(s) a peer deleted");
+  assertStringIncludes(lines, "wipe removes them");
+  assertStringIncludes(lines, "ns/gone");
+});
+
+Deno.test("createUnpushedFilesRepairRenderer: log mode says what to do with files a repair left, and fails", () => {
+  const renderer = createUnpushedFilesRepairRenderer(
+    "log",
+    new DatastoreRepairJsonReport(),
+  );
+  const done = stripAnsiCode(captureStdout(() =>
+    renderer.handlers().completed({
+      kind: "completed",
+      summary: unpushed({ unpushed: 1, samplePaths: ["ns/data/x"] }),
+    })
+  ));
+  assertEquals(renderer.overallStatus, "fail");
+  assertStringIncludes(done, "repeating the repair does not clear them");
+  assertStringIncludes(done, "Copy them out of the datastore cache");
+});
+
+Deno.test("createDoctorDatastoresRenderer: log mode escapes the error of a failed unpushed files check", () => {
+  const renderer = createDoctorDatastoresRenderer("log");
+  const out = captureStdout(() =>
+    renderer.handlers().completed({
+      kind: "completed",
+      data: {
+        ...data(),
+        unpushedFilesFinding: {
+          unpushed: 0,
+          samplePaths: [],
+          error: "failed\u001b[2J",
+        },
+      },
+    })
+  );
+  assertStringIncludes(out, "failed\\x1b[2J");
+  assertEquals(out.includes("\u001b[2J"), false);
+});
+
+Deno.test("createDoctorDatastoresRenderer: an unpushed files finding is an advisory that does not fail", () => {
+  for (const mode of ["log", "json"] as const) {
+    const renderer = createDoctorDatastoresRenderer(mode);
+    const printed = captureStdout(() =>
+      renderer.handlers().completed({
+        kind: "completed",
+        data: {
+          datastoreType: "@swamp/s3-datastore",
+          isCustom: true,
+          healthFindings: [{ check: "health", passed: true, message: "ok" }],
+          vaultMismatchFindings: [],
+          unpushedFilesFinding: {
+            unpushed: 5,
+            samplePaths: ["ns/a", "ns/b\u001b"],
+          },
+        },
+      })
+    );
+    assertEquals(renderer.overallStatus, "pass");
+    if (mode === "json") {
+      assertEquals(JSON.parse(printed).unpushedFilesFinding.unpushed, 5);
+    } else {
+      const text = stripAnsiCode(printed);
+      assertStringIncludes(text, "5 cache file(s) the remote never received");
+      assertStringIncludes(text, "ns/b\\x1b");
+      assertStringIncludes(text, "… and 3 more");
+      assertStringIncludes(text, "swamp doctor datastores --repair");
+    }
+  }
+});
+
+Deno.test("createDoctorDatastoresRenderer: json mode reports a null unpushed files finding without one", () => {
+  const renderer = createDoctorDatastoresRenderer("json");
+  const printed = captureStdout(() =>
+    renderer.handlers().completed({ kind: "completed", data: data() })
+  );
+  assertEquals(JSON.parse(printed).unpushedFilesFinding, null);
+});
+
+Deno.test("createUnpushedFilesRepairRenderer: json mode records each outcome under unpushed", () => {
+  const cases: Array<
+    [
+      string,
+      (r: ReturnType<typeof createUnpushedFilesRepairRenderer>) => void,
+      string,
+    ]
+  > = [
+    [
+      "unpushed_preview",
+      (r) =>
+        r.handlers().preview({
+          kind: "preview",
+          summary: unpushed({ unpushed: 1, samplePaths: ["ns/a"] }),
+        }),
+      "preview",
+    ],
+    [
+      "unpushed_completed",
+      (r) =>
+        r.handlers().completed({
+          kind: "completed",
+          summary: unpushed({ uploaded: 1, locallyModified: 1 }),
+        }),
+      "pass",
+    ],
+    [
+      "unpushed_incomplete",
+      (r) =>
+        r.handlers().completed({
+          kind: "completed",
+          summary: unpushed({ uploaded: 1, unpushed: 1 }),
+        }),
+      "fail",
+    ],
+    [
+      "unpushed_not_needed",
+      (r) => r.handlers().not_needed({ kind: "not_needed" }),
+      "pass",
+    ],
+    [
+      "unpushed_not_supported",
+      (r) =>
+        r.handlers().not_supported({
+          kind: "not_supported",
+          message: "update it",
+        }),
+      "not_supported",
+    ],
+  ];
+  for (const [status, drive, overall] of cases) {
+    const report = new DatastoreRepairJsonReport();
+    const renderer = createUnpushedFilesRepairRenderer("json", report);
+    assertEquals(captureStdout(() => drive(renderer)), "");
+    assertEquals(renderer.overallStatus, overall);
+    assertEquals(
+      JSON.parse(captureStdout(() => report.print())).unpushed.status,
+      status,
+    );
+  }
+});
+
+Deno.test("createUnpushedFilesRepairRenderer: log mode lists what it uploads and what it leaves", () => {
+  const renderer = createUnpushedFilesRepairRenderer(
+    "log",
+    new DatastoreRepairJsonReport(),
+  );
+  const preview = stripAnsiCode(
+    captureStdout(() =>
+      renderer.handlers().preview({
+        kind: "preview",
+        summary: unpushed({
+          unpushed: 2,
+          samplePaths: ["ns/a", "ns/b"],
+          locallyModified: 1,
+          sampleModified: ["ns/m"],
+        }),
+      })
+    ),
+  );
+  assertStringIncludes(preview, "2 file(s) the remote never received");
+  assertStringIncludes(
+    preview,
+    "1 file(s) changed locally since the last sync",
+  );
+  assertStringIncludes(preview, "ns/m");
+  assertStringIncludes(preview, "Run with -y");
+
+  const done = stripAnsiCode(captureStdout(() =>
+    renderer.handlers().completed({
+      kind: "completed",
+      summary: unpushed({ uploaded: 2 }),
+    })
+  ));
+  assertStringIncludes(done, "Uploaded 2 file(s)");
+  assertEquals(renderer.overallStatus, "pass");
+});
+
+Deno.test("createUnpushedFilesRepairRenderer: both modes fail with the error's message", () => {
+  for (const mode of ["log", "json"] as const) {
+    const renderer = createUnpushedFilesRepairRenderer(
+      mode,
+      new DatastoreRepairJsonReport(),
+    );
+    let thrown: unknown;
+    try {
+      renderer.handlers().error({
+        kind: "error",
+        error: { code: "repair_failed", message: "boom" },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    assertEquals(thrown instanceof UserError, true);
+    assertEquals(renderer.overallStatus, "fail");
+  }
 });
