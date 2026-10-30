@@ -401,7 +401,8 @@ const SIGNAL_CHANGE_LOOKBACK = 200;
  * a `withChangeSignalled(...)` call, which signals before and after a write
  * (swamp-club#2421), or of a `stageTyped(...)` call, the typed route after a write, or the only
  * argument of `typedStagingActive(...)` (swamp-club#3250) or
- * `versionFloorSource(...)` (swamp-club#3532), lookups of the unit the hook
+ * `versionFloorSource(...)` (swamp-club#3532), or the first of
+ * `unitAdmitsKey(...)` (swamp-club#4019), lookups of the unit the hook
  * routes to, as
  * "<file>: <class>": calling the hook, passing it elsewhere, or storing it.
  * Code before and after the reference is read across lines, so a call that
@@ -434,7 +435,7 @@ function hookReferencesOutsideSignalChange(
           );
           const after = source.slice(start + match[0].length);
           if (
-            /\b(?:signalChange|withChangeSignalled|stageTyped|typedStagingActive|versionFloorSource)\(\s*$/
+            /\b(?:signalChange|withChangeSignalled|stageTyped|typedStagingActive|versionFloorSource|unitAdmitsKey)\(\s*$/
               .test(
                 before,
               ) &&
@@ -1383,7 +1384,8 @@ Deno.test("datastore write seams: repositories reference their hook only as sign
     "A repository reaches its mark hook only as the first argument of\n" +
       "signalChange(this.<hook>, change), stageTyped(this.<hook>, build) or\n" +
       "typedStagingActive(this.<hook>), or looks up its unit's version floor\n" +
-      "with versionFloorSource(this.<hook>), so the unit of work sees every\n" +
+      "with versionFloorSource(this.<hook>) or its filter with\n" +
+      "unitAdmitsKey(this.<hook>, key), so the unit of work sees every\n" +
       "change.\n" +
       "Do not call the hook, pass it on, or store it.",
   );
@@ -1405,6 +1407,7 @@ Deno.test("datastore write seams: the hook reference scan catches calls and pass
     "    await stageTyped(this.markDirty, () => changes);",
     "    if (typedStagingActive(this.markDirty)) read();",
     "    const floors = versionFloorSource(this.markDirty);",
+    "    const kept = unitAdmitsKey(this.markDirty, key);",
     "    await stageTyped(",
     "      this.markDirty,",
     "      () => changes,",

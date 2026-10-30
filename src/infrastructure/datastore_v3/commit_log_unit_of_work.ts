@@ -174,6 +174,7 @@ import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import {
   typedStagers,
+  unitAdmissions,
   unitOfWorkBinding,
   unitWrites,
   versionFloors,
@@ -970,6 +971,9 @@ export function createCommitLogUnitOfWork(
     touched = true;
   });
   options.tracker?.opened();
+  if (options.admits !== undefined) {
+    unitAdmissions.register(uow, options.admits);
+  }
   const floors = floorSourceFor(options.sink, options.namespace.toString());
   versionFloors.register(uow, {
     floor: floors.floor,

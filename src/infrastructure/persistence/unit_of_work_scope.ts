@@ -64,6 +64,7 @@ import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_w
 import { legacyUnitOfWorkTarget } from "./legacy_unit_of_work.ts";
 import {
   typedStagers,
+  unitAdmissions,
   unitOfWorkBinding,
   unitWrites,
   versionFloors,
@@ -319,6 +320,24 @@ export function typedStagingActive(
   if (markDirty === undefined) return adoptingStager() !== undefined;
   return unitOfWorkBinding.requiresUnit(markDirty) &&
     boundTypedStager(markDirty) !== undefined;
+}
+
+/**
+ * Whether the v3 unit a write through `markDirty` stages into, found as
+ * {@link stageTyped} finds its stager, admits `key` (swamp-club#4019): a
+ * key its checkout filter rejects is dropped from its commit, so nothing
+ * replays it. False with no such unit, so a caller that did not first ask
+ * {@link typedStagingActive} makes its write durable rather than skip it.
+ */
+export function unitAdmitsKey(
+  markDirty: MarkDirtyHook | undefined,
+  key: string,
+): boolean {
+  const uow = markDirty === undefined
+    ? adoptingStager() === undefined ? undefined : adoptingUnit()
+    : boundTypedStager(markDirty)?.unit;
+  if (uow === undefined) return false;
+  return unitAdmissions.of(uow)?.(key) ?? true;
 }
 
 /**

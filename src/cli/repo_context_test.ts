@@ -126,6 +126,7 @@ import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_r
 import {
   type CustomDatastoreConfig,
   type DatastoreConfig,
+  type FilesystemDatastoreConfig,
   isCustomDatastoreConfig,
 } from "../domain/datastore/datastore_config.ts";
 import type {
@@ -977,6 +978,33 @@ Deno.test("createModelLock - on a durable v2 filesystem datastore, syncs the dir
           .syncCreatedDirectories,
         true,
       );
+    });
+  });
+});
+
+Deno.test("createModelLock - on a durable v3 filesystem datastore that may keep data local, syncs the directories it creates (swamp-club#4019)", async () => {
+  await withTempDir(async (dir) => {
+    const syncs = async (config: Partial<FilesystemDatastoreConfig>) =>
+      ((await createModelLock(
+        { type: "filesystem", path: dir, format: 3, ...config },
+        "aws-ec2",
+        "my-server",
+      )) as FileLock).syncCreatedDirectories;
+    await withMockedEnv({ SWAMP_DATASTORE_DURABLE: undefined }, async () => {
+      // Data left out of the datastore's directories stays in the checkout.
+      assertEquals(
+        await syncs({ durable: true, directories: ["models", "workflows"] }),
+        true,
+      );
+      // An exclude pattern may match data; the lock has no data name.
+      assertEquals(await syncs({ durable: true, exclude: ["data/**"] }), true);
+      // Durable writes off: nothing syncs.
+      assertEquals(
+        await syncs({ directories: ["models", "workflows"] }),
+        false,
+      );
+      // Every data key is committed, so replay recreates the directories.
+      assertEquals(await syncs({ durable: true }), false);
     });
   });
 });

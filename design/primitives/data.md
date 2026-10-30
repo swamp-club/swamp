@@ -151,12 +151,12 @@ subprocess is synced by `finalizeVersion` (`contentSynced: false`).
   ([datastores.md](../enablers/datastores.md#filesystem)). A failed sync fails
   the write before it is published, except the last one, of the moved marker's
   directory, after which the catalog row is still written so the two agree. On
-  v3 the commit is durable and replay rewrites the checkout (swamp-club#3617),
-  except for data keys the checkout's datastore filter keeps local
-  (swamp-club#4019). Without the syncs, ext4's delayed allocation can keep the
-  renames, the marker and the catalog row across a power cut but lose the
-  bytes, leaving empty `raw` and `metadata.yaml` published as latest
-  (swamp-club#3955).
+  v3 the commit is durable and replay rewrites the checkout (swamp-club#3617);
+  a version the checkout's datastore filter keeps local is never committed, so
+  the repository syncs it as on v2 (swamp-club#4019). Without the syncs,
+  ext4's delayed allocation can keep the renames, the marker and the catalog
+  row across a power cut but lose the bytes, leaving empty `raw` and
+  `metadata.yaml` published as latest (swamp-club#3955).
 
 The exception is a version whose path a file writer handed out with
 `getFilePath` and never finalised: it holds content but no metadata, so no later write or commit ever

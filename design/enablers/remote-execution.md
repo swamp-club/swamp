@@ -1249,7 +1249,8 @@ leaves 3 durable writes, as a local process crash does today.
 Durable in this section means surviving a process or worker crash. Surviving a
 power cut is the second sense, defined in
 [data.md](../primitives/data.md#writing-data): on v2 a version is synced before
-anything publishes it (swamp-club#4017).
+anything publishes it (swamp-club#4017), as is a v3 version the checkout keeps
+local (swamp-club#4019).
 
 Two `DataWriter` modes need their own remote shape:
 

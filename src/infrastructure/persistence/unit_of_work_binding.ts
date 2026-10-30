@@ -101,6 +101,22 @@ export const versionFloors = {
   of: (uow: UnitOfWork): VersionFloorSource | undefined => floors.get(uow),
 };
 
+const admissions = new WeakMap<UnitOfWork, (key: string) => boolean>();
+
+/**
+ * Each v3 unit's checkout filter (swamp-club#4019): whether a change to a
+ * record key belongs to the datastore. A unit drops a key its filter does
+ * not admit, so no commit replays it, and the repository makes that write
+ * durable itself. A unit with no filter admits every key.
+ */
+export const unitAdmissions = {
+  register(uow: UnitOfWork, admits: (key: string) => boolean): void {
+    admissions.set(uow, admits);
+  },
+  of: (uow: UnitOfWork): ((key: string) => boolean) | undefined =>
+    admissions.get(uow),
+};
+
 const writeSignals = new WeakMap<UnitOfWork, () => void>();
 
 /**
