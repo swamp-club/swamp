@@ -3897,8 +3897,11 @@ engine evaluates the remaining steps in topological order:
   that succeeded, or that its guard skipped, counts, whenever that step ran, so
   a teardown chain runs to its end. A step gated on a step skipped by its
   `dependsOn`, or on a work step's success, does not. So a forward step gated
-  `succeeded` on a `completed`-gated step counts as cleanup and starts. A cleanup
-  step gets the cleanup signal, and can read the status of a settled step. Every
+  `succeeded` on a `completed`-gated step counts as cleanup and starts. An
+  approval gate or a wait for a signal never counts, whatever gates it, so the
+  cancellation does not become a suspended run; a nested workflow that suspends
+  at its own gate still does, as it does in cleanup mode. A cleanup step gets
+  the cleanup signal, and can read the status of a settled step. Every
   other step is settled as above, so a resume runs it. A `failed`-gated rollback
   on a settled step runs. A step recorded `running` fails as cancelled rather
   than starting, and a finished step or one re-entering a wait is not decided

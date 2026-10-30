@@ -31,7 +31,11 @@ import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { TriggerCondition } from "./trigger_condition.ts";
-import { CANCELLED_STEP_ERROR, WorkflowRun } from "./workflow_run.ts";
+import {
+  CANCELLED_STEP_ERROR,
+  type StepSkipReasonData,
+  WorkflowRun,
+} from "./workflow_run.ts";
 import { SignalWait } from "./signal_wait.ts";
 
 function gate(name: string): Step {
@@ -830,4 +834,65 @@ Deno.test("runsAfterFailure: a cleanup dependency its guard skipped answers skip
     expression: "${{ true }}",
   });
   assertEquals(runsAfterFailure(c, definition, jobRun), true);
+});
+
+Deno.test("runsAfterFailure: an approval gate or a wait for a signal is work, whatever gates it", () => {
+  const { definition, jobRun } = chain(
+    TriggerCondition.always(),
+    TriggerCondition.always(),
+    { a: "succeeded" },
+  );
+  for (
+    const task of [
+      StepTask.manualApproval("go?"),
+      StepTask.waitForSignal(600, { type: "object" }),
+    ]
+  ) {
+    const step = Step.create({
+      name: "gated",
+      task,
+      dependsOn: [{ step: "a", condition: TriggerCondition.always() }],
+    });
+    assertEquals(runsAfterFailure(step, definition, jobRun), false);
+  }
+});
+
+/** Job each (forEach, always-gated on a), then t gated skipped on each. */
+function chainOverForEach(skips: StepSkipReasonData[]) {
+  const t = modelStep("t", {
+    step: "each",
+    condition: TriggerCondition.skipped(),
+  });
+  const definition = job("main", [
+    modelStep("a"),
+    modelStep(
+      "each",
+      { step: "a", condition: TriggerCondition.always() },
+      { forEach: { item: "x", in: "${{ ['p', 'q'] }}" } },
+    ),
+    t,
+  ]);
+  const jobRun = WorkflowRun.create(
+    Workflow.create({ name: "each-wf", jobs: [definition] }),
+  ).getJob("main")!;
+  const names = skips.map((_, i) => `each-${i}`);
+  jobRun.replaceExpandedSteps(
+    "each",
+    names,
+  );
+  jobRun.registerForEachExpansion("each", names);
+  skips.forEach((reason, i) => jobRun.getStep(names[i])!.skip(reason));
+  return { t, definition, jobRun };
+}
+
+Deno.test("runsAfterFailure: a forEach dependency answers skipped only when every iteration's guard skipped it", () => {
+  const guarded = { kind: "guarded" as const };
+  const dependency = { kind: "dependency" as const };
+  const all = chainOverForEach([guarded, guarded]);
+  assertEquals(runsAfterFailure(all.t, all.definition, all.jobRun), true);
+  const mixed = chainOverForEach([guarded, dependency]);
+  assertEquals(
+    runsAfterFailure(mixed.t, mixed.definition, mixed.jobRun),
+    false,
+  );
 });

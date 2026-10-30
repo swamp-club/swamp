@@ -5667,7 +5667,7 @@ export class WorkflowExecutionService {
 
       // Execute steps level by level
       let jobFailed = false;
-      // Set when an interrupted level leaves a guarded step undecided.
+      // Set when the abort leaves a guarded step undecided.
       let jobUndecided = false;
       // Set once a level is reached after the abort with nothing failed. Later
       // levels stay on that rule, so a step settled there does not turn the

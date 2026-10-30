@@ -100,9 +100,11 @@ export function shouldStepRun(step: Step, jobRun: JobRun): boolean {
  * succeeded or was skipped by its guard, with that real status, so a teardown
  * chain runs to its end. A dependency skipped on its `dependsOn` answers failed
  * like work does: had the work failed it might have run, so its skip says
- * nothing. A step with no `dependsOn` is work. Conditions are evaluated, so `and`, `or` and `not` need
- * no special case. Read from the definition and the records, so it does not
- * matter when the abort fired or which walk finished a dependency.
+ * nothing. A step with no `dependsOn` is work, and so is an approval gate or a
+ * wait for a signal: it would turn the cancel into a suspended run. Conditions
+ * are evaluated, so `and`, `or` and `not` need no special case. Read from the
+ * definition and the records, so it does not matter when the abort fired or
+ * which walk finished a dependency.
  */
 export function runsAfterFailure(
   step: Step,
@@ -118,12 +120,14 @@ export function runsAfterFailure(
         const dependency = job.getStep(ref);
         const status = jobRun.getStatus(ref);
         const ran = status === "succeeded" ||
-          (status === "skipped" &&
-            jobRun.getStep(ref)?.skipReason?.kind === "guarded");
+          (status === "skipped" && jobRun.skippedByGuard(ref));
         return dependency && ran && isCleanup(dependency) ? status : "failed";
       },
     };
-    const cleanup = candidate.dependsOn.length > 0 &&
+    const taskType = candidate.task.data.type;
+    const cleanup = taskType !== "manual_approval" &&
+      taskType !== "wait_for_signal" &&
+      candidate.dependsOn.length > 0 &&
       candidate.dependsOn.every((dep) =>
         dep.condition.evaluate(afterFailure, dep.step)
       );

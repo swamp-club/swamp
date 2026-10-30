@@ -23441,6 +23441,7 @@ async function runThroughAbort(
     undefined,
     executor,
   );
+  service.signalWaits = inMemorySignalWaits();
   const { run } = await runUntilAborted(
     service,
     workflow,
@@ -24079,5 +24080,76 @@ Deno.test("abort cleanup: a settled step's concurrency does not limit the cleanu
     assertCancelledBeforeStart(run, "main", ["work"]);
     assertEquals(run.getJob("main")!.getStep("c1")!.status, "succeeded");
     assertEquals(run.getJob("main")!.getStep("c2")!.status, "succeeded");
+  });
+});
+
+Deno.test("abort cleanup: a teardown chain goes on past a forEach link whose guard skipped every iteration", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run, executor } = await runThroughAbort(
+      tempDir,
+      "chain-each-guarded-wf",
+      [
+        modelStep("a"),
+        modelStep("each", {
+          ...onStep("a", TriggerCondition.always()),
+          forEach: { item: "t", in: "${{ ['x', 'y'] }}" },
+          guard: '${{ model.method("infra", "gone") }}',
+        }),
+        modelStep("t2", onStep("each", TriggerCondition.skipped())),
+      ],
+      new SignalRecordingAbortingExecutor("a", "succeed", { gone: true }),
+    );
+
+    assertEquals(run.status, "cancelled");
+    const job = run.getJob("main")!;
+    assertEquals(job.getStep("each-x")!.skipReason?.kind, "guarded");
+    assertEquals(job.getStep("each-y")!.skipReason?.kind, "guarded");
+    assertRanAsCleanup(executor, ["t2"]);
+  });
+});
+
+for (
+  const [gated, condition] of [
+    ["always", TriggerCondition.always()],
+    ["completed", TriggerCondition.completed()],
+  ] as const
+) {
+  Deno.test(`abort cleanup: a ${gated}-gated gate or signal wait reached after the abort is settled, so the cancel does not suspend the run`, async () => {
+    await withTempDir(async (tempDir) => {
+      const { run } = await runThroughAbort(tempDir, `gate-${gated}-wf`, [
+        modelStep("a"),
+        Step.create({
+          name: "gate",
+          task: StepTask.manualApproval("go?"),
+          ...onStep("a", condition),
+        }),
+        Step.create({
+          name: "wait",
+          task: StepTask.waitForSignal(600, { type: "object" }),
+          ...onStep("a", condition),
+        }),
+        modelStep("work", onStep("a", TriggerCondition.succeeded())),
+      ]);
+
+      assertEquals(run.status, "cancelled");
+      assertCancelledBeforeStart(run, "main", ["gate", "wait", "work"]);
+    });
+  });
+}
+
+Deno.test("abort cleanup: a failed-gated gate on a settled step does not suspend the run", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run } = await runThroughAbort(tempDir, "gate-failed-wf", [
+      modelStep("a"),
+      modelStep("b", onStep("a", TriggerCondition.succeeded())),
+      Step.create({
+        name: "gate",
+        task: StepTask.manualApproval("go?"),
+        ...onStep("b", TriggerCondition.failed()),
+      }),
+    ]);
+
+    assertEquals(run.status, "cancelled");
+    assertCancelledBeforeStart(run, "main", ["b", "gate"]);
   });
 });
