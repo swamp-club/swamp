@@ -54,9 +54,10 @@ commit is durable and replay rewrites the checkout. A version whose keys
 `directories` or `exclude` keep local is dropped from the commit, so nothing
 replays it, and the repository syncs it as on v2 (swamp-club#4019). It asks the
 bound unit through `unitAdmitsKey` (`unit_of_work_scope.ts`), which answers
-with the filter the unit was opened with. The directories above a version are
-synced unless the unit commits the name's `latest` marker, since replaying the
-marker recreates them. On v3 the per-model lock syncs the directories it
+with the filter the unit was opened with. One key kept local syncs the whole
+version, and the directories created above it: the repository creates them
+once the first version number to try is known, so the decision covers that
+version's keys. On v3 the per-model lock syncs the directories it
 creates when the checkout may keep data local: data is not among its
 `directories`, or any `exclude` pattern is set. See
 [data.md](../primitives/data.md#writing-data) for what durable means.

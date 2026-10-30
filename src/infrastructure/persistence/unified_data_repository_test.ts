@@ -4235,6 +4235,8 @@ Deno.test("save: on v3, a version is synced when the checkout keeps only its raw
     });
     const v1 = `.swamp/data/test/model/${modelId}/state/1`;
     assertBefore(events, `file ${v1}/raw`, `dir ${v1}`);
+    // The new model's directory entry, which reaches the local raw, too.
+    assertBefore(events, `dir .swamp/data/test/model`, `dir ${v1}`);
   });
 });
 

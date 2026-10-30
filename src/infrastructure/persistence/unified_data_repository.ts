@@ -130,15 +130,14 @@ const logger = getSwampLogger(["data", "repository"]);
 const DATA_VERSION_FILES: readonly DataVersionFile[] = ["metadata.yaml", "raw"];
 
 /**
- * The data a write publishes, which decides whether it is synced
- * (swamp-club#4019): a version, or with no version the directories above
- * one.
+ * The data version a write publishes, which decides whether it is synced
+ * (swamp-club#4019).
  */
 interface DurableRecord {
   readonly type: ModelType;
   readonly modelId: string;
   readonly dataName: string;
-  readonly version?: number;
+  readonly version: number;
 }
 
 /**
@@ -350,19 +349,19 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
   /**
    * Whether the bound v3 unit commits every key that publishes `record`
-   * (swamp-club#4019): the name's latest marker and, given a version, its
-   * `metadata.yaml` and `raw`. Without a version it answers for the
-   * directories above one, which replay recreates whenever it rewrites
-   * the name's marker.
+   * (swamp-club#4019): the name's latest marker and the version's
+   * `metadata.yaml` and `raw`. One key kept local is enough to sync the
+   * whole version: replay rewrites the others, but not that one, nor the
+   * directory entries that reach it.
    */
   private replayed(record: DurableRecord): boolean {
     const changes = new ModelChanges(record.type, record.modelId);
-    const keys = [changes.latestKey(record.dataName)];
-    if (record.version !== undefined) {
-      for (const file of DATA_VERSION_FILES) {
-        keys.push(changes.dataKey(record.dataName, record.version, file));
-      }
-    }
+    const keys = [
+      changes.latestKey(record.dataName),
+      ...DATA_VERSION_FILES.map((file) =>
+        changes.dataKey(record.dataName, record.version, file)
+      ),
+    ];
     return keys.every((key) => unitAdmitsKey(this.markDirty, key.toString()));
   }
 
@@ -3596,7 +3595,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
   /**
    * Creates the data-name directory and any missing directory above it, one
-   * level at a time. On v2 the parent of each directory created here is
+   * level at a time. On v2, and on v3 for a `record` the unit does not
+   * commit (swamp-club#4019), the parent of each directory created here is
    * synced before this returns, so its entry is durable before any version
    * under it is published (swamp-club#4017). The model lock creates the
    * model directory and those above it first, and syncs them the same way
@@ -3624,7 +3624,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   ): Promise<{ version: number; versionDir: string; priorVersions: number[] }> {
     const dataNameDir = this.getDataNameDir(type, modelId, dataName);
     await assertSafePath(dataNameDir, this.baseDir);
-    await this.makeDataNameDir(dataNameDir, { type, modelId, dataName });
 
     const versions = await this.listVersions(type, modelId, dataName);
     // Never below the version floor: a number deleted versions used is not
@@ -3647,6 +3646,14 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       ? 0
       : await v3Floors.floor(partition, dataName);
     let nextVersion = Math.max(maxOf(versions) ?? 0, floor, v3Floor) + 1;
+    // Made once the first version to try is known, so on v3 the sync
+    // decision covers that version's own keys (swamp-club#4019).
+    await this.makeDataNameDir(dataNameDir, {
+      type,
+      modelId,
+      dataName,
+      version: nextVersion,
+    });
 
     const maxRetries = 100;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
