@@ -75,7 +75,7 @@ export class TeamPeerKey {
   /** Reads started, so a slow read never overwrites a newer one's answer. */
   #reads = 0;
   /** The read {@link verify} and {@link trusts} are waiting on. */
-  #reading: Promise<string | undefined> | undefined;
+  #reading: { at: number; answer: Promise<string | undefined> } | undefined;
 
   constructor(vault: VaultProvider, now: () => number = Date.now) {
     this.#vault = vault;
@@ -171,8 +171,19 @@ export class TeamPeerKey {
     if (last !== undefined && this.#now() - last.at < PEER_KEY_CACHE_MS) {
       return last.found === "none" ? undefined : this.#usableCached();
     }
-    this.#reading ??= this.#refresh();
-    return await this.#reading;
+    const reading = this.#reading;
+    if (
+      reading !== undefined && this.#now() - reading.at < PEER_KEY_CACHE_MS
+    ) {
+      return await reading.answer;
+    }
+    // A read that has not answered within the window is left to its own
+    // waiters: later checks start a fresh one rather than join it for ever.
+    const answer = this.#refresh().finally(() => {
+      if (this.#reading?.answer === answer) this.#reading = undefined;
+    });
+    this.#reading = { at: this.#now(), answer };
+    return await answer;
   }
 
   /** One read for every check waiting on it; a failure falls back. */
@@ -181,8 +192,6 @@ export class TeamPeerKey {
       return await this.#read();
     } catch {
       return this.#usableCached();
-    } finally {
-      this.#reading = undefined;
     }
   }
 
@@ -198,7 +207,8 @@ export class TeamPeerKey {
    * The key the vault holds, or undefined when it holds none. Any other
    * failure, and a value that is not a key, is thrown: the key is never
    * replaced because it could not be read. What it found is recorded unless
-   * a read that started later already answered.
+   * a read that started later already found the key or its absence: a later
+   * failure says nothing about which key is current.
    */
   async #read(): Promise<string | undefined> {
     const read = ++this.#reads;
@@ -217,7 +227,10 @@ export class TeamPeerKey {
     found: "key" | "none" | "failed",
     key?: string,
   ): void {
-    if (this.#lastRead !== undefined && this.#lastRead.read > read) return;
+    const last = this.#lastRead;
+    if (last !== undefined && last.read > read && last.found !== "failed") {
+      return;
+    }
     const at = this.#now();
     if (key !== undefined) this.#cached = { key, at };
     this.#lastRead = { at, found, read };
