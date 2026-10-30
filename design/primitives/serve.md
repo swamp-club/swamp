@@ -282,6 +282,19 @@ needs the full list. `workflow.run.search` also filters, before paging, by
 (ignoring case; an empty list filters nothing); beside `status` or
 `triggerSource`, both filters must hold.
 
+`model.usage.summary` counts method runs instead of listing them, over the same
+`since` and `until` as `model.output.search` (a duration back from now or an ISO
+time): totals, and one row per definition id and type with its executions, failed
+count, last start, methods most recent first and newest outputs (`recentLimit`,
+default 20, clamped to 0..100). It reads the same outputs as the search and has
+no cap. Outputs are tallied per model and method, then each of those is
+authorized once by the search's rule, so a methods-scoped or tag-conditioned
+grant shapes the counts, and an unreadable method never reaches them. Workflow
+links in the newest outputs are redacted as the search redacts them. Outputs of
+an id with no definition under any type count in the totals but get no row, so
+history holding many deleted definitions does not grow the reply; outputs recorded
+under a type the definition no longer has keep a row.
+
 `workflow.run.summary` counts runs instead of listing them: totals, per-workflow
 counts with each workflow's newest runs (`recentLimit`, default 20, clamped to
 0..100) and, with `timeline`, hourly UTC buckets. It takes the same `since`,

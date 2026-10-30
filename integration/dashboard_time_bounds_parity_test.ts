@@ -28,6 +28,7 @@
 import { assertEquals } from "@std/assert";
 import { parseRunTimeBound } from "../src/libswamp/workflows/run_search.ts";
 import { modelOutputSearch } from "../src/libswamp/models/output_search.ts";
+import { modelUsageSummary } from "../src/libswamp/models/usage_summary.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
 import { collect } from "../src/libswamp/testing.ts";
 import {
@@ -92,6 +93,52 @@ Deno.test("dashboard time bounds: model output search reads every preset's durat
     assertEquals(last.kind, "completed", preset);
     if (last.kind === "completed") {
       assertEquals(last.data.results.map((r) => r.id), ["inside"], preset);
+    }
+  }
+});
+
+Deno.test("dashboard time bounds: model usage summary reads every preset's duration as the window the dashboard shows", async () => {
+  const minute = 60_000;
+  for (const { preset } of TIME_PRESETS) {
+    const range: TimeRange = { kind: "preset", preset };
+    const shown = resolveTimeRange(range, Date.now());
+    if (shown.since === undefined) continue;
+    const edge = Date.parse(shown.since);
+    const output = (id: string, startedAt: number) => ({
+      output: {
+        id,
+        definitionId: "def-1",
+        methodName: "sync",
+        status: "succeeded",
+        startedAt: new Date(startedAt),
+      },
+      type: { normalized: "test/model" },
+    });
+    const events = await collect(
+      modelUsageSummary(createLibSwampContext(), {
+        findAllOutputsGlobal: () =>
+          Promise.resolve([
+            output("inside", edge + minute),
+            output("outside", edge - minute),
+          ]),
+        findAllDefinitions: () =>
+          Promise.resolve([{
+            definition: { id: "def-1", name: "m" },
+            type: { normalized: "test/model" },
+          }]),
+        isReadable: () => Promise.resolve(true),
+        definitionNameById: () => Promise.resolve("m"),
+      }, requestTimeBounds(range)),
+    );
+    const last = events[events.length - 1];
+    assertEquals(last.kind, "completed", preset);
+    if (last.kind === "completed") {
+      assertEquals(last.data.totals.executions, 1, preset);
+      assertEquals(
+        last.data.models[0].recent.map((o) => o.id),
+        ["inside"],
+        preset,
+      );
     }
   }
 });

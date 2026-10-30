@@ -124,6 +124,7 @@ const CATEGORIES: Record<string, Category> = {
 
   "model.search": "collection",
   "model.output.search": "collection",
+  "model.usage.summary": "collection",
   "model.method.history.search": "collection",
   "data.list": "collection",
   "data.search": "collection",
@@ -319,6 +320,7 @@ Deno.test("serve condition-fields conformance: collections leave out tag-denied 
       const [type, payload, visible] of [
         ["model.search", {}, "dev-db"],
         ["model.output.search", {}, "dev-db"],
+        ["model.usage.summary", {}, "dev-db"],
         ["model.method.history.search", {}, "dev-db"],
         ["data.search", {}, "dev-db"],
         ["data.query", { predicate: "true" }, "dev-db"],

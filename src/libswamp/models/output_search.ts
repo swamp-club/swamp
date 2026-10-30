@@ -269,7 +269,7 @@ export interface ModelOutputSearchInput {
  * A time bound as a Date: a duration (`7d`) counts back from `now`, as the
  * run queries read one; anything else must parse as a date-time.
  */
-function parseInstant(
+export function parseInstant(
   field: "since" | "until",
   value: string | undefined,
   now: number,
@@ -340,21 +340,8 @@ export async function* modelOutputSearch(
       // then for the results alike (swamp-club#4141, swamp-club#4142).
       const namer = definitionNamer(deps);
 
-      // Each key asked about with the name its outputs' results would carry,
-      // so it is judged as their results are.
       const canRead = deps.canRead;
-      const selectReadable: ModelOutputSearchSelector | undefined = canRead &&
-        (async (keys) => {
-          await namer.resolve(keys);
-          return canRead(
-            await Promise.all(keys.map(async (key) => ({
-              definitionId: key.definitionId,
-              modelName: await namer.nameOf(key.type, key.definitionId),
-              type: key.type.normalized,
-              methodName: key.methodName,
-            }))),
-          );
-        });
+      const selectReadable = readableSelector(namer, canRead);
 
       // Exported as the output_search diagnostic area's phases when the
       // caller runs this in it (swamp-club#4056); silent otherwise.
@@ -437,27 +424,7 @@ export async function* modelOutputSearch(
           : items;
       }
 
-      // One lookup for every workflow the results name, not one per result.
-      const workflowIds = new Set<string>();
-      for (const item of results) {
-        if (item.workflowId !== undefined) workflowIds.add(item.workflowId);
-      }
-      if (workflowIds.size > 0 && deps.resolveWorkflowNames) {
-        const resolveWorkflowNames = deps.resolveWorkflowNames;
-        const workflowNames = await observeDiagnosticPhase(
-          "workflow_names",
-          {},
-          (phase) => {
-            phase.tally.add("workflow_ids", workflowIds.size);
-            return resolveWorkflowNames(workflowIds);
-          },
-        );
-        for (const item of results) {
-          if (item.workflowId === undefined) continue;
-          const workflowName = workflowNames.get(item.workflowId);
-          if (workflowName !== undefined) item.workflowName = workflowName;
-        }
-      }
+      await nameWorkflows(deps, results);
 
       yield {
         kind: "completed",
@@ -470,8 +437,60 @@ export async function* modelOutputSearch(
   );
 }
 
+/**
+ * Sets the current workflow name on each item that links a workflow: one
+ * lookup for every workflow the items name, not one per item.
+ */
+export async function nameWorkflows(
+  deps: Pick<ModelOutputSearchDeps, "resolveWorkflowNames">,
+  items: readonly Pick<ModelOutputSearchItem, "workflowId" | "workflowName">[],
+): Promise<void> {
+  const workflowIds = new Set<string>();
+  for (const item of items) {
+    if (item.workflowId !== undefined) workflowIds.add(item.workflowId);
+  }
+  if (workflowIds.size === 0 || !deps.resolveWorkflowNames) return;
+  const resolveWorkflowNames = deps.resolveWorkflowNames;
+  const workflowNames = await observeDiagnosticPhase(
+    "workflow_names",
+    {},
+    (phase) => {
+      phase.tally.add("workflow_ids", workflowIds.size);
+      return resolveWorkflowNames(workflowIds);
+    },
+  );
+  for (const item of items) {
+    if (item.workflowId === undefined) continue;
+    const workflowName = workflowNames.get(item.workflowId);
+    if (workflowName !== undefined) item.workflowName = workflowName;
+  }
+}
+
+/**
+ * The selector a scan leaves out unread what `canRead` refuses with: each key
+ * asked about with the name its outputs' results would carry, so it is judged
+ * as their results are.
+ */
+export function readableSelector(
+  namer: ReturnType<typeof definitionNamer>,
+  canRead: ModelOutputSearchDeps["canRead"],
+): ModelOutputSearchSelector | undefined {
+  return canRead &&
+    (async (keys) => {
+      await namer.resolve(keys);
+      return canRead(
+        await Promise.all(keys.map(async (key) => ({
+          definitionId: key.definitionId,
+          modelName: await namer.nameOf(key.type, key.definitionId),
+          type: key.type.normalized,
+          methodName: key.methodName,
+        }))),
+      );
+    });
+}
+
 /** Whether an output started at or after `since` and before `until`. */
-function startedInWindow(
+export function startedInWindow(
   output: ModelOutputSearchOutput,
   since: Date | undefined,
   until: Date | undefined,
@@ -482,7 +501,7 @@ function startedInWindow(
 }
 
 /** The search result for an output. */
-function toSearchItem(
+export function toSearchItem(
   output: ModelOutputSearchOutput,
   type: { normalized: string },
   modelName: string | undefined,
@@ -713,7 +732,9 @@ async function readNewestFirst(
  * and id wins, so a primary definition names its outputs over an
  * auto-definition sharing its id.
  */
-function definitionNamer(deps: ModelOutputSearchDeps): {
+export function definitionNamer(
+  deps: Pick<ModelOutputSearchDeps, "findAllDefinitions" | "resolveModelNames">,
+): {
   resolve(
     keys: ReadonlyArray<
       { type: { normalized: string }; definitionId: string }
@@ -785,8 +806,14 @@ function definitionNamer(deps: ModelOutputSearchDeps): {
  * cutoff when the repository can skip older ones) that `selectReadable`
  * does not refuse.
  */
-async function findCandidates(
-  deps: ModelOutputSearchDeps,
+export async function findCandidates(
+  deps: Pick<
+    ModelOutputSearchDeps,
+    | "findAllOutputsGlobal"
+    | "findAllOutputsGlobalSince"
+    | "resolveModel"
+    | "findOutputsByDefinition"
+  >,
   model: string | undefined,
   since: Date | undefined,
   until: Date | undefined,

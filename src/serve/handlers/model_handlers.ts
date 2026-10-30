@@ -85,6 +85,11 @@ import {
   type ModelOutputSearchModel,
 } from "../../libswamp/models/output_search.ts";
 import {
+  modelUsageSummary,
+  type ModelUsageSummaryData,
+  type ModelUsageSummaryDeps,
+} from "../../libswamp/models/usage_summary.ts";
+import {
   type NamedWorkflow,
   nestedRunReadDecider,
 } from "./nested_run_redaction.ts";
@@ -122,6 +127,7 @@ import type {
   ModelSearchPayload,
   ModelTypeDescribePayload,
   ModelTypeSearchPayload,
+  ModelUsageSummaryPayload,
   ModelValidatePayload,
 } from "../protocol.ts";
 import {
@@ -2167,32 +2173,9 @@ export async function handleModelOutputSearch(
           controller.signal,
           selectReadable,
         ),
-      resolveWorkflowNames: async (ids) => {
-        const names = new Map<string, string>();
-        for (const workflow of await workflowRepo.findAll()) {
-          if (ids.has(workflow.id) && !names.has(workflow.id)) {
-            names.set(workflow.id, workflow.name);
-          }
-        }
-        return names;
-      },
+      resolveWorkflowNames: (ids) => workflowNamesOf(workflowRepo, ids),
       // Files the caller may not read are left unread (swamp-club#4142).
-      ...(ctx.authConfig.mode === "none" ? {} : {
-        canRead: (candidates) =>
-          observeDiagnosticPhase(
-            "candidate_authorization",
-            {},
-            async (phase) => {
-              phase.tally.add("keys", candidates.length);
-              const answers = await Promise.all(candidates.map(readable));
-              phase.tally.add(
-                "readable_keys",
-                answers.filter((answer) => answer).length,
-              );
-              return answers;
-            },
-          ),
-      }),
+      ...candidateReadability(ctx, readable),
     };
 
     // Exported as the output_search diagnostic area's phases
@@ -2276,6 +2259,120 @@ export async function handleModelOutputSearch(
       socket,
       requestId,
       "model_output_search_failed",
+      message,
+      clientErrorDetails(error),
+    );
+  }
+}
+
+/**
+ * Answers `model.usage.summary`: exact usage per model over a window, counted
+ * after the same per-method authorization as `model.output.search`, so the
+ * dashboard's Behaviors page needs no raw rows (swamp-club#4144).
+ */
+export async function handleModelUsageSummary(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  controller: AbortController,
+  principal: Principal | null,
+  payload?: ModelUsageSummaryPayload,
+): Promise<void> {
+  if (
+    !authorizeAnyOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      "model",
+      ctx,
+    )
+  ) return;
+
+  try {
+    const libCtx = handlerLibSwampContext(ctx);
+    const outputRepo = ctx.repoContext.outputRepo;
+    const workflowRepo = ctx.repoContext.workflowRepo.memoizedView?.() ??
+      ctx.repoContext.workflowRepo;
+    const canonical = canonicalResources(ctx, controller.signal);
+    const readable = outputReadability(canonical, socket, principal, ctx);
+    // Decides afresh once the scan is done, as filterOutputItems does, so a
+    // grant revoked while the summary waited for its reads no longer counts.
+    let finalCheck: ReturnType<typeof outputReadability> | undefined;
+
+    const deps: ModelUsageSummaryDeps = {
+      findAllOutputsGlobal: (selectReadable) =>
+        outputRepo.findAllGlobal(controller.signal, selectReadable),
+      findAllOutputsGlobalSince: (cutoff, selectReadable) =>
+        outputRepo.findAllGlobalSince(
+          cutoff,
+          controller.signal,
+          selectReadable,
+        ),
+      findAllDefinitions: () =>
+        ctx.repoContext.definitionRepo.findAllIncludingAutoGlobal(),
+      resolveModelNames: (keys) =>
+        resolveModelNames(canonical, keys, controller.signal),
+      definitionNameById: (id) => canonical.anyModelName(id),
+      resolveWorkflowNames: (ids) => workflowNamesOf(workflowRepo, ids),
+      ...candidateReadability(ctx, readable),
+      isReadable: (group) => {
+        finalCheck ??= outputReadability(canonical, socket, principal, ctx);
+        return finalCheck(group);
+      },
+    };
+
+    await withDiagnosticArea("output_search", async () => {
+      let data: ModelUsageSummaryData | undefined;
+      await consumeStream(
+        modelUsageSummary(libCtx, deps, {
+          since: payload?.since,
+          until: payload?.until,
+          recentLimit: payload?.recentLimit,
+        }),
+        {
+          resolving: () => {},
+          completed: (e) => {
+            data = e.data;
+          },
+          error: (e) => {
+            throw new LibSwampStreamError(e.error);
+          },
+        },
+      );
+
+      if (controller.signal.aborted) {
+        sendError(socket, requestId, "cancelled", "Operation was cancelled");
+        return;
+      }
+      if (!data) throw new Error("The usage summary completed without data");
+
+      const summary = data;
+      await observeDiagnosticPhase("response", {}, async (phase) => {
+        await redactWorkflowLinks(
+          summary.models.flatMap((model) => model.recent),
+          ctx.authConfig.mode === "none",
+          nestedRunReadDecider(ctx, socket, principal),
+        );
+        phase.tally.add("results", summary.models.length);
+        send(socket, {
+          type: "model.usage.summary",
+          id: requestId,
+          payload: { data: summary },
+        });
+      });
+    }, controller.signal);
+  } catch (error) {
+    // A scan stopped by the cancel answers as one that ran to the end does.
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+    const message = sanitizeErrorForClient(error);
+    sendError(
+      socket,
+      requestId,
+      "model_usage_summary_failed",
       message,
       clientErrorDetails(error),
     );
@@ -3147,7 +3244,10 @@ export async function handleModelTypeSearch(
  * authorized, so it is dropped too unless the server has no authorization.
  */
 export async function redactWorkflowLinks(
-  items: ModelOutputSearchItem[],
+  items: Pick<
+    ModelOutputSearchItem,
+    "workflowId" | "workflowName" | "workflowRunId" | "stepName"
+  >[],
   unrestricted: boolean,
   canRead: (workflow: NamedWorkflow) => Promise<boolean>,
 ): Promise<void> {
@@ -3272,6 +3372,50 @@ function outputReadability(
     }
     return allowed;
   };
+}
+
+/**
+ * A scan's `canRead`, in its own phase, for a caller whose reads are
+ * authorized: with authorization off, nothing is asked and every file is read.
+ */
+function candidateReadability(
+  ctx: ConnectionContext,
+  readable: (key: OutputReadKey) => Promise<boolean>,
+): Pick<ModelOutputSearchDeps, "canRead"> {
+  if (ctx.authConfig.mode === "none") return {};
+  return {
+    canRead: (candidates) =>
+      observeDiagnosticPhase(
+        "candidate_authorization",
+        {},
+        async (phase) => {
+          phase.tally.add("keys", candidates.length);
+          const answers = await Promise.all(candidates.map(readable));
+          phase.tally.add(
+            "readable_keys",
+            answers.filter((answer) => answer).length,
+          );
+          return answers;
+        },
+      ),
+  };
+}
+
+/** The current names of the given workflow ids, from one listing. */
+async function workflowNamesOf(
+  workflowRepo: Pick<
+    ConnectionContext["repoContext"]["workflowRepo"],
+    "findAll"
+  >,
+  ids: ReadonlySet<string>,
+): Promise<ReadonlyMap<string, string>> {
+  const names = new Map<string, string>();
+  for (const workflow of await workflowRepo.findAll()) {
+    if (ids.has(workflow.id) && !names.has(workflow.id)) {
+      names.set(workflow.id, workflow.name);
+    }
+  }
+  return names;
 }
 
 /**

@@ -422,6 +422,16 @@ export {
   type ModelOutputSearchSelector,
 } from "./models/output_search.ts";
 export {
+  type ModelUsageOutputGroup,
+  type ModelUsageRecentOutput,
+  modelUsageSummary,
+  type ModelUsageSummaryData,
+  type ModelUsageSummaryDeps,
+  type ModelUsageSummaryEvent,
+  type ModelUsageSummaryInput,
+  type ModelUsageSummaryModel,
+} from "./models/usage_summary.ts";
+export {
   type ArtifactsData,
   createModelOutputGetDeps,
   type ErrorData,

@@ -17,8 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Serve's `model.output.search` over the dashboard time range, for the
-// Models page and a model's page. A preset goes as a duration, so the
+// Serve's `model.output.search` over the dashboard time range, for a
+// model's page. A preset goes as a duration, so the
 // request does not change as the clock moves (swamp-club#3449).
 
 import { useRequest } from "./useRequest.ts";
