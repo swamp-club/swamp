@@ -1254,6 +1254,15 @@ export function getEnvCaCerts(): string[] | undefined {
   return resolvedEnvCaCerts;
 }
 
+/**
+ * Test seam: forgets the certificates {@link getEnvCaCerts} read, so a test
+ * that points `SWAMP_CA_CERT` at a fresh CA reads it on every run
+ * (`deno test --repeats`).
+ */
+export function resetEnvCaCertsForTesting(): void {
+  resolvedEnvCaCerts = undefined;
+}
+
 let cachedCaCertClient: Deno.HttpClient | undefined;
 
 function createSocket(

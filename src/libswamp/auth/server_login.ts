@@ -21,7 +21,7 @@ import type { ServerCredential } from "../../domain/auth/server_credential.ts";
 import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
 import { openBrowser } from "../../infrastructure/process/browser.ts";
 import { FileServerCredentialRepository } from "../../infrastructure/persistence/server_credential_repository.ts";
-import { UserError } from "../../domain/errors.ts";
+import { describeCauses, UserError } from "../../domain/errors.ts";
 
 /** Data returned on successful server login via OAuth device flow. */
 export interface ServerLoginData {
@@ -141,24 +141,6 @@ async function fetchFromServer(
       }`,
     );
   }
-}
-
-/**
- * Join an error's message with those of its causes. Deno's fetch rejects
- * with "fetch failed" and puts the reason (connection refused, TLS failure)
- * in `cause`.
- */
-function describeCauses(err: unknown): string {
-  const parts: string[] = [];
-  let current: unknown = err;
-  while (current instanceof Error && parts.length < 5) {
-    parts.push(current.message);
-    current = current.cause;
-  }
-  if (current !== undefined && !(current instanceof Error)) {
-    parts.push(String(current));
-  }
-  return parts.join(": ");
 }
 
 /**

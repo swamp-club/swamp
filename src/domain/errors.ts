@@ -106,6 +106,24 @@ export function errorPaths(value: unknown): string[] {
 }
 
 /**
+ * Join an error's message with those of its causes. Deno's fetch rejects
+ * with "fetch failed" and puts the reason (connection refused, TLS failure)
+ * in `cause`.
+ */
+export function describeCauses(err: unknown): string {
+  const parts: string[] = [];
+  let current: unknown = err;
+  while (current instanceof Error && parts.length < 5) {
+    parts.push(current.message);
+    current = current.cause;
+  }
+  if (current !== undefined && !(current instanceof Error)) {
+    parts.push(String(current));
+  }
+  return parts.join(": ");
+}
+
+/**
  * The stable code of a `UserError`, or `undefined` for an error without one,
  * one whose code is empty, and anything that is not a `UserError`. Reads only
  * the error itself, never its `cause`, as the workflow job loop does when it
