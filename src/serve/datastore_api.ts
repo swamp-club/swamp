@@ -51,7 +51,7 @@ import type { Action } from "../domain/access/action.ts";
 import { parsePrincipal } from "../domain/access/principal.ts";
 import { restoreNamespace, SOLO_NAMESPACE } from "../domain/data/namespace.ts";
 import type { BlobRef } from "../domain/datastore_v3/blob_ref.ts";
-import { type Commit, MAX_COMMIT_OPS } from "../domain/datastore_v3/commit.ts";
+import { MAX_COMMIT_OPS } from "../domain/datastore_v3/commit.ts";
 import {
   ADMIN_RESOURCE,
   type AggregateResourceResolver,
@@ -128,6 +128,7 @@ import {
   replicationErrorForClient,
 } from "./handlers/shared.ts";
 import {
+  commitJSONFor,
   commitReadAccessOf,
   memoized,
   serveResolver,
@@ -265,20 +266,6 @@ function readsLeaseOps(req: Request): boolean {
   return (req.headers.get(SERVE_DATASTORE_FEATURES_HEADER) ?? "")
     .split(",")
     .some((feature) => feature.trim() === LEASE_OPS_FEATURE);
-}
-
-/**
- * `commit` as a reader is sent it: without its lease ops for a client that
- * does not understand them (swamp-club#4121). A swamp from before them
- * judges a lease op's fence against the writer fence; without it, the
- * commit is exactly what that swamp's own rules accept. Serve stamps a
- * lease op only beside a client's ops, so no commit is left empty.
- */
-function commitJSONFor(commit: Commit, leaseOps: boolean): unknown {
-  const json = commit.toJSON() as { ops: readonly { kind?: unknown }[] };
-  return leaseOps
-    ? json
-    : { ...json, ops: json.ops.filter((op) => op.kind !== "lease") };
 }
 
 /**

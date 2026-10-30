@@ -36,6 +36,7 @@
  * @module
  */
 
+import { LEASE_OPS_FEATURE } from "../infrastructure/datastore_v3/serve_datastore_client.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { ServeLeader } from "../domain/datastore_v3/serve_leader.ts";
 import type { LeaderLink } from "./leader_link.ts";
@@ -188,7 +189,8 @@ export class FollowerFeed implements FollowerCopyFeed {
       socket.send(JSON.stringify({
         type: "commits.subscribe",
         id: SUBSCRIBE_ID,
-        payload: { cursor: this.#applied },
+        // This copy applies the leader's lease ops (swamp-club#4168).
+        payload: { cursor: this.#applied, features: [LEASE_OPS_FEATURE] },
       }));
     };
     socket.onmessage = (event) => {

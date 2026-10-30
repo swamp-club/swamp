@@ -242,6 +242,12 @@ export interface AuditExportResponse {
 export interface CommitsSubscribePayload {
   /** The feed position to read after, as `GET changes?cursor=` takes it. */
   cursor: number;
+  /**
+   * What the subscriber's copy understands, as `GET changes` reads the
+   * `x-swamp-datastore-features` header: a commit's lease ops are sent only
+   * to a subscriber that names `lease-ops` (swamp-club#4168).
+   */
+  features?: string[];
 }
 
 /**

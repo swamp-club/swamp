@@ -24,7 +24,7 @@
  * client's repositories write.
  */
 
-import { assert } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { stringify as stringifyYaml } from "@std/yaml";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
@@ -321,3 +321,74 @@ export const writer = (): Grant[] => [
   ...member(),
   grant({ actions: ["admin"], resource: { kind: "access", pattern: "*" } }),
 ];
+
+export function modelKey(server: Server, id: string = server.model.id): string {
+  return `data/${server.modelType.normalized}/${id}/.lock`;
+}
+
+export async function call(
+  server: Server,
+  method: string,
+  path: string,
+  token: string,
+  body?: unknown,
+): Promise<{ status: number; json: Record<string, unknown> }> {
+  const response = await fetch(`${server.url}/${path}`, {
+    method,
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  return { status: response.status, json: await response.json() };
+}
+
+export async function fencedLease(
+  server: Server,
+  token: string,
+  lockKey = modelKey(server),
+): Promise<{ leaseId: string; fence: number; floor: unknown }> {
+  const taken = await call(server, "POST", "locks", token, {
+    lockKey,
+    fenced: true,
+  });
+  assertEquals(taken.status, 201, JSON.stringify(taken.json));
+  return {
+    leaseId: taken.json.leaseId as string,
+    fence: taken.json.fence as number,
+    floor: taken.json.floor,
+  };
+}
+
+/** The framed commit saving version `version` of `vpc`. */
+export async function saveBody(
+  server: Server,
+  version: number,
+  expectedSeq: number,
+  options: { lease?: string; txnId?: string } = {},
+): Promise<Uint8Array> {
+  const content = new TextEncoder().encode(`content of version ${version}`);
+  return commitBody({
+    expectedSeq,
+    txnId: options.txnId ?? crypto.randomUUID(),
+    ...(options.lease === undefined ? {} : { lease: options.lease }),
+    ops: await blobSaveOps(server, "vpc", version, content),
+    chunks: [{ sha256: await sha256Hex(content), size: content.length }],
+  }, [content]);
+}
+
+/** Saves version `version` of `vpc`, naming `lease` when given. */
+export async function save(
+  server: Server,
+  token: string,
+  version: number,
+  expectedSeq: number,
+  options: { lease?: string } = {},
+): Promise<{ status: number; json: Record<string, unknown> }> {
+  return await post(
+    partitionPath(server),
+    token,
+    await saveBody(server, version, expectedSeq, options),
+  );
+}

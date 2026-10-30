@@ -50,6 +50,24 @@ import {
   isAdminOnlyModelType,
 } from "./handlers/shared.ts";
 
+/**
+ * `commit` as a reader is sent it: without its lease ops for a reader that
+ * does not understand them (swamp-club#4121), over `GET commits`, `GET
+ * changes` and the `commits.subscribe` feed (swamp-club#4168). A swamp from
+ * before them judges a lease op's fence against the writer fence; without
+ * it, the commit is exactly what that swamp's own rules accept. Serve stamps
+ * a lease op only beside a client's ops, so no commit is left empty.
+ */
+export function commitJSONFor(
+  commit: CommitChange["commit"],
+  leaseOps: boolean,
+): unknown {
+  const json = commit.toJSON() as { ops: readonly { kind?: unknown }[] };
+  return leaseOps
+    ? json
+    : { ...json, ops: json.ops.filter((op) => op.kind !== "lease") };
+}
+
 /** What reading a commit to `partition` with `ops` requires. */
 export async function commitReadAccessOf(
   partition: PartitionKey,

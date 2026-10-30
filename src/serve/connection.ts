@@ -583,6 +583,7 @@ const CommitsSubscribeRequestSchema = z.object({
   id: z.string().min(1).max(256),
   payload: z.object({
     cursor: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    features: z.array(z.string().max(64)).max(16).optional(),
   }),
 });
 
