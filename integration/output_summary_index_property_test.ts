@@ -81,6 +81,7 @@ type Op =
   }
   | { kind: "writeMislabelled"; run: Run }
   | { kind: "delete" | "finish"; pick: number }
+  | { kind: "damageRecord"; pick: number; empty: boolean }
   | { kind: "tearIndex" | "removeIndex" | "duplicateRows" | "search" }
   | { kind: "retention"; offset: number };
 
@@ -114,6 +115,14 @@ const op: fc.Arbitrary<Op> = fc.oneof(
     arbitrary: fc.record({
       kind: fc.constantFrom<"delete" | "finish">("delete", "finish"),
       pick: fc.nat(),
+    }),
+  },
+  {
+    weight: 1,
+    arbitrary: fc.record({
+      kind: fc.constant<"damageRecord">("damageRecord"),
+      pick: fc.nat(),
+      empty: fc.boolean(),
     }),
   },
   {
@@ -265,8 +274,8 @@ async function apply(
   mislabelled: Set<string>,
   named: Set<string>,
 ): Promise<void> {
-  // Two runs of a method named for the same millisecond replace each other's
-  // record, and a finished row can outlive that: the one case the summaries do
+  // Writes to one name in the same millisecond at the same size have the same
+  // stat, and a test's writes can be that close: the one case the summaries do
   // not cover (design/enablers/output-summary-index.md). A name is used once.
   const firstUse = (path: string): boolean => {
     if (named.has(path)) return false;
@@ -337,6 +346,17 @@ async function apply(
       if (saved.length === 0) return;
       const [found] = saved.splice(op.pick % saved.length, 1);
       await repo.delete(found.type, found.method, found.output.id);
+      return;
+    }
+    case "damageRecord": {
+      if (saved.length === 0) return;
+      const [found] = saved.splice(op.pick % saved.length, 1);
+      // Each differs in size from any record. One that does not parse at all is
+      // pinned apart: a delete of another output in its directory stops at it.
+      await writeAt(
+        repo.getPath(found.type, found.method, found.output),
+        op.empty ? "" : "id: not-a-record\n",
+      );
       return;
     }
     case "tearIndex": {

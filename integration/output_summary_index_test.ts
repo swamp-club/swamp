@@ -42,6 +42,9 @@ import {
   withDiagnosticArea,
 } from "../src/domain/diagnostics/diagnostic_phase.ts";
 import { YamlOutputRepository } from "../src/infrastructure/persistence/yaml_output_repository.ts";
+import { runInRootUnitOfWork } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
+import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
+import { withV3RowRepos } from "./usecase_v3_fixtures.ts";
 // The global output scans walk the registered types.
 import "../src/domain/models/models.ts";
 
@@ -263,6 +266,124 @@ Deno.test("output summaries: a recovery that puts back an older record clears th
   });
 });
 
+Deno.test("output summaries: a record put back with no clear after it answers from itself, whatever left its row behind", async () => {
+  await withRepo(async (repo) => {
+    const output = await saveFinished(repo);
+    await writeRecord(
+      repo,
+      ModelOutput.create({
+        id: output.id,
+        definitionId: createDefinitionId(output.definitionId),
+        methodName: "run",
+        status: "running",
+        startedAt: output.startedAt,
+        provenance: PROVENANCE,
+      }),
+    );
+    const found = await repo.findAllGlobalSummaries();
+    assertEquals(found[0].output.status, "running");
+  });
+});
+
+const DAMAGE: ReadonlyArray<[string, string]> = [
+  ["garbage", "{ not: [yaml"],
+  ["empty", ""],
+  ["schema-failing", "id: not-a-record\n"],
+];
+
+for (const [kind, content] of DAMAGE) {
+  Deno.test(`output summaries: a finished record turned ${kind} is left out of every read, as reading every record does, and a repair brings it back`, async () => {
+    await withRepo(async (repo) => {
+      const kept = await saveFinished(repo);
+      const damaged = await saveFinished(
+        repo,
+        running(new Date(STARTED.getTime() + 1)),
+      );
+      const path = repo.getPath(TYPE, "run", damaged);
+      const intact = await Deno.readTextFile(path);
+      await Deno.writeTextFile(path, content);
+
+      const cutoff = new Date(STARTED.getTime() - 1);
+      const expected = [kept.id];
+      assertEquals(
+        (await repo.findAllGlobal()).map((r) => r.output.id),
+        expected,
+      );
+      assertEquals(
+        (await repo.findAllGlobalSummaries()).map((r) => r.output.id),
+        expected,
+      );
+      assertEquals(
+        (await repo.findAllGlobalSince(cutoff)).map((r) => r.output.id),
+        expected,
+      );
+      assertEquals(await allNewestFirst(repo), expected);
+      assertEquals(
+        (await repo.findHistoryByDefinition(
+          TYPE,
+          createDefinitionId(damaged.definitionId),
+        )).length,
+        0,
+      );
+
+      await Deno.writeTextFile(path, intact);
+      const repaired = await countRecordReads(() =>
+        repo.findAllGlobalSummaries()
+      );
+      assertEquals(repaired.reads, 1);
+      assertEquals(repaired.result.length, 2);
+      const healed = await countRecordReads(() =>
+        repo.findAllGlobalSummaries()
+      );
+      assertEquals(healed.reads, 0);
+    });
+  });
+}
+
+Deno.test("output summaries: a record whose stat moved with the same content is read once, then answered from its new row", async () => {
+  await withRepo(async (repo) => {
+    const output = await saveFinished(repo);
+    const moved = new Date(STARTED.getTime() + 1000);
+    await Deno.utime(repo.getPath(TYPE, "run", output), moved, moved);
+
+    const first = await countRecordReads(() => repo.findAllGlobalSummaries());
+    assertEquals(first.reads, 1);
+    assertEquals(first.result.map((r) => r.output.id), [output.id]);
+    const second = await countRecordReads(() => repo.findAllGlobalSummaries());
+    assertEquals(second.reads, 0);
+  });
+});
+
+Deno.test("output summaries: readers racing on a cold index leave a shard the next read rewrites without their duplicates", async () => {
+  await withRepo(async (_repo, dir) => {
+    const writer = new YamlOutputRepository(dir);
+    const total = 40;
+    for (let i = 0; i < total; i++) {
+      const output = running(new Date(STARTED.getTime() + i));
+      output.markSucceeded();
+      await writeRecord(writer, output);
+    }
+
+    // Separate repositories, as separate processes are: they share no scan.
+    await Promise.all(
+      Array.from(
+        { length: 8 },
+        () => new YamlOutputRepository(dir).findAllGlobalSummaries(),
+      ),
+    );
+
+    const after = await countRecordReads(() => writer.findAllGlobalSummaries());
+    assertEquals(after.reads, 0);
+    assertEquals(after.result.length, total);
+    const lines = (await Deno.readTextFile(await onlyShard(dir))).trim()
+      .split("\n").length;
+    assertEquals(lines < 2 * total, true, `${lines} lines for ${total} runs`);
+    // And what it left still answers.
+    const again = await countRecordReads(() => writer.findAllGlobalSummaries());
+    assertEquals(again.reads, 0);
+  });
+});
+
 Deno.test("output summaries: a read that held records while the summaries were cleared does not add them back", async () => {
   await withRepo(async (repo, dir) => {
     const output = running();
@@ -417,6 +538,8 @@ Deno.test("output summaries: candidate_scan counts rows added on a cold read and
     assertEquals(warm["swamp.diagnostic.summary_rows_used"], 1);
     assertEquals(warm["swamp.diagnostic.summary_shards_read"], 1);
     assertEquals(warm["swamp.diagnostic.summary_rows_backfilled"], undefined);
+    assertEquals(warm["swamp.diagnostic.summary_rows_outdated"], undefined);
+    assertEquals(warm["swamp.diagnostic.summary_stats"], 1);
   });
 });
 
@@ -514,3 +637,32 @@ async function shardOf(dir: string, startedAt: Date): Promise<string> {
   assertEquals(shards.length, 1);
   return shards[0];
 }
+
+Deno.test("output summaries: on a v3 datastore a committed save keeps its row through the checkout's catch-up", async () => {
+  await withV3RowRepos({}, async (repos) => {
+    const output = ModelOutput.create({
+      definitionId: createDefinitionId(crypto.randomUUID()),
+      methodName: "noop",
+      status: "running",
+      startedAt: STARTED,
+      provenance: PROVENANCE,
+    });
+    output.markSucceeded();
+    await runInRootUnitOfWork(
+      repos.a.repoContext,
+      { flush: undefined },
+      () =>
+        repos.a.repoContext.outputRepo.save(repos.modelType, "noop", output),
+    );
+
+    const reopened = await requireInitializedRepoUnlocked({
+      repoDir: repos.repoA,
+      outputMode: "json",
+    });
+    const read = await countRecordReads(() =>
+      reopened.repoContext.outputRepo.findAllGlobalSummaries()
+    );
+    assertEquals(read.result.map((r) => r.output.id), [output.id]);
+    assertEquals(read.reads, 0);
+  });
+});

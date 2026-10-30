@@ -28,6 +28,7 @@ import {
   SEPARATOR,
 } from "@std/path";
 import { getLogger } from "@logtape/logtape";
+import { currentDiagnosticTally } from "../../domain/diagnostics/diagnostic_phase.ts";
 import { isSettledStatus } from "../../domain/models/model_output.ts";
 import {
   type OutputSummary,
@@ -55,6 +56,20 @@ const SHARD_SUFFIX = ".ndjson";
 /** Changes each time the summaries are cleared: see {@link OutputSummaryIndex.generation}. */
 const CLEARED_MARKER = "cleared";
 
+/** Names a clear moves entries to before removing them. */
+const CLEARED_ASIDE_PREFIX = ".cleared-";
+
+/**
+ * A row of a shard: a run's summary, and the fingerprint of the record it was
+ * made from, so a record changed since can be told apart without reading it. As
+ * read back from a shard the fingerprint is not trusted:
+ * {@link fingerprintMatches} takes anything and matches only a real one.
+ */
+export interface OutputSummaryRow {
+  readonly summary: OutputSummary;
+  readonly record: unknown;
+}
+
 /** `startedAt` as an output file name spells it. */
 export function outputFileStamp(startedAt: Date): string {
   return startedAt.toISOString().replace(/[:.]/g, "-");
@@ -78,6 +93,15 @@ function keyOfSummary(summary: OutputSummary): string {
   );
 }
 
+/** `rows` as the lines of a shard. */
+function shardText(rows: Iterable<OutputSummaryRow>): string {
+  let text = "";
+  for (const { summary, record } of rows) {
+    text += `${JSON.stringify({ ...outputSummaryToData(summary), record })}\n`;
+  }
+  return text;
+}
+
 /** The shard a file name's stamp belongs in: its UTC day. */
 export function shardDayOf(stamp: string): string {
   return stamp.slice(0, 10);
@@ -95,15 +119,21 @@ async function isSymlink(path: string): Promise<boolean> {
 
 /**
  * Removes every summary of the checkout at `repoDir`, so its next reads go back
- * to the records. A v3 recovery can put back the committed version of a record
- * whose later save the index already holds, and a finished row is never checked
- * against its record. One that cannot be removed is warned about, never failing
- * the caller.
+ * to the records: a v3 recovery can put back the committed version of a record
+ * whose later save the index already holds. Rows are checked against their
+ * records anyway, so this is a second guard, and what frees their disk.
+ *
+ * Entries are moved aside before they are removed. A read adding rows can add a
+ * file to a directory while a removal empties it, which fails the removal. Under
+ * a name no writer knows that cannot happen, and every shard is gone at once
+ * rather than as the removal reaches it. One still there from a removal that
+ * failed goes with the next clear. Nothing here fails the caller.
  */
 export async function removeStaleOutputSummaries(
   repoDir: string,
 ): Promise<void> {
   const dir = swampPath(repoDir, OUTPUT_SUMMARIES_DIR);
+  const aside: string[] = [];
   try {
     // A symlink here is not this index's to empty: only the link goes.
     if (await isSymlink(dir)) await Deno.remove(dir);
@@ -112,17 +142,27 @@ export async function removeStaleOutputSummaries(
     // cannot add them back to a directory that looks untouched.
     // Replaced rather than written through, should it be a symlink.
     await atomicWriteTextFile(join(dir, CLEARED_MARKER), crypto.randomUUID());
-    for await (const entry of Deno.readDir(dir)) {
-      if (entry.name === CLEARED_MARKER) continue;
-      await Deno.remove(join(dir, entry.name), { recursive: true }).catch(
-        (error) => {
-          if (!(error instanceof Deno.errors.NotFound)) throw error;
-        },
-      );
+    for (const { name } of await Array.fromAsync(Deno.readDir(dir))) {
+      if (name === CLEARED_MARKER) continue;
+      if (name.startsWith(CLEARED_ASIDE_PREFIX)) {
+        aside.push(join(dir, name));
+        continue;
+      }
+      const moved = join(dir, `${CLEARED_ASIDE_PREFIX}${crypto.randomUUID()}`);
+      await Deno.rename(join(dir, name), moved);
+      aside.push(moved);
     }
   } catch (error) {
     logger
-      .warn`Removing the output summaries of ${repoDir} failed; history reads may show outdated results for finished runs. Delete ${dir} to rebuild them: ${error}`;
+      .warn`Clearing the output summaries of ${repoDir} failed. Reads still check each row against its record, but the rows stay on disk. Delete ${dir} to remove them: ${error}`;
+  }
+  for (const path of aside) {
+    try {
+      await Deno.remove(path, { recursive: true });
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) continue;
+      logger.debug`Removing cleared output summaries ${path} failed: ${error}`;
+    }
   }
 }
 
@@ -134,15 +174,18 @@ export async function removeStaleOutputSummaries(
  * The record files stay the only truth. A row is looked up only by what a
  * listing of the records found, and its key comes from its own content, so it
  * can stand in only for a file whose location says the same. A row with no
- * listed file is never used, so a delete needs no write here. A row that is
- * missing, torn or lost costs one read of its record, which adds it back; nothing
- * here ever fails a caller. Only finished outputs have rows, because only their
- * records never change. A row for a running output would have to be checked
- * against its record on every read anyway.
+ * listed file is never used, so a delete needs no write here. A row carries the
+ * fingerprint of the record it was made from, and its caller uses it only while
+ * the record's stat still says the same, so a record damaged, replaced or put
+ * back is read as it would be without this index. A row that is missing, torn,
+ * lost or outdated costs one read of its record, which adds it back if it can;
+ * nothing here ever fails a caller. Only finished outputs have rows: a running
+ * output changes too often for one to be worth keeping.
  *
  * Every write is one append, so writers in other processes interleave whole
- * lines. A rewrite ({@link compact}) can lose an append that lands while it
- * runs, which costs that one read as well.
+ * lines. Readers racing on a cold index each add the same rows, so {@link read}
+ * rewrites a shard that is at least half lines no read would use. A rewrite can
+ * lose an append that lands while it runs, which costs that one read as well.
  */
 export class OutputSummaryIndex {
   readonly #root: string;
@@ -168,8 +211,8 @@ export class OutputSummaryIndex {
    * What identifies the summaries since they were last cleared. A caller adding
    * rows from records compares it from before it read them with its value now:
    * if it moved, those records may be what the clear was for. A clear landing
-   * between that comparison and the append can still lose the race, in a window
-   * of one file operation rather than a batch of reads.
+   * between that comparison and the append can still lose the race, but a row
+   * added that way does not match a record the clear's recovery put back.
    */
   async generation(): Promise<string | undefined> {
     try {
@@ -192,26 +235,59 @@ export class OutputSummaryIndex {
     }
   }
 
-  /** A shard's rows by key, the last row of each winning. */
-  async read(type: string, day: string): Promise<Map<string, OutputSummary>> {
-    return (await this.#readShard(this.#shardPath(type, day))).rows;
+  /**
+   * A shard's rows by key, the last row of each winning. A shard at least half
+   * made of lines that lost to another, or are not rows, is rewritten with only
+   * the winners. Each line a rewrite drops took an append to add, so a read pays
+   * for this at most once per doubling of the shard.
+   */
+  async read(
+    type: string,
+    day: string,
+  ): Promise<Map<string, OutputSummaryRow>> {
+    const path = this.#shardPath(type, day);
+    const { rows, lines, bytes } = await this.#readShard(path);
+    if (lines > 0 && lines >= 2 * rows.size) {
+      await this.#rewriteWithoutLosers(path, rows, bytes);
+    }
+    return rows;
+  }
+
+  async #rewriteWithoutLosers(
+    path: string,
+    rows: ReadonlyMap<string, OutputSummaryRow>,
+    bytesRead: number,
+  ): Promise<void> {
+    try {
+      await assertSafePath(path, this.#boundary);
+      // Grown since it was read: other readers are still adding rows, and the
+      // rewrite would lose them. A later read gets to it.
+      if ((await Deno.lstat(path)).size !== bytesRead) return;
+      await atomicWriteTextFile(path, shardText(rows.values()));
+      currentDiagnosticTally().add("summary_shards_rewritten");
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return;
+      logger.debug`Rewriting output summaries ${path} failed: ${error}`;
+    }
   }
 
   async #readShard(
     path: string,
-  ): Promise<{ rows: Map<string, OutputSummary>; lines: number }> {
-    const rows = new Map<string, OutputSummary>();
-    let text: string;
+  ): Promise<
+    { rows: Map<string, OutputSummaryRow>; lines: number; bytes: number }
+  > {
+    const rows = new Map<string, OutputSummaryRow>();
+    let content: Uint8Array;
     try {
-      text = new TextDecoder().decode(await Deno.readFile(path));
+      content = await Deno.readFile(path);
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
         logger.debug`Reading output summaries ${path} failed: ${error}`;
       }
-      return { rows, lines: 0 };
+      return { rows, lines: 0, bytes: 0 };
     }
     let lines = 0;
-    for (const line of text.split("\n")) {
+    for (const line of new TextDecoder().decode(content).split("\n")) {
       if (line.length === 0) continue;
       lines++;
       let data: unknown;
@@ -222,35 +298,38 @@ export class OutputSummaryIndex {
       }
       const summary = outputSummaryFromData(data);
       if (summary === undefined || !isSettledStatus(summary.status)) continue;
-      rows.set(keyOfSummary(summary), summary);
+      rows.set(keyOfSummary(summary), {
+        summary,
+        record: (data as { record?: unknown }).record,
+      });
     }
-    return { rows, lines };
+    return { rows, lines, bytes: content.length };
   }
 
   /**
-   * Adds `summaries` of `type`, one append per shard; how many were written.
-   * A summary whose start no file name can carry, or a run not yet finished, is
+   * Adds `rows` of `type`, one append per shard; how many were written. A
+   * summary whose start no file name can carry, or a run not yet finished, is
    * left out. A failure only leaves those rows to be added on a later read.
    */
   async append(
     type: string,
-    summaries: readonly OutputSummary[],
+    rows: readonly OutputSummaryRow[],
   ): Promise<number> {
-    const byShard = new Map<string, string[]>();
-    for (const summary of summaries) {
-      if (!isSettledStatus(summary.status)) continue;
-      const stamp = outputFileStamp(summary.startedAt);
+    const byShard = new Map<string, OutputSummaryRow[]>();
+    for (const row of rows) {
+      if (!isSettledStatus(row.summary.status)) continue;
+      const stamp = outputFileStamp(row.summary.startedAt);
       if (!/^\d{4}-/.test(stamp)) continue;
       const path = this.#shardPath(type, shardDayOf(stamp));
-      const lines = byShard.get(path) ?? [];
-      lines.push(JSON.stringify(outputSummaryToData(summary)));
-      byShard.set(path, lines);
+      const shard = byShard.get(path) ?? [];
+      shard.push(row);
+      byShard.set(path, shard);
     }
     let written = 0;
-    for (const [path, lines] of byShard) {
+    for (const [path, shard] of byShard) {
       try {
-        await this.#appendLines(path, `${lines.join("\n")}\n`);
-        written += lines.length;
+        await this.#appendLines(path, shardText(shard));
+        written += shard.length;
       } catch (error) {
         logger.debug`Adding output summaries to ${path} failed: ${error}`;
       }
@@ -306,9 +385,7 @@ export class OutputSummaryIndex {
         } else if (kept.length !== lines) {
           await atomicWriteTextFile(
             path,
-            kept.map(([, summary]) =>
-              `${JSON.stringify(outputSummaryToData(summary))}\n`
-            ).join(""),
+            shardText(kept.map(([, row]) => row)),
           );
           compacted.shardsRewritten++;
         }

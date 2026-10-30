@@ -25,6 +25,7 @@ import {
   outputFileStamp,
   OutputSummaryIndex,
   outputSummaryKey,
+  type OutputSummaryRow,
   removeStaleOutputSummaries,
 } from "./output_summary_index.ts";
 import { swampPath } from "./paths.ts";
@@ -58,6 +59,14 @@ function summaryOf(overrides: Partial<OutputSummary> = {}): OutputSummary {
     provenance: { triggeredBy: "manual" },
     ...overrides,
   };
+}
+
+/** `summaries` as rows, each of a record no test here compares. */
+function rowsOf(...summaries: OutputSummary[]): OutputSummaryRow[] {
+  return summaries.map((summary) => ({
+    summary,
+    record: { mtimeMs: 1, size: 1 },
+  }));
 }
 
 function keyOf(summary: OutputSummary): string {
@@ -98,14 +107,14 @@ Deno.test("OutputSummaryIndex.append: rows read back by key, and the last row of
     const index = indexIn(dir);
     const first = summaryOf({ status: "cancelled" });
     const other = summaryOf();
-    assertEquals(await index.append(TYPE, [first, other]), 2);
+    assertEquals(await index.append(TYPE, rowsOf(first, other)), 2);
     const later = { ...first, status: "succeeded" as const };
-    assertEquals(await index.append(TYPE, [later]), 1);
+    assertEquals(await index.append(TYPE, rowsOf(later)), 1);
 
     const rows = await index.read(TYPE, DAY);
     assertEquals(rows.size, 2);
-    assertEquals(rows.get(keyOf(first))?.status, "succeeded");
-    assertEquals(rows.get(keyOf(other))?.id, other.id);
+    assertEquals(rows.get(keyOf(first))?.summary.status, "succeeded");
+    assertEquals(rows.get(keyOf(other))?.summary.id, other.id);
   });
 });
 
@@ -113,11 +122,14 @@ Deno.test("OutputSummaryIndex.append: a run not finished has no row, nor does a 
   await withTempDir(async (dir) => {
     const index = indexIn(dir);
     assertEquals(
-      await index.append(TYPE, [
-        summaryOf({ status: "running" }),
-        summaryOf({ status: "pending" }),
-        summaryOf({ startedAt: new Date("+012026-01-02T00:00:00.000Z") }),
-      ]),
+      await index.append(
+        TYPE,
+        rowsOf(
+          summaryOf({ status: "running" }),
+          summaryOf({ status: "pending" }),
+          summaryOf({ startedAt: new Date("+012026-01-02T00:00:00.000Z") }),
+        ),
+      ),
       0,
     );
     assertEquals((await index.read(TYPE, DAY)).size, 0);
@@ -127,9 +139,10 @@ Deno.test("OutputSummaryIndex.append: a run not finished has no row, nor does a 
 Deno.test("OutputSummaryIndex.append: never stores an error message", async () => {
   await withTempDir(async (dir) => {
     const index = indexIn(dir);
-    await index.append(TYPE, [
-      summaryOf({ status: "failed", errorMessage: "secret" }),
-    ]);
+    await index.append(
+      TYPE,
+      rowsOf(summaryOf({ status: "failed", errorMessage: "secret" })),
+    );
     const text = await Deno.readTextFile(await shardIn(dir));
     assertEquals(text.includes("secret"), false);
   });
@@ -139,7 +152,7 @@ Deno.test("OutputSummaryIndex.read: skips torn, invalid and unfinished lines and
   await withTempDir(async (dir) => {
     const index = indexIn(dir);
     const kept = summaryOf();
-    await index.append(TYPE, [kept]);
+    await index.append(TYPE, rowsOf(kept));
     const shard = await shardIn(dir);
     const line = (await Deno.readTextFile(shard)).trim();
     const running = line.replace('"succeeded"', '"running"');
@@ -155,7 +168,7 @@ Deno.test("OutputSummaryIndex.read: skips torn, invalid and unfinished lines and
 Deno.test("OutputSummaryIndex: each records root has its own shards", async () => {
   await withTempDir(async (dir) => {
     const summary = summaryOf();
-    await indexIn(dir, "one").append(TYPE, [summary]);
+    await indexIn(dir, "one").append(TYPE, rowsOf(summary));
     assertEquals((await indexIn(dir, "one").read(TYPE, DAY)).size, 1);
     assertEquals((await indexIn(dir, "two").read(TYPE, DAY)).size, 0);
   });
@@ -167,7 +180,7 @@ Deno.test("OutputSummaryIndex: an index that cannot be used fails no caller", as
     await ensureDir(dirname(blocked));
     await Deno.writeTextFile(blocked, "");
     const index = indexIn(dir);
-    assertEquals(await index.append(TYPE, [summaryOf()]), 0);
+    assertEquals(await index.append(TYPE, rowsOf(summaryOf())), 0);
     assertEquals((await index.read(TYPE, DAY)).size, 0);
     assertEquals(await index.compact(new Map(), "9999-12-31"), {
       shardsRewritten: 0,
@@ -185,14 +198,14 @@ Deno.test({
     await withTempDir(async (dir) => {
       const index = indexIn(dir);
       const summary = summaryOf();
-      await index.append(TYPE, [summary]);
+      await index.append(TYPE, rowsOf(summary));
       const shard = await shardIn(dir);
       const outside = join(dir, "outside.txt");
       await Deno.writeTextFile(outside, "untouched");
       await Deno.remove(shard);
       await Deno.symlink(outside, shard, { type: "file" });
 
-      assertEquals(await index.append(TYPE, [summaryOf()]), 0);
+      assertEquals(await index.append(TYPE, rowsOf(summaryOf())), 0);
       assertEquals(await Deno.readTextFile(outside), "untouched");
     });
   },
@@ -206,13 +219,13 @@ Deno.test({
   fn: async () => {
     await withTempDir(async (dir) => {
       const index = indexIn(dir);
-      await index.append(TYPE, [summaryOf()]);
+      await index.append(TYPE, rowsOf(summaryOf()));
       const shard = await shardIn(dir);
       const outside = join(dir, "outside.txt");
       await Deno.remove(shard);
       await Deno.symlink(outside, shard, { type: "file" });
 
-      assertEquals(await index.append(TYPE, [summaryOf()]), 0);
+      assertEquals(await index.append(TYPE, rowsOf(summaryOf())), 0);
       await assertRejects(() => Deno.stat(outside), Deno.errors.NotFound);
     });
   },
@@ -254,7 +267,7 @@ Deno.test({
       await Deno.symlink(target, link, { type: "dir" });
 
       const index = indexIn(dir);
-      assertEquals(await index.append(TYPE, [summaryOf()]), 0);
+      assertEquals(await index.append(TYPE, rowsOf(summaryOf())), 0);
       assertEquals(await index.compact(new Map(), "9999-12-31"), {
         shardsRewritten: 0,
         shardsRemoved: 0,
@@ -279,7 +292,7 @@ Deno.test("OutputSummaryIndex.shardBytes: the size of a shard, and 0 without one
   await withTempDir(async (dir) => {
     const index = indexIn(dir);
     assertEquals(await index.shardBytes(TYPE, DAY), 0);
-    await index.append(TYPE, [summaryOf()]);
+    await index.append(TYPE, rowsOf(summaryOf()));
     assertEquals(
       await index.shardBytes(TYPE, DAY),
       (await Deno.stat(await shardIn(dir))).size,
@@ -292,7 +305,7 @@ Deno.test("OutputSummaryIndex.compact: drops rows whose record is gone, keeps th
     const index = indexIn(dir);
     const kept = summaryOf();
     const gone = summaryOf();
-    await index.append(TYPE, [kept, gone, kept]);
+    await index.append(TYPE, rowsOf(kept, gone, kept));
 
     assertEquals(
       await index.compact(
@@ -312,7 +325,7 @@ Deno.test("OutputSummaryIndex.compact: a shard with nothing to drop is left alon
   await withTempDir(async (dir) => {
     const index = indexIn(dir);
     const kept = summaryOf();
-    await index.append(TYPE, [kept]);
+    await index.append(TYPE, rowsOf(kept));
     assertEquals(
       await index.compact(
         new Map([[TYPE, new Set([keyOf(kept)])]]),
@@ -326,7 +339,7 @@ Deno.test("OutputSummaryIndex.compact: a shard with nothing to drop is left alon
 Deno.test("OutputSummaryIndex.compact: removes a shard with no live rows, and leaves one still taking rows", async () => {
   await withTempDir(async (dir) => {
     const index = indexIn(dir);
-    await index.append(TYPE, [summaryOf()]);
+    await index.append(TYPE, rowsOf(summaryOf()));
     const shard = await shardIn(dir);
 
     assertEquals(await index.compact(new Map(), DAY), {
@@ -346,8 +359,8 @@ Deno.test("OutputSummaryIndex.compact: removes a shard with no live rows, and le
 Deno.test("removeStaleOutputSummaries: removes every root's shards, and is fine with none", async () => {
   await withTempDir(async (dir) => {
     await removeStaleOutputSummaries(dir);
-    await indexIn(dir, "one").append(TYPE, [summaryOf()]);
-    await indexIn(dir, "two").append(TYPE, [summaryOf()]);
+    await indexIn(dir, "one").append(TYPE, rowsOf(summaryOf()));
+    await indexIn(dir, "two").append(TYPE, rowsOf(summaryOf()));
     await removeStaleOutputSummaries(dir);
     assertEquals((await indexIn(dir, "one").read(TYPE, DAY)).size, 0);
     assertEquals((await indexIn(dir, "two").read(TYPE, DAY)).size, 0);
@@ -358,16 +371,156 @@ Deno.test("OutputSummaryIndex.generation: moves each time the summaries are clea
   await withTempDir(async (dir) => {
     const index = indexIn(dir);
     assertEquals(await index.generation(), undefined);
-    await index.append(TYPE, [summaryOf()]);
+    await index.append(TYPE, rowsOf(summaryOf()));
     assertEquals(await index.generation(), undefined);
 
     await removeStaleOutputSummaries(dir);
     const first = await index.generation();
     assertEquals(typeof first, "string");
-    await index.append(TYPE, [summaryOf()]);
+    await index.append(TYPE, rowsOf(summaryOf()));
     assertEquals(await index.generation(), first);
 
     await removeStaleOutputSummaries(dir);
     assertEquals((await index.generation()) === first, false);
+  });
+});
+
+Deno.test("OutputSummaryIndex.read: a row reads back with the fingerprint it was added with", async () => {
+  await withTempDir(async (dir) => {
+    const index = indexIn(dir);
+    const summary = summaryOf();
+    const record = { mtimeMs: 5, size: 6, ctimeMs: 7, ino: 8 };
+    await index.append(TYPE, [{ summary, record }]);
+    assertEquals(
+      (await index.read(TYPE, DAY)).get(keyOf(summary))?.record,
+      record,
+    );
+  });
+});
+
+Deno.test("OutputSummaryIndex.read: a shard at least half duplicates is rewritten with one row per key, the last of each", async () => {
+  await withTempDir(async (dir) => {
+    const index = indexIn(dir);
+    const first = summaryOf({ status: "cancelled" });
+    const other = summaryOf();
+    const later = { ...first, status: "succeeded" as const };
+    await index.append(TYPE, rowsOf(first, other, first, other, later));
+    const shard = await shardIn(dir);
+
+    const rows = await index.read(TYPE, DAY);
+    assertEquals(rows.size, 2);
+    const lines = (await Deno.readTextFile(shard)).trim().split("\n");
+    assertEquals(lines.length, 2);
+    assertEquals(
+      await index.read(TYPE, DAY),
+      rows,
+    );
+    assertEquals(rows.get(keyOf(first))?.summary.status, "succeeded");
+  });
+});
+
+Deno.test("OutputSummaryIndex.read: a shard with few duplicates is left as it is", async () => {
+  await withTempDir(async (dir) => {
+    const index = indexIn(dir);
+    const once = summaryOf();
+    await index.append(TYPE, rowsOf(once, summaryOf(), summaryOf(), once));
+    const shard = await shardIn(dir);
+    const before = await Deno.readTextFile(shard);
+    assertEquals((await index.read(TYPE, DAY)).size, 3);
+    assertEquals(await Deno.readTextFile(shard), before);
+  });
+});
+
+Deno.test("OutputSummaryIndex.read: a shard that grew since it was read is not rewritten, so the rows added are kept", async () => {
+  await withTempDir(async (dir) => {
+    const index = indexIn(dir);
+    const duplicated = summaryOf();
+    await index.append(TYPE, rowsOf(duplicated, duplicated));
+    const shard = await shardIn(dir);
+    const added = summaryOf();
+
+    const readFile = Deno.readFile;
+    (Deno as { readFile: typeof Deno.readFile }).readFile = async (
+      path,
+      options,
+    ) => {
+      const content = await readFile(path, options);
+      if (String(path) === shard) {
+        (Deno as { readFile: typeof Deno.readFile }).readFile = readFile;
+        await index.append(TYPE, rowsOf(added));
+      }
+      return content;
+    };
+    try {
+      await index.read(TYPE, DAY);
+    } finally {
+      (Deno as { readFile: typeof Deno.readFile }).readFile = readFile;
+    }
+
+    assertEquals((await Deno.readTextFile(shard)).trim().split("\n").length, 3);
+    assertEquals((await index.read(TYPE, DAY)).has(keyOf(added)), true);
+  });
+});
+
+Deno.test("removeStaleOutputSummaries: a removal that fails still leaves no row to read, and the next clear takes what it left", async () => {
+  await withTempDir(async (dir) => {
+    const index = indexIn(dir);
+    await index.append(TYPE, rowsOf(summaryOf()));
+
+    const remove = Deno.remove;
+    (Deno as { remove: typeof Deno.remove }).remove = () =>
+      Promise.reject(new Error("Directory not empty"));
+    try {
+      await removeStaleOutputSummaries(dir);
+    } finally {
+      (Deno as { remove: typeof Deno.remove }).remove = remove;
+    }
+    assertEquals((await index.read(TYPE, DAY)).size, 0);
+
+    await removeStaleOutputSummaries(dir);
+    assertEquals(
+      (await Array.fromAsync(
+        Deno.readDir(swampPath(dir, OUTPUT_SUMMARIES_DIR)),
+      ))
+        .map((entry) => entry.name),
+      ["cleared"],
+    );
+  });
+});
+
+Deno.test("removeStaleOutputSummaries: readers adding rows while it clears fail no removal", async () => {
+  await withTempDir(async (dir) => {
+    const index = indexIn(dir);
+    const failures: unknown[] = [];
+    const remove = Deno.remove;
+    (Deno as { remove: typeof Deno.remove }).remove = async (path, options) => {
+      try {
+        await remove(path, options);
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) failures.push(error);
+        throw error;
+      }
+    };
+    let clearing = true;
+    // Each writer keeps making a new type's directory, which is what a removal
+    // walking the tree cannot get ahead of.
+    const writers = Array.from({ length: 4 }, async (_, writer) => {
+      for (let i = 0; clearing; i++) {
+        await index.append(`${TYPE}/${writer}/${i % 8}`, rowsOf(summaryOf()));
+      }
+    });
+    try {
+      for (let i = 0; i < 40; i++) {
+        for (let j = 0; j < 32; j++) {
+          await index.append(`${TYPE}/seed/${j}`, rowsOf(summaryOf()));
+        }
+        await removeStaleOutputSummaries(dir);
+      }
+    } finally {
+      clearing = false;
+      await Promise.all(writers);
+      (Deno as { remove: typeof Deno.remove }).remove = remove;
+    }
+    assertEquals(failures, []);
   });
 });

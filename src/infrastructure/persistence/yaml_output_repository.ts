@@ -93,8 +93,15 @@ import {
   outputFileStamp as fileStamp,
   OutputSummaryIndex,
   outputSummaryKey,
+  type OutputSummaryRow,
   shardDayOf,
 } from "./output_summary_index.ts";
+import {
+  fingerprintMatches,
+  fingerprintOf,
+  type RecordFingerprint,
+  statRecord,
+} from "./workflow_run_index.ts";
 
 const logger = getLogger(["output-repo"]);
 
@@ -141,6 +148,14 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  */
 const SUMMARY_SHARD_BYTES_PER_FILE = 16 * 1024;
 
+/**
+ * How long checking rows against their records holds the event loop before it
+ * yields. A read checks one record per row, and an awaited stat waits a turn of
+ * a busy loop: on a contended loop 75,000 stats took 5 s awaited, 16 at a time,
+ * and 0.3 s synchronously in slices (0.25 s and 0.4 s on a quiet one).
+ */
+const SUMMARY_STAT_SLICE_MS = 4;
+
 /** An output file name `<definitionId>-<stamp>.yaml`, as getPath writes it. */
 const OUTPUT_FILE_NAME =
   /^(.+)-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)\.yaml$/;
@@ -166,7 +181,7 @@ type GlobalSummary = { output: OutputSummary; type: ModelType; method: string };
 interface OpenShards {
   /** The summaries' generation they were opened in: a clear retires them. */
   generation: string | undefined;
-  readonly rows: Map<string, Promise<Map<string, OutputSummary>>>;
+  readonly rows: Map<string, Promise<Map<string, OutputSummaryRow>>>;
 }
 
 /**
@@ -1311,7 +1326,10 @@ export class YamlOutputRepository implements OutputRepository {
    * there is one, otherwise read from its record, adding the row for the next
    * read when its location says what the record says. A file whose name is not
    * in {@link getPath}'s form has no row. A row is what a read of its finished
-   * record returned or a save wrote, so results are those of reading every file.
+   * record returned or a save wrote, and it answers only while the record's stat
+   * says it is that version, so results are those of reading every file: a record
+   * since damaged is read, and left out as it would be, and one since replaced
+   * gets a new row.
    *
    * With `errorMessages`, a run that did not succeed is read from its record,
    * the only place its error message is kept.
@@ -1378,7 +1396,7 @@ export class YamlOutputRepository implements OutputRepository {
       signal,
     );
 
-    const rows = new Map<string, Map<string, OutputSummary>>();
+    const rows = new Map<string, Map<string, OutputSummaryRow>>();
     for (const key of wanted.keys()) {
       const opened = shards.rows.get(key);
       if (opened !== undefined) rows.set(key, await opened);
@@ -1386,6 +1404,7 @@ export class YamlOutputRepository implements OutputRepository {
 
     const found = new Map<string, GlobalSummary>();
     const unanswered: Array<[string, ListedOutput, boolean]> = [];
+    const answerable: Array<[string, ListedOutput, OutputSummaryRow]> = [];
     for (const [path, file] of files) {
       const { modelType, method, definitionId, stamp } = file;
       const row = stamp === undefined || definitionId === undefined
@@ -1394,14 +1413,9 @@ export class YamlOutputRepository implements OutputRepository {
           ?.get(outputSummaryKey(method, definitionId, stamp));
       if (
         row !== undefined &&
-        (!options.errorMessages || row.status === "succeeded")
+        (!options.errorMessages || row.summary.status === "succeeded")
       ) {
-        found.set(path, {
-          output: row,
-          type: modelType,
-          method: row.methodName,
-        });
-        tally.add("summary_rows_used");
+        answerable.push([path, file, row]);
       } else {
         const unopenedShard = stamp !== undefined && unopened.has(
           JSON.stringify([modelType.normalized, shardDayOf(stamp)]),
@@ -1410,15 +1424,42 @@ export class YamlOutputRepository implements OutputRepository {
       }
     }
 
+    const versions = await this.recordFingerprints(
+      answerable.map(([path]) => path),
+      signal,
+    );
+    for (const [path, file, row] of answerable) {
+      const fingerprint = versions.get(path);
+      if (
+        fingerprint !== undefined && fingerprintMatches(row.record, fingerprint)
+      ) {
+        found.set(path, {
+          output: row.summary,
+          type: file.modelType,
+          method: row.summary.methodName,
+        });
+        tally.add("summary_rows_used");
+      } else {
+        tally.add("summary_rows_outdated");
+        unanswered.push([path, file, false]);
+      }
+    }
+
     for (let i = 0; i < unanswered.length; i += SUMMARY_BACKFILL_BATCH) {
       const batch = unanswered.slice(i, i + SUMMARY_BACKFILL_BATCH);
       const generation = await this.summaries.generation();
+      // Before the reads: a record replaced between the two has a row naming
+      // the older version, which does not match it, so it is read again.
+      const fingerprints = await this.recordFingerprints(
+        batch.filter(([, , mayHaveRow]) => !mayHaveRow).map(([path]) => path),
+        signal,
+      );
       const read = await this.readListed(
         new Map(batch.map(([path, file]) => [path, file])),
         signal,
       );
-      const backfill = new Map<ModelType, OutputSummary[]>();
-      for (const [path, file, mayHaveRow] of batch) {
+      const backfill = new Map<ModelType, OutputSummaryRow[]>();
+      for (const [path, file] of batch) {
         const record = read.get(path);
         if (record === undefined) continue;
         const summary = outputSummaryOf(record.output);
@@ -1427,14 +1468,15 @@ export class YamlOutputRepository implements OutputRepository {
           type: record.type,
           method: record.method,
         });
+        const fingerprint = fingerprints.get(path);
         if (
-          !mayHaveRow && isSettledStatus(summary.status) &&
+          fingerprint !== undefined && isSettledStatus(summary.status) &&
           file.definitionId === summary.definitionId &&
           file.method === summary.methodName &&
           file.stamp === fileStamp(summary.startedAt)
         ) {
           const added = backfill.get(file.modelType) ?? [];
-          added.push(summary);
+          added.push({ summary, record: fingerprint });
           backfill.set(file.modelType, added);
         }
       }
@@ -1449,6 +1491,41 @@ export class YamlOutputRepository implements OutputRepository {
       }
     }
     return found;
+  }
+
+  /**
+   * The fingerprint of each of `paths` that has one: not a file that cannot be
+   * stat'ed, whose read says what that means. Stat'ed synchronously, yielding to
+   * the event loop every {@link SUMMARY_STAT_SLICE_MS}, and taking no scan permit
+   * since a stat holds no descriptor.
+   */
+  private async recordFingerprints(
+    paths: readonly string[],
+    signal: AbortSignal,
+  ): Promise<Map<string, RecordFingerprint>> {
+    const tally = currentDiagnosticTally();
+    const fingerprints = new Map<string, RecordFingerprint>();
+    let next = 0;
+    while (next < paths.length) {
+      tally.measureSync("summary_stat", () => {
+        const until = performance.now() + SUMMARY_STAT_SLICE_MS;
+        while (next < paths.length && performance.now() < until) {
+          const path = paths[next++];
+          try {
+            const fingerprint = fingerprintOf(Deno.statSync(path));
+            if (fingerprint !== undefined) fingerprints.set(path, fingerprint);
+          } catch {
+            // Its read reports what is wrong with it.
+          }
+        }
+      });
+      if (next < paths.length) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        signal.throwIfAborted();
+      }
+    }
+    tally.add("summary_stats", paths.length);
+    return fingerprints;
   }
 
   /**
@@ -1548,7 +1625,14 @@ export class YamlOutputRepository implements OutputRepository {
       ),
     ]);
     if (method === output.methodName && isSettledStatus(output.status)) {
-      await this.summaries.append(type.normalized, [outputSummaryOf(output)]);
+      // Not this save's size: another writer has replaced the record since, so
+      // it gets no row and the next read reads whichever is there.
+      const record = await statRecord(path).catch(() => undefined);
+      if (record && record.size === utf8ByteLength(content)) {
+        await this.summaries.append(type.normalized, [
+          { summary: outputSummaryOf(output), record },
+        ]);
+      }
     }
   }
 

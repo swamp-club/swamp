@@ -280,10 +280,14 @@ Once the listing has chosen its files, the
 [output summary index](./output-summary-index.md) answers for the finished ones
 (lab #4145): `summary_shards_read` counts shards opened, with
 `summary_read_work_ms`, `summary_shards_left_unopened` those too large for what the
-read wanted from them, `summary_rows_used` the files answered without a read, and
+read wanted from them, `summary_shards_rewritten` those a read rewrote to drop
+duplicate rows, `summary_stats` the records stat'ed to check rows and for rows being
+added, with `summary_stat_work_ms`, `summary_rows_used` the files answered without a
+read, `summary_rows_outdated` the rows not used because their record changed, and
 `summary_rows_backfilled` the rows a read added. On a warm window `files_read`
 stays near zero and `summary_rows_used` near `candidates`; a `files_read` near
-`candidates` is a cold index.
+`candidates` is a cold index, and with `summary_rows_outdated` near it, records
+rewritten since their rows were made.
 A `since` search walks every type and method directory and skips a file whose
 name says it started before the cutoff without a stat or a read; only a file
 whose name is not in the output form is stat'ed for its mtime. A search for one

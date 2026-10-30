@@ -15,7 +15,9 @@ Shards live at
 `.swamp/_output_summaries/v1/<hash of the records root>/<normalized type>/<YYYY-MM-DD>.ndjson`,
 one per type and UTC day of the file name's stamp. Each line is an `OutputSummary`:
 id, definition id, method, status, start, duration, and what triggered the run
-(trigger, workflow id, workflow run id, step name).
+(trigger, workflow id, workflow run id, step name), with the fingerprint of the
+record it was made from (mtime, size, and ctime and inode where the platform has
+them), as a workflow run index entry has.
 
 - **Checkout-local.** The directory is outside every materialised and synced
   subdirectory, so it is never committed, pushed or swept by a v3 recovery. Each
@@ -33,12 +35,15 @@ A read lists file names exactly as it did without the index: registered types, i
 walk order, leaving out names outside its window, and asking `selectReadable`
 about the key each name carries. Then, for each file chosen:
 
-1. A row whose key matches the file answers for it. A row's key comes from its
-   own definition id, method and start, so it can only stand in for a file whose
-   location says the same.
+1. A row whose key matches the file, and whose fingerprint matches a stat of the
+   file now, answers for it. A row's key comes from its own definition id, method
+   and start, so it can only stand in for a file whose location says the same.
 2. Anything else reads the record: no row, a torn line, a name not in the output
-   form, a running output, or a record that disagrees with its location. A
-   finished record whose location agrees gets a row for the next read.
+   form, a running output, a record that disagrees with its location, or one whose
+   stat moved. So a damaged record is left out, as it is without the index and as
+   `output get` finds it. A finished record whose location agrees gets a row for
+   the next read, its fingerprint taken before the read, so a record replaced in
+   between has a row that does not match it.
 
 A read opens a shard only when it is not much larger than what the read wants
 from it: past 16 KiB per wanted file, it reads those records instead and adds no
@@ -57,6 +62,12 @@ The listing is the part that still grows: with retained runs, not with the
 window. It is what keeps results identical to reading every record, because a
 file the listing does not find is never returned, and a file with no row is read.
 
+The stats grow with the files a read answers: about 240 ms of the 734 ms a warm
+read of 75,000 outputs takes. They are synchronous, in slices of 4 ms between
+yields to the event loop, because an awaited stat waits a turn of a busy loop:
+on a contended loop 75,000 of them took 5 s awaited and 0.3 s in slices. A stat
+of a filesystem that hangs therefore holds the loop, not just the scan.
+
 ## How it heals
 
 A write is one append and never fails the caller. Every way the index can fall
@@ -66,42 +77,53 @@ behind costs reads, not wrong answers:
 | ----------------------------------- | ----------------------------------------- |
 | Crash between record write and row  | Reads the record, adds the row            |
 | Torn line, deleted or lost shard    | Reads those records, adds the rows        |
+| Record damaged, edited or put back  | Stat moved: reads the record              |
+| Readers racing on a cold index      | Rewrites the shard with one row per key   |
 | Write from another checkout or pull | Reads the new record, adds the row        |
 | Delete, GC or retention             | Finds no file, so never returns the row   |
 | Index unwritable                    | Reads records, as it did without an index |
 
-Two things do write back:
+Three things do write back:
 
 - **Retention.** A pass's final batch drops rows whose record is gone, and shards
   left empty, from shards more than two days old. Newer shards are left alone,
   because a record saved after the pass listed its files would lose its row. With
   retention off, rows of deleted runs stay on disk until the shard is rebuilt.
   They are never returned.
+- **Duplicates.** Readers racing on a cold index each add the same rows, since
+  they share no scan across processes or read kinds. A read that finds a shard at
+  least half made of lines that lost to another, or are not rows, rewrites it with
+  the winners, unless the shard grew since it was read, so readers still adding
+  rows keep them. Each dropped line took an append to add, so this costs a read at
+  most once per doubling of the shard. A shard too large for a read to open waits
+  for one that opens it.
 - **Recovery and restore.** A v3 recovery or a replica restore that moves the read
   model can put back the committed version of a record whose later save already has
-  a row, and a finished row is never checked against its record. So whatever
-  rewinds records removes the summaries afterwards, whether or not it succeeded,
-  which `integration/output_summary_rules_test.ts` pins. `swamp doctor datastores`
-  repair removes them as well. A read holding records from before a clear does not
-  add them back: `removeStaleOutputSummaries` first moves a generation marker, and
-  a backfill or a compaction that sees it moved skips its write, and a newest-first
-  read drops the shards it holds.
+  a row. That record's stat has moved, so the row no longer answers, but whatever
+  rewinds records still removes the summaries afterwards, whether or not it
+  succeeded, as a second guard and to free the disk, which
+  `integration/output_summary_rules_test.ts` pins. `swamp doctor datastores` repair
+  removes them as well. A clear moves a generation marker first, and a backfill or
+  a compaction that sees it moved skips its write, and a newest-first read drops the
+  shards it holds. It then renames the shards aside and removes them from there: a
+  read adding a file to a directory while a removal empties it would fail the
+  removal, and no writer knows the name it moved to. A removal that still fails
+  costs only disk, and the next clear retries it.
 
 ## Known limits
 
-- **Rewriting a finished record by hand.** The row keeps the old values until a
-  recovery or a doctor repair removes the index.
+- **A write the stat cannot see.** Two writes to a record in one millisecond at
+  one size, or a platform with only mtime and size restoring both, look like one
+  version. A run's record is replaced whole, so the inode tells them apart wherever
+  there is one.
+- **Order of two finishes.** A save stats its record just after writing it, and
+  keeps no row if the size is not what it wrote. Another save of that output
+  landing in between, at the same size, leaves this save's values under the other's
+  stat. That needs a cancel or a reaper to race a live owner, and both check the
+  owner is gone first.
 - **Two runs in the same millisecond.** Two runs of one definition and method
   started in the same millisecond share a file name, so the later write replaces
-  the earlier record. If the later one is still running, or was written by another
-  checkout, the earlier row can outlive it until the index is removed.
-- **Order of two finishes.** Two finished saves of one output can append in the
-  opposite order to their record writes. That needs a cancel or a reaper to race
-  a live owner, and both check the owner is gone first.
-
-- **A clear racing an append.** A backfill compares the generation just before it
-  appends, so a clear landing in that gap, one file operation wide, can leave a row
-  of a rewound record.
+  the earlier record and the earlier run is lost, as it is without the index.
 - **Step names outlive their record.** A row keeps the step name, and a `forEach`
   name can carry an item value, with secrets already scrubbed. Rows of deleted runs
   stay until a retention pass compacts their shard, and a recent shard or a repo
