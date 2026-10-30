@@ -271,7 +271,7 @@ export async function interruptShutdownRuns(
     pushError = await commitWithin(root, pushTimeoutMs);
     if (pushError !== undefined) {
       logger.warn(
-        "The interrupted status of workflow run(s) {runIds} was not committed to the datastore: {error}. The next serve in this checkout commits it, and a leader instance settles the runs meanwhile",
+        "Failed to commit interrupted workflow run(s) {runIds} to the datastore: {error}. The next serve in this checkout commits them, and a leader instance settles the runs meanwhile",
         { runIds: workflowRuns.map((r) => r.runId), error: pushError },
       );
     }

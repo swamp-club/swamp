@@ -1937,6 +1937,9 @@ export async function closeV3Datastores(
           handles,
           deadlineMs,
           watch.signal,
+          // Serve's shutdown deadline covers the wait for a probe's sync
+          // too (swamp-club#3961).
+          { queueWaitCounts: shutdownDeadline !== undefined },
         );
       } finally {
         if (watch.stop()) unreachable = true;
@@ -2018,6 +2021,10 @@ export async function closeV3Datastores(
  * lineages a first confirmation replaced once the check passed. Resolves
  * with the published head's high-water mark, or undefined when the sync
  * published no head.
+ *
+ * With `options.queueWaitCounts` the wait for a sync already running counts
+ * against `deadlineMs` (serve's closing sync, swamp-club#3961); otherwise the
+ * sync gets all of `deadlineMs` once that one has settled.
  */
 async function syncAndPublish(
   datastore: string,
@@ -2025,29 +2032,39 @@ async function syncAndPublish(
   handles: readonly V3Datastore[],
   deadlineMs: number,
   signal?: AbortSignal,
+  options: { readonly queueWaitCounts?: boolean } = {},
 ): Promise<number | undefined> {
   // One at a time per datastore: serve's probe and a drain can both sync,
   // and a head taken earlier must never be published over a later one.
-  // The wait for the one ahead counts against the deadline
-  // (swamp-club#3961): serve's closing sync otherwise waited out a probe's
-  // sync on a slow bucket before its own deadline started.
-  const previous = publishing.get(datastore) ?? Promise.resolve();
+  const ahead = publishing.get(datastore);
+  const previous = ahead ?? Promise.resolve();
   const startedAt = Date.now();
   const run = (async () => {
-    if (!await settlesWithin(previous, deadlineMs)) {
+    if (options.queueWaitCounts !== true) {
+      await previous.catch(() => {});
+      return await syncAndPublishNow(
+        datastore,
+        use,
+        handles,
+        deadlineMs,
+        signal,
+      );
+    }
+    const left = () => deadlineMs - (Date.now() - startedAt);
+    // Serve's closing sync otherwise waited out a probe's sync on a slow
+    // bucket before its own deadline started. Too little left once the one
+    // ahead settles is given up as a wait that never ended.
+    if (
+      !await settlesWithin(previous, deadlineMs) ||
+      (ahead !== undefined && left() < MIN_QUEUED_SYNC_MS)
+    ) {
       throw new V3ReplicationError(
         `the sync did not finish within ${
           Math.round(deadlineMs / 1000)
         }s: an earlier sync of this datastore was still running`,
       );
     }
-    return await syncAndPublishNow(
-      datastore,
-      use,
-      handles,
-      Math.max(1, deadlineMs - (Date.now() - startedAt)),
-      signal,
-    );
+    return await syncAndPublishNow(datastore, use, handles, left(), signal);
   })();
   // The next sync waits for this one and for the one it gave up on.
   const turn = Promise.allSettled([previous, run]);
@@ -2075,6 +2092,12 @@ async function settlesWithin(
     clearTimeout(timer);
   }
 }
+
+/**
+ * The least a closing sync that waited for an earlier one starts its own
+ * with (swamp-club#3961); with less left it gives up instead.
+ */
+const MIN_QUEUED_SYNC_MS = 500;
 
 /** The sync-and-publish in flight, by datastore. */
 const publishing = new Map<string, Promise<unknown>>();
@@ -2454,7 +2477,10 @@ export function startV3ReplicationUpkeep(
       return;
     }
     const startedAt = retakes;
-    const stale = () => retakes !== startedAt;
+    // A bounded stop() that gave up ends the replacement at its next
+    // checkpoint too: the teardown is closing the stores it would touch
+    // (swamp-club#3961).
+    const stale = () => retakes !== startedAt || stopping.signal.aborted;
     replacing = (async () => {
       const uses = replications.get(key) ?? [];
       replications.delete(key);

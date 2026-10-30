@@ -41,6 +41,7 @@ import {
 } from "../src/infrastructure/datastore_v3/litestream/v3_replication.ts";
 import {
   closeV3Datastores,
+  confirmV3CommandReplicated,
   holdV3Writer,
   startV3ReplicationUpkeep,
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
@@ -217,6 +218,53 @@ Deno.test({
       syncDeadlineMs: NEVER_MS,
       deps: {
         control: { info: unixLitestreamControl.info, sync: hangingSync(seen) },
+      },
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 replication: outside serve's shutdown a sync queued behind a probe's still gets its whole deadline once that one settles (swamp-club#3961)",
+  ignore,
+  async fn() {
+    const deadlines: number[] = [];
+    let probeHeld = false;
+    await withReplicationEnv(async (env) => {
+      await holdV3Writer(env.config, env.repoDir, { retakeLost: true });
+      await commitIn(env, 1);
+      const upkeep = startV3ReplicationUpkeep(env.repoDir, env.config, {
+        probeIntervalMs: 100,
+      });
+      try {
+        await waitFor(() => probeHeld, "the probe to start a sync");
+        await commitIn(env, 1);
+        // The probe holds its sync longer than this sync's own deadline.
+        await confirmV3CommandReplicated();
+        assertEquals(deadlines.at(-1), 500);
+      } finally {
+        await upkeep.stop({ waitMs: 5_000 });
+      }
+      await closeV3Datastores();
+    }, {
+      syncDeadlineMs: 500,
+      deps: {
+        control: {
+          info: unixLitestreamControl.info,
+          sync: async (socket, db, deadlineMs, signal) => {
+            deadlines.push(deadlineMs);
+            if (!probeHeld) {
+              probeHeld = true;
+              await new Promise((resolve) => setTimeout(resolve, 900));
+            }
+            return await unixLitestreamControl.sync(
+              socket,
+              db,
+              NEVER_MS,
+              signal,
+            );
+          },
+        },
       },
     });
   },
