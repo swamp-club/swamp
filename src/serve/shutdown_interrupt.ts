@@ -28,6 +28,11 @@
  * tracker row is settled whatever happens, so the next boot's reaper does
  * not skip the run as still running, and the runs not pushed are reported
  * and recorded for the next start (swamp-club#3958).
+ *
+ * Before the runs are loaded, serve's run write fence is closed for them.
+ * An executor that outlived the drain's abort grace can then no longer save
+ * its own `running` copy of a run over the interrupted record, which would
+ * otherwise be what the push uploads (swamp-club#4101).
  */
 
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
@@ -40,6 +45,7 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { ActiveRun } from "./active_run_registry.ts";
 import { type SyncGate, withSharedSyncGate } from "./sync_gate.ts";
 import { recordUnpushedInterrupts } from "./unpushed_interrupts.ts";
+import type { ServeRunWriteFence } from "./run_write_fence.ts";
 import { keepActiveRunRecords } from "./active_run_tracker.ts";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import {
@@ -66,6 +72,12 @@ export interface ShutdownInterruptDeps {
         "findGlobalByStatus" | "save"
       >;
     };
+  /**
+   * Serve's run write fence. Closed for the runs about to be interrupted
+   * before they are loaded, so an executor that outlived the abort grace
+   * cannot save its running copy over the interrupt (swamp-club#4101).
+   */
+  readonly runWriteFence?: Pick<ServeRunWriteFence, "close">;
   /** The datastore sync service; absent on a filesystem datastore. */
   readonly syncService?: Pick<DatastoreSyncService, "pushChanged">;
   readonly namespace?: string;
@@ -117,6 +129,7 @@ export async function interruptShutdownRuns(
   );
   if (workflowRuns.length === 0) return { interrupted };
   const { repoContext, syncService } = deps;
+  await deps.runWriteFence?.close(workflowRuns.map((r) => r.runId));
   const settleTrackerRow = (runId: string) => {
     try {
       deps.runTracker?.complete(runId, "interrupted", "server_shutdown");

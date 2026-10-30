@@ -112,6 +112,7 @@ import type { AuditPolicy } from "../../domain/serve_audit/audit_policy.ts";
 import type { AuditWal } from "../../domain/serve_audit/audit_wal.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { SyncGate } from "../sync_gate.ts";
+import type { RunWriteFence } from "../../domain/workflows/run_write_fence.ts";
 import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
 import type { FollowerGate } from "../follower_requests.ts";
 import type { LeaderLink } from "../leader_link.ts";
@@ -423,6 +424,11 @@ export interface ConnectionContext {
    * race. Not reentrant: see `src/serve/sync_gate.ts`.
    */
   syncGate?: SyncGate;
+  /**
+   * Serve's run write fence, handed to every executor a handler builds and
+   * closed by shutdown for the runs it interrupts (swamp-club#4101).
+   */
+  runWriteFence?: RunWriteFence;
   /**
    * Confirms that the commits serve made so far are replicated, before a
    * write request answers (swamp-club#3489): set only on a v3 datastore

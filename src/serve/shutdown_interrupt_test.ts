@@ -454,6 +454,97 @@ Deno.test("interruptShutdownRuns: a pushed run records nothing for the next star
   });
 });
 
+Deno.test("interruptShutdownRuns: a push that sent no files is taken as pushed, since the record may have gone already or run records may not sync", async () => {
+  await withTempDir(async (dir) => {
+    const wf = workflow();
+    const run = runningRun(wf);
+    const { repoContext } = harness([run], wf.id);
+    const marker = join(dir, UNPUSHED_INTERRUPTS_FILE);
+
+    const result = await interruptShutdownRuns([active(run)], {
+      repoContext,
+      syncService: { pushChanged: () => Promise.resolve(0) },
+      unpushedMarkerPath: marker,
+    });
+
+    assertEquals(result, { interrupted: [run.id] });
+    assertEquals(await readUnpushedInterrupts(marker), { present: false });
+  });
+});
+
+Deno.test("interruptShutdownRuns: closes the aborted workflow runs' write fence before it loads them (swamp-club#4101)", async () => {
+  const wf = workflow();
+  const run = runningRun(wf);
+  const { events, repoContext } = harness([run], wf.id);
+  const methodRun = {
+    runId: crypto.randomUUID(),
+    kind: "method-run" as const,
+    startedAt: new Date(),
+  };
+
+  await interruptShutdownRuns([active(run), methodRun], {
+    repoContext,
+    runWriteFence: {
+      close: (runIds) => {
+        events.push(`close ${runIds.join(",")}`);
+        return Promise.resolve();
+      },
+    },
+    syncService: {
+      pushChanged: () => {
+        events.push("push");
+        return Promise.resolve(1);
+      },
+    },
+  });
+
+  assertEquals(events, [
+    `close ${run.id}`,
+    "load",
+    `save ${run.id} interrupted`,
+    "push",
+  ]);
+});
+
+Deno.test("interruptShutdownRuns: closes the write fence on a filesystem datastore too", async () => {
+  const wf = workflow();
+  const run = runningRun(wf);
+  const { events, repoContext } = harness([run], wf.id);
+
+  await interruptShutdownRuns([active(run)], {
+    repoContext,
+    runWriteFence: {
+      close: (runIds) => {
+        events.push(`close ${runIds.join(",")}`);
+        return Promise.resolve();
+      },
+    },
+  });
+
+  assertEquals(events, [
+    `close ${run.id}`,
+    "load",
+    `save ${run.id} interrupted`,
+  ]);
+});
+
+Deno.test("interruptShutdownRuns: with no aborted workflow run the write fence is not closed", async () => {
+  let closed = false;
+  await interruptShutdownRuns(
+    [{ runId: crypto.randomUUID(), kind: "method-run", startedAt: new Date() }],
+    {
+      repoContext: harness([], workflow().id).repoContext,
+      runWriteFence: {
+        close: () => {
+          closed = true;
+          return Promise.resolve();
+        },
+      },
+    },
+  );
+  assertEquals(closed, false);
+});
+
 Deno.test("interruptShutdownRuns: a marker that cannot be written is logged, not thrown", async () => {
   await withTempDir(async (dir) => {
     const wf = workflow();

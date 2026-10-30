@@ -81,6 +81,7 @@ import {
   NO_RUN_CHECKPOINTS,
   type RunCheckpointer,
 } from "./run_checkpointer.ts";
+import { OPEN_RUN_WRITE_FENCE, type RunWriteFence } from "./run_write_fence.ts";
 import {
   applyAcceptedSignals,
   closeRunWaits,
@@ -3501,6 +3502,13 @@ export class WorkflowExecutionService {
    * to none, for a datastore whose writes land as they are made.
    */
   runCheckpointer: RunCheckpointer = NO_RUN_CHECKPOINTS;
+
+  /**
+   * Stops this executor saving a run another owner has taken over: serve's
+   * shutdown, once it marks an aborted run interrupted (swamp-club#4101).
+   * Defaults to never closing.
+   */
+  runWriteFence: RunWriteFence = OPEN_RUN_WRITE_FENCE;
 
   /**
    * The continuation claims a resume of a suspended run takes
@@ -7616,6 +7624,7 @@ export class WorkflowExecutionService {
     );
     childService.signalWaits = this.signalWaits;
     childService.runCheckpointer = this.runCheckpointer;
+    childService.runWriteFence = this.runWriteFence;
 
     let childRun: WorkflowRun | undefined;
     // The child's suspended event is the parent step's outcome, as its
@@ -8234,8 +8243,22 @@ export class WorkflowExecutionService {
     workflowId: WorkflowId,
     run: WorkflowRun,
   ): Promise<void> {
-    await this.runRepo.save(workflowId, run);
-    await this.runCheckpointer.checkpoint(run);
+    // Checked and tracked in one tick, so the owner closing the fence waits
+    // for every save that got past it.
+    if (this.runWriteFence.isClosed(run.id)) {
+      getSwampLogger(["workflow", "run"]).debug(
+        "Not saving workflow run {runId}: another owner has taken its record over",
+        { runId: run.id },
+      );
+      return;
+    }
+    await this.runWriteFence.track(
+      run.id,
+      (async () => {
+        await this.runRepo.save(workflowId, run);
+        await this.runCheckpointer.checkpoint(run);
+      })(),
+    );
   }
 
   /**

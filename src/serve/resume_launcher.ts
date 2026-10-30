@@ -351,7 +351,11 @@ export async function startDetachedResume(
               ctx.datastoreConfig,
               stepLockHook,
               ctx.runTracker,
-              { runCheckpointer, defaultVault: ctx.defaultVault },
+              {
+                runCheckpointer,
+                defaultVault: ctx.defaultVault,
+                runWriteFence: ctx.runWriteFence,
+              },
             );
 
             ephemeral = createEphemeralStore(

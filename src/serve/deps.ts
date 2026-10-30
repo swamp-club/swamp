@@ -110,6 +110,7 @@ import { pushNamespace } from "../infrastructure/persistence/push_paths.ts";
 import { refreshLocalModelsForRun } from "./local_model_refresh.ts";
 import { runWithVaultAccess } from "../domain/vaults/run_vault_access.ts";
 import type { ServeRunVaultScope } from "./run_vault_access_policy.ts";
+import type { RunWriteFence } from "../domain/workflows/run_write_fence.ts";
 
 const logger = getSwampLogger(["serve", "deps"]);
 
@@ -133,6 +134,12 @@ export async function createWorkflowRunDeps(
      * sensitive outputs land when nothing names a vault (swamp-club#3680).
      */
     defaultVault?: string;
+    /**
+     * Serve's run write fence, closed by shutdown for the runs it interrupts
+     * (swamp-club#4101). Every serve caller passes it (pinned by
+     * `integration/serve_deps_rules_test.ts`).
+     */
+    runWriteFence?: RunWriteFence;
   },
 ): Promise<WorkflowRunDeps> {
   await Promise.all([
@@ -270,6 +277,9 @@ export async function createWorkflowRunDeps(
       service.runRecordCurrency = repoContext.runRecordCurrency;
       if (options?.runCheckpointer !== undefined) {
         service.runCheckpointer = options.runCheckpointer;
+      }
+      if (options?.runWriteFence !== undefined) {
+        service.runWriteFence = options.runWriteFence;
       }
       return service;
     },
@@ -548,6 +558,8 @@ export async function executeWorkflowWithLocks(
     vaultAccess?: ServeRunVaultScope;
     /** The repo's `defaultVault`, forwarded to the run (swamp-club#3680). */
     defaultVault?: string;
+    /** Serve's run write fence, forwarded to the run (swamp-club#4101). */
+    runWriteFence?: RunWriteFence;
   },
 ): Promise<void> {
   // Pre-lookup workflow for trigger.inputs resolution — by the same rule the
@@ -593,6 +605,7 @@ export async function executeWorkflowWithLocks(
       telemetrySink: runTelemetry?.sink,
       runCheckpointer,
       defaultVault: options.defaultVault,
+      runWriteFence: options.runWriteFence,
     },
   );
   const libCtx = createLibSwampContext({

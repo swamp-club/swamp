@@ -434,6 +434,7 @@ export async function handleWorkflowRun(
           initiatedBy,
           vaultAccess,
           defaultVault: ctx.defaultVault,
+          runWriteFence: ctx.runWriteFence,
         },
       );
       await sending;
@@ -580,6 +581,7 @@ export async function handleWorkflowRun(
           initiatedBy,
           vaultAccess,
           defaultVault: ctx.defaultVault,
+          runWriteFence: ctx.runWriteFence,
         },
       );
       // Reported finished only once its commits are replicated
@@ -2390,7 +2392,11 @@ export async function handleWorkflowResume(
             ctx.datastoreConfig,
             stepLockHook,
             ctx.runTracker,
-            { runCheckpointer, defaultVault: ctx.defaultVault },
+            {
+              runCheckpointer,
+              defaultVault: ctx.defaultVault,
+              runWriteFence: ctx.runWriteFence,
+            },
           );
 
           const resumeInputs = payload.inputs ?? {};
