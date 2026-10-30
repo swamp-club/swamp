@@ -102,6 +102,7 @@ import {
   handleModelSearch,
   handleModelTypeDescribe,
   handleModelTypeSearch,
+  handleModelUsageSummary,
   handleModelValidate,
 } from "./handlers/model_handlers.ts";
 import {
@@ -754,6 +755,17 @@ const ModelOutputSearchRequestSchema = z.object({
     since: z.string().optional(),
     until: z.string().optional(),
     limit: z.number().int().nonnegative().optional(),
+  }).optional(),
+});
+
+const ModelUsageSummaryRequestSchema = z.object({
+  type: z.literal("model.usage.summary"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    since: z.string().max(64).optional(),
+    until: z.string().max(64).optional(),
+    // Any finite number; the handler clamps it to 0..100.
+    recentLimit: z.number().finite().optional(),
   }).optional(),
 });
 
@@ -1590,6 +1602,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   ModelOutputDataRequestSchema,
   ModelOutputLogsRequestSchema,
   ModelOutputSearchRequestSchema,
+  ModelUsageSummaryRequestSchema,
   ModelMethodHistoryGetRequestSchema,
   ModelMethodHistoryLogsRequestSchema,
   ModelMethodHistorySearchRequestSchema,
@@ -3166,6 +3179,21 @@ export function handleMessage(
             request.payload,
           ),
           auditOpts("data", "model", request.payload?.query ?? "*"),
+        )
+      );
+      break;
+    case "model.usage.summary":
+      task = traced(() =>
+        audited(
+          handleModelUsageSummary(
+            socket,
+            ctx,
+            request.id,
+            controller,
+            principal,
+            request.payload,
+          ),
+          auditOpts("data", "model", "*"),
         )
       );
       break;

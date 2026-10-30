@@ -19,7 +19,7 @@
 
 import { type MouseEvent, useMemo } from "react";
 import { useRequest } from "../client/useRequest.ts";
-import { useModelOutputSearch } from "../client/model_outputs.ts";
+import { useModelUsageSummary } from "../client/model_usage.ts";
 import { extractArray } from "../client/extract.ts";
 import {
   asString,
@@ -27,11 +27,7 @@ import {
   useQueryList,
   useQueryState,
 } from "../client/useQueryState.ts";
-import {
-  describeTimeRange,
-  useTimeBounds,
-  useTimeRange,
-} from "../client/time_range.ts";
+import { describeTimeRange, useTimeRange } from "../client/time_range.ts";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { SearchBar, type SearchFacet } from "../components/SearchBar.tsx";
 import { ViewMenu } from "../components/ViewMenu.tsx";
@@ -57,16 +53,12 @@ import {
   type ModelSort,
   type ModelSummary,
   modelTypeOptions,
-  partialCount,
-  partialPlural,
   sortModels,
 } from "./model_list.ts";
 import {
-  filterOutputs,
-  type ModelOutput,
   type ModelUsage,
   outputPips,
-  usageByModel,
+  usageFromSummary,
 } from "./model_executions.ts";
 import {
   behaviorNoun,
@@ -79,8 +71,6 @@ interface ModelsProps {
   onOpenModel?: (modelName: string) => void;
 }
 
-/** Outputs fetched for the whole page's usage; one request, no per-card calls. */
-const OUTPUT_LIMIT = 5000;
 const SORTS: readonly ModelSort[] = ["name", "recent", "busy"];
 const SORT_LABELS: Record<ModelSort, string> = {
   name: "Name",
@@ -110,14 +100,12 @@ function useModelFilter(): [ModelFilter, (next: ModelFilter) => void] {
 
 export function Models({ onOpenModel }: ModelsProps) {
   const { data, error, refetch } = useRequest("model.search");
-  const bounds = useTimeBounds();
   const { range } = useTimeRange();
-  const { data: outputData, error: outputError } = useModelOutputSearch({
-    limit: OUTPUT_LIMIT,
-  });
-  const usageState: UsageState = outputData !== null
+  // The whole page's usage; one request, no per-card calls.
+  const { summary, error: usageError } = useModelUsageSummary();
+  const usageState: UsageState = summary !== null
     ? "loaded"
-    : outputError
+    : usageError
     ? "failed"
     : "loading";
 
@@ -129,28 +117,23 @@ export function Models({ onOpenModel }: ModelsProps) {
   );
 
   const models = useMemo(() => extractArray<ModelSummary>(data), [data]);
-  const outputs = useMemo(
-    () => filterOutputs(extractArray<ModelOutput>(outputData), bounds),
-    [outputData, bounds],
-  );
-  const usage = useMemo(() => usageByModel(outputs), [outputs]);
-  const usageOf = (m: ModelSummary): ModelUsage | undefined =>
-    usage.get(m.id) ?? usage.get(m.name);
+  const usage = useMemo(() => usageFromSummary(summary?.models ?? []), [
+    summary,
+  ]);
+  const usageOf = (m: ModelSummary): ModelUsage | undefined => usage.get(m.id);
 
   const shown = useMemo(
     () =>
       sortModels(
         filterModels(models, filter),
         filter.query.trim() ? "relevance" : sort,
-        (m) => usage.get(m.id) ?? usage.get(m.name),
+        usageOf,
       ),
     [models, filter, sort, usage],
   );
 
   const loaded = data !== null;
   const rangeText = describeTimeRange(range);
-  const truncated = extractArray<ModelOutput>(outputData).length >=
-    OUTPUT_LIMIT;
 
   const typeCount = new Set(models.map((m) => m.type)).size;
   const stats: Stat[] = [
@@ -163,16 +146,16 @@ export function Models({ onOpenModel }: ModelsProps) {
       value: formatCount(typeCount),
     },
   ];
-  if (outputData !== null) {
-    const failed = outputs.filter((o) => o.status === "failed").length;
+  if (summary !== null) {
+    const { executions, failed } = summary.totals;
     stats.push({
       label: "executions",
-      value: `${formatCompactCount(outputs.length)}${truncated ? "+" : ""}`,
-      title: `${formatCount(outputs.length)} method runs · ${rangeText}`,
+      value: formatCompactCount(executions),
+      title: `${formatCount(executions)} method runs · ${rangeText}`,
     });
     stats.push({
       label: "failed",
-      value: `${formatCompactCount(failed)}${truncated ? "+" : ""}`,
+      value: formatCompactCount(failed),
       tone: failed > 0 ? "danger" : "neutral",
       title: `Failed method runs · ${rangeText}`,
     });
@@ -257,7 +240,6 @@ export function Models({ onOpenModel }: ModelsProps) {
                       usage={usageOf(m)}
                       usageState={usageState}
                       rangeText={rangeText}
-                      partial={truncated}
                       onOpen={onOpenModel}
                     />
                   ))}
@@ -326,14 +308,12 @@ function ModelFilterBar(
 }
 
 function ModelCard(
-  { model, usage, usageState, rangeText, partial, onOpen }: {
+  { model, usage, usageState, rangeText, onOpen }: {
     model: ModelSummary;
     usage: ModelUsage | undefined;
     /** Usage comes from one page-wide request; "failed" hides the strip. */
     usageState: UsageState;
     rangeText: string;
-    /** The page-wide request hit its cap: counts are lower bounds. */
-    partial: boolean;
     onOpen?: (name: string) => void;
   },
 ) {
@@ -407,25 +387,15 @@ function ModelCard(
                   </time>
                 </span>
               )
-              : (
-                <span>
-                  {partial
-                    ? `No executions in the newest ${formatCount(OUTPUT_LIMIT)}`
-                    : `No executions · ${rangeText}`}
-                </span>
-              )}
+              : <span>{`No executions · ${rangeText}`}</span>}
             {usage && (
-              <span
-                title={partial
-                  ? `Counted from the newest ${
-                    formatCount(OUTPUT_LIMIT)
-                  } executions · ${rangeText}`
-                  : undefined}
-              >
-                {partialPlural(usage.executions, "run", partial)}
+              <span>
+                {`${formatCount(usage.executions)} ${
+                  usage.executions === 1 ? "run" : "runs"
+                }`}
                 {usage.failed > 0 && (
                   <span className="tone-danger">
-                    {` · ${partialCount(usage.failed, partial)} failed`}
+                    {` · ${formatCount(usage.failed)} failed`}
                   </span>
                 )}
               </span>

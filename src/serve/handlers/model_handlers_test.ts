@@ -37,6 +37,7 @@ import {
   handleModelMethodHistorySearch,
   handleModelOutputGet,
   handleModelOutputSearch,
+  handleModelUsageSummary,
   redactWorkflowLinks,
 } from "./model_handlers.ts";
 import {
@@ -1930,6 +1931,501 @@ Deno.test("handleModelOutputSearch: a limit counts only outputs the caller may r
   });
 });
 
+// --- handleModelUsageSummary (swamp-club#4144) ---
+
+/** A context over real repositories in `dir` with these grants. */
+function usageSummaryCtx(
+  dir: string,
+  definitionRepo: YamlDefinitionRepository,
+  outputRepo: YamlOutputRepository,
+  workflowRepo: YamlWorkflowRepository,
+  grants: Grant[],
+) {
+  return {
+    ...createPolicyEditCtx(dir, definitionRepo, grants),
+    repoContext: {
+      definitionRepo,
+      outputRepo,
+      workflowRepo,
+    } as unknown as ConnectionContext["repoContext"],
+  };
+}
+
+function saveUsageOutput(
+  outputRepo: YamlOutputRepository,
+  definition: Definition,
+  methodName: string,
+  startedAt: string,
+  status: "succeeded" | "failed" = "succeeded",
+  provenance: Record<string, unknown> = { triggeredBy: "manual" },
+) {
+  return outputRepo.save(
+    EDIT_TEST_TYPE,
+    methodName,
+    ModelOutput.create({
+      definitionId: definition.id,
+      methodName,
+      status,
+      startedAt: new Date(startedAt),
+      provenance: {
+        definitionHash: "h",
+        modelVersion: "1",
+        ...provenance,
+      } as ModelOutput["provenance"],
+    }),
+  );
+}
+
+Deno.test("handleModelUsageSummary: counts only what the principal may read, and exports output_search phases", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const readable = await saveEditModel(definitionRepo, "readable");
+    const hidden = await saveEditModel(definitionRepo, "hidden");
+    await saveUsageOutput(
+      outputRepo,
+      readable,
+      "execute",
+      "2026-01-01T00:00:00Z",
+    );
+    await saveUsageOutput(
+      outputRepo,
+      readable,
+      "execute",
+      "2026-01-02T00:00:00Z",
+      "failed",
+    );
+    await saveUsageOutput(
+      outputRepo,
+      hidden,
+      "execute",
+      "2026-01-03T00:00:00Z",
+    );
+    await saveUsageOutput(outputRepo, hidden, "check", "2026-01-04T00:00:00Z");
+
+    const ctx = usageSummaryCtx(
+      dir,
+      definitionRepo,
+      outputRepo,
+      new YamlWorkflowRepository(dir),
+      [grant({
+        actions: ["read"],
+        resource: { kind: "model", pattern: "readable" },
+      })],
+    );
+    await withEditTestTypeRegistered(() =>
+      withObservedSpans(async (spans) => {
+        const socket = createMockSocket();
+        await handleModelUsageSummary(
+          socket,
+          ctx,
+          "req-1",
+          new AbortController(),
+          EDITOR,
+          {},
+        );
+
+        const [response] = frames(socket);
+        assertEquals(response.type, "model.usage.summary");
+        const { totals, models } = response.payload.data;
+        assertEquals(totals, { executions: 2, failed: 1 });
+        assertEquals(models.length, 1);
+        assertEquals(models[0].modelName, "readable");
+        assertEquals(models[0].definitionId, readable.id);
+        assertEquals(models[0].executions, 2);
+        assertEquals(models[0].failed, 1);
+        assertEquals(models[0].methods, ["execute"]);
+        assertEquals(models[0].lastStartedAt, "2026-01-02T00:00:00.000Z");
+
+        const phase = (name: string) =>
+          findSpan(spans, `swamp.diagnostic.${name}`).attributes;
+        assertEquals(
+          phase("candidate_scan")["swamp.diagnostic.area"],
+          "output_search",
+        );
+        // The hidden model's files are left unread.
+        assertEquals(phase("candidate_scan")["swamp.diagnostic.candidates"], 2);
+        assertEquals(phase("authorization")["swamp.diagnostic.items"], 2);
+        assertEquals(phase("authorization")["swamp.diagnostic.groups"], 1);
+        assertEquals(phase("authorization")["swamp.diagnostic.readable"], 2);
+        assertEquals(phase("response")["swamp.diagnostic.results"], 1);
+      })
+    );
+  });
+});
+
+Deno.test("handleModelUsageSummary: a warm read answers from the output summaries, with a window or without one", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const model = await saveEditModel(definitionRepo, "readable");
+    await saveUsageOutput(outputRepo, model, "execute", "2026-01-01T00:00:00Z");
+    await saveUsageOutput(
+      outputRepo,
+      model,
+      "execute",
+      "2026-01-02T00:00:00Z",
+      "failed",
+    );
+
+    const ctx = usageSummaryCtx(
+      dir,
+      definitionRepo,
+      outputRepo,
+      new YamlWorkflowRepository(dir),
+      [grant({
+        actions: ["read"],
+        resource: { kind: "model", pattern: "readable" },
+      })],
+    );
+    const read = async (payload: { since?: string }) => {
+      const socket = createMockSocket();
+      await handleModelUsageSummary(
+        socket,
+        ctx,
+        "req-1",
+        new AbortController(),
+        EDITOR,
+        payload,
+      );
+      const [response] = frames(socket);
+      assertEquals(response.type, "model.usage.summary");
+      assertEquals(response.payload.data.totals, { executions: 2, failed: 1 });
+    };
+
+    await withEditTestTypeRegistered(async () => {
+      for (const payload of [{}, { since: "2025-12-01T00:00:00Z" }]) {
+        await read(payload);
+        await withObservedSpans(async (spans) => {
+          await read(payload);
+          const scan =
+            findSpan(spans, "swamp.diagnostic.candidate_scan").attributes;
+          // A counter that stays at zero is not exported.
+          assertEquals(scan["swamp.diagnostic.files_read"], undefined);
+          assertEquals(scan["swamp.diagnostic.summary_rows_used"], 2);
+        });
+      }
+    });
+  });
+});
+
+Deno.test("handleModelUsageSummary: reports zero readable when nothing is", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const hidden = await saveEditModel(definitionRepo, "hidden");
+    await saveUsageOutput(
+      outputRepo,
+      hidden,
+      "execute",
+      "2026-01-01T00:00:00Z",
+    );
+
+    const ctx = usageSummaryCtx(
+      dir,
+      definitionRepo,
+      outputRepo,
+      new YamlWorkflowRepository(dir),
+      [grant({
+        actions: ["read"],
+        resource: { kind: "model", pattern: "other" },
+      })],
+    );
+    await withEditTestTypeRegistered(() =>
+      withObservedSpans(async (spans) => {
+        const socket = createMockSocket();
+        await handleModelUsageSummary(
+          socket,
+          ctx,
+          "req-1",
+          new AbortController(),
+          EDITOR,
+          {},
+        );
+
+        const { totals, models } = frames(socket)[0].payload.data;
+        assertEquals(totals, { executions: 0, failed: 0 });
+        assertEquals(models, []);
+        assertEquals(
+          findSpan(spans, "swamp.diagnostic.authorization")
+            .attributes["swamp.diagnostic.readable"],
+          0,
+        );
+      })
+    );
+  });
+});
+
+Deno.test("handleModelUsageSummary: outputs recorded under a type the definition no longer has keep a row", async () => {
+  const oldType = ModelType.create("command/previous");
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const model = await saveEditModel(definitionRepo, "moved");
+    await saveUsageOutput(outputRepo, model, "execute", "2026-01-02T00:00:00Z");
+    await outputRepo.save(
+      oldType,
+      "execute",
+      ModelOutput.create({
+        definitionId: model.id,
+        methodName: "execute",
+        status: "failed",
+        startedAt: new Date("2026-01-01T00:00:00Z"),
+        provenance: {
+          definitionHash: "h",
+          modelVersion: "1",
+          triggeredBy: "manual",
+        },
+      }),
+    );
+
+    const ctx = usageSummaryCtx(
+      dir,
+      definitionRepo,
+      outputRepo,
+      new YamlWorkflowRepository(dir),
+      [grant({ actions: ["read"], resource: { kind: "model", pattern: "*" } })],
+    );
+    modelRegistry.register({
+      type: oldType,
+      version: "2026.01.01.1",
+      methods: {},
+    });
+    try {
+      await withEditTestTypeRegistered(async () => {
+        const socket = createMockSocket();
+        await handleModelUsageSummary(
+          socket,
+          ctx,
+          "req-1",
+          new AbortController(),
+          EDITOR,
+          {},
+        );
+
+        const { totals, models } = frames(socket)[0].payload.data;
+        assertEquals(totals, { executions: 2, failed: 1 });
+        assertEquals(
+          models.map((m: { modelName: string; executions: number }) => [
+            m.modelName,
+            m.executions,
+          ]),
+          [["moved", 1], ["moved", 1]],
+        );
+      });
+    } finally {
+      modelRegistry.invalidateType(oldType);
+    }
+  });
+});
+
+Deno.test("handleModelUsageSummary: a methods-scoped grant counts only that method", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const model = await saveEditModel(definitionRepo, "scoped");
+    await saveUsageOutput(outputRepo, model, "allowed", "2026-01-01T00:00:00Z");
+    await saveUsageOutput(
+      outputRepo,
+      model,
+      "refused",
+      "2026-01-02T00:00:00Z",
+      "failed",
+    );
+
+    const ctx = usageSummaryCtx(
+      dir,
+      definitionRepo,
+      outputRepo,
+      new YamlWorkflowRepository(dir),
+      [grant({
+        actions: ["read"],
+        resource: { kind: "model", pattern: "scoped" },
+        methods: ["allowed"],
+      })],
+    );
+    await withEditTestTypeRegistered(async () => {
+      const socket = createMockSocket();
+      await handleModelUsageSummary(
+        socket,
+        ctx,
+        "req-1",
+        new AbortController(),
+        EDITOR,
+        {},
+      );
+
+      const { totals, models } = frames(socket)[0].payload.data;
+      assertEquals(totals, { executions: 1, failed: 0 });
+      assertEquals(models[0].methods, ["allowed"]);
+      assertEquals(models[0].lastStartedAt, "2026-01-01T00:00:00.000Z");
+      assertEquals(
+        models[0].recent.map((o: { methodName: string }) => o.methodName),
+        ["allowed"],
+      );
+    });
+  });
+});
+
+Deno.test("handleModelUsageSummary: drops the workflow linkage of a recent output whose workflow the principal may not read", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const workflowRepo = new YamlWorkflowRepository(dir);
+    const model = await saveEditModel(definitionRepo, "watched");
+    const shown = linkedWorkflow("readable-wf");
+    const hidden = linkedWorkflow("hidden-wf");
+    await workflowRepo.save(shown);
+    await workflowRepo.save(hidden);
+    await saveUsageOutput(
+      outputRepo,
+      model,
+      "execute",
+      "2026-01-01T00:00:00Z",
+      "succeeded",
+      {
+        triggeredBy: "workflow",
+        workflowId: shown.id,
+        workflowRunId: "run-readable",
+        stepName: "step-a",
+      },
+    );
+    await saveUsageOutput(
+      outputRepo,
+      model,
+      "execute",
+      "2026-01-02T00:00:00Z",
+      "succeeded",
+      {
+        triggeredBy: "workflow",
+        workflowId: hidden.id,
+        workflowRunId: "run-hidden",
+        stepName: "step-b",
+      },
+    );
+
+    const ctx = usageSummaryCtx(
+      dir,
+      definitionRepo,
+      outputRepo,
+      workflowRepo,
+      [
+        grant({ actions: ["read"], resource: { kind: "model", pattern: "*" } }),
+        grant({
+          actions: ["read"],
+          resource: { kind: "workflow", pattern: "readable-wf" },
+        }),
+      ],
+    );
+    await withEditTestTypeRegistered(async () => {
+      const socket = createMockSocket();
+      await handleModelUsageSummary(
+        socket,
+        ctx,
+        "req-1",
+        new AbortController(),
+        EDITOR,
+        {},
+      );
+
+      const [newest, oldest] = frames(socket)[0].payload.data.models[0].recent;
+      assertEquals(newest.triggeredBy, "workflow");
+      assertEquals(newest.workflowId, undefined);
+      assertEquals(newest.workflowName, undefined);
+      assertEquals(newest.workflowRunId, undefined);
+      assertEquals(newest.stepName, undefined);
+      assertEquals(oldest.workflowId, shown.id);
+      assertEquals(oldest.workflowName, "readable-wf");
+      assertEquals(oldest.workflowRunId, "run-readable");
+      assertEquals(oldest.stepName, "step-a");
+    });
+  });
+});
+
+Deno.test("handleModelUsageSummary: answers cancelled once the request is cancelled", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const model = await saveEditModel(definitionRepo, "busy");
+    await saveUsageOutput(outputRepo, model, "execute", "2026-01-01T00:00:00Z");
+
+    const ctx = usageSummaryCtx(
+      dir,
+      definitionRepo,
+      outputRepo,
+      new YamlWorkflowRepository(dir),
+      [grant({ actions: ["read"], resource: { kind: "model", pattern: "*" } })],
+    );
+    await withEditTestTypeRegistered(async () => {
+      const socket = createMockSocket();
+      const controller = new AbortController();
+      controller.abort();
+      await handleModelUsageSummary(
+        socket,
+        ctx,
+        "req-1",
+        controller,
+        EDITOR,
+        {},
+      );
+
+      const [response] = frames(socket);
+      assertEquals(response.type, "error");
+      assertEquals(response.error.code, "cancelled");
+    });
+  });
+});
+
+Deno.test("handleModelUsageSummary: refuses a malformed bound", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const ctx = usageSummaryCtx(
+      dir,
+      definitionRepo,
+      new YamlOutputRepository(dir),
+      new YamlWorkflowRepository(dir),
+      [grant({ actions: ["read"], resource: { kind: "model", pattern: "*" } })],
+    );
+    const socket = createMockSocket();
+    await handleModelUsageSummary(
+      socket,
+      ctx,
+      "req-1",
+      new AbortController(),
+      EDITOR,
+      { since: "whenever" },
+    );
+
+    const [response] = frames(socket);
+    assertEquals(response.type, "error");
+    assertEquals(response.error.code, "model_usage_summary_failed");
+  });
+});
+
+Deno.test("handleModelUsageSummary: rejects a principal with no model read grant", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const ctx = usageSummaryCtx(
+      dir,
+      definitionRepo,
+      new YamlOutputRepository(dir),
+      new YamlWorkflowRepository(dir),
+      [],
+    );
+    const socket = createMockSocket();
+    await handleModelUsageSummary(
+      socket,
+      ctx,
+      "req-1",
+      new AbortController(),
+      EDITOR,
+      {},
+    );
+
+    assertEquals(frames(socket)[0].type, "error");
+  });
+});
+
 Deno.test("handleModelOutputSearch: names workflows through the repository's per-request view", async () => {
   await withTempDir(async (dir) => {
     const definitionRepo = new YamlDefinitionRepository(dir);
@@ -2504,6 +3000,64 @@ Deno.test("handleModelOutputSearch: a grant revoked while the search reads leave
     } finally {
       modelRegistry.invalidateType(EDIT_TEST_TYPE);
     }
+  });
+});
+
+Deno.test("handleModelUsageSummary: a grant revoked while the summary reads leaves its outputs out of the counts", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const model = await saveEditModel(definitionRepo, "revoked-model");
+    await saveUsageOutput(outputRepo, model, "execute", "2026-01-01T00:00:00Z");
+    const decisionService = (grants: Grant[]) =>
+      new GrantBasedAccessDecisionService(
+        new PolicySnapshot(grants, [], createConditionEvaluator()),
+      );
+    // The loader hands out the current snapshot's service, as a reload
+    // replaces it.
+    const loader = {
+      decisionService: decisionService([grant({ actions: ["read"] })]),
+    };
+    let chose: readonly boolean[] = [];
+    const ctx: ConnectionContext = {
+      ...createPolicyEditCtx(dir, definitionRepo, []),
+      policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+      repoContext: {
+        definitionRepo,
+        outputRepo: {
+          findAllGlobalSince: async (
+            cutoff: Date,
+            signal?: AbortSignal,
+            selectReadable?: SelectReadableOutputs,
+          ) => {
+            const found = await outputRepo.findAllGlobalSince(
+              cutoff,
+              signal,
+              async (keys) => (chose = await selectReadable!(keys)),
+            );
+            // The grant is revoked once the files are chosen and read.
+            loader.decisionService = decisionService([]);
+            return found;
+          },
+        },
+        workflowRepo: new YamlWorkflowRepository(dir),
+      } as unknown as ConnectionContext["repoContext"],
+    };
+    await withEditTestTypeRegistered(async () => {
+      const socket = createMockSocket();
+      await handleModelUsageSummary(
+        socket,
+        ctx,
+        "req-1",
+        new AbortController(),
+        EDITOR,
+        { since: "2025-12-01T00:00:00Z" },
+      );
+      const [response] = frames(socket);
+      assertEquals(chose, [true]);
+      assertEquals(response.payload.data.totals, { executions: 0, failed: 0 });
+      assertEquals(response.payload.data.models, []);
+    });
   });
 });
 

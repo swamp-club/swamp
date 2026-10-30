@@ -392,6 +392,40 @@ Deno.test("validateServerRequest accepts workflow.run.summary with or without a 
   }
 });
 
+Deno.test("validateServerRequest accepts model.usage.summary with or without a payload", () => {
+  assertEquals(
+    typeof validateServerRequest({ type: "model.usage.summary", id: "u-1" }),
+    "object",
+  );
+  const payload = {
+    since: "7d",
+    until: "2026-10-02T00:00:00Z",
+    recentLimit: 500,
+  };
+  const validated = validateServerRequest({
+    type: "model.usage.summary",
+    id: "u-2",
+    payload,
+  });
+  assertEquals(
+    (validated as Extract<ServerRequest, { type: "model.usage.summary" }>)
+      .payload,
+    payload,
+  );
+  for (
+    const bad of [{ since: 7 }, { until: "x".repeat(65) }, { recentLimit: "5" }]
+  ) {
+    assertEquals(
+      typeof validateServerRequest({
+        type: "model.usage.summary",
+        id: "u-bad",
+        payload: bad,
+      }),
+      "string",
+    );
+  }
+});
+
 Deno.test("validateServerRequest rejects unknown type", () => {
   const input = { type: "unknown.type", id: "req-4" };
   const result = validateServerRequest(input);
@@ -5451,6 +5485,7 @@ for (
     "workflow.run.summary",
     // Behavior history reads (swamp-club#4056).
     "model.output.search",
+    "model.usage.summary",
     "model.method.history.search",
   ]
 ) {

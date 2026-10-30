@@ -246,10 +246,11 @@ phases.
 
 ## Behavior history search
 
-Parent: `swamp.serve.request`, for a `model.output.search` (the dashboard's
-Models page and a model's page) or `model.method.history.search` request
-(lab #4056). Both requests run in that traced span, which records the event-loop
-lag seen while they ran. The handler sets the area, and the area carries the
+Parent: `swamp.serve.request`, for a `model.output.search` (a model's page in
+the dashboard), `model.usage.summary` (the dashboard's Models page) or
+`model.method.history.search` request (lab #4056). These requests run in that
+traced span, which records the event-loop lag seen while they ran. The handler
+sets the area, and the area carries the
 request's cancellation, so every phase records `cancel_observed`. The CLI's
 `model output search` runs the same search outside any area and exports none of
 these phases.
@@ -345,6 +346,15 @@ definition. A filter resolving to several definitions, which takes a model id he
 under several types or a model named with another's id, reads a batch from each
 at every round, and sorts outputs started in the same millisecond by definition.
 Without a `limit`, a search for one model still reads its whole window.
+
+`model.usage.summary` exports the same phases with `swamp.model.usage.summary`
+as the parent of `candidate_scan`, `definition_names`, `workflow_names` and
+`authorization`. It always reads its whole window, leaving out unread the files
+a restricted caller may not read as a search without a `limit` does. It tallies
+outputs before its final check, so `authorization` also counts `groups`, the
+distinct model and method pairs judged; `items` and `readable` still count
+outputs. `response` counts the model rows in `results`, and `workflow_names`
+covers only the outputs in those rows' recent lists.
 
 | Attribute                                        | Meaning                                                                         |
 | ------------------------------------------------ | ------------------------------------------------------------------------------- |

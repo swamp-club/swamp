@@ -23,8 +23,9 @@ import {
   type ModelOutput,
   outputPips,
   outputRunRoute,
-  usageByModel,
+  usageFromSummary,
 } from "./model_executions.ts";
+import type { ModelUsageRow } from "../client/model_usage.ts";
 
 const out = (o: Partial<ModelOutput> & { id: string }): ModelOutput => ({
   definitionId: "def-a",
@@ -110,26 +111,78 @@ Deno.test("outputRunRoute: links only when the run is known", () => {
   assertEquals(outputRunRoute(out({ id: "x", workflowName: "w" })), null);
 });
 
-Deno.test("usageByModel: counts, last use and methods per model by id and name", () => {
-  const usage = usageByModel(outputs);
-  const a = usage.get("def-a")!;
-  assertEquals(usage.get("a"), a);
-  assertEquals(a.executions, 3);
-  assertEquals(a.failed, 1);
-  assertEquals(a.lastStartedAt, "2026-10-12T11:00:00.000Z");
-  assertEquals(a.methods, ["sync", "execute"]);
-  assertEquals(a.recent.map((o) => o.id), ["4", "2", "1"]);
-  assertEquals(usage.get("b")!.executions, 1);
+const row = (r: Partial<ModelUsageRow>): ModelUsageRow => ({
+  definitionId: "def-a",
+  modelName: "a",
+  type: "test/one",
+  executions: 1,
+  failed: 0,
+  lastStartedAt: "2026-10-12T10:00:00.000Z",
+  methods: ["execute"],
+  recent: [],
+  ...r,
 });
 
-Deno.test("usageByModel: caps the recent list", () => {
+Deno.test("usageFromSummary: looks a row up by id, never by name", () => {
+  const usage = usageFromSummary([
+    row({ executions: 3, failed: 1, methods: ["sync", "execute"] }),
+    row({ definitionId: "def-b", modelName: "b" }),
+  ]);
+  const a = usage.get("def-a")!;
+  assertEquals(usage.get("a"), undefined);
+  assertEquals(a.executions, 3);
+  assertEquals(a.failed, 1);
+  assertEquals(a.lastStartedAt, "2026-10-12T10:00:00.000Z");
+  assertEquals(a.methods, ["sync", "execute"]);
+  assertEquals(usage.get("def-b")!.executions, 1);
+  assertEquals(usage.get("def-c"), undefined);
+});
+
+Deno.test("usageFromSummary: merges rows sharing a definition id across types", () => {
+  const usage = usageFromSummary([
+    row({
+      executions: 2,
+      failed: 1,
+      lastStartedAt: "2026-10-12T11:00:00.000Z",
+      methods: ["sync", "execute"],
+      recent: [
+        out({ id: "new", startedAt: "2026-10-12T11:00:00.000Z" }),
+        out({ id: "old", startedAt: "2026-10-10T10:00:00.000Z" }),
+      ],
+    }),
+    row({
+      type: "test/two",
+      executions: 1,
+      failed: 1,
+      lastStartedAt: "2026-10-11T10:00:00.000Z",
+      methods: ["execute", "check"],
+      recent: [out({ id: "mid", startedAt: "2026-10-11T10:00:00.000Z" })],
+    }),
+  ]);
+  const a = usage.get("def-a")!;
+  assertEquals(a.executions, 3);
+  assertEquals(a.failed, 2);
+  assertEquals(a.lastStartedAt, "2026-10-12T11:00:00.000Z");
+  assertEquals(a.methods, ["sync", "execute", "check"]);
+  assertEquals(a.recent.map((o) => o.id), ["new", "mid", "old"]);
+});
+
+Deno.test("usageFromSummary: a model named like another's id keeps its own counts", () => {
+  const usage = usageFromSummary([
+    row({ definitionId: "def-a", modelName: "def-b", executions: 2 }),
+    row({ definitionId: "def-b", modelName: "b", executions: 5 }),
+  ]);
+  assertEquals(usage.get("def-a")!.executions, 2);
+  assertEquals(usage.get("def-b")!.executions, 5);
+});
+
+Deno.test("usageFromSummary: caps the recent list", () => {
   const many = Array.from({ length: 30 }, (_, i) =>
     out({
       id: String(i),
-      startedAt: new Date(Date.UTC(2026, 9, 1, 0, i)).toISOString(),
+      startedAt: new Date(Date.UTC(2026, 9, 1, 0, 30 - i)).toISOString(),
     }));
-  const a = usageByModel(many, 20).get("a")!;
-  assertEquals(a.executions, 30);
-  assertEquals(a.recent.length, 20);
-  assertEquals(a.recent[0].id, "29");
+  const usage = usageFromSummary([row({ recent: many })], 20);
+  assertEquals(usage.get("def-a")!.recent.length, 20);
+  assertEquals(usage.get("def-a")!.recent[0].id, "0");
 });

@@ -748,6 +748,11 @@ export class CanonicalResources {
     return found;
   }
 
+  /** The name of a definition with this id, under any type. */
+  async anyModelName(id: string): Promise<string | undefined> {
+    return (await this.#definitionsById(id))[0]?.definition.name;
+  }
+
   /**
    * The name of the first definition of `modelType` declaring `id`, primary
    * definitions first, as a scan of every definition names it; undefined when

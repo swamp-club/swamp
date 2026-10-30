@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { RouteState } from "../routes.ts";
+import type { ModelUsageRow } from "../client/model_usage.ts";
 
 // A model's executions (method runs) from serve's `model.output.search`.
 // Older servers ignore the model and time filters and return every output,
@@ -135,36 +136,35 @@ export interface ModelUsage {
 }
 
 /**
- * Usage per model from one unfiltered output search, keyed by both name
- * and definition id so a card can look itself up by either.
+ * Usage per definition id from the usage summary's rows (newest use first).
+ * Rows sharing an id across types make one entry: a card is one id, and its
+ * methods are each row's in turn.
  */
-export function usageByModel(
-  outputs: readonly ModelOutput[],
+export function usageFromSummary(
+  rows: readonly ModelUsageRow[],
   recentLimit = 20,
 ): Map<string, ModelUsage> {
-  const sorted = [...outputs].sort((a, b) =>
-    Date.parse(b.startedAt) - Date.parse(a.startedAt)
-  );
-  const byKey = new Map<string, ModelUsage>();
-  for (const o of sorted) {
-    const key = o.definitionId ?? o.modelName;
-    if (!key) continue;
-    let usage = byKey.get(key);
+  const byId = new Map<string, ModelUsage>();
+  for (const row of rows) {
+    const usage = byId.get(row.definitionId);
     if (!usage) {
-      usage = {
-        executions: 0,
-        failed: 0,
-        lastStartedAt: o.startedAt,
-        methods: [],
-        recent: [],
-      };
-      byKey.set(key, usage);
-      if (o.modelName && o.definitionId) byKey.set(o.modelName, usage);
+      byId.set(row.definitionId, {
+        executions: row.executions,
+        failed: row.failed,
+        lastStartedAt: row.lastStartedAt,
+        methods: [...row.methods],
+        recent: row.recent.slice(0, recentLimit),
+      });
+      continue;
     }
-    usage.executions++;
-    if (o.status === "failed") usage.failed++;
-    if (!usage.methods.includes(o.methodName)) usage.methods.push(o.methodName);
-    if (usage.recent.length < recentLimit) usage.recent.push(o);
+    usage.executions += row.executions;
+    usage.failed += row.failed;
+    for (const method of row.methods) {
+      if (!usage.methods.includes(method)) usage.methods.push(method);
+    }
+    usage.recent = [...usage.recent, ...row.recent]
+      .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))
+      .slice(0, recentLimit);
   }
-  return byKey;
+  return byId;
 }

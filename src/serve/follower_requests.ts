@@ -112,6 +112,7 @@ export const FOLLOWER_READ_REQUESTS: ReadonlySet<string> = new Set([
   "model.output.data",
   "model.output.logs",
   "model.output.search",
+  "model.usage.summary",
   "model.method.history.get",
   "model.method.history.logs",
   "model.method.history.search",

@@ -394,6 +394,18 @@ export interface ModelOutputLogsPayload {
   tail?: number;
 }
 
+export interface ModelUsageSummaryPayload {
+  /**
+   * Counts outputs started at or after this ISO 8601 instant, or this long
+   * ago by serve's clock for a duration like `7d`.
+   */
+  since?: string;
+  /** Counts outputs started before this instant or duration ago (exclusive). */
+  until?: string;
+  /** Outputs kept per model in `recent`; clamped to 0..100, default 20. */
+  recentLimit?: number;
+}
+
 export interface ModelOutputSearchPayload {
   query?: string;
   /** Only outputs of this model, by exact name or id. */
@@ -992,6 +1004,11 @@ export type ServerRequest =
     payload?: ModelOutputSearchPayload;
   }
   | {
+    type: "model.usage.summary";
+    id: string;
+    payload?: ModelUsageSummaryPayload;
+  }
+  | {
     type: "model.method.history.get";
     id: string;
     payload: ModelMethodHistoryGetPayload;
@@ -1458,6 +1475,48 @@ export interface ModelOutputLogsResponse {
 
 export interface ModelOutputSearchResponse {
   data: Record<string, unknown>;
+}
+
+/** One output in a model's `recent` list. */
+export interface ModelUsageSummaryRecentOutput {
+  id: string;
+  methodName: string;
+  status: string;
+  startedAt: string;
+  durationMs?: number;
+  triggeredBy?: string;
+  workflowId?: string;
+  workflowName?: string;
+  workflowRunId?: string;
+  stepName?: string;
+}
+
+/** Usage of one definition id under one type over the window. */
+export interface ModelUsageSummaryModel {
+  definitionId: string;
+  modelName: string;
+  type: string;
+  executions: number;
+  failed: number;
+  lastStartedAt: string;
+  /** Distinct methods run, most recent first. */
+  methods: string[];
+  /** The newest outputs, newest first, at most `recentLimit`. */
+  recent: ModelUsageSummaryRecentOutput[];
+}
+
+export interface ModelUsageSummaryData {
+  /** The window as resolved, when bounded. */
+  since?: string;
+  until?: string;
+  /** Every readable output, including those of definitions no longer named. */
+  totals: { executions: number; failed: number };
+  /** Newest use first. */
+  models: ModelUsageSummaryModel[];
+}
+
+export interface ModelUsageSummaryResponse {
+  data: ModelUsageSummaryData;
 }
 
 export interface ModelMethodHistoryGetResponse {
@@ -2198,6 +2257,11 @@ export type ServerMessage =
     type: "model.output.search";
     id: string;
     payload: ModelOutputSearchResponse;
+  }
+  | {
+    type: "model.usage.summary";
+    id: string;
+    payload: ModelUsageSummaryResponse;
   }
   | {
     type: "model.method.history.get";

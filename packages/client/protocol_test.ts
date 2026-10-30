@@ -133,6 +133,26 @@ const _identicalPairs: {
     client.ModelOutputSearchPayload,
     serve.ModelOutputSearchPayload
   >;
+  ModelUsageSummaryPayload: Identical<
+    client.ModelUsageSummaryPayload,
+    serve.ModelUsageSummaryPayload
+  >;
+  ModelUsageSummaryRecentOutput: Identical<
+    client.ModelUsageSummaryRecentOutput,
+    serve.ModelUsageSummaryRecentOutput
+  >;
+  ModelUsageSummaryModel: Identical<
+    client.ModelUsageSummaryModel,
+    serve.ModelUsageSummaryModel
+  >;
+  ModelUsageSummaryData: Identical<
+    client.ModelUsageSummaryData,
+    serve.ModelUsageSummaryData
+  >;
+  ModelUsageSummaryResponse: Identical<
+    client.ModelUsageSummaryResponse,
+    serve.ModelUsageSummaryResponse
+  >;
   ModelMethodHistoryGetPayload: Identical<
     client.ModelMethodHistoryGetPayload,
     serve.ModelMethodHistoryGetPayload
@@ -359,6 +379,11 @@ const _identicalPairs: {
   ModelOutputDataPayload: true,
   ModelOutputLogsPayload: true,
   ModelOutputSearchPayload: true,
+  ModelUsageSummaryPayload: true,
+  ModelUsageSummaryRecentOutput: true,
+  ModelUsageSummaryModel: true,
+  ModelUsageSummaryData: true,
+  ModelUsageSummaryResponse: true,
   ModelMethodHistoryGetPayload: true,
   ModelMethodHistoryLogsPayload: true,
   ModelMethodHistorySearchPayload: true,

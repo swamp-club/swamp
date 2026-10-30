@@ -58,6 +58,7 @@ export const FORWARDED_READS: ReadonlySet<string> = new Set([
   "extension.list",
   "model.get",
   "model.output.search",
+  "model.usage.summary",
   "model.search",
   "serve.config",
   "vault.audit-trail",

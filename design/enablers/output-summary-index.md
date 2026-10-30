@@ -1,7 +1,7 @@
 # Output summary index
 
-History reads list runs: `model.output.search`, the output and method history
-searches, `swamp summarise`. Each needs about ten fields per run, and reading them from
+History reads list runs: `model.output.search`, `model.usage.summary`, the output
+and method history searches, `swamp summarise`. Each needs about ten fields per run, and reading them from
 the output records means opening one YAML file per run in the window. The output
 summary index (lab #4145) answers those reads from a compact cache, so their cost
 stops growing with the runs in the window.

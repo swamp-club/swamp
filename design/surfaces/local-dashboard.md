@@ -144,9 +144,10 @@ live and the views' refresh-on-change covers them. Model-method rows carry no
 model name and are left out.
 
 Refresh-on-change drives the dashboard's reads; the only clocks are a live
-run's poll and the second-by-second clocks beside it. Run summaries, and the
-model output searches behind the Models page and a model's page, are re-read
-when a run starts or stops being driven and when the tab comes back into view,
+run's poll and the second-by-second clocks beside it. Run summaries, the model
+usage summary behind the Models page and the model output search behind a
+model's page are re-read when a run starts or stops being driven and when the
+tab comes back into view,
 at most once per 30 seconds (`RUN_ACTIVITY_REFETCH_MS`) and never while the tab
 is hidden. Such a re-read, and the age-out re-read below, does not supersede a
 read still in flight: it waits for that read, whose answer is shown, then reads
@@ -162,8 +163,17 @@ of the run or its logs still in flight instead of sending another (`reload` in
 per tick (swamp-club#3742). There is no client-side request timeout: a read
 serve never answers holds the page's live reads until it answers or the socket
 closes, which rejects it. A preset time range is sent as a duration
-(`since: "7d"`) to the run queries and to `model.output.search`, so the request
-does not change as the clock moves.
+(`since: "7d"`) to the run queries, `model.output.search` and
+`model.usage.summary`, so the request does not change as the clock moves.
+
+The Models page reads its counts from `model.usage.summary`, so they are exact
+at any volume, and a card's run history is that row's newest outputs. A serve
+that refuses the request leaves the cards up without their usage strip. Each read
+goes through every output in the window, unlike a search with a `limit`, so on a
+busy repo with a wide window run activity can keep one read going at a time.
+There is no age-out re-read as run summaries have, which would add a read each
+time the oldest output leaves a preset window. Between re-reads the counts can
+include an output that has since left the window.
 
 The sidebar, overview and Approvals page share one approvals request owner.
 Entering either page or retrying a read joins an in-flight listing. A completed
