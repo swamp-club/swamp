@@ -113,6 +113,8 @@ Deno.test("selectDurableWriteSync: a data directory spelled differently but the 
     config: () => real.config(),
     engine: () => "v2",
     localPath: (...segments) => real.localPath(...segments),
+    // Spelled by hand on purpose: a `..` segment and a trailing separator
+    // that only `resolve()` folds back into the local data directory.
     resolvePath: (subdir) =>
       join(REPO, ".swamp", "outputs") + "/../" + subdir + "/",
   };

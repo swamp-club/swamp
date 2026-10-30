@@ -284,7 +284,8 @@ On macOS, the default datastore (`.swamp/data`, no custom `path`, no
 full drive-cache flush, so durable writes there cost a few milliseconds, not
 tens. Content still reaches disk before the version is published, but the newest
 versions may not survive a power cut. Custom-path, namespaced, extension and v3
-datastores, and `data delete`/`rename`/`prune`/`gc`, keep the full flush.
+datastores, and `data delete`/`rename`/`prune`/`gc`, keep the full flush; set a
+custom `path` where the newest versions must survive a power cut.
 
 ### Setting Up a v3 Filesystem Datastore
 

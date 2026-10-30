@@ -2833,6 +2833,11 @@ whatever device the checkout's copy is on. One narrow gap is accepted: when
 replication is first turned on, a commit appended just before, its chunk
 ordered but perhaps still in the drive cache, can be seeded into the replica
 before the drive flushes it. Linux and Windows sync as before.
+It validates the namespace and hash before building any path, and uses mtime
+as `lastModified`. `assertStorageConformance` in `@swamp-club/swamp-testing`
+checks an implementation. `createInMemoryRemote({ storage: true })` provides a
+conforming in-memory one. The S3 and GCS implementations are a later
+swamp-extensions change.
 
 **The v2 write-sync policy** (swamp-club#4032). Durable v2 data writes
 (swamp-club#4017) use the same barrier where it is safe. A repository's sync
@@ -2868,11 +2873,6 @@ and the libswamp direct construction sites (`data delete`, `rename`, `prune`,
 `gc`, `model delete`) keep the full sync. On macOS a durable write to the
 default datastore is therefore ordered, not flushed: a power cut can lose the
 newest versions, but never publishes one whose content is missing.
-It validates the namespace and hash before building any path, and uses mtime
-as `lastModified`. `assertStorageConformance` in `@swamp-club/swamp-testing`
-checks an implementation. `createInMemoryRemote({ storage: true })` provides a
-conforming in-memory one. The S3 and GCS implementations are a later
-swamp-extensions change.
 
 ### v3 commit store (datastore rework Phase 3)
 

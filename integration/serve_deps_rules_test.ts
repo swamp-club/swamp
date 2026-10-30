@@ -461,7 +461,7 @@ Deno.test("every WorkflowExecutionService passes the repository's write sync", a
       const args of callArguments(content, /\bnew WorkflowExecutionService\(/g)
     ) {
       services++;
-      if (!/[wW]riteSync/.test(args)) {
+      if (!/\.(?:durableW|w)riteSync\b/.test(args)) {
         violations.push(`${rel}: new WorkflowExecutionService(...)`);
       }
     }

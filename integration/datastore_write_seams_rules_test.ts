@@ -1613,6 +1613,9 @@ const PINNED_ENGINE_READERS: readonly string[] = [
   "src/infrastructure/persistence/datastore_lock_target.ts: lockingConfigOf",
   // A resolver resolves records into the checkout on v3.
   "src/infrastructure/persistence/default_datastore_path_resolver.ts: DefaultDatastorePathResolver",
+  // swamp-club#4032: the macOS ordering barrier is for v2 writes only; a
+  // v3 repository syncs in full. It reads the engine the context opened.
+  "src/infrastructure/persistence/ordered_sync.ts: selectDurableWriteSync",
   // The catalog is the read model's on v3; no shared-datastore write
   // tracker there.
   "src/infrastructure/persistence/repository_factory.ts: catalogDbPath",
