@@ -254,20 +254,23 @@ request's cancellation, so every phase records `cancel_observed`. The CLI's
 `model output search` runs the same search outside any area and exports none of
 these phases.
 
-| Phase              | Parent                      | Attributes                                                                     |
-| ------------------ | --------------------------- | ------------------------------------------------------------------------------ |
-| `candidate_scan`   | `swamp.model.output.search` | Finding the outputs to consider; counters below                                |
-| `definition_names` | `swamp.model.output.search` | `definitions` named, `owner_lookups`, `owner_lookups_reused`, `files_read`     |
-| `workflow_names`   | `swamp.model.output.search` | `workflow_ids`: the workflows named in one lookup; absent when none is named   |
-| `authorization`    | `swamp.serve.request`       | `items` considered, `readable` kept, `owner_lookups`, `owner_lookups_reused`   |
-| `response`         | `swamp.serve.request`       | `results` sent: the limit, then workflow-link redaction, then the reply itself |
+| Phase                     | Parent                                        | Attributes                                                                     |
+| ------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------ |
+| `candidate_scan`          | `swamp.model.output.search`                   | Finding the outputs to consider; counters below                                |
+| `candidate_authorization` | `candidate_scan`                              | `keys` asked about and `readable_keys`: which listed files the caller may read |
+| `definition_names`        | `swamp.model.output.search`, `candidate_scan` | `definitions` named, `owner_lookups`, `owner_lookups_reused`, `files_read`     |
+| `workflow_names`          | `swamp.model.output.search`                   | `workflow_ids`: the workflows named in one lookup; absent when none is named   |
+| `authorization`           | `swamp.serve.request`                         | `items` considered, `readable` kept, `owner_lookups`, `owner_lookups_reused`   |
+| `response`                | `swamp.serve.request`                         | `results` sent: the limit, then workflow-link redaction, then the reply itself |
 
 `definition_names` names the outputs from the request's owner lookups
 (lab #4141): it looks up each definition owning an output that is not already
 named, once, and reads only those definitions' files (`files_read`), never a
-definition that owns none. `authorization` then judges each item on the same
-lookups, so its `owner_lookups` are all `owner_lookups_reused` and it reads no
-definition files. Without a definition index, the request's one scan of every
+definition that owns none. A restricted search can run it twice: inside
+`candidate_scan` for the listed keys, then under the search for any output still
+unnamed (see below). `authorization` then judges each item on the same lookups,
+so its `owner_lookups` are all `owner_lookups_reused` and it reads no definition
+files. Without a definition index, the request's one scan of every
 definition answers both phases.
 
 `candidate_scan` counts `candidates`, and what the repository did to find them.
@@ -280,30 +283,53 @@ says they started outside that window, without a stat or a read (lab #4058). A
 file not in the output form is stat'ed for its mtime only against `since`, and
 read under `until` alone. A search with neither reads every output.
 
+A search without `model` by a caller whose reads are authorized reads only the
+files it may read (lab #4142). A file's location carries the key its
+authorization needs: the type and method directories, and the definition id in
+its name. After the listing, the search asks once about the distinct keys it
+found, in its `candidate_authorization` phase, and leaves out unread every file
+whose key the caller may not read. The model name the key is judged on is the
+one the result would carry, so `definition_names` runs inside `candidate_scan`,
+before the reads; after the scan it looks up only a definition no listed name
+carried. A file whose name is not in the output form carries no key: it is read,
+and judged with every result in `authorization`, which stays the final check on
+what each record says. That check decides afresh, on the policy current once the
+scan is done, so a grant revoked while the search waited for its reads no
+longer admits their outputs. With authorization off, nothing is asked and every
+file is read.
+
 | Attribute                                        | Meaning                                                                         |
 | ------------------------------------------------ | ------------------------------------------------------------------------------- |
-| `type_dirs`, `method_dirs`, `entries`            | Directories listed and output files found by a `since` search without `model`   |
+| `type_dirs`, `method_dirs`, `entries`            | Directories listed and output files found by a search without `model`           |
 | `skipped_by_name`                                | Files skipped unread because their name is outside the window or the definition |
 | `stats`, `skipped_by_mtime`, `stat_work_ms`      | Files stat'ed because their name is not in the output form, and those skipped   |
+| `skipped_by_authorization`                       | Files skipped unread because their key is one the caller may not read           |
+| `key_mismatch`                                   | Records read whose method or definition differs from what their location says   |
 | `files_read`, `bytes_read`                       | Records read                                                                    |
 | `read_work_ms`, `parse_work_ms`                  | Reading and parsing them                                                        |
 | `scans_joined`                                   | 1 when the request shared a scan whose reads another request on it counted      |
 
-Identical searches running at once share one scan (lab #4074): searches for
-the same model, `since` searches, and searches with neither. Both requests
-share them, so a `model.method.history.search` and a `model.output.search`
-with neither filter read once between them. A request joins only a scan that
-has not started yet, so it never gets a result older than itself; one arriving
-while a scan runs waits for it and shares the next one with every request that
-arrives meanwhile. Joining widens that scan's window to cover the request's own
-(the earliest `since`, the latest `until`), so one request's wide window
-enlarges what the others wait on, by at most a full read; each keeps only its
-own window. The scan runs outside every request's async context, so no
-request's vault scope, unit of work or held locks reach the others' results.
-Exactly one request on a scan counts its directories and reads in its
-`candidate_scan`: the one that started it, or, if that one was cancelled, the
-earliest still waiting when the scan ends. The others count `scans_joined` and
-none of them.
+Identical searches running at once share one scan (lab #4074): searches for the
+same model, `since` searches, and searches with neither. Both requests share
+them, so a `model.method.history.search` and a `model.output.search` with
+neither filter read once between them. A search without `model` shares its
+listing and its reads apart (lab #4142): the reads are shared by every search of
+the same kind (`since`, or neither) whatever it listed, each adds the files it
+chose, and each keeps only its own, so requests that may read different files
+read the union of them once. A request that may read none of the files it listed
+joins no reads. A request joins only a scan that has not started yet, so it
+never gets a result older than itself; one arriving while a scan runs waits for
+it and shares the next one with every request that arrives meanwhile. Joining
+widens that scan's window to cover the request's own (the earliest `since`, the
+latest `until`), so one request's wide window enlarges what the others wait on,
+by at most a full read; each keeps only its own window. The scan runs outside
+every request's async context, so no request's vault scope, unit of work or held
+locks reach the others' results. Exactly one request on a scan counts its
+directories and reads in its `candidate_scan`: the one that started it, or, if
+that one was cancelled, the earliest still waiting when the scan ends. The
+others count `scans_joined` and none of them. For a search without `model` the
+listing and the reads are counted this way apart, so one request can hold the
+listing's counts and another the reads', each with `scans_joined`.
 
 Both a `since` search and a search for one model list directories and read
 files concurrently, with at most 16 listings and reads in flight across every

@@ -22,6 +22,24 @@ import type { ModelOutput, ModelOutputId } from "./model_output.ts";
 import type { DefinitionId } from "../definitions/definition.ts";
 
 /**
+ * What an output's location says about it before it is read: the type and
+ * method it is stored under, and the definition its file is named for.
+ */
+export interface OutputKey {
+  type: ModelType;
+  definitionId: string;
+  methodName: string;
+}
+
+/**
+ * Which of `keys` (distinct) the caller may read: one answer per key, in
+ * order.
+ */
+export type SelectReadableOutputs = (
+  keys: readonly OutputKey[],
+) => Promise<readonly boolean[]>;
+
+/**
  * Repository interface for persisting and retrieving ModelOutputs.
  *
  * Stores outputs in the path structure:
@@ -97,9 +115,19 @@ export interface OutputRepository {
    * read-only. They are not filtered for any principal: authorize and
    * redact on values derived from them, never on the outputs themselves.
    *
+   * With `selectReadable`, an implementation may leave out unread the
+   * outputs whose location carries a key it refuses (swamp-club#4142). An
+   * output whose location carries no key is returned for the caller to
+   * judge, so the result still needs authorizing.
+   *
+   * @param signal - Stops the scan once aborted
+   * @param selectReadable - Which output keys the caller may read
    * @returns Array of all outputs with their types and methods
    */
-  findAllGlobal(): Promise<
+  findAllGlobal(
+    signal?: AbortSignal,
+    selectReadable?: SelectReadableOutputs,
+  ): Promise<
     { output: ModelOutput; type: ModelType; method: string }[]
   >;
 
@@ -111,10 +139,15 @@ export interface OutputRepository {
    * read-only and shared as `findAllGlobal()`'s are.
    *
    * @param cutoff - Earliest `startedAt` to include (inclusive)
+   * @param signal - Stops the scan once aborted
+   * @param selectReadable - Which output keys the caller may read, as in
+   *   `findAllGlobal()`
    * @returns Array of outputs whose `startedAt >= cutoff`
    */
   findAllGlobalSince(
     cutoff: Date,
+    signal?: AbortSignal,
+    selectReadable?: SelectReadableOutputs,
   ): Promise<{ output: ModelOutput; type: ModelType; method: string }[]>;
 
   /**

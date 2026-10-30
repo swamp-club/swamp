@@ -46,6 +46,7 @@ import {
 } from "../../domain/definitions/definition.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import type { OutputKey } from "../../domain/models/repositories.ts";
 import { YamlOutputRepository } from "./yaml_output_repository.ts";
 import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
@@ -4128,6 +4129,380 @@ Deno.test(
             undefined,
           );
         });
+      });
+    });
+  },
+);
+
+/** A record of `definitionId`'s `method`, started at `startedAt`. */
+function keyedOutput(
+  definitionId: DefinitionId,
+  method = "run",
+  startedAt = new Date(),
+): ModelOutput {
+  return ModelOutput.create({
+    definitionId,
+    methodName: method,
+    status: "succeeded",
+    startedAt,
+    provenance: defaultProvenance,
+  });
+}
+
+/** A selectReadable accepting the keys of `definitionIds`, and its calls. */
+function selectDefinitions(...definitionIds: string[]): {
+  select: (keys: readonly OutputKey[]) => Promise<readonly boolean[]>;
+  calls: (readonly OutputKey[])[];
+} {
+  const calls: (readonly OutputKey[])[] = [];
+  return {
+    calls,
+    select: (keys) => {
+      calls.push(keys);
+      return Promise.resolve(
+        keys.map((key) => definitionIds.includes(key.definitionId)),
+      );
+    },
+  };
+}
+
+Deno.test(
+  "findAllGlobalSince: with selectReadable, leaves unread every file whose key it refuses, asks once about the distinct keys, and still reads a name not in the output form (swamp-club#4142)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const readable = createDefinitionId(crypto.randomUUID());
+      const hidden = createDefinitionId(crypto.randomUUID());
+      const now = Date.now();
+      for (let i = 0; i < 2; i++) {
+        await repo.save(
+          registeredType,
+          "run",
+          keyedOutput(readable, "run", new Date(now - i)),
+        );
+      }
+      await repo.save(registeredType, "run", keyedOutput(hidden));
+      await repo.save(
+        registeredType,
+        "run",
+        keyedOutput(hidden, "run", new Date(now - 5)),
+      );
+      const unnamed = keyedOutput(hidden);
+      await writeRecordAs(repo, unnamed, "renamed.yaml");
+      const { select, calls } = selectDefinitions(readable);
+
+      await withObservedSpans(async (spans) => {
+        const found = await withDiagnosticArea(
+          "output_search",
+          () =>
+            observeDiagnosticPhase(
+              "candidate_scan",
+              {},
+              () =>
+                repo.findAllGlobalSince(
+                  new Date(now - DAY_MS),
+                  undefined,
+                  select,
+                ),
+            ),
+        );
+
+        assertEquals(
+          found.map((r) => r.output.definitionId).sort(),
+          [hidden, readable, readable].sort(),
+        );
+        assert(found.some((r) => r.output.id === unnamed.id));
+        assertEquals(calls.length, 1);
+        assertEquals(
+          calls[0].map((key) => [
+            key.type.normalized,
+            key.definitionId,
+            key.methodName,
+          ]).sort(),
+          [
+            [registeredType.normalized, hidden, "run"],
+            [registeredType.normalized, readable, "run"],
+          ].sort(),
+        );
+        const scan = phaseAttributes(spans, "candidate_scan");
+        assertEquals(scan["swamp.diagnostic.files_read"], 3);
+        assertEquals(scan["swamp.diagnostic.skipped_by_authorization"], 2);
+        assertEquals(scan["swamp.diagnostic.key_mismatch"], undefined);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobal: with selectReadable, leaves unread every file whose key it refuses (swamp-club#4142)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const readable = createDefinitionId(crypto.randomUUID());
+      const hidden = createDefinitionId(crypto.randomUUID());
+      const kept = keyedOutput(readable);
+      await repo.save(registeredType, "run", kept);
+      await repo.save(registeredType, "run", keyedOutput(hidden));
+      await repo.save(registeredType, "other", keyedOutput(readable, "other"));
+      // Only the readable definition's run method is accepted.
+      const select = (keys: readonly OutputKey[]) =>
+        Promise.resolve(
+          keys.map((key) =>
+            key.definitionId === readable && key.methodName === "run"
+          ),
+        );
+
+      await withHeldReads(async (reads) => {
+        const found = await repo.findAllGlobal(undefined, select);
+        assertEquals(found.map((r) => r.output.id), [kept.id]);
+        assertEquals(reads.started, 1);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: concurrent calls choosing different files share one listing and one read of their union, and each gets only its own (swamp-club#4142)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const a = createDefinitionId(crypto.randomUUID());
+      const b = createDefinitionId(crypto.randomUUID());
+      const neither = createDefinitionId(crypto.randomUUID());
+      for (const id of [a, b, neither]) {
+        await repo.save(registeredType, "run", keyedOutput(id));
+      }
+      const cutoff = new Date(Date.now() - DAY_MS);
+
+      await withObservedSpans(async (spans) => {
+        await withHeldReads(async (reads) => {
+          const [onlyA, onlyB] = await withDiagnosticArea(
+            "output_search",
+            () =>
+              Promise.all([a, b].map((id) =>
+                observeDiagnosticPhase(
+                  "candidate_scan",
+                  {},
+                  () =>
+                    repo.findAllGlobalSince(
+                      cutoff,
+                      undefined,
+                      selectDefinitions(id).select,
+                    ),
+                )
+              )),
+          );
+          assertEquals(onlyA.map((r) => r.output.definitionId), [a]);
+          assertEquals(onlyB.map((r) => r.output.definitionId), [b]);
+          assertEquals(reads.started, 2);
+        });
+        const scans = diagnosticPhases(spans, "candidate_scan");
+        assertEquals(
+          scans.filter((span) =>
+            span.attributes["swamp.diagnostic.scans_joined"] === 1
+          ).length,
+          1,
+        );
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: a call with no selectReadable joining a filtered one reads everything, and the filtered call still gets only its own (swamp-club#4142)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const a = createDefinitionId(crypto.randomUUID());
+      const b = createDefinitionId(crypto.randomUUID());
+      await repo.save(registeredType, "run", keyedOutput(a));
+      await repo.save(registeredType, "run", keyedOutput(b));
+      const cutoff = new Date(Date.now() - DAY_MS);
+
+      await withHeldReads(async (reads) => {
+        const [filtered, everything] = await Promise.all([
+          repo.findAllGlobalSince(
+            cutoff,
+            undefined,
+            selectDefinitions(a).select,
+          ),
+          repo.findAllGlobalSince(cutoff),
+        ]);
+        assertEquals(filtered.map((r) => r.output.definitionId), [a]);
+        assertEquals(
+          everything.map((r) => r.output.definitionId).sort(),
+          [a, b].sort(),
+        );
+        assertEquals(reads.started, 2);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: a filtered call arriving while reads run gets a later listing and read, which see a save made before it arrived (swamp-club#4142)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      const now = Date.now();
+      for (let i = 0; i < 3; i++) {
+        await repo.save(
+          registeredType,
+          "run",
+          keyedOutput(definitionId, "run", new Date(now - i)),
+        );
+      }
+      const cutoff = new Date(now - DAY_MS);
+      const { select } = selectDefinitions(definitionId);
+
+      await withHeldReads(async (reads) => {
+        reads.hold();
+        const first = repo.findAllGlobalSince(cutoff, undefined, select);
+        await waitFor(() => reads.inFlight === 3, "the first call's reads");
+
+        // The running reads come from a finished listing, so cannot see this.
+        await repo.save(
+          registeredType,
+          "run",
+          keyedOutput(definitionId, "run", new Date(now + 1000)),
+        );
+        const later = repo.findAllGlobalSince(cutoff, undefined, select);
+        reads.release();
+
+        assertEquals((await first).length, 3);
+        assertEquals((await later).length, 4);
+        assertEquals(reads.started, 3 + 4);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: a filtered call cancelled on shared reads rejects with its reason, and the call still on them gets its outputs (swamp-club#4142)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const a = createDefinitionId(crypto.randomUUID());
+      const b = createDefinitionId(crypto.randomUUID());
+      await repo.save(registeredType, "run", keyedOutput(a));
+      await repo.save(registeredType, "run", keyedOutput(b));
+      const cutoff = new Date(Date.now() - DAY_MS);
+
+      await withHeldReads(async (reads) => {
+        reads.hold();
+        const controller = new AbortController();
+        const reason = new DOMException("request cancelled", "AbortError");
+        const cancelled = repo.findAllGlobalSince(
+          cutoff,
+          controller.signal,
+          selectDefinitions(a).select,
+        );
+        const kept = repo.findAllGlobalSince(
+          cutoff,
+          undefined,
+          selectDefinitions(b).select,
+        );
+        await waitFor(() => reads.inFlight === 2, "the shared reads");
+        controller.abort(reason);
+        await assertRejects(() => cancelled, DOMException, "request cancelled");
+        reads.release();
+
+        assertEquals((await kept).map((r) => r.output.definitionId), [b]);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: a record whose method differs from its method directory counts key_mismatch (swamp-club#4142)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      // Stored under "moved" while the record says it ran "run".
+      await repo.save(registeredType, "moved", keyedOutput(definitionId));
+
+      await withObservedSpans(async (spans) => {
+        await withDiagnosticArea(
+          "output_search",
+          () =>
+            observeDiagnosticPhase(
+              "candidate_scan",
+              {},
+              () =>
+                repo.findAllGlobalSince(
+                  new Date(Date.now() - DAY_MS),
+                  undefined,
+                  selectDefinitions(definitionId).select,
+                ),
+            ),
+        );
+        const scan = phaseAttributes(spans, "candidate_scan");
+        assertEquals(scan["swamp.diagnostic.key_mismatch"], 1);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: a since search's reads start while a full read is still running, not after it (swamp-club#4142)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      const now = Date.now();
+      for (let i = 0; i < 3; i++) {
+        await repo.save(
+          registeredType,
+          "run",
+          keyedOutput(definitionId, "run", new Date(now - i)),
+        );
+      }
+
+      await withHeldReads(async (reads) => {
+        reads.hold();
+        const full = repo.findAllGlobal();
+        await waitFor(() => reads.inFlight === 3, "the full read");
+        const since = repo.findAllGlobalSince(
+          new Date(now - DAY_MS),
+          undefined,
+          selectDefinitions(definitionId).select,
+        );
+        // Its own reads start beside the held full read.
+        await waitFor(() => reads.inFlight === 6, "the since search's reads");
+        reads.release();
+
+        assertEquals((await full).length, 3);
+        assertEquals((await since).length, 3);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: a call that may read none of the files it listed returns at once, without waiting on running reads (swamp-club#4142)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      await repo.save(registeredType, "run", keyedOutput(definitionId));
+      const cutoff = new Date(Date.now() - DAY_MS);
+
+      await withHeldReads(async (reads) => {
+        reads.hold();
+        const first = repo.findAllGlobalSince(cutoff);
+        await waitFor(() => reads.inFlight === 1, "the first read");
+        assertEquals(
+          await repo.findAllGlobalSince(
+            cutoff,
+            undefined,
+            selectDefinitions().select,
+          ),
+          [],
+        );
+        reads.release();
+        assertEquals((await first).length, 1);
       });
     });
   },

@@ -29,6 +29,8 @@ import fc from "fast-check";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
 import { ModelOutput } from "../../domain/models/model_output.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import type { OutputKey } from "../../domain/models/repositories.ts";
+import { SERVER_TOKEN_MODEL_TYPE } from "../../domain/models/access/server_token_model.ts";
 import { YamlOutputRepository } from "./yaml_output_repository.ts";
 import "../../domain/models/models.ts";
 
@@ -121,6 +123,72 @@ Deno.test("findHistoryByDefinition: returns a record exactly when it started in 
 
           const inWindow = isUntil ? startedMs < boundMs : startedMs >= boundMs;
           assertEquals(found.map((o) => o.id), inWindow ? [output.id] : []);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+// A global scan judges a file on the key its location carries before it
+// reads it (swamp-club#4142): its type and method directories and the
+// definition id in its name. That is safe only if, for every record save()
+// writes, the location says what the record says.
+// A record's definition id is a UUID, hyphens and all.
+const definitionIdArb = fc.uuid();
+const methodArb = fc.stringMatching(/^[a-z][a-zA-Z0-9_-]{0,15}$/);
+const typeArb = fc.constantFrom(TYPE, SERVER_TOKEN_MODEL_TYPE);
+
+Deno.test("findAllGlobalSince: the key a saved record's location carries is the record's own type, method and definition", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-output-key-" });
+  try {
+    await fc.assert(
+      fc.asyncProperty(
+        typeArb,
+        definitionIdArb,
+        methodArb,
+        instant,
+        async (type, definitionId, method, startedMs) => {
+          const repoDir = await Deno.makeTempDir({ dir });
+          const repo = new YamlOutputRepository(repoDir);
+          const output = ModelOutput.create({
+            definitionId: createDefinitionId(definitionId),
+            methodName: method,
+            status: "succeeded",
+            startedAt: new Date(startedMs),
+            provenance: {
+              definitionHash: "abc123",
+              modelVersion: "2026.02.09.1",
+              triggeredBy: "manual",
+            },
+          });
+          await repo.save(type, method, output);
+
+          const asked: OutputKey[] = [];
+          const found = await repo.findAllGlobalSince(
+            new Date(0),
+            undefined,
+            (keys) => {
+              asked.push(...keys);
+              return Promise.resolve(keys.map(() => true));
+            },
+          );
+
+          assertEquals(
+            asked.map((key) => [
+              key.type.normalized,
+              key.definitionId,
+              key.methodName,
+            ]),
+            [[type.normalized, output.definitionId, output.methodName]],
+          );
+          assertEquals(found.map((r) => r.output.id), [output.id]);
         },
       ),
       { numRuns: 100 },
