@@ -42,6 +42,12 @@ import type {
 
 const OPENERS = 4;
 
+/**
+ * How long the openers get to start and to open the outbox. A loaded runner has
+ * stalled the whole suite for longer than the default 10s (swamp-club#4160).
+ */
+const OPENER_WAIT_MS = 60_000;
+
 /** What each schema's migration added, dropped to make an older file. */
 const DOWNGRADES: Record<number, string> = {
   1: "ALTER TABLE outbox_entries DROP COLUMN writer_process; " +
@@ -117,6 +123,7 @@ async function raceOpeners(schema: number): Promise<void> {
     await waitFor(
       () => results.filter((r) => r.kind === "ready").length === OPENERS,
       "every opener to be ready",
+      { timeoutMs: OPENER_WAIT_MS },
     );
     const flag = new Int32Array(start);
     Atomics.store(flag, 0, 1);
@@ -124,6 +131,7 @@ async function raceOpeners(schema: number): Promise<void> {
     await waitFor(
       () => results.filter((r) => r.kind !== "ready").length === OPENERS,
       "every opener to open the outbox",
+      { timeoutMs: OPENER_WAIT_MS },
     );
     assertEquals(
       results.filter((r) => r.kind !== "ready"),
