@@ -49,6 +49,7 @@ export const AGENT_SESSION_QUERY_PREDICATE =
 
 /** Size bounds; a longest real session (169 calls, 17 turns) fits well inside. */
 export const AGENT_SESSION_LIMITS = {
+  harnessLength: 64,
   idLength: 200,
   nameLength: 200,
   textLength: 1000,
@@ -65,9 +66,11 @@ export const AGENT_SESSION_LIMITS = {
 
 const L = AGENT_SESSION_LIMITS;
 
+// A harness slug has no `_`, so the `_` in a data name always ends it.
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
+const HarnessSchema = z.string().max(L.harnessLength).regex(SLUG);
 const SessionIdSchema = z.string().max(L.idLength).regex(SESSION_ID);
 const MillisSchema = z.number().nonnegative();
 const TokenCountSchema = z.number().int().nonnegative();
@@ -162,7 +165,7 @@ export const AgentSessionRecordV1Schema = z.strictObject({
   schemaVersion: z.literal(1),
   id: SessionIdSchema,
   repo: z.string().min(1).max(L.nameLength),
-  harness: z.string().max(64).regex(SLUG),
+  harness: HarnessSchema,
   harnessVersion: z.string().min(1).max(L.nameLength).optional(),
   model: z.string().min(1).max(L.nameLength),
   startedAt: z.iso.datetime(),
@@ -273,12 +276,24 @@ function skipped(
     : { kind: "skipped", reason, schemaVersion, note };
 }
 
-/** The data name a session is stored under: one item per harness session. */
+/**
+ * The data name a session is stored under: one item per harness session.
+ * Throws when `harness` or `sessionId` is not one the record schema accepts,
+ * so no two sessions share a name.
+ */
 export function agentSessionDataName(
   harness: string,
   sessionId: string,
 ): string {
-  return `agent-session-${harness}-${sessionId}`;
+  if (!HarnessSchema.safeParse(harness).success) {
+    throw new Error("agent session harness must be a lowercase slug");
+  }
+  if (!SessionIdSchema.safeParse(sessionId).success) {
+    throw new Error(
+      "agent session id must be letters, digits, '-' and '_', starting with a letter or digit",
+    );
+  }
+  return `agent-session-${harness}_${sessionId}`;
 }
 
 /** The JSON Schema of the current version, for extension authors. */

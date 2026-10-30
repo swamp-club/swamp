@@ -40,6 +40,12 @@ maps each harness's tool name to one canonical set; a name with no mapping
 is `unknown`. Findings are plain text, and every `callIds` entry names a call
 in the same session.
 
+The schema does not check that times are in order: an `end` before its
+`start`, a call outside its turn, or turn numbers with gaps are all accepted.
+Harness clocks and files are not always tidy, and refusing a whole session
+over one bad time loses more than it protects. The page clamps what it draws
+instead: a negative duration draws as zero.
+
 **No transcript content.** Prompts and replies are never part of the record.
 `text` holds only the redacted target of a call: a command line, a path, a
 skill name or a URL. Text the model wrote, such as a subagent's description
@@ -74,8 +80,11 @@ caller on a forwarded write.
 
 ## One item per session, and how the page finds it
 
-Each session is one data item named `agent-session-<harness>-<session id>`
-(`agentSessionDataName`). Re-importing writes a new version of the same item.
+Each session is one data item named `agent-session-<harness>_<session id>`
+(`agentSessionDataName`). A harness slug cannot contain `_`, so two sessions
+never share a name even when one harness slug prefixes another, and the helper
+throws on a harness or id the record schema would refuse. Re-importing writes
+a new version of the same item.
 The extension's output spec sets two tags: `type: agent-session`, which
 replaces the writer's own `type: resource`, and `swampUserId`.
 
@@ -95,7 +104,9 @@ showing it.
 
 `schemaVersion` is in every record from version 1. `readAgentSessionRecord`
 never throws, so one bad record cannot fail the page. A record it cannot read
-is skipped with a note that names field paths and never field values:
+is skipped with a note. The note names field paths and never field values; the
+one value it repeats is the record's `schemaVersion`, once that is known to be
+an integer:
 
 | Reason    | When                                                    | Note tells the viewer to |
 | --------- | ------------------------------------------------------- | ------------------------ |

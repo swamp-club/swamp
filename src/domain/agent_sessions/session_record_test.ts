@@ -17,7 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   AGENT_SESSION_LIMITS,
   AGENT_SESSION_QUERY_PREDICATE,
@@ -220,8 +226,30 @@ Deno.test("AgentSessionRecordV1Schema: startedAt must be an ISO 8601 UTC time", 
 Deno.test("agentSessionDataName: one name per harness session", () => {
   assertEquals(
     agentSessionDataName("codex", "abc-123"),
-    "agent-session-codex-abc-123",
+    "agent-session-codex_abc-123",
   );
+});
+
+Deno.test("agentSessionDataName: a harness that prefixes another never shares a name", () => {
+  assertNotEquals(
+    agentSessionDataName("claude", "code-x"),
+    agentSessionDataName("claude-code", "x"),
+  );
+});
+
+Deno.test("agentSessionDataName: refuses a harness or session id the schema refuses", () => {
+  for (
+    const [harness, sessionId] of [
+      ["Claude Code", "abc"],
+      ["claude_code", "abc"],
+      ["", "abc"],
+      ["codex", "../etc"],
+      ["codex", ""],
+      ["codex", "a".repeat(AGENT_SESSION_LIMITS.idLength + 1)],
+    ]
+  ) {
+    assertThrows(() => agentSessionDataName(harness, sessionId));
+  }
 });
 
 Deno.test("AGENT_SESSION_QUERY_PREDICATE: lists by the type tag", () => {
