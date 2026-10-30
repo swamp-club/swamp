@@ -186,7 +186,12 @@ async function warmEsbuild(): Promise<void> {
   }
 }
 
-/** Removes what Deno cached from this run's registry in the shared cache. */
+/**
+ * Removes what Deno cached from this run's registry's port in the shared
+ * cache. It runs before the vectors too: another suite's registry on the
+ * same port may have left a packument there that names none of this
+ * registry's versions, and Deno would resolve against it (swamp-club#4189).
+ */
 async function forgetRegistry(registry: VectorRegistry): Promise<void> {
   const port = new URL(registry.origin).port;
   for (
@@ -210,6 +215,7 @@ Deno.test("dependency input vectors", async (t) => {
   await warmEsbuild();
   const registry = await startVectorRegistry();
   try {
+    await forgetRegistry(registry);
     for (const name of vectorNames) {
       await t.step(name, async () => {
         const dir = join(VECTORS_DIR, name);
