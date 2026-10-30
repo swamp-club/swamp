@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 import { assertEquals, assertRejects } from "@std/assert";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { ensureDir } from "@std/fs";
 import { dirname, join } from "@std/path";
 import type { OutputSummary } from "../../domain/models/output_summary.ts";
@@ -28,6 +29,7 @@ import {
   type OutputSummaryRow,
   removeStaleOutputSummaries,
 } from "./output_summary_index.ts";
+import { initializeLogging } from "../logging/logger.ts";
 import { swampPath } from "./paths.ts";
 
 const TYPE = "@acme/thing";
@@ -522,5 +524,237 @@ Deno.test("removeStaleOutputSummaries: readers adding rows while it clears fail 
       (Deno as { remove: typeof Deno.remove }).remove = remove;
     }
     assertEquals(failures, []);
+  });
+});
+
+/**
+ * Runs `fn` with a clock that moves past a slice between any two looks at it, so
+ * work done in slices yields after each item, however fast this machine is.
+ */
+async function withEverySliceExpired<T>(fn: () => Promise<T>): Promise<T> {
+  const now = performance.now;
+  let ticks = now.call(performance);
+  performance.now = () => ticks += 1000;
+  try {
+    return await fn();
+  } finally {
+    performance.now = now;
+  }
+}
+
+Deno.test("OutputSummaryIndex.read: yields to the event loop while it parses a shard", async () => {
+  await withTempDir(async (dir) => {
+    const index = indexIn(dir);
+    await index.append(TYPE, rowsOf(summaryOf(), summaryOf(), summaryOf()));
+
+    let turns = 0;
+    const read = await withEverySliceExpired(async () => {
+      const reading = index.read(TYPE, DAY);
+      const ticking = (async () => {
+        let done = false;
+        reading.finally(() => done = true);
+        while (!done) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          turns++;
+        }
+      })();
+      const rows = await reading;
+      await ticking;
+      return rows;
+    });
+    assertEquals(read.size, 3);
+    assertEquals(turns > 1, true, `${turns} turns`);
+  });
+});
+
+Deno.test("OutputSummaryIndex.read: a read whose signal aborts stops at its next yield, with the reason", async () => {
+  await withTempDir(async (dir) => {
+    const index = indexIn(dir);
+    await index.append(TYPE, rowsOf(summaryOf()));
+    const controller = new AbortController();
+    const reason = new Error("cancelled");
+    controller.abort(reason);
+
+    const failure = await withEverySliceExpired(() =>
+      index.read(TYPE, DAY, controller.signal).then(() => undefined, (e) => e)
+    );
+    assertEquals(failure, reason);
+  });
+});
+
+Deno.test("OutputSummaryIndex.read: a shard past a chunk reads back whole, with multi-byte text and a line longer than a chunk", async () => {
+  await withTempDir(async (dir) => {
+    const index = indexIn(dir);
+    const provenance = (stepName: string) => ({
+      triggeredBy: "manual" as const,
+      stepName,
+    });
+    const summaries = Array.from({ length: 5000 }, (_, i) =>
+      summaryOf({
+        startedAt: new Date(Date.UTC(2026, 0, 2, 0, 0, 0, i)),
+        provenance: provenance(`é-日本語-🐊-${i}-${"x".repeat(400)}`),
+      }));
+    const long = summaryOf({
+      startedAt: new Date(Date.UTC(2026, 0, 2, 1)),
+      provenance: provenance(`日本語${"y".repeat(3 * 1024 * 1024)}`),
+    });
+    summaries.splice(2500, 0, long);
+    await index.append(TYPE, rowsOf(...summaries));
+
+    const rows = await index.read(TYPE, DAY);
+    assertEquals(rows.size, summaries.length);
+    for (const summary of summaries) {
+      assertEquals(
+        rows.get(keyOf(summary))?.summary.provenance.stepName,
+        summary.provenance.stepName,
+      );
+    }
+  });
+});
+
+Deno.test("OutputSummaryIndex.read: never decodes a shard whole, so its size cannot pass the limit of one string", async () => {
+  await withTempDir(async (dir) => {
+    const index = indexIn(dir);
+    const summaries = Array.from({ length: 12000 }, (_, i) =>
+      summaryOf({
+        startedAt: new Date(Date.UTC(2026, 0, 2, 0, 0, 0, i)),
+        provenance: { triggeredBy: "manual", stepName: "x".repeat(400) },
+      }));
+    await index.append(TYPE, rowsOf(...summaries));
+    const shardBytes = await index.shardBytes(TYPE, DAY);
+    const chunk = 1024 * 1024;
+    assertEquals(shardBytes > 4 * chunk, true);
+
+    const decode = TextDecoder.prototype.decode;
+    let largest = 0;
+    TextDecoder.prototype.decode = function (input, options) {
+      largest = Math.max(largest, (input as Uint8Array).byteLength ?? 0);
+      return decode.call(this, input, options);
+    };
+    try {
+      assertEquals((await index.read(TYPE, DAY)).size, summaries.length);
+    } finally {
+      TextDecoder.prototype.decode = decode;
+    }
+    assertEquals(largest > 0 && largest <= chunk, true, `${largest} bytes`);
+  });
+});
+
+Deno.test("OutputSummaryIndex.read: a chunk that cannot be decoded fails no caller, and costs only its rows", async () => {
+  await withTempDir(async (dir) => {
+    const index = indexIn(dir);
+    const summaries = Array.from({ length: 6000 }, (_, i) =>
+      summaryOf({
+        startedAt: new Date(Date.UTC(2026, 0, 2, 0, 0, 0, i)),
+        provenance: { triggeredBy: "manual", stepName: "x".repeat(400) },
+      }));
+    await index.append(TYPE, rowsOf(...summaries));
+
+    const decode = TextDecoder.prototype.decode;
+    let calls = 0;
+    TextDecoder.prototype.decode = function (input, options) {
+      if (++calls === 1) throw new RangeError("Invalid string length");
+      return decode.call(this, input, options);
+    };
+    let rows: Map<string, OutputSummaryRow>;
+    try {
+      rows = await index.read(TYPE, DAY);
+    } finally {
+      TextDecoder.prototype.decode = decode;
+    }
+    assertEquals(rows.size > 0 && rows.size < summaries.length, true);
+  });
+});
+
+/** The warnings logged while `fn` runs. */
+async function warningsDuring(fn: () => Promise<void>): Promise<string[]> {
+  const warnings: string[] = [];
+  await configure({
+    sinks: {
+      capture: (record: LogRecord) => {
+        if (record.level === "warning") {
+          warnings.push(record.message.map(String).join(""));
+        }
+      },
+    },
+    loggers: [
+      { category: ["output-repo"], lowestLevel: "debug", sinks: ["capture"] },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await reset();
+    await initializeLogging({});
+  }
+  return warnings;
+}
+
+Deno.test("removeStaleOutputSummaries: an entry another clear moved first is not a failure, and the rest still go", async () => {
+  await withTempDir(async (dir) => {
+    const root = swampPath(dir, OUTPUT_SUMMARIES_DIR);
+    await ensureDir(join(root, "first"));
+    await ensureDir(join(root, "second"));
+    const taken = join(dir, "taken-by-another-clear");
+
+    const rename = Deno.rename;
+    let raced = false;
+    (Deno as { rename: typeof Deno.rename }).rename = async (from, to) => {
+      const name = String(from);
+      if (!raced && (name.endsWith("first") || name.endsWith("second"))) {
+        raced = true;
+        await rename(from, taken);
+      }
+      return await rename(from, to);
+    };
+    let warnings: string[];
+    try {
+      warnings = await warningsDuring(() => removeStaleOutputSummaries(dir));
+    } finally {
+      (Deno as { rename: typeof Deno.rename }).rename = rename;
+    }
+
+    assertEquals(raced, true);
+    assertEquals(warnings, []);
+    assertEquals(
+      (await Array.fromAsync(Deno.readDir(root))).map((entry) => entry.name),
+      ["cleared"],
+    );
+  });
+});
+
+Deno.test("removeStaleOutputSummaries: clears racing each other warn of nothing, and leave no shard", async () => {
+  await withTempDir(async (dir) => {
+    const index = indexIn(dir);
+    for (let i = 0; i < 16; i++) {
+      await index.append(`${TYPE}/${i}`, rowsOf(summaryOf()));
+    }
+    const warnings = await warningsDuring(async () => {
+      await Promise.all(
+        Array.from({ length: 8 }, () => removeStaleOutputSummaries(dir)),
+      );
+    });
+    assertEquals(warnings, []);
+    assertEquals(
+      (await Array.fromAsync(
+        Deno.readDir(swampPath(dir, OUTPUT_SUMMARIES_DIR)),
+      )).map((entry) => entry.name).filter((name) => name === "v1"),
+      [],
+    );
+  });
+});
+
+Deno.test("removeStaleOutputSummaries: the temp file of another clear's marker is left for that clear to rename", async () => {
+  await withTempDir(async (dir) => {
+    const root = swampPath(dir, OUTPUT_SUMMARIES_DIR);
+    await ensureDir(root);
+    const temp = join(root, `.${crypto.randomUUID()}.tmp`);
+    await Deno.writeTextFile(temp, "marker");
+
+    await removeStaleOutputSummaries(dir);
+
+    assertEquals(await Deno.readTextFile(temp), "marker");
   });
 });

@@ -62,11 +62,17 @@ The listing is the part that still grows: with retained runs, not with the
 window. It is what keeps results identical to reading every record, because a
 file the listing does not find is never returned, and a file with no row is read.
 
-The stats grow with the files a read answers: about 240 ms of the 734 ms a warm
-read of 75,000 outputs takes. They are synchronous, in slices of 4 ms between
-yields to the event loop, because an awaited stat waits a turn of a busy loop:
-on a contended loop 75,000 of them took 5 s awaited and 0.3 s in slices. A stat
+The stats grow with the files a read answers, about a quarter of a warm read's
+time. They are synchronous, because an awaited stat waits a turn of a busy loop:
+on a contended loop 75,000 of them took 5 s awaited and 0.3 s synchronously. A stat
 of a filesystem that hangs therefore holds the loop, not just the scan.
+
+So that a large read does not hold up the requests beside it, the stats, the shard
+parse and the join of rows to files all yield to the event loop every 4 ms, and
+stop at the next yield once the read is cancelled. A shard is decoded 1 MiB at a
+time, so its size is not limited by what one string can hold. With 75,000 runs in
+one shard, this took a warm read's longest block from about 250 ms to about 170 ms,
+which is the listing's own sort and name matching, and added about 20% to its time.
 
 ## How it heals
 
@@ -108,7 +114,8 @@ Three things do write back:
   shards it holds. It then renames the shards aside and removes them from there: a
   read adding a file to a directory while a removal empties it would fail the
   removal, and no writer knows the name it moved to. A removal that still fails
-  costs only disk, and the next clear retries it.
+  costs only disk, and the next clear retries it. Clears can overlap: an entry
+  another clear moved first is that clear's to remove.
 
 ## Known limits
 

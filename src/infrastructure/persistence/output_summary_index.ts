@@ -38,6 +38,7 @@ import {
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { swampPath } from "./paths.ts";
 import { assertSafePath } from "./safe_path.ts";
+import { inTimeSlices } from "./scan_permits.ts";
 
 const logger = getLogger(["output-repo", "summaries"]);
 
@@ -52,6 +53,15 @@ export const OUTPUT_SUMMARIES_DIR = "_output_summaries";
 const SCHEMA_VERSION = "v1";
 
 const SHARD_SUFFIX = ".ndjson";
+
+/**
+ * How much of a shard is decoded at once. A string of a whole shard would hold
+ * the event loop while it is decoded and split, and past V8's string limit of
+ * about 512 MB could not be made at all.
+ */
+const SHARD_CHUNK_BYTES = 1024 * 1024;
+
+const NEWLINE = 10;
 
 /** Changes each time the summaries are cleared: see {@link OutputSummaryIndex.generation}. */
 const CLEARED_MARKER = "cleared";
@@ -94,12 +104,30 @@ function keyOfSummary(summary: OutputSummary): string {
 }
 
 /** `rows` as the lines of a shard. */
-function shardText(rows: Iterable<OutputSummaryRow>): string {
+async function shardText(rows: readonly OutputSummaryRow[]): Promise<string> {
   let text = "";
-  for (const { summary, record } of rows) {
-    text += `${JSON.stringify({ ...outputSummaryToData(summary), record })}\n`;
-  }
+  let next = 0;
+  await inTimeSlices(
+    () => next < rows.length,
+    (until) => {
+      do {
+        const { summary, record } = rows[next++];
+        const data = { ...outputSummaryToData(summary), record };
+        text += `${JSON.stringify(data)}\n`;
+      } while (next < rows.length && performance.now() < until);
+    },
+  );
   return text;
+}
+
+/** Where the chunk of `content` starting at `start` ends: after a whole line. */
+function chunkEnd(content: Uint8Array, start: number): number {
+  const limit = start + SHARD_CHUNK_BYTES;
+  if (limit >= content.length) return content.length;
+  const last = content.lastIndexOf(NEWLINE, limit - 1);
+  if (last >= start) return last + 1;
+  const next = content.indexOf(NEWLINE, limit);
+  return next === -1 ? content.length : next + 1;
 }
 
 /** The shard a file name's stamp belongs in: its UTC day. */
@@ -143,14 +171,20 @@ export async function removeStaleOutputSummaries(
     // Replaced rather than written through, should it be a symlink.
     await atomicWriteTextFile(join(dir, CLEARED_MARKER), crypto.randomUUID());
     for (const { name } of await Array.fromAsync(Deno.readDir(dir))) {
-      if (name === CLEARED_MARKER) continue;
+      // The temp file of another clear's marker is its to rename.
+      if (name === CLEARED_MARKER || name.endsWith(".tmp")) continue;
       if (name.startsWith(CLEARED_ASIDE_PREFIX)) {
         aside.push(join(dir, name));
         continue;
       }
       const moved = join(dir, `${CLEARED_ASIDE_PREFIX}${crypto.randomUUID()}`);
-      await Deno.rename(join(dir, name), moved);
-      aside.push(moved);
+      try {
+        await Deno.rename(join(dir, name), moved);
+        aside.push(moved);
+      } catch (error) {
+        // Another clear got to it first, and removes it.
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
     }
   } catch (error) {
     logger
@@ -239,14 +273,16 @@ export class OutputSummaryIndex {
    * A shard's rows by key, the last row of each winning. A shard at least half
    * made of lines that lost to another, or are not rows, is rewritten with only
    * the winners. Each line a rewrite drops took an append to add, so a read pays
-   * for this at most once per doubling of the shard.
+   * for this at most once per doubling of the shard. Once `signal` aborts, it
+   * rejects with the reason at the next yield to the event loop.
    */
   async read(
     type: string,
     day: string,
+    signal?: AbortSignal,
   ): Promise<Map<string, OutputSummaryRow>> {
     const path = this.#shardPath(type, day);
-    const { rows, lines, bytes } = await this.#readShard(path);
+    const { rows, lines, bytes } = await this.#readShard(path, signal);
     if (lines > 0 && lines >= 2 * rows.size) {
       await this.#rewriteWithoutLosers(path, rows, bytes);
     }
@@ -260,10 +296,11 @@ export class OutputSummaryIndex {
   ): Promise<void> {
     try {
       await assertSafePath(path, this.#boundary);
+      const text = await shardText([...rows.values()]);
       // Grown since it was read: other readers are still adding rows, and the
       // rewrite would lose them. A later read gets to it.
       if ((await Deno.lstat(path)).size !== bytesRead) return;
-      await atomicWriteTextFile(path, shardText(rows.values()));
+      await atomicWriteTextFile(path, text);
       currentDiagnosticTally().add("summary_shards_rewritten");
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) return;
@@ -271,8 +308,14 @@ export class OutputSummaryIndex {
     }
   }
 
+  /**
+   * A shard's rows, parsed a chunk at a time in slices of the event loop, so a
+   * large shard neither holds up other requests nor resists a cancelled read. A
+   * chunk that cannot be decoded costs only the reads of its rows.
+   */
   async #readShard(
     path: string,
+    signal?: AbortSignal,
   ): Promise<
     { rows: Map<string, OutputSummaryRow>; lines: number; bytes: number }
   > {
@@ -286,23 +329,51 @@ export class OutputSummaryIndex {
       }
       return { rows, lines: 0, bytes: 0 };
     }
+    const decoder = new TextDecoder();
     let lines = 0;
-    for (const line of new TextDecoder().decode(content).split("\n")) {
-      if (line.length === 0) continue;
+    let decodedTo = 0;
+    let chunk: string[] = [];
+    let next = 0;
+    const more = () => next < chunk.length || decodedTo < content.length;
+    const parseNext = () => {
+      if (next === chunk.length) {
+        const end = chunkEnd(content, decodedTo);
+        try {
+          chunk = decoder.decode(content.subarray(decodedTo, end)).split("\n");
+        } catch (error) {
+          logger.debug`Decoding output summaries ${path} failed: ${error}`;
+          chunk = [];
+          lines++;
+        }
+        next = 0;
+        decodedTo = end;
+        return;
+      }
+      const line = chunk[next++];
+      if (line.length === 0) return;
       lines++;
       let data: unknown;
       try {
         data = JSON.parse(line);
       } catch {
-        continue;
+        return;
       }
       const summary = outputSummaryFromData(data);
-      if (summary === undefined || !isSettledStatus(summary.status)) continue;
+      if (summary === undefined || !isSettledStatus(summary.status)) return;
       rows.set(keyOfSummary(summary), {
         summary,
         record: (data as { record?: unknown }).record,
       });
-    }
+    };
+    await inTimeSlices(
+      more,
+      (until) => {
+        do {
+          parseNext();
+        } while (more() && performance.now() < until);
+      },
+      signal,
+    );
     return { rows, lines, bytes: content.length };
   }
 
@@ -328,7 +399,7 @@ export class OutputSummaryIndex {
     let written = 0;
     for (const [path, shard] of byShard) {
       try {
-        await this.#appendLines(path, shardText(shard));
+        await this.#appendLines(path, await shardText(shard));
         written += shard.length;
       } catch (error) {
         logger.debug`Adding output summaries to ${path} failed: ${error}`;
@@ -385,7 +456,7 @@ export class OutputSummaryIndex {
         } else if (kept.length !== lines) {
           await atomicWriteTextFile(
             path,
-            shardText(kept.map(([, row]) => row)),
+            await shardText(kept.map(([, row]) => row)),
           );
           compacted.shardsRewritten++;
         }

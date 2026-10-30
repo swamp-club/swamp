@@ -50,6 +50,7 @@ import { assertSafePath } from "./safe_path.ts";
 import { isIoError } from "./io_errors.ts";
 import { readDirSorted } from "./sorted_dir_entries.ts";
 import {
+  inTimeSlices,
   mapBounded,
   SCAN_CONCURRENCY,
   type ScanKind,
@@ -147,14 +148,6 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * a busy loop, and a read in batches reuses the shard it opened.
  */
 const SUMMARY_SHARD_BYTES_PER_FILE = 16 * 1024;
-
-/**
- * How long checking rows against their records holds the event loop before it
- * yields. A read checks one record per row, and an awaited stat waits a turn of
- * a busy loop: on a contended loop 75,000 stats took 5 s awaited, 16 at a time,
- * and 0.3 s synchronously in slices (0.25 s and 0.4 s on a quiet one).
- */
-const SUMMARY_STAT_SLICE_MS = 4;
 
 /** An output file name `<definitionId>-<stamp>.yaml`, as getPath writes it. */
 const OUTPUT_FILE_NAME =
@@ -1380,7 +1373,7 @@ export class YamlOutputRepository implements OutputRepository {
           () =>
             tally.measure(
               "summary_read",
-              () => this.summaries.read(type.normalized, day),
+              () => this.summaries.read(type.normalized, day, signal),
             ),
           signal,
         );
@@ -1405,45 +1398,65 @@ export class YamlOutputRepository implements OutputRepository {
     const found = new Map<string, GlobalSummary>();
     const unanswered: Array<[string, ListedOutput, boolean]> = [];
     const answerable: Array<[string, ListedOutput, OutputSummaryRow]> = [];
-    for (const [path, file] of files) {
-      const { modelType, method, definitionId, stamp } = file;
-      const row = stamp === undefined || definitionId === undefined
-        ? undefined
-        : rows.get(JSON.stringify([modelType.normalized, shardDayOf(stamp)]))
-          ?.get(outputSummaryKey(method, definitionId, stamp));
-      if (
-        row !== undefined &&
-        (!options.errorMessages || row.summary.status === "succeeded")
-      ) {
-        answerable.push([path, file, row]);
-      } else {
-        const unopenedShard = stamp !== undefined && unopened.has(
-          JSON.stringify([modelType.normalized, shardDayOf(stamp)]),
-        );
-        unanswered.push([path, file, row !== undefined || unopenedShard]);
-      }
-    }
+    const listed = [...files];
+    let joined = 0;
+    await inTimeSlices(
+      () => joined < listed.length,
+      (until) => {
+        do {
+          const [path, file] = listed[joined++];
+          const { modelType, method, definitionId, stamp } = file;
+          const shard = stamp === undefined
+            ? undefined
+            : JSON.stringify([modelType.normalized, shardDayOf(stamp)]);
+          const row = shard === undefined || definitionId === undefined
+            ? undefined
+            : rows.get(shard)?.get(
+              outputSummaryKey(method, definitionId, stamp!),
+            );
+          if (
+            row !== undefined &&
+            (!options.errorMessages || row.summary.status === "succeeded")
+          ) {
+            answerable.push([path, file, row]);
+          } else {
+            const unopenedShard = shard !== undefined && unopened.has(shard);
+            unanswered.push([path, file, row !== undefined || unopenedShard]);
+          }
+        } while (joined < listed.length && performance.now() < until);
+      },
+      signal,
+    );
 
     const versions = await this.recordFingerprints(
       answerable.map(([path]) => path),
       signal,
     );
-    for (const [path, file, row] of answerable) {
-      const fingerprint = versions.get(path);
-      if (
-        fingerprint !== undefined && fingerprintMatches(row.record, fingerprint)
-      ) {
-        found.set(path, {
-          output: row.summary,
-          type: file.modelType,
-          method: row.summary.methodName,
-        });
-        tally.add("summary_rows_used");
-      } else {
-        tally.add("summary_rows_outdated");
-        unanswered.push([path, file, false]);
-      }
-    }
+    let checked = 0;
+    await inTimeSlices(
+      () => checked < answerable.length,
+      (until) => {
+        do {
+          const [path, file, row] = answerable[checked++];
+          const fingerprint = versions.get(path);
+          if (
+            fingerprint !== undefined &&
+            fingerprintMatches(row.record, fingerprint)
+          ) {
+            found.set(path, {
+              output: row.summary,
+              type: file.modelType,
+              method: row.summary.methodName,
+            });
+            tally.add("summary_rows_used");
+          } else {
+            tally.add("summary_rows_outdated");
+            unanswered.push([path, file, false]);
+          }
+        } while (checked < answerable.length && performance.now() < until);
+      },
+      signal,
+    );
 
     for (let i = 0; i < unanswered.length; i += SUMMARY_BACKFILL_BATCH) {
       const batch = unanswered.slice(i, i + SUMMARY_BACKFILL_BATCH);
@@ -1495,9 +1508,10 @@ export class YamlOutputRepository implements OutputRepository {
 
   /**
    * The fingerprint of each of `paths` that has one: not a file that cannot be
-   * stat'ed, whose read says what that means. Stat'ed synchronously, yielding to
-   * the event loop every {@link SUMMARY_STAT_SLICE_MS}, and taking no scan permit
-   * since a stat holds no descriptor.
+   * stat'ed, whose read says what that means. A read checks one record per row,
+   * and an awaited stat waits a turn of a busy loop: on a contended loop 75,000
+   * stats took 5 s awaited, 16 at a time, and 0.3 s synchronously in slices (0.25 s
+   * and 0.4 s on a quiet one). They take no scan permit: a stat holds no descriptor.
    */
   private async recordFingerprints(
     paths: readonly string[],
@@ -1506,24 +1520,24 @@ export class YamlOutputRepository implements OutputRepository {
     const tally = currentDiagnosticTally();
     const fingerprints = new Map<string, RecordFingerprint>();
     let next = 0;
-    while (next < paths.length) {
-      tally.measureSync("summary_stat", () => {
-        const until = performance.now() + SUMMARY_STAT_SLICE_MS;
-        while (next < paths.length && performance.now() < until) {
-          const path = paths[next++];
-          try {
-            const fingerprint = fingerprintOf(Deno.statSync(path));
-            if (fingerprint !== undefined) fingerprints.set(path, fingerprint);
-          } catch {
-            // Its read reports what is wrong with it.
-          }
-        }
-      });
-      if (next < paths.length) {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        signal.throwIfAborted();
-      }
-    }
+    await inTimeSlices(
+      () => next < paths.length,
+      (until) =>
+        tally.measureSync("summary_stat", () => {
+          do {
+            const path = paths[next++];
+            try {
+              const fingerprint = fingerprintOf(Deno.statSync(path));
+              if (fingerprint !== undefined) {
+                fingerprints.set(path, fingerprint);
+              }
+            } catch {
+              // Its read reports what is wrong with it.
+            }
+          } while (next < paths.length && performance.now() < until);
+        }),
+      signal,
+    );
     tally.add("summary_stats", paths.length);
     return fingerprints;
   }
