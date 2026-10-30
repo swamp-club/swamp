@@ -797,3 +797,237 @@ Deno.test("modelOutputSearch: gives the full scan a selection only when canRead 
   );
   assertEquals(typeof selected, "function");
 });
+
+/**
+ * A newest-first read over `files`, given in the order the repository would
+ * read them, counting what it reads and how often it is opened. `named: false`
+ * is a file whose name says nothing about its start.
+ */
+function fakeNewestFirst(
+  files: Array<{ id: string; startedAt: string; named?: boolean }>,
+) {
+  let at = 0;
+  const counts = { opened: 0, read: 0, batches: [] as number[] };
+  const instantOf = (startedAt: string) => new Date(startedAt);
+  const dep: NonNullable<ModelOutputSearchDeps["findOutputsNewestFirst"]> =
+    () => {
+      counts.opened++;
+      return Promise.resolve({
+        get unread() {
+          return files.length - at;
+        },
+        unreadStartedBefore: (instant: Date) => {
+          const head = files[at];
+          if (head === undefined) return true;
+          return head.named !== false &&
+            instantOf(head.startedAt).getTime() < instant.getTime();
+        },
+        next: (count: number) => {
+          const batch = files.slice(at, at + count);
+          at += batch.length;
+          counts.read += batch.length;
+          counts.batches.push(batch.length);
+          return Promise.resolve(batch.map((file, i) => ({
+            output: {
+              id: file.id,
+              definitionId: `def-${file.id}`,
+              methodName: "run",
+              status: "succeeded",
+              startedAt: instantOf(file.startedAt),
+            },
+            type: { normalized: "command/shell" },
+            position: at - batch.length + i,
+          })));
+        },
+      });
+    };
+  return { dep, counts };
+}
+
+/** Deps whose only way to find outputs is the given newest-first read. */
+function newestFirstDeps(
+  dep: NonNullable<ModelOutputSearchDeps["findOutputsNewestFirst"]>,
+  overrides: Partial<ModelOutputSearchDeps> = {},
+): ModelOutputSearchDeps {
+  return makeDeps({
+    findAllOutputsGlobal: () => {
+      throw new Error("a limited search must not read every output");
+    },
+    findOutputsNewestFirst: dep,
+    ...overrides,
+  });
+}
+
+/** `count` files a minute apart, newest first. */
+function minutesApart(count: number) {
+  return Array.from({ length: count }, (_, i) => ({
+    id: `out-${i}`,
+    startedAt: new Date(Date.UTC(2026, 0, 1, 1, -i)).toISOString(),
+  }));
+}
+
+Deno.test("modelOutputSearch: with a limit, reads no further than the results it returns, and counts what it left unread", async () => {
+  await withObservedSpans(async (spans) => {
+    const { dep, counts } = fakeNewestFirst(minutesApart(100));
+
+    const data = completedOf(
+      await withDiagnosticArea(
+        "output_search",
+        () =>
+          collect(
+            modelOutputSearch(createLibSwampContext(), newestFirstDeps(dep), {
+              limit: 20,
+            }),
+          ),
+      ),
+    );
+
+    assertEquals(
+      data.results.map((r) => r.id),
+      minutesApart(20).map((file) => file.id),
+    );
+    assertEquals(counts.batches, [20]);
+    const scan = findSpan(spans, "swamp.diagnostic.candidate_scan").attributes;
+    assertEquals(scan["swamp.diagnostic.candidates"], 20);
+    assertEquals(scan["swamp.diagnostic.left_unread"], 80);
+  });
+});
+
+Deno.test("modelOutputSearch: with a large limit, reads at most 1024 outputs at once, so it takes turns at the shared reads", async () => {
+  const { dep, counts } = fakeNewestFirst(minutesApart(3000));
+
+  const data = completedOf(
+    await collect(
+      modelOutputSearch(createLibSwampContext(), newestFirstDeps(dep), {
+        limit: 2500,
+      }),
+    ),
+  );
+
+  assertEquals(data.results.length, 2500);
+  assertEquals(counts.batches, [1024, 1024, 452]);
+});
+
+Deno.test("modelOutputSearch: with a limit, reads through outputs started in the same millisecond as the last result, keeping the first in walk order", async () => {
+  const at = "2026-01-01T00:00:00.000Z";
+  const { dep, counts } = fakeNewestFirst([
+    { id: "tied-1", startedAt: at },
+    ...Array.from({ length: 20 }, (_, i) => ({
+      id: `tied-${i + 2}`,
+      startedAt: at,
+    })),
+    { id: "older", startedAt: "2025-01-01T00:00:00.000Z" },
+  ]);
+
+  const data = completedOf(
+    await collect(
+      modelOutputSearch(createLibSwampContext(), newestFirstDeps(dep), {
+        limit: 1,
+      }),
+    ),
+  );
+
+  assertEquals(data.results.map((r) => r.id), ["tied-1"]);
+  // Every tied output, in batches of at least 16, and so the older one too.
+  assertEquals(counts.read, 22);
+});
+
+Deno.test("modelOutputSearch: with a limit, an old output whose name says nothing does not end the search before newer ones are read", async () => {
+  const { dep } = fakeNewestFirst([
+    { id: "old-unnamed", startedAt: "2020-01-01T00:00:00.000Z", named: false },
+    ...minutesApart(40),
+  ]);
+
+  const data = completedOf(
+    await collect(
+      modelOutputSearch(createLibSwampContext(), newestFirstDeps(dep), {
+        limit: 20,
+      }),
+    ),
+  );
+
+  assertEquals(
+    data.results.map((r) => r.id),
+    minutesApart(20).map((file) => file.id),
+  );
+});
+
+Deno.test("modelOutputSearch: with a limit, an output canRead refuses takes no place among the results, and the search reads on", async () => {
+  const { dep, counts } = fakeNewestFirst(minutesApart(100));
+  const refused = new Set(
+    minutesApart(30).map((file) => `def-${file.id}`),
+  );
+
+  const data = completedOf(
+    await collect(
+      modelOutputSearch(
+        createLibSwampContext(),
+        newestFirstDeps(dep, {
+          canRead: (candidates) =>
+            Promise.resolve(
+              candidates.map((c) => !refused.has(c.definitionId)),
+            ),
+        }),
+        { limit: 2 },
+      ),
+    ),
+  );
+
+  assertEquals(data.results.map((r) => r.id), ["out-30", "out-31"]);
+  assertEquals(counts.batches, [16, 16]);
+});
+
+Deno.test("modelOutputSearch: with a limit, an output its name placed in the window but whose record does not is left out", async () => {
+  const { dep } = fakeNewestFirst([
+    { id: "in", startedAt: "2026-01-02T00:00:00.000Z" },
+    { id: "out", startedAt: "2020-01-02T00:00:00.000Z" },
+  ]);
+
+  const data = completedOf(
+    await collect(
+      modelOutputSearch(createLibSwampContext(), newestFirstDeps(dep), {
+        since: "2026-01-01T00:00:00.000Z",
+        limit: 5,
+      }),
+    ),
+  );
+
+  assertEquals(data.results.map((r) => r.id), ["in"]);
+});
+
+Deno.test("modelOutputSearch: a limit of 0 reads nothing", async () => {
+  const { dep, counts } = fakeNewestFirst(minutesApart(5));
+
+  const data = completedOf(
+    await collect(
+      modelOutputSearch(createLibSwampContext(), newestFirstDeps(dep), {
+        limit: 0,
+      }),
+    ),
+  );
+
+  assertEquals(data.results, []);
+  assertEquals(counts.opened, 0);
+});
+
+Deno.test("modelOutputSearch: reads newest first only with a limit and without a model", async () => {
+  const { dep, counts } = fakeNewestFirst(minutesApart(5));
+  const deps = makeDeps({ findOutputsNewestFirst: dep });
+
+  const unlimited = completedOf(
+    await collect(modelOutputSearch(createLibSwampContext(), deps, {})),
+  );
+  assertEquals(unlimited.results.length, 2);
+
+  const forModel = completedOf(
+    await collect(
+      modelOutputSearch(createLibSwampContext(), deps, {
+        model: "def-1",
+        limit: 1,
+      }),
+    ),
+  );
+  assertEquals(forModel.results.map((r) => r.definitionId), ["def-1"]);
+
+  assertEquals(counts.opened, 0);
+});

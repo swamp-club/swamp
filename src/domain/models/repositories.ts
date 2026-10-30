@@ -39,6 +39,40 @@ export type SelectReadableOutputs = (
   keys: readonly OutputKey[],
 ) => Promise<readonly boolean[]>;
 
+/** An output of a newest-first read, with its place in the scan's walk order. */
+export interface NewestFirstOutput {
+  output: ModelOutput;
+  type: ModelType;
+  method: string;
+  /** Breaks ties between outputs started in the same millisecond. */
+  position: number;
+}
+
+/**
+ * The outputs of a time window, read a batch at a time, newest first. Outputs
+ * whose start cannot be told without reading them come first, in walk order.
+ * It holds nothing between calls, so a caller may stop at any point.
+ */
+export interface OutputsNewestFirst {
+  /**
+   * The next outputs, at most `count`. Empty only once none remain.
+   *
+   * @param count - The most outputs to read
+   */
+  next(count: number): Promise<NewestFirstOutput[]>;
+
+  /**
+   * True when every output not yet read is known to have started strictly
+   * before `instant`, so no read can return one at or after it.
+   *
+   * @param instant - The instant to compare with
+   */
+  unreadStartedBefore(instant: Date): boolean;
+
+  /** How many listed outputs have not been read or refused. */
+  readonly unread: number;
+}
+
 /**
  * Repository interface for persisting and retrieving ModelOutputs.
  *
@@ -149,6 +183,24 @@ export interface OutputRepository {
     signal?: AbortSignal,
     selectReadable?: SelectReadableOutputs,
   ): Promise<{ output: ModelOutput; type: ModelType; method: string }[]>;
+
+  /**
+   * The outputs across all types started in `window`, for a caller that wants
+   * only the most recent: outputs are read as `next` asks for them, instead of
+   * every output in the window. Its outputs are read-only and shared as
+   * `findAllGlobal()`'s are. Each is still to be checked against `window`.
+   *
+   * @param window - The earliest (inclusive) and latest (exclusive) `startedAt`
+   * @param signal - Stops the reads once aborted
+   * @param selectReadable - Which output keys the caller may read, as in
+   *   `findAllGlobal()`, asked only about the outputs the reads reach
+   * @returns The window's outputs, ready to read
+   */
+  findGlobalNewestFirst(
+    window: { since?: Date; until?: Date },
+    signal?: AbortSignal,
+    selectReadable?: SelectReadableOutputs,
+  ): Promise<OutputsNewestFirst>;
 
   /**
    * Saves an output.

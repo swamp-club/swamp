@@ -39,6 +39,7 @@ import {
   redactWorkflowLinks,
 } from "./model_handlers.ts";
 import {
+  diagnosticPhases,
   findSpan,
   withCapturedSpans,
   withObservedSpans,
@@ -1825,7 +1826,7 @@ Deno.test("handleModelMethodHistoryLogs: reads a workflow step's log from its wo
 
 // --- bounded behavior history search (swamp-club#4056) ---
 
-Deno.test("handleModelOutputSearch: limits only after authorization, and exports output_search phases", async () => {
+Deno.test("handleModelOutputSearch: a limit counts only outputs the caller may read, and exports output_search phases", async () => {
   await withTempDir(async (dir) => {
     const definitionRepo = new YamlDefinitionRepository(dir);
     const outputRepo = new YamlOutputRepository(dir);
@@ -1907,14 +1908,15 @@ Deno.test("handleModelOutputSearch: limits only after authorization, and exports
           phase("candidate_scan")["swamp.diagnostic.skipped_by_authorization"],
           3,
         );
-        assertEquals(
-          phase("candidate_authorization")["swamp.diagnostic.keys"],
-          2,
-        );
-        assertEquals(
-          phase("candidate_authorization")["swamp.diagnostic.readable_keys"],
-          1,
-        );
+        // Asked once about the files' keys, then about the records read.
+        const [files, records] = diagnosticPhases(
+          spans,
+          "candidate_authorization",
+        ).map((span) => span.attributes);
+        assertEquals(files["swamp.diagnostic.keys"], 2);
+        assertEquals(files["swamp.diagnostic.readable_keys"], 1);
+        assertEquals(records["swamp.diagnostic.keys"], 2);
+        assertEquals(records["swamp.diagnostic.readable_keys"], 2);
         assertEquals(phase("authorization")["swamp.diagnostic.items"], 2);
         assertEquals(phase("authorization")["swamp.diagnostic.readable"], 2);
         assertEquals(phase("response")["swamp.diagnostic.results"], 2);
@@ -2496,6 +2498,403 @@ Deno.test("handleModelOutputSearch: a grant revoked while the search reads leave
       assertEquals(response.payload.data.results, []);
     } finally {
       modelRegistry.invalidateType(EDIT_TEST_TYPE);
+    }
+  });
+});
+
+// --- A limited search reads newest first and stops (swamp-club#4143) ---
+
+/** Saves a run of `definition` started `minutes` into 2026, named as usual. */
+function saveMinutesIn(
+  outputRepo: YamlOutputRepository,
+  definition: Definition,
+  minutes: number,
+  method = "execute",
+): Promise<void> {
+  return outputRepo.save(
+    EDIT_TEST_TYPE,
+    method,
+    limitedSearchOutput(definition.id, minutes, method),
+  );
+}
+
+function limitedSearchOutput(
+  definitionId: string,
+  minutes: number,
+  method = "execute",
+): ModelOutput {
+  return ModelOutput.create({
+    definitionId: createDefinitionId(definitionId),
+    methodName: method,
+    status: "succeeded",
+    startedAt: new Date(Date.UTC(2026, 0, 1, 0, minutes)),
+    provenance: {
+      definitionHash: "h",
+      modelVersion: "1",
+      triggeredBy: "manual",
+    },
+  });
+}
+
+/** `fn` with the global output scans able to walk the test type. */
+async function withTestTypeScanned<T>(fn: () => Promise<T>): Promise<T> {
+  modelRegistry.register({
+    type: EDIT_TEST_TYPE,
+    version: "2026.01.01.1",
+    methods: {},
+  });
+  try {
+    return await fn();
+  } finally {
+    modelRegistry.invalidateType(EDIT_TEST_TYPE);
+  }
+}
+
+/** `base` reading from the given repositories. */
+function limitedSearchCtx(
+  base: ConnectionContext,
+  dir: string,
+  definitionRepo: YamlDefinitionRepository,
+  outputRepo: unknown,
+): ConnectionContext {
+  return {
+    ...base,
+    repoContext: {
+      definitionRepo,
+      outputRepo,
+      workflowRepo: new YamlWorkflowRepository(dir),
+    } as unknown as ConnectionContext["repoContext"],
+  };
+}
+
+Deno.test("handleModelOutputSearch: a restricted search with a limit reads near its limit, and an unreadable record whose name says nothing takes no result's place", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const readable = await saveEditModel(definitionRepo, "readable");
+    const hidden = await saveEditModel(definitionRepo, "hidden");
+    for (let minutes = 1; minutes <= 40; minutes++) {
+      await saveMinutesIn(outputRepo, readable, minutes * 2);
+      await saveMinutesIn(outputRepo, hidden, minutes * 2 + 1);
+    }
+    // The newest of all, in a file whose name carries no key to refuse.
+    const unnamed = limitedSearchOutput(hidden.id, 500);
+    await Deno.writeTextFile(
+      join(
+        dirname(outputRepo.getPath(EDIT_TEST_TYPE, "execute", unnamed)),
+        "renamed.yaml",
+      ),
+      stringifyYaml(JSON.parse(JSON.stringify(unnamed.toData()))),
+    );
+    const ctx = limitedSearchCtx(
+      createPolicyEditCtx(dir, definitionRepo, [
+        grant({
+          actions: ["read"],
+          resource: { kind: "model", pattern: "readable" },
+        }),
+      ]),
+      dir,
+      definitionRepo,
+      outputRepo,
+    );
+
+    await withTestTypeScanned(() =>
+      withObservedSpans(async (spans) => {
+        const socket = createMockSocket();
+        await handleModelOutputSearch(
+          socket,
+          ctx,
+          "req-1",
+          new AbortController(),
+          EDITOR,
+          { limit: 3 },
+        );
+
+        const [response] = frames(socket);
+        assertEquals(
+          response.payload.data.results.map((r: { startedAt: string }) =>
+            r.startedAt
+          ),
+          [80, 78, 76].map((minutes) =>
+            new Date(Date.UTC(2026, 0, 1, 0, minutes)).toISOString()
+          ),
+        );
+        const scan = findSpan(spans, "swamp.diagnostic.candidate_scan")
+          .attributes;
+        // The record with no key, then one batch of the 40 it may read.
+        assertEquals(scan["swamp.diagnostic.files_read"], 16);
+        assertEquals(scan["swamp.diagnostic.candidates"], 16);
+        assertEquals(
+          findSpan(spans, "swamp.diagnostic.authorization").attributes[
+            "swamp.diagnostic.items"
+          ],
+          3,
+        );
+      })
+    );
+  });
+});
+
+Deno.test("handleModelOutputSearch: with authorization off, a limit stops the reads and asks about nothing", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const model = await saveEditModel(definitionRepo, "model");
+    for (let minutes = 1; minutes <= 40; minutes++) {
+      await saveMinutesIn(outputRepo, model, minutes);
+    }
+    const ctx = limitedSearchCtx(
+      createEditCtx(dir, definitionRepo),
+      dir,
+      definitionRepo,
+      outputRepo,
+    );
+
+    await withTestTypeScanned(() =>
+      withObservedSpans(async (spans) => {
+        const socket = createMockSocket();
+        await handleModelOutputSearch(
+          socket,
+          ctx,
+          "req-1",
+          new AbortController(),
+          null,
+          { since: "2026-01-01T00:00:00Z", limit: 20 },
+        );
+
+        const [response] = frames(socket);
+        assertEquals(response.payload.data.results.length, 20);
+        assertEquals(
+          response.payload.data.results[0].startedAt,
+          new Date(Date.UTC(2026, 0, 1, 0, 40)).toISOString(),
+        );
+        const scan = findSpan(spans, "swamp.diagnostic.candidate_scan")
+          .attributes;
+        assertEquals(scan["swamp.diagnostic.files_read"], 20);
+        assertEquals(scan["swamp.diagnostic.left_unread"], 20);
+        assertEquals(diagnosticPhases(spans, "candidate_authorization"), []);
+      })
+    );
+  });
+});
+
+Deno.test("handleModelOutputSearch: a model's search still limits only after authorization", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const model = await saveEditModel(definitionRepo, "scoped");
+    await saveMinutesIn(outputRepo, model, 1);
+    // Newer, under a method the caller may not read.
+    await saveMinutesIn(outputRepo, model, 2, "other");
+    const ctx = limitedSearchCtx(
+      createPolicyEditCtx(dir, definitionRepo, [
+        grant({
+          actions: ["read"],
+          resource: { kind: "model", pattern: "scoped" },
+          methods: ["execute"],
+        }),
+      ]),
+      dir,
+      definitionRepo,
+      outputRepo,
+    );
+
+    const socket = createMockSocket();
+    await handleModelOutputSearch(
+      socket,
+      ctx,
+      "req-1",
+      new AbortController(),
+      EDITOR,
+      { model: "scoped", limit: 1 },
+    );
+
+    const [response] = frames(socket);
+    assertEquals(
+      response.payload.data.results.map((r: { methodName: string }) =>
+        r.methodName
+      ),
+      ["execute"],
+    );
+  });
+});
+
+Deno.test("handleModelOutputSearch: a grant revoked after a limited search chose its results leaves them out, however few remain", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const model = await saveEditModel(definitionRepo, "revoked-model");
+    for (let minutes = 1; minutes <= 3; minutes++) {
+      await saveMinutesIn(outputRepo, model, minutes);
+    }
+    const decisionService = (grants: Grant[]) =>
+      new GrantBasedAccessDecisionService(
+        new PolicySnapshot(grants, [], createConditionEvaluator()),
+      );
+    const loader = {
+      decisionService: decisionService([grant({ actions: ["read"] })]),
+    };
+    const ctx: ConnectionContext = {
+      ...limitedSearchCtx(
+        createPolicyEditCtx(dir, definitionRepo, []),
+        dir,
+        definitionRepo,
+        {
+          findGlobalNewestFirst: async (
+            window: { since?: Date; until?: Date },
+            signal?: AbortSignal,
+            selectReadable?: SelectReadableOutputs,
+          ) => {
+            const read = await outputRepo.findGlobalNewestFirst(
+              window,
+              signal,
+              selectReadable,
+            );
+            return {
+              get unread() {
+                return read.unread;
+              },
+              unreadStartedBefore: (instant: Date) =>
+                read.unreadStartedBefore(instant),
+              next: async (count: number) => {
+                const batch = await read.next(count);
+                // The grant is revoked once the files are chosen and read.
+                loader.decisionService = decisionService([]);
+                return batch;
+              },
+            };
+          },
+        },
+      ),
+      policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+    };
+
+    await withTestTypeScanned(async () => {
+      const socket = createMockSocket();
+      await handleModelOutputSearch(
+        socket,
+        ctx,
+        "req-1",
+        new AbortController(),
+        EDITOR,
+        { limit: 2 },
+      );
+
+      const [response] = frames(socket);
+      assertEquals(response.type, "model.output.search");
+      assertEquals(response.payload.data.results, []);
+    });
+  });
+});
+
+Deno.test("handleModelOutputSearch: a cancel landing in a later batch of a limited search replies cancelled and reads no further", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    // A definition per output, so each batch has names still to look up.
+    for (let minutes = 1; minutes <= 6; minutes++) {
+      const model = await saveEditModel(definitionRepo, `model-${minutes}`);
+      await saveMinutesIn(outputRepo, model, minutes);
+    }
+    const controller = new AbortController();
+    let batches = 0;
+    const ctx = limitedSearchCtx(
+      createEditCtx(dir, definitionRepo),
+      dir,
+      definitionRepo,
+      {
+        findGlobalNewestFirst: async (
+          window: { since?: Date; until?: Date },
+          signal?: AbortSignal,
+        ) => {
+          const read = await outputRepo.findGlobalNewestFirst(window, signal);
+          return {
+            get unread() {
+              return read.unread;
+            },
+            unreadStartedBefore: (instant: Date) =>
+              read.unreadStartedBefore(instant),
+            // One output at a time, so the search takes several rounds.
+            next: async () => {
+              const batch = await read.next(1);
+              // The cancel arrives as the second output's name is looked up.
+              if (++batches === 2) controller.abort();
+              return batch;
+            },
+          };
+        },
+      },
+    );
+
+    await withTestTypeScanned(async () => {
+      const socket = createMockSocket();
+      await handleModelOutputSearch(
+        socket,
+        ctx,
+        "req-1",
+        controller,
+        null,
+        { limit: 4 },
+      );
+
+      const [response] = frames(socket);
+      assertEquals(response.type, "error");
+      assertEquals(response.error.code, "cancelled");
+      assertEquals(batches, 2);
+    });
+  });
+});
+
+Deno.test("handleModelOutputSearch: 64 identical limited searches at once read each batch's files at most twice, and answer alike", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const model = await saveEditModel(definitionRepo, "model");
+    for (let minutes = 1; minutes <= 40; minutes++) {
+      await saveMinutesIn(outputRepo, model, minutes);
+    }
+    const ctx = limitedSearchCtx(
+      createEditCtx(dir, definitionRepo),
+      dir,
+      definitionRepo,
+      outputRepo,
+    );
+    const outputsDir = join(dir, ".swamp", "outputs");
+    const readTextFile = Deno.readTextFile;
+    let outputReads = 0;
+    (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile = (
+      path,
+      options,
+    ) => {
+      if (String(path).startsWith(outputsDir)) outputReads++;
+      return readTextFile(path, options);
+    };
+    try {
+      await withTestTypeScanned(async () => {
+        const sockets = Array.from({ length: 64 }, () => createMockSocket());
+        await Promise.all(sockets.map((socket, i) =>
+          handleModelOutputSearch(
+            socket,
+            ctx,
+            `req-${i}`,
+            new AbortController(),
+            null,
+            { limit: 16 },
+          )
+        ));
+
+        const answers = sockets.map((socket) =>
+          JSON.stringify(frames(socket)[0].payload.data.results)
+        );
+        assertEquals(new Set(answers).size, 1);
+        assertEquals(JSON.parse(answers[0]).length, 16);
+        // One batch of 16, read by the search that started it and once more
+        // by those that arrived while it ran.
+        assert(outputReads <= 32, `${outputReads} reads`);
+      });
+    } finally {
+      (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile =
+        readTextFile;
     }
   });
 });

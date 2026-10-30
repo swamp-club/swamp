@@ -4507,3 +4507,458 @@ Deno.test(
     });
   },
 );
+
+// --- findGlobalNewestFirst (swamp-club#4143) ---
+
+/** Every output `read` returns, a batch of `count` at a time. */
+async function readAllNewestFirst(
+  read: { next(count: number): Promise<{ output: ModelOutput }[]> },
+  count = 2,
+): Promise<string[]> {
+  const ids: string[] = [];
+  while (true) {
+    const batch = await read.next(count);
+    if (batch.length === 0) return ids;
+    ids.push(...batch.map((found) => found.output.id));
+  }
+}
+
+Deno.test(
+  "findGlobalNewestFirst: reads a name not in the output form first, then newest first, with walk order breaking ties across method directories",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      const at = (minutes: number) =>
+        new Date(Date.UTC(2026, 0, 1, 0, minutes));
+      const oldest = keyedOutput(definitionId, "a-method", at(1));
+      const tiedSecond = keyedOutput(definitionId, "b-method", at(5));
+      const tiedFirst = keyedOutput(definitionId, "a-method", at(5));
+      const newest = keyedOutput(definitionId, "b-method", at(9));
+      for (const output of [oldest, tiedSecond, tiedFirst, newest]) {
+        await repo.save(registeredType, output.methodName, output);
+      }
+      // Older than everything, but its name does not say so.
+      const unnamed = keyedOutput(definitionId, "run", at(0));
+      await writeRecordAs(repo, unnamed, "renamed.yaml");
+
+      const read = await repo.findGlobalNewestFirst({});
+
+      assertEquals(await readAllNewestFirst(read), [
+        unnamed.id,
+        newest.id,
+        tiedFirst.id,
+        tiedSecond.id,
+        oldest.id,
+      ]);
+    });
+  },
+);
+
+Deno.test(
+  "findGlobalNewestFirst: next reads only what it is asked for, and says what remains unread",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      const at = (minutes: number) =>
+        new Date(Date.UTC(2026, 0, 1, 0, minutes));
+      for (let minutes = 1; minutes <= 5; minutes++) {
+        await repo.save(
+          registeredType,
+          "run",
+          keyedOutput(definitionId, "run", at(minutes)),
+        );
+      }
+
+      await withHeldReads(async (reads) => {
+        const read = await repo.findGlobalNewestFirst({});
+        assertEquals(reads.started, 0);
+        assertEquals(read.unread, 5);
+
+        const batch = await read.next(2);
+
+        assertEquals(
+          batch.map((found) => found.output.startedAt),
+          [at(5), at(4)],
+        );
+        assertEquals(reads.started, 2);
+        assertEquals(read.unread, 3);
+        // The newest unread output started at minute 3: strictly before
+        // minute 4, not before itself.
+        assertEquals(read.unreadStartedBefore(at(4)), true);
+        assertEquals(read.unreadStartedBefore(at(3)), false);
+        // An instant no name can be compared with decides nothing.
+        assertEquals(
+          read.unreadStartedBefore(new Date(Date.UTC(10000, 0, 1))),
+          false,
+        );
+
+        await readAllNewestFirst(read);
+        assertEquals(read.unread, 0);
+        assertEquals(read.unreadStartedBefore(at(0)), true);
+        assertEquals(await read.next(2), []);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findGlobalNewestFirst: an unread name not in the output form is never known to be older",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const unnamed = keyedOutput(
+        createDefinitionId(crypto.randomUUID()),
+        "run",
+        new Date(Date.UTC(2026, 0, 1)),
+      );
+      await writeRecordAs(repo, unnamed, "renamed.yaml");
+
+      const read = await repo.findGlobalNewestFirst({});
+
+      assertEquals(
+        read.unreadStartedBefore(new Date(Date.UTC(2030, 0))),
+        false,
+      );
+      await read.next(1);
+      assertEquals(read.unreadStartedBefore(new Date(Date.UTC(2030, 0))), true);
+    });
+  },
+);
+
+Deno.test(
+  "findGlobalNewestFirst: leaves unread a file named outside since or until, however it would have been listed",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      const at = (day: number) => new Date(Date.UTC(2026, 0, day));
+      const inWindow = keyedOutput(definitionId, "run", at(5));
+      for (
+        const output of [
+          keyedOutput(definitionId, "run", at(1)),
+          inWindow,
+          keyedOutput(definitionId, "run", at(9)),
+        ]
+      ) {
+        await repo.save(registeredType, "run", output);
+      }
+
+      await withObservedSpans(async (spans) => {
+        const ids = await withDiagnosticArea(
+          "output_search",
+          () =>
+            observeDiagnosticPhase(
+              "candidate_scan",
+              {},
+              async () =>
+                await readAllNewestFirst(
+                  await repo.findGlobalNewestFirst({
+                    since: at(3),
+                    until: at(7),
+                  }),
+                ),
+            ),
+        );
+
+        assertEquals(ids, [inWindow.id]);
+        const scan = phaseAttributes(spans, "candidate_scan");
+        assertEquals(scan["swamp.diagnostic.files_read"], 1);
+        // One by the listing's since, one by the caller's until.
+        assertEquals(scan["swamp.diagnostic.skipped_by_name"], 2);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findGlobalNewestFirst: asks about keys only for the files it reaches, in chunks that double while too few are chosen",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const at = (minutes: number) =>
+        new Date(Date.UTC(2026, 0, 1, 0, minutes));
+      const readable = createDefinitionId(crypto.randomUUID());
+      // The oldest file is the only one the caller may read.
+      const kept = keyedOutput(readable, "run", at(0));
+      await repo.save(registeredType, "run", kept);
+      for (let minutes = 1; minutes <= 8; minutes++) {
+        await repo.save(
+          registeredType,
+          "run",
+          keyedOutput(
+            createDefinitionId(crypto.randomUUID()),
+            "run",
+            at(minutes),
+          ),
+        );
+      }
+      const { select, calls } = selectDefinitions(readable);
+
+      const read = await repo.findGlobalNewestFirst({}, undefined, select);
+      assertEquals(calls.length, 0);
+      assertEquals(
+        (await read.next(1)).map((found) => found.output.id),
+        [kept.id],
+      );
+      assertEquals(calls.map((keys) => keys.length), [1, 2, 4, 2]);
+
+      // A caller who may read the newest files never asks about the rest.
+      const newest = keyedOutput(
+        createDefinitionId(crypto.randomUUID()),
+        "run",
+        at(9),
+      );
+      await repo.save(registeredType, "run", newest);
+      const second = selectDefinitions(newest.definitionId);
+      const readNewest = await repo.findGlobalNewestFirst(
+        {},
+        undefined,
+        second.select,
+      );
+      assertEquals(
+        (await readNewest.next(1)).map((found) => found.output.id),
+        [newest.id],
+      );
+      assertEquals(second.calls.map((keys) => keys.length), [1]);
+    });
+  },
+);
+
+Deno.test(
+  "findGlobalNewestFirst: a batch whose files have all vanished moves on to the next, and a file vanishing leaves the rest",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      const at = (minutes: number) =>
+        new Date(Date.UTC(2026, 0, 1, 0, minutes));
+      const outputs = [1, 2, 3].map((minutes) =>
+        keyedOutput(definitionId, "run", at(minutes))
+      );
+      for (const output of outputs) {
+        await repo.save(registeredType, "run", output);
+      }
+      const read = await repo.findGlobalNewestFirst({});
+      // The two newest go between the listing and their read.
+      for (const output of outputs.slice(1)) {
+        await Deno.remove(repo.getPath(registeredType, "run", output));
+      }
+
+      assertEquals(
+        (await read.next(2)).map((found) => found.output.id),
+        [outputs[0].id],
+      );
+      assertEquals(await read.next(2), []);
+    });
+  },
+);
+
+Deno.test(
+  "findGlobalNewestFirst: once aborted, next rejects with the reason and starts no read",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      await repo.save(registeredType, "run", keyedOutput(definitionId));
+      const controller = new AbortController();
+      const read = await repo.findGlobalNewestFirst({}, controller.signal);
+
+      await withHeldReads(async (reads) => {
+        controller.abort(new DOMException("request cancelled", "AbortError"));
+        await assertRejects(
+          () => read.next(1),
+          DOMException,
+          "request cancelled",
+        );
+        assertEquals(reads.started, 0);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findGlobalNewestFirst: a batch's reads start while a full read is still running",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      await repo.save(
+        registeredType,
+        "run",
+        keyedOutput(createDefinitionId(crypto.randomUUID())),
+      );
+      const cutoff = new Date(Date.now() - DAY_MS);
+
+      await withHeldReads(async (reads) => {
+        reads.hold();
+        const full = repo.findAllGlobalSince(cutoff);
+        await waitFor(() => reads.inFlight === 1, "the full read");
+        const read = await repo.findGlobalNewestFirst({ since: cutoff });
+        const batch = read.next(1);
+        await waitFor(() => reads.inFlight === 2, "the batch's read");
+        reads.release();
+
+        assertEquals((await batch).length, 1);
+        assertEquals((await full).length, 1);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findGlobalNewestFirst: batches asked for while one runs share one read of their files",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      for (let minutes = 1; minutes <= 2; minutes++) {
+        await repo.save(
+          registeredType,
+          "run",
+          keyedOutput(
+            definitionId,
+            "run",
+            new Date(Date.UTC(2026, 0, 1, 0, minutes)),
+          ),
+        );
+      }
+
+      await withHeldReads(async (reads) => {
+        reads.hold();
+        const open = () => repo.findGlobalNewestFirst({});
+        const running = (await open()).next(2);
+        await waitFor(() => reads.inFlight === 2, "the running batch");
+        const [second, third] = await Promise.all([open(), open()]);
+        const waiting = [second.next(2), third.next(2)];
+        await sharedScansStarted();
+        reads.release();
+
+        assertEquals((await running).length, 2);
+        for (const batch of await Promise.all(waiting)) {
+          assertEquals(batch.length, 2);
+        }
+        // Two callers joined the pending read: 2 files, read twice in all.
+        assertEquals(reads.started, 4);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findGlobalNewestFirst: a read that joins other reads on several batches counts scans_joined once",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      for (let minutes = 1; minutes <= 2; minutes++) {
+        await repo.save(
+          registeredType,
+          "run",
+          keyedOutput(
+            definitionId,
+            "run",
+            new Date(Date.UTC(2026, 0, 1, 0, minutes)),
+          ),
+        );
+      }
+      const open = () => repo.findGlobalNewestFirst({});
+      const running = await open();
+      const pending = await open();
+      const joining = await open();
+
+      await withHeldReads(async (reads) => {
+        await withObservedSpans(async (spans) => {
+          await withDiagnosticArea(
+            "output_search",
+            () =>
+              observeDiagnosticPhase("candidate_scan", {}, async () => {
+                for (let batch = 0; batch < 2; batch++) {
+                  reads.hold();
+                  const runningBatch = running.next(1);
+                  await waitFor(() => reads.inFlight === 1, "the running read");
+                  // The first to ask creates the pending read; the next joins.
+                  const pendingBatch = pending.next(1);
+                  const joiningBatch = joining.next(1);
+                  await sharedScansStarted();
+                  reads.release();
+                  await Promise.all([runningBatch, pendingBatch, joiningBatch]);
+                }
+              }),
+          );
+          const scan = phaseAttributes(spans, "candidate_scan");
+          assertEquals(scan["swamp.diagnostic.scans_joined"], 1);
+        });
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findGlobalNewestFirst: a record started at another time than its name says counts stamp_mismatch",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      const output = keyedOutput(
+        definitionId,
+        "run",
+        new Date("2026-01-01T00:00:00Z"),
+      );
+      await writeRecordAs(
+        repo,
+        output,
+        `${definitionId}-2020-01-01T00-00-00-000Z.yaml`,
+      );
+      await repo.save(registeredType, "run", keyedOutput(definitionId));
+
+      await withObservedSpans(async (spans) => {
+        await withDiagnosticArea(
+          "output_search",
+          () =>
+            observeDiagnosticPhase(
+              "candidate_scan",
+              {},
+              async () =>
+                await readAllNewestFirst(await repo.findGlobalNewestFirst({})),
+            ),
+        );
+        const scan = phaseAttributes(spans, "candidate_scan");
+        assertEquals(scan["swamp.diagnostic.files_read"], 2);
+        assertEquals(scan["swamp.diagnostic.stamp_mismatch"], 1);
+      });
+    });
+  },
+);
+
+Deno.test("YamlOutputRepository.findGlobalNewestFirst: warns only about unreadable outputs whose file name says they started in its window (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const { repo, paths } = repoWithUnreadable(dir, [
+      {
+        type: registeredType,
+        method: "run",
+        output: outputAt(crypto.randomUUID(), "2020-01-01T00:00:00Z"),
+      },
+      {
+        type: registeredType,
+        method: "run",
+        output: outputAt(crypto.randomUUID(), "2026-01-01T00:00:00Z"),
+      },
+      {
+        type: registeredType,
+        method: "run",
+        output: outputAt(crypto.randomUUID(), "2030-01-01T00:00:00Z"),
+      },
+    ]);
+    const warnings = await captureUnreadableWarnings(async () => {
+      await repo.findGlobalNewestFirst({
+        since: new Date("2025-01-01T00:00:00Z"),
+        until: new Date("2027-01-01T00:00:00Z"),
+      });
+    });
+    assertEquals(warnings.length, 1, warnings.join("\n"));
+    assertStringIncludes(warnings[0], paths[1]);
+    assert(!warnings[0].includes(paths[0]), warnings[0]);
+    assert(!warnings[0].includes(paths[2]), warnings[0]);
+  });
+});

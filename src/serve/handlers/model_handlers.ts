@@ -2118,6 +2118,12 @@ export async function handleModelOutputSearch(
           controller.signal,
           selectReadable,
         ),
+      findOutputsNewestFirst: (window, selectReadable) =>
+        outputRepo.findGlobalNewestFirst(
+          window,
+          controller.signal,
+          selectReadable,
+        ),
       findAllDefinitions: () => definitionRepo.findAllIncludingAutoGlobal(),
       resolveModelNames: (keys) =>
         resolveModelNames(canonical, keys, controller.signal),
@@ -2181,10 +2187,13 @@ export async function handleModelOutputSearch(
     await withDiagnosticArea("output_search", async () => {
       let result: ModelOutputSearchData | undefined;
       await consumeStream(
-        // Limit only after model authorization, then redact unreadable run links.
+        // A search without a model judges each output it reads with canRead,
+        // so its limit counts only outputs the caller may read, and it stops
+        // reading there (swamp-club#4143). A model's search limits only after
+        // model authorization. Unreadable run links are redacted after both.
         modelOutputSearch(libCtx, deps, {
           ...payload,
-          limit: undefined,
+          limit: payload?.model === undefined ? payload?.limit : undefined,
           includeProvenance: true,
         }),
         {
