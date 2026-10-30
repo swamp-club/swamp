@@ -24,6 +24,8 @@ import {
   dataQuery,
   type DataQueryData,
   type DataQueryDeps,
+  parseQuerySort,
+  type QuerySort,
   requireSingleResult,
 } from "../../libswamp/data/query.ts";
 import { userErrorFromSwampError } from "../../libswamp/errors.ts";
@@ -63,12 +65,20 @@ type AnyOptions = any;
  */
 export function remoteQueryPayload(
   predicate: string,
-  options: { limit?: number; select?: string; single: boolean },
+  options: {
+    limit?: number;
+    select?: string;
+    single: boolean;
+    sort?: QuerySort;
+    cursor?: string;
+  },
 ): DataQueryPayload {
   return {
     predicate,
     limit: options.single ? 2 : options.limit,
     select: options.select,
+    ...(options.sort && { sort: options.sort }),
+    ...(options.cursor !== undefined && { cursor: options.cursor }),
   };
 }
 
@@ -125,7 +135,16 @@ export const dataQueryCommand = withRemoteOptions(
     .option(
       "--single",
       "Require exactly one match; with --json, print the match (or its --select value) on its own instead of a results list",
-      { conflicts: ["limit"] },
+      { conflicts: ["limit", "sort", "cursor"] },
+    )
+    .option(
+      "--sort <field:string>",
+      "Order by createdAt or tags.<key>, compared as strings, as <field>[:asc|desc] (asc by default); capped at 10000 results without --limit",
+    )
+    .option(
+      "--cursor <token:string>",
+      "Continue a sorted query after the page that printed this cursor",
+      { depends: ["sort"] },
     )
     .example(
       "Interactive mode",
@@ -152,12 +171,20 @@ export const dataQueryCommand = withRemoteOptions(
       'swamp data query \'behaviorName == "scanner" && name == "state"\' --single --json',
     )
     .example(
+      "Newest first, 50 per page; pass the printed cursor for the next page",
+      "swamp data query 'tags.type == \"agent-session\"' --sort createdAt:desc --limit 50",
+    )
+    .example(
       "Read from a workflow's latest run",
       "swamp data query 'workflowRunId == latestRun(\"deploy\") && version >= 0'",
     ),
 ).action(async function (options: AnyOptions, predicate?: string) {
   const ctx = createContext(options as GlobalOptions, ["data", "query"]);
   const single = options.single === true;
+  const sort = options.sort === undefined
+    ? undefined
+    : parseQuerySort(options.sort as string);
+  const cursor = options.cursor as string | undefined;
 
   if (single && !predicate) {
     throw new UserError(
@@ -187,6 +214,8 @@ export const dataQueryCommand = withRemoteOptions(
           limit: options.limit as number | undefined,
           select: options.select as string | undefined,
           single,
+          sort,
+          cursor,
         }),
       },
     );
@@ -224,6 +253,12 @@ export const dataQueryCommand = withRemoteOptions(
   const deps: DataQueryDeps = {
     query: (pred, opts) =>
       queryService.query(pred, { ...opts, latestRunResolver, modelResolver }),
+    queryPage: (pred, opts) =>
+      queryService.queryPage(pred, {
+        ...opts,
+        latestRunResolver,
+        modelResolver,
+      }),
     specNameFallback: (pred) => queryService.specNameFallback(pred),
   };
 
@@ -263,6 +298,8 @@ export const dataQueryCommand = withRemoteOptions(
       select: options.select as string | undefined,
       limit: options.limit as number | undefined,
       single,
+      sort,
+      cursor,
     }),
     renderer.handlers(),
   );

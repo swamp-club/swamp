@@ -5658,3 +5658,38 @@ Deno.test("handleMessage: a datastore.release from a non-admin is refused", asyn
   assertEquals(frame.type, "error");
   assertEquals(frame.error.code, "unauthorized");
 });
+
+Deno.test("validateServerRequest: data.query accepts a sort and a cursor (swamp-club#4177)", () => {
+  const result = validateServerRequest({
+    type: "data.query",
+    id: "req-1",
+    payload: {
+      predicate: "true",
+      limit: 50,
+      sort: { field: "tags.startedAt", direction: "desc" },
+      cursor: "eyJ2IjoxfQ",
+    },
+  });
+  assertEquals(typeof result, "object");
+});
+
+Deno.test("validateServerRequest: data.query rejects a bad sort direction, a long sort field or an oversized cursor (swamp-club#4177)", () => {
+  for (
+    const extra of [
+      { sort: { field: "createdAt", direction: "up" } },
+      { sort: { field: "x".repeat(300), direction: "asc" } },
+      { sort: { field: "createdAt" } },
+      {
+        sort: { field: "createdAt", direction: "asc" },
+        cursor: "A".repeat(20_000),
+      },
+    ]
+  ) {
+    const result = validateServerRequest({
+      type: "data.query",
+      id: "req-1",
+      payload: { predicate: "true", ...extra },
+    });
+    assertEquals(typeof result, "string", JSON.stringify(extra).slice(0, 80));
+  }
+});

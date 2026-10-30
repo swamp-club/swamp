@@ -253,6 +253,7 @@ function renderJson(data: DataQueryData, single: boolean): void {
         total: data.total,
         limited: data.limited,
         ...(data.specNameHint && { specNameHint: data.specNameHint }),
+        ...(data.nextCursor && { nextCursor: data.nextCursor }),
       },
       null,
       2,
@@ -265,6 +266,7 @@ function renderJson(data: DataQueryData, single: boolean): void {
         total: data.total,
         limited: data.limited,
         ...(data.specNameHint && { specNameHint: data.specNameHint }),
+        ...(data.nextCursor && { nextCursor: data.nextCursor }),
       },
       null,
       2,
@@ -369,6 +371,11 @@ export function createDataQueryRenderer(
         writeOutput(renderQueryResultsTerminal(event.data, showNamespace));
         if (event.data.specNameHint) {
           writeOutput(renderSpecNameHint(event.data.specNameHint));
+        }
+        if (event.data.nextCursor) {
+          writeOutput(
+            `\nNext page: re-run with --cursor ${event.data.nextCursor}`,
+          );
         }
       },
       error: (event: DataQueryEvent & { kind: "error" }) => {

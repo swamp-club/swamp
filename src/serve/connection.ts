@@ -49,6 +49,7 @@ import { audited, type AuditedOptions } from "./audited.ts";
 import { traceWebSocketRequest } from "./ws_request_span.ts";
 import { resolverEngine } from "../domain/datastore/datastore_path_resolver.ts";
 import { normalizeOwnerAddress } from "../domain/datastore_v3/datastore_owner.ts";
+import { MAX_QUERY_CURSOR_LENGTH } from "../domain/data/query_sort.ts";
 import {
   IDEMPOTENCY_KEY_FORM,
   isIdempotencyKey,
@@ -393,6 +394,11 @@ const DataQueryRequestSchema = z.object({
     predicate: z.string().max(MAX_PREDICATE_LENGTH),
     limit: z.number().int().positive().max(MAX_QUERY_RESULTS).optional(),
     select: z.string().max(MAX_PREDICATE_LENGTH).optional(),
+    sort: z.object({
+      field: z.string().max(256),
+      direction: z.enum(["asc", "desc"]),
+    }).optional(),
+    cursor: z.string().max(MAX_QUERY_CURSOR_LENGTH).optional(),
   }),
 });
 

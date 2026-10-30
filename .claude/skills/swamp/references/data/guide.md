@@ -96,6 +96,19 @@ The override names the output **spec**, which may differ from the data name
 durable lifetime, query the recorded version or workflow run to read that
 output.
 
+## Sorting and paging
+
+`--sort createdAt:desc` or `--sort tags.<key>:desc` orders matches by a string
+compare (ISO 8601 times sort in time order; a missing tag sorts as empty). A
+sorted page that fills `--limit` prints a cursor (`nextCursor` in `--json`);
+pass it back with `--cursor <token>` and the same `--sort` for the next page.
+Without `--limit` a sorted query stops at 10,000 results. `--cursor` requires
+`--sort`; neither works with `--single`. Content fields cannot be sorted on.
+
+```bash
+swamp data query 'tags.type == "agent-session"' --select 'tags' --sort tags.startedAt:desc --limit 50 --json
+```
+
 ## Quick Reference
 
 | Task                     | Command                                               |
@@ -105,6 +118,7 @@ output.
 | Query with projection    | `swamp data query 'modelName == "x"' --select 'name'` |
 | Query by tags            | `swamp data query 'tags.env == "prod"'`               |
 | Query by content         | `swamp data query 'attributes.status == "failed"'`    |
+| Newest first, paged      | See [Sorting and paging](#sorting-and-paging)         |
 | List behavior data       | `swamp data list <model> --json`                      |
 | List workflow data       | `swamp data list --workflow <name> --json`            |
 | Read one item            | See [Reading one item](#reading-one-item)             |

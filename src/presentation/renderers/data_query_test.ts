@@ -500,3 +500,62 @@ Deno.test("renderJson: specNameHint is included only when present", () => {
   });
   assertEquals("specNameHint" in without, false);
 });
+
+Deno.test("createDataQueryRenderer: a sorted page carries nextCursor in json and a next-page hint in log mode (swamp-club#4177)", () => {
+  const data = {
+    predicate: "true",
+    results: [makeRecord()],
+    total: 1,
+    limited: true,
+    nextCursor: "eyJ2IjoxfQ",
+  };
+  const json = captureJsonOutput(() => {
+    createDataQueryRenderer("json").handlers().completed({
+      kind: "completed",
+      data,
+    });
+  });
+  assertEquals(json.nextCursor, "eyJ2IjoxfQ");
+  const projected = captureJsonOutput(() => {
+    createDataQueryRenderer("json").handlers().completed({
+      kind: "completed",
+      data: {
+        ...data,
+        results: [],
+        projected: { shape: "scalar", values: ["a"] },
+      },
+    });
+  });
+  assertEquals(projected.nextCursor, "eyJ2IjoxfQ");
+
+  const log = captureLines(() => {
+    createDataQueryRenderer("log").handlers().completed({
+      kind: "completed",
+      data,
+    });
+  });
+  assertStringIncludes(log, "Next page: re-run with --cursor eyJ2IjoxfQ");
+});
+
+Deno.test("createDataQueryRenderer: an unsorted page prints no cursor (swamp-club#4177)", () => {
+  const data = {
+    predicate: "true",
+    results: [makeRecord()],
+    total: 1,
+    limited: true,
+  };
+  const json = captureJsonOutput(() => {
+    createDataQueryRenderer("json").handlers().completed({
+      kind: "completed",
+      data,
+    });
+  });
+  assertEquals("nextCursor" in json, false);
+  const log = captureLines(() => {
+    createDataQueryRenderer("log").handlers().completed({
+      kind: "completed",
+      data,
+    });
+  });
+  assertEquals(log.includes("--cursor"), false);
+});

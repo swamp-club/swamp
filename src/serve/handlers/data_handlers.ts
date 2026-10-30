@@ -518,6 +518,12 @@ export async function handleDataQuery(
           latestRunResolver,
           modelResolver,
         }),
+      queryPage: (pred, opts) =>
+        queryService.queryPage(pred, {
+          ...opts,
+          latestRunResolver,
+          modelResolver,
+        }),
       specNameFallback: (pred) => queryService.specNameFallback(pred),
     };
 
@@ -533,6 +539,8 @@ export async function handleDataQuery(
         select: payload.select,
         limit,
         include,
+        sort: payload.sort,
+        cursor: payload.cursor,
       }),
       {
         resolving: () => {},

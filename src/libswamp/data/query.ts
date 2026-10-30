@@ -27,6 +27,20 @@ import {
   UNREADABLE_CONTENT_CODE,
 } from "../../domain/datastore/unreadable_content.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  createQuerySort,
+  decodeQueryCursor,
+  encodeQueryCursor,
+  MAX_QUERY_RESULTS,
+  type QueryCursorPosition,
+  type QuerySort,
+} from "../../domain/data/query_sort.ts";
+
+export { parseQuerySort } from "../../domain/data/query_sort.ts";
+export type {
+  QuerySort,
+  QuerySortDirection,
+} from "../../domain/data/query_sort.ts";
 
 const logger = getLogger(["swamp", "data", "query"]);
 
@@ -61,6 +75,11 @@ export interface DataQueryData {
   limited: boolean;
   /** Set only when nothing matched and the spec-name fallback does. */
   specNameHint?: SpecNameHint;
+  /**
+   * With a sort, the cursor for the page after this one: set only when the
+   * page filled its limit. Pass it back as `cursor` with the same sort.
+   */
+  nextCursor?: string;
 }
 
 export type DataQueryEvent =
@@ -83,6 +102,20 @@ export interface DataQueryDeps {
     },
   ): Promise<DataRecord[] | unknown[]>;
   /**
+   * A sorted query from after a cursor position, returning the last row's
+   * position with the results. Without it, a sorted query is refused.
+   */
+  queryPage?(
+    predicate: string,
+    options: {
+      limit?: number;
+      select?: string;
+      include?: (record: DataRecord) => Promise<boolean>;
+      sort: QuerySort;
+      after?: QueryCursorPosition;
+    },
+  ): Promise<{ results: DataRecord[] | unknown[]; last?: QueryCursorPosition }>;
+  /**
    * Returns the spec-name counterpart of a predicate that matches one
    * instance name exactly, or null. Without it, no hint is offered.
    */
@@ -103,6 +136,14 @@ export interface DataQueryInput {
   single?: boolean;
   /** Keeps only the matched records this accepts, before any projection. */
   include?: (record: DataRecord) => Promise<boolean>;
+  /**
+   * Orders the matches by `createdAt` or `tags.<key>`, compared as strings,
+   * with the item identity as the tie-break. A sorted query with no limit is
+   * capped at MAX_QUERY_RESULTS. Cannot be combined with `single`.
+   */
+  sort?: { field: string; direction: string };
+  /** The `nextCursor` of the previous page of the same sorted query. */
+  cursor?: string;
 }
 
 /**
@@ -207,24 +248,78 @@ export async function* dataQuery(
         return;
       }
 
+      let sort: QuerySort | undefined;
+      let after: QueryCursorPosition | undefined;
+      if (input.sort || input.cursor !== undefined) {
+        const refusal = input.single
+          ? "A single-result query cannot also set a sort or a cursor."
+          : !input.sort
+          ? "A query cursor needs the sort it was made with."
+          : !deps.queryPage
+          ? "Sorted queries are not supported here."
+          : undefined;
+        if (refusal) {
+          yield { kind: "error" as const, error: validationFailed(refusal) };
+          return;
+        }
+        try {
+          sort = createQuerySort(input.sort!.field, input.sort!.direction);
+          if (input.cursor !== undefined) {
+            after = decodeQueryCursor(input.cursor, sort);
+          }
+        } catch (error) {
+          yield {
+            kind: "error" as const,
+            error: validationFailed(
+              error instanceof Error ? error.message : String(error),
+            ),
+          };
+          return;
+        }
+      }
+
       // Unlimited by default — callers pass an explicit limit when they
       // need a cap. `limited` in the completed event reflects whether
       // the query service actually hit the supplied limit; the service fills
       // a limited page from records that survive its stale-row check
       // (swamp-club#2985). A single-result query stays unlimited.
-      const limit = input.single ? undefined : input.limit;
+      // A sorted query is always bounded (swamp-club#4177).
+      const limit = input.single
+        ? undefined
+        : sort
+        ? input.limit ?? MAX_QUERY_RESULTS
+        : input.limit;
 
       try {
-        const rawResults = await deps.query(input.predicate, {
-          limit,
-          select: input.select,
-          include: input.include,
-        });
+        let rawResults: DataRecord[] | unknown[];
+        let last: QueryCursorPosition | undefined;
+        if (sort) {
+          ({ results: rawResults, last } = await deps.queryPage!(
+            input.predicate,
+            {
+              limit,
+              select: input.select,
+              include: input.include,
+              sort,
+              after,
+            },
+          ));
+        } else {
+          rawResults = await deps.query(input.predicate, {
+            limit,
+            select: input.select,
+            include: input.include,
+          });
+        }
         const total = rawResults.length;
         const limited = limit !== undefined && total >= limit;
-        // A zero limit returns nothing by construction; there is no miss
-        // to explain.
-        const specNameHint = total === 0 && limit !== 0
+        const pageCursor = sort && limited && last
+          ? { nextCursor: encodeQueryCursor(sort, last) }
+          : {};
+        // A zero limit returns nothing by construction, and a page after a
+        // cursor is empty once the matches run out; neither is a miss to
+        // explain.
+        const specNameHint = total === 0 && limit !== 0 && !after
           ? await findSpecNameHint(deps, input)
           : undefined;
         const hint = specNameHint ? { specNameHint } : {};
@@ -255,6 +350,7 @@ export async function* dataQuery(
               total,
               limited,
               ...hint,
+              ...pageCursor,
             },
           };
           return;
@@ -305,6 +401,7 @@ export async function* dataQuery(
             total,
             limited,
             ...hint,
+            ...pageCursor,
           },
         };
       } catch (error) {

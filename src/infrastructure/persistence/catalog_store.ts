@@ -221,6 +221,36 @@ export interface CatalogRowKey {
   readonly version?: number;
 }
 
+/** Largest internal page {@link CatalogStore.iterateSorted} reads at once. */
+export const MAX_SORTED_PAGE_SIZE = 16 * ITERATE_PAGE_SIZE;
+
+/** The columns that identify a row, the tie-break of a sorted read. */
+const CATALOG_IDENTITY_COLUMNS = [
+  "namespace",
+  "type_normalized",
+  "model_id",
+  "data_name",
+  "version",
+] as const;
+
+/** The order of {@link CatalogStore.iterateSorted}. */
+export interface CatalogSortOrder {
+  /** The tag whose value orders the rows, or null to order by created_at. */
+  readonly tagKey: string | null;
+  readonly direction: "asc" | "desc";
+  /** Start after this sort value and row identity. */
+  readonly after?: {
+    readonly key: string;
+    readonly id: readonly [string, string, string, string, number];
+  };
+}
+
+/** A row from {@link CatalogStore.iterateSorted}, with its sort value. */
+export interface SortedCatalogRow {
+  row: CatalogRow;
+  sortKey: string;
+}
+
 /**
  * The catalog changes {@link CatalogStore.applyInTransaction} hands out, each
  * as the store's method of the same name makes it. The store itself is one,
@@ -1125,6 +1155,82 @@ export class CatalogStore {
       yield* rows;
       if (rows.length < ITERATE_PAGE_SIZE) break;
       offset += ITERATE_PAGE_SIZE;
+    }
+  }
+
+  /**
+   * Iterates the rows matching `whereClause` in a total order: by the sort
+   * value (created_at, or one tag's value as text, "" when the row lacks
+   * it), then by the row's identity, all in `order.direction`. Starts after
+   * `order.after` when given. Each internal page starts after the previous
+   * page's last row rather than at an offset, so a page never re-sorts the
+   * rows before it. A tag sort has no index, so every page scans the rows
+   * the WHERE clause leaves; pages double in size up to
+   * {@link MAX_SORTED_PAGE_SIZE}, so reading far into a large catalog takes
+   * a logarithmic number of scans rather than one per
+   * {@link ITERATE_PAGE_SIZE} rows. Reads metadata columns only.
+   */
+  *iterateSorted(
+    whereClause: string,
+    params: readonly (string | number)[],
+    order: CatalogSortOrder,
+  ): IterableIterator<SortedCatalogRow> {
+    if (order.tagKey !== null && /["\\]/.test(order.tagKey)) {
+      throw new Error(`Invalid sort tag key: ${order.tagKey}`);
+    }
+    const sortExpr = order.tagKey === null
+      ? "created_at"
+      : "COALESCE(CASE WHEN json_valid(tags) THEN CAST(json_extract(tags, ?) AS TEXT) END, '')";
+    const sortParams = order.tagKey === null ? [] : [`$."${order.tagKey}"`];
+    const dir = order.direction === "desc" ? "DESC" : "ASC";
+    const cmp = order.direction === "desc" ? "<" : ">";
+    const orderBy = [
+      "sort_key",
+      ...CATALOG_IDENTITY_COLUMNS,
+    ].map((column) => `${column} ${dir}`).join(", ");
+    const inner = `SELECT *, ${sortExpr} AS sort_key FROM catalog WHERE ${
+      whereClause || "1"
+    }`;
+    const firstPage = this.db.prepare(
+      `SELECT * FROM (${inner}) ORDER BY ${orderBy} LIMIT ?`,
+    );
+    const nextPage = this.db.prepare(
+      `SELECT * FROM (${inner}) WHERE (sort_key, ${
+        CATALOG_IDENTITY_COLUMNS.join(", ")
+      }) ${cmp} (?, ?, ?, ?, ?, ?) ORDER BY ${orderBy} LIMIT ?`,
+    );
+    let after = order.after;
+    let pageSize = ITERATE_PAGE_SIZE;
+    while (true) {
+      const raw = (after
+        ? nextPage.all(
+          ...sortParams,
+          ...params,
+          after.key,
+          ...after.id,
+          pageSize,
+        )
+        : firstPage.all(
+          ...sortParams,
+          ...params,
+          pageSize,
+        )) as unknown as (CatalogRow & { sort_key: string })[];
+      for (const { sort_key: sortKey, ...row } of raw) {
+        yield { row, sortKey };
+      }
+      if (raw.length < pageSize) break;
+      pageSize = Math.min(pageSize * 2, MAX_SORTED_PAGE_SIZE);
+      const last = raw[raw.length - 1];
+      after = {
+        key: last.sort_key,
+        id: [
+          last.namespace,
+          last.type_normalized,
+          last.model_id,
+          last.data_name,
+          last.version,
+        ],
+      };
     }
   }
 

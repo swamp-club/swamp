@@ -20,9 +20,11 @@
 import type { DataRecord } from "./data_record.ts";
 import {
   type DataQueryOptions,
+  type DataQueryPage,
   DataQueryService,
   type LatestRecordOptions,
 } from "./data_query_service.ts";
+import { UserError } from "../errors.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import type { UnifiedDataRepository } from "./repositories.ts";
 
@@ -96,6 +98,14 @@ export class CompositeDataQueryService extends DataQueryService {
     predicate: string,
     options?: DataQueryOptions,
   ): Promise<DataRecord[] | unknown[]> {
+    // Merging two sorted streams into one keyset order is not supported
+    // (swamp-club#4177).
+    if (options?.sort || options?.after) {
+      throw new UserError(
+        "Sorted and cursor-paged queries are not supported during a " +
+          "workflow run",
+      );
+    }
     const [persistentResults, ephemeralResults] = await Promise.all([
       super.query(predicate, options),
       this.ephemeralQueryService.query(predicate, options),
@@ -115,10 +125,23 @@ export class CompositeDataQueryService extends DataQueryService {
     );
   }
 
+  override async queryPage(
+    predicate: string,
+    options?: DataQueryOptions,
+  ): Promise<DataQueryPage> {
+    return { results: await this.query(predicate, options) };
+  }
+
   override querySync(
     predicate: string,
     options?: DataQueryOptions,
   ): DataRecord[] | unknown[] {
+    if (options?.sort || options?.after) {
+      throw new UserError(
+        "Sorted and cursor-paged queries are not supported during a " +
+          "workflow run",
+      );
+    }
     const persistentResults = super.querySync(predicate, options);
     const ephemeralResults = this.ephemeralQueryService.querySync(
       predicate,

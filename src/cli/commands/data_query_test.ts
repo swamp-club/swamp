@@ -36,9 +36,40 @@ Deno.test("dataQueryCommand has --single option", async () => {
   assertEquals(option !== undefined, true);
 });
 
-Deno.test("dataQueryCommand --single conflicts with --limit", async () => {
+Deno.test("dataQueryCommand --single conflicts with --limit, --sort and --cursor", async () => {
   const { dataQueryCommand } = await import("./data_query.ts");
-  assertEquals(dataQueryCommand.getOption("single")?.conflicts, ["limit"]);
+  assertEquals(dataQueryCommand.getOption("single")?.conflicts, [
+    "limit",
+    "sort",
+    "cursor",
+  ]);
+});
+
+Deno.test("dataQueryCommand: --cursor depends on --sort (swamp-club#4177)", async () => {
+  const { dataQueryCommand } = await import("./data_query.ts");
+  assertEquals(dataQueryCommand.getOption("cursor")?.depends, ["sort"]);
+});
+
+Deno.test("dataQueryCommand: an invalid --sort fails before the query runs (swamp-club#4177)", async () => {
+  const { dataQueryCommand } = await import("./data_query.ts");
+  const root = new Command()
+    .globalOption("--json", "JSON output")
+    .command("query", dataQueryCommand);
+
+  await assertRejects(
+    () => root.parse(["query", "true", "--sort", "name:desc"]),
+    UserError,
+    "Cannot sort by",
+  );
+});
+
+Deno.test("remoteQueryPayload: carries the sort and cursor to the server (swamp-club#4177)", async () => {
+  const { remoteQueryPayload } = await import("./data_query.ts");
+  const sort = { field: "tags.startedAt", direction: "desc" } as const;
+  assertEquals(
+    remoteQueryPayload("true", { limit: 5, single: false, sort, cursor: "c" }),
+    { predicate: "true", limit: 5, select: undefined, sort, cursor: "c" },
+  );
 });
 
 Deno.test("dataQueryCommand: --single without a predicate fails before opening the TUI", async () => {

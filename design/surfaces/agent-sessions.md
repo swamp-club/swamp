@@ -224,7 +224,13 @@ no new filter:
 
 A list query passes `AGENT_SESSION_LIST_SELECT`, which reads only the data
 name and tags. With a predicate over tags, the query then never loads a record
-body. Without a select, `data.query` loads the body of every record it
+body. The list pages newest first with
+`sort: { field: "tags.startedAt", direction: "desc" }` and a `limit`, and asks
+for each later page with the `nextCursor` the previous one returned
+([data-query.md](../enablers/data-query.md#sorting-and-paging---sort---cursor)).
+The sort reads the tag in SQL, so it loads no body either, and the type tag
+equality in the predicate pushes down to the catalog's `data_type` column, so a
+limit-1 probe for any session does not scan the whole catalog. Without a select, `data.query` loads the body of every record it
 returns. `data.query` drops records the viewer may not read before it applies
 the limit, so a page of results always reflects readable sessions.
 `data.search` also takes a tags filter, but it applies its limit before its

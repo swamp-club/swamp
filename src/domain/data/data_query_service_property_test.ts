@@ -26,6 +26,7 @@ import type { DataRecord } from "./data_record.ts";
 import type { UnifiedDataRepository } from "./repositories.ts";
 import { ModelType } from "../models/model_type.ts";
 import { Data } from "./data.ts";
+import { createQuerySort, type QueryCursorPosition } from "./query_sort.ts";
 import {
   type CatalogRow,
   CatalogStore,
@@ -479,5 +480,93 @@ Deno.test("property: a catalog rebuilt from disk matches the write-through catal
       }
     }),
     { numRuns: 40 },
+  );
+});
+
+Deno.test("property: keyset pages of a sorted query concatenate to the whole sorted match set, with no repeats (swamp-club#4177)", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-sort-prop-" });
+  using _cleanup = {
+    [Symbol.dispose]() {
+      try {
+        Deno.removeSync(dir, { recursive: true });
+      } catch (error) {
+        // Windows refuses while V8 still holds the SQLite handle.
+        if (Deno.build.os !== "windows") throw error;
+      }
+    },
+  };
+  await fc.assert(
+    fc.asyncProperty(
+      fc.array(
+        fc.record({
+          startedAt: fc.option(fc.constantFrom("a", "b", "c", "d"), {
+            nil: undefined,
+          }),
+          model: fc.constantFrom("m1", "m2"),
+          hidden: fc.boolean(),
+        }),
+        { maxLength: 25 },
+      ),
+      fc.integer({ min: 1, max: 6 }),
+      fc.constantFrom("asc" as const, "desc" as const),
+      async (items, limit, direction) => {
+        const catalog = new CatalogStore(
+          join(dir, `${crypto.randomUUID()}.db`),
+        );
+        try {
+          catalog.markPopulated();
+          items.forEach((item, i) => {
+            catalog.upsert({
+              ...makeRow(1, ""),
+              is_latest: 1,
+              is_step_latest: 1,
+              model_id: item.model,
+              model_name: item.hidden ? "hidden" : "ingest",
+              data_name: `d${i}`,
+              id: crypto.randomUUID(),
+              tags: JSON.stringify(
+                item.startedAt ? { startedAt: item.startedAt } : {},
+              ),
+            });
+          });
+          const service = new DataQueryService(
+            catalog,
+            new FileSystemUnifiedDataRepository(dir, undefined, catalog),
+          );
+          const sort = createQuerySort("tags.startedAt", direction);
+          const include = (record: DataRecord) =>
+            Promise.resolve(record.modelName !== "hidden");
+          const whole = (await service.queryPage("true", {
+            select: "modelId + '/' + name",
+            sort,
+            include,
+          })).results as string[];
+
+          const paged: string[] = [];
+          let after: QueryCursorPosition | undefined;
+          for (let pages = 0; pages <= items.length + 1; pages++) {
+            const page = await service.queryPage("true", {
+              select: "modelId + '/' + name",
+              sort,
+              include,
+              limit,
+              after,
+            });
+            paged.push(...page.results as string[]);
+            if (page.results.length < limit) break;
+            after = page.last;
+          }
+          assertEquals(paged, whole);
+          assertEquals(new Set(paged).size, paged.length);
+          assertEquals(
+            paged.length,
+            items.filter((item) => !item.hidden).length,
+          );
+        } finally {
+          catalog.close();
+        }
+      },
+    ),
+    { numRuns: 60 },
   );
 });

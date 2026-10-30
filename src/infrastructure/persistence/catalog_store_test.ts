@@ -2436,3 +2436,76 @@ Deno.test("CatalogStore.versionKeys: lists the published rows of one namespace, 
     store.close();
   }
 });
+
+Deno.test("CatalogStore.iterateSorted: pages past ITERATE_PAGE_SIZE by keyset in a total order, ties crossing page boundaries (swamp-club#4177)", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  try {
+    // Pages of 1000 then 2000 rows: both boundaries fall inside a tie.
+    const count = ITERATE_PAGE_SIZE * 3 + 7;
+    for (let i = 0; i < count; i++) {
+      store.upsert(makeRow({
+        data_name: `d${String(i).padStart(5, "0")}`,
+        id: crypto.randomUUID(),
+        // Three rows share each value.
+        tags: JSON.stringify({
+          startedAt: String(Math.floor(i / 3)).padStart(5, "0"),
+        }),
+      }));
+    }
+    const rows = [...store.iterateSorted("is_latest = ?", [1], {
+      tagKey: "startedAt",
+      direction: "desc",
+    })];
+    assertEquals(rows.length, count);
+    assertEquals(new Set(rows.map((r) => r.row.data_name)).size, count);
+    for (let i = 1; i < rows.length; i++) {
+      const [prev, next] = [rows[i - 1], rows[i]];
+      assert(
+        prev.sortKey > next.sortKey ||
+          (prev.sortKey === next.sortKey &&
+            prev.row.data_name > next.row.data_name),
+      );
+    }
+    assertEquals("sort_key" in rows[0].row, false);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("CatalogStore.iterateSorted: starts after a position, sorts a missing tag as empty (swamp-club#4177)", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  try {
+    store.upsert(makeRow({ data_name: "a", id: "1", tags: '{"k":"2"}' }));
+    store.upsert(makeRow({ data_name: "b", id: "2", tags: "{}" }));
+    store.upsert(makeRow({ data_name: "c", id: "3", tags: '{"k":"1"}' }));
+    // A row whose tags are not JSON sorts as empty instead of failing.
+    store.upsert(makeRow({ data_name: "d", id: "4", tags: "not json" }));
+    const names = (
+      after?: { key: string; id: [string, string, string, string, number] },
+    ) =>
+      [...store.iterateSorted("", [], { tagKey: "k", direction: "asc", after })]
+        .map((r) => `${r.row.data_name}=${r.sortKey}`);
+
+    assertEquals(names(), ["b=", "d=", "c=1", "a=2"]);
+    assertEquals(
+      names({ key: "1", id: ["", "test-model", "model-001", "c", 1] }),
+      ["a=2"],
+    );
+    const byCreated = [...store.iterateSorted("", [], {
+      tagKey: null,
+      direction: "desc",
+    })];
+    assertEquals(byCreated[0].sortKey, "2026-01-01T00:00:00.000Z");
+    assertThrows(
+      () => [
+        ...store.iterateSorted("", [], { tagKey: 'a"b', direction: "asc" }),
+      ],
+      Error,
+      "Invalid sort tag key",
+    );
+  } finally {
+    store.close();
+  }
+});

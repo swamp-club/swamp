@@ -22,9 +22,15 @@ import { Environment } from "cel-js";
 import { coerceBigInts } from "../../infrastructure/cel/cel_evaluator.ts";
 import type {
   CatalogRow,
+  CatalogSortOrder,
   CatalogStore,
 } from "../../infrastructure/persistence/catalog_store.ts";
 import { UserError } from "../errors.ts";
+import {
+  type QueryCursorPosition,
+  type QuerySort,
+  querySortTagKey,
+} from "./query_sort.ts";
 import { isUnreadableContentError } from "../datastore/unreadable_content.ts";
 import {
   type ContentAvailability,
@@ -46,6 +52,7 @@ import {
   extractModelCall,
   extractModelNameEquality,
   extractStringEquality,
+  extractTypeTagEquality,
   extractWorkflowRunIdLatestRun,
   HISTORY_OPT_IN_FIELDS,
   LATEST_RUN_FUNCTION,
@@ -282,6 +289,28 @@ export interface DataQueryOptions {
    * each of its services.
    */
   view?: QueryView;
+  /**
+   * Orders the matches by `createdAt` or a tag's value, with the row
+   * identity as the tie-break, instead of catalog order (swamp-club#4177).
+   * Only {@link DataQueryService.query} and
+   * {@link DataQueryService.queryPage} take it.
+   */
+  sort?: QuerySort;
+  /**
+   * With `sort`, matches only rows after this position: the keyset cursor
+   * of the previous page's last row.
+   */
+  after?: QueryCursorPosition;
+}
+
+/** A page of {@link DataQueryService.queryPage} results. */
+export interface DataQueryPage {
+  results: DataRecord[] | unknown[];
+  /**
+   * With a sort, the position of the last returned row, for the next
+   * page's cursor. Absent when nothing was returned or there is no sort.
+   */
+  last?: QueryCursorPosition;
 }
 
 /** Options for {@link DataQueryService.getLatestRecord}. */
@@ -322,6 +351,11 @@ interface MatchResult {
   violations: Array<{ record: DataRecord; matchesBefore: number }>;
   /** Whether matching stopped at the limit, so more rows may match. */
   hitLimit: boolean;
+  /**
+   * With a sort, each record's sort value and row identity, in step with
+   * `records`; empty without one.
+   */
+  positions: QueryCursorPosition[];
 }
 
 /** A record's content as a projection sees it; see `projectedContent`. */
@@ -849,12 +883,33 @@ export class DataQueryService {
     predicate: string,
     options?: DataQueryOptions,
   ): Promise<DataRecord[] | unknown[]> {
+    return (await this.runQuery(predicate, options)).results;
+  }
+
+  /**
+   * {@link query}, also returning the position of the last returned row
+   * when the query is sorted, so the caller can build the next page's
+   * cursor. The position is taken from the catalog row, before projection.
+   */
+  queryPage(
+    predicate: string,
+    options?: DataQueryOptions,
+  ): Promise<DataQueryPage> {
+    return this.runQuery(predicate, options);
+  }
+
+  /** The body of {@link query} and {@link queryPage}; never overridden. */
+  private async runQuery(
+    predicate: string,
+    options?: DataQueryOptions,
+  ): Promise<DataQueryPage> {
     // Resolved before the catalog is touched, so a query that cannot
     // resolve its runs fails without a backfill.
     const latestRuns = await this.resolveLatestRuns(predicate, options);
     const models = await this.resolveModels(predicate, options);
     await this.ensurePopulated();
     let results: DataRecord[] | unknown[];
+    let last: QueryCursorPosition | undefined;
     // Apply the limit to returned records, so neither hidden records nor
     // stale catalog rows dropped during hydration shorten a page: match in
     // growing batches until the limit is met or the matches run out, never
@@ -886,6 +941,7 @@ export class DataQueryService {
       // record, so the error never names, or reveals, an item outside the
       // caller's reach.
       const accepted: DataRecord[] = [];
+      let lastAccepted: QueryCursorPosition | undefined;
       let nextViolation = 0;
       for (
         let i = 0;
@@ -906,6 +962,7 @@ export class DataQueryService {
         const record = matched.records[i];
         if (record && (!include || await include(record))) {
           accepted.push(record);
+          lastAccepted = matched.positions[i];
         }
       }
       // Stale rows dropped during hydration can shorten a batch, so only
@@ -930,12 +987,13 @@ export class DataQueryService {
           await this.projectedContents(accepted, matched.selectReadsContent),
           options,
         );
+        last = lastAccepted;
         break;
       }
       batch *= 4;
     }
 
-    return results;
+    return last ? { results, last } : { results };
   }
 
   /**
@@ -1217,6 +1275,9 @@ export class DataQueryService {
     latestRuns: LatestRuns = NO_LATEST_RUNS,
     models: ResolvedModels = NO_MODELS,
   ): MatchResult {
+    if (options?.after && !options.sort) {
+      throw new UserError("A query cursor needs the sort it was made with");
+    }
     // No default limit — an unspecified limit returns every matching row.
     // Callers that need a cap pass one explicitly.
     const limit = options?.limit ?? Infinity;
@@ -1388,6 +1449,14 @@ export class DataQueryService {
       whereParams.push(lifecycleLiteral);
     }
 
+    // data_type is the type tag or "" on every catalog writer, so an
+    // equality with a non-empty literal pushes down exactly.
+    const typeTagLiteral = extractTypeTagEquality(userAst);
+    if (typeTagLiteral !== null) {
+      whereClauses.push("data_type = ?");
+      whereParams.push(typeTagLiteral);
+    }
+
     const modelCall = extractModelCall(userAst);
     const modelTarget = modelCall === null ? undefined : models.get(modelCall);
     if (modelTarget) {
@@ -1417,18 +1486,53 @@ export class DataQueryService {
           selectReadsAttributes: readsAttributesInSelect,
           violations: [],
           hitLimit: false,
+          positions: [],
         };
       }
       whereClauses.push("workflow_run_id = ?");
       whereParams.push(runId);
     }
 
-    const rows = whereClauses.length > 0
+    // A sorted query reads rows in its order, from after its cursor; each
+    // row's position is kept for the next page's cursor.
+    const sort = options?.sort;
+    const sortKeys = new WeakMap<CatalogRow, string>();
+    const sortedRows = (order: CatalogSortOrder) => {
+      const sorted = this.catalogStore.iterateSorted(
+        whereClauses.join(" AND "),
+        whereParams,
+        order,
+      );
+      return (function* () {
+        for (const { row, sortKey } of sorted) {
+          sortKeys.set(row, sortKey);
+          yield row;
+        }
+      })();
+    };
+    const rows = sort
+      ? sortedRows({
+        tagKey: querySortTagKey(sort),
+        direction: sort.direction,
+        after: options?.after,
+      })
+      : whereClauses.length > 0
       ? this.catalogStore.iterateFiltered(
         whereClauses.join(" AND "),
         whereParams,
       )
       : this.catalogStore.iterate();
+    const positions: QueryCursorPosition[] = [];
+    const positionOf = (row: CatalogRow): QueryCursorPosition => ({
+      key: sortKeys.get(row) ?? "",
+      id: [
+        row.namespace,
+        row.type_normalized,
+        row.model_id,
+        row.data_name,
+        row.version,
+      ],
+    });
 
     // Iterate catalog rows and evaluate predicate.
     // CEL reserves "namespace" as an identifier, so we expose an "ns" alias
@@ -1546,6 +1650,7 @@ export class DataQueryService {
           // (e.g. `<read error> || true`) resurfaces here.
           results.push(needsHydration ? record : load());
           if (needsHydration) matchedRows.push(row);
+          if (sort) positions.push(positionOf(row));
           if (results.length >= limit) {
             hitLimit = true;
             break;
@@ -1609,6 +1714,7 @@ export class DataQueryService {
           includePath,
           reportMissing(row),
         );
+        if (sort) positions[writeIndex] = positions[i];
         writeIndex++;
       }
       keptBefore.push(writeIndex);
@@ -1616,6 +1722,7 @@ export class DataQueryService {
         violation.matchesBefore = keptBefore[violation.matchesBefore];
       }
       results.length = writeIndex;
+      if (sort) positions.length = writeIndex;
     }
 
     return {
@@ -1625,6 +1732,7 @@ export class DataQueryService {
       selectReadsAttributes: readsAttributesInSelect,
       violations,
       hitLimit,
+      positions,
     };
   }
 
