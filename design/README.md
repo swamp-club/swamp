@@ -82,6 +82,7 @@ Write in plain English:
 | [input-pinning](./enablers/input-pinning.md)               | workflows                           | Write-once resume inputs, replay runs on the cache's inputs          |
 | [data-query](./enablers/data-query.md)                     | data                                | `data query`, catalog                                                |
 | [datastores](./enablers/datastores.md)                     | data                                | To be split: operator view / sync contract / locking                 |
+| [output-summary-index](./enablers/output-summary-index.md) | behaviors, serve                    | History reads answered from a derived, checkout-local index          |
 | [datastore-litestream](./enablers/datastore-litestream.md) | data                                | v3 `commits.db` replication: sidecar, outbox sync rule, fences       |
 | [remote-execution](./enablers/remote-execution.md)         | serve                               | Workers, leases, runners, data plane; serve protocol to be extracted |
 | [reports](./enablers/reports.md)                           | behaviors, workflows                |                                                                      |

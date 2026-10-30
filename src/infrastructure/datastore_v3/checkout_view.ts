@@ -39,6 +39,7 @@ import { createHash } from "node:crypto";
 import { join, resolve } from "@std/path";
 import { resolveLockTimeoutMs } from "../../domain/datastore/datastore_config.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
+import { removeStaleOutputSummaries } from "../persistence/output_summary_index.ts";
 import { removeStaleRunIndexes } from "../persistence/workflow_run_index.ts";
 import { writeFileDurably } from "./atomic_stream_write.ts";
 import { readModelStateDir } from "./record_path_guard.ts";
@@ -310,6 +311,7 @@ export async function alignCheckoutView(
     } finally {
       // The replay may have rewritten run records before any failure.
       await removeStaleRunIndexes(repoDir);
+      await removeStaleOutputSummaries(repoDir);
     }
     await writeRecordedView(repoDir, { view });
   } finally {

@@ -19,6 +19,7 @@
 
 import type { ModelType } from "./model_type.ts";
 import type { ModelOutput, ModelOutputId } from "./model_output.ts";
+import type { OutputSummary } from "./output_summary.ts";
 import type { DefinitionId } from "../definitions/definition.ts";
 
 /**
@@ -41,7 +42,7 @@ export type SelectReadableOutputs = (
 
 /** An output of a newest-first read, with its place in the scan's walk order. */
 export interface NewestFirstOutput {
-  output: ModelOutput;
+  output: OutputSummary;
   type: ModelType;
   method: string;
   /** Breaks ties between outputs started in the same millisecond. */
@@ -71,6 +72,15 @@ export interface OutputsNewestFirst {
 
   /** How many listed outputs have not been read or refused. */
   readonly unread: number;
+}
+
+/** What a search of summaries also needs from the records. */
+export interface OutputSummaryOptions {
+  /**
+   * Fill in `errorMessage` on every run that did not succeed, which opens
+   * those runs' records.
+   */
+  errorMessages?: boolean;
 }
 
 /**
@@ -166,23 +176,40 @@ export interface OutputRepository {
   >;
 
   /**
-   * Finds all outputs across all types whose `startedAt` is at or after the
-   * given cutoff. Prefer this over `findAllGlobal()` when the caller has a
-   * time bound; implementations may short-circuit the underlying scan and skip
-   * work that `findAllGlobal()` would do unconditionally. Its outputs are
-   * read-only and shared as `findAllGlobal()`'s are.
+   * The summaries of all outputs across all types, for a caller listing runs
+   * rather than opening one: `findAllGlobal()` without the cost of opening
+   * every record. Read-only and shared as `findAllGlobal()`'s outputs are.
+   *
+   * @param signal - Stops the scan once aborted
+   * @param selectReadable - Which output keys the caller may read, as in
+   *   `findAllGlobal()`
+   * @returns Array of all summaries with their types and methods
+   */
+  findAllGlobalSummaries(
+    signal?: AbortSignal,
+    selectReadable?: SelectReadableOutputs,
+  ): Promise<{ output: OutputSummary; type: ModelType; method: string }[]>;
+
+  /**
+   * Finds the summaries of all outputs across all types whose `startedAt` is
+   * at or after the given cutoff. Prefer this over `findAllGlobalSummaries()`
+   * when the caller has a time bound; implementations may short-circuit the
+   * underlying scan and skip work it would do unconditionally. Its summaries
+   * are read-only and shared as `findAllGlobal()`'s outputs are.
    *
    * @param cutoff - Earliest `startedAt` to include (inclusive)
    * @param signal - Stops the scan once aborted
    * @param selectReadable - Which output keys the caller may read, as in
    *   `findAllGlobal()`
-   * @returns Array of outputs whose `startedAt >= cutoff`
+   * @param options - What else the caller needs from the records
+   * @returns Array of summaries whose `startedAt >= cutoff`
    */
   findAllGlobalSince(
     cutoff: Date,
     signal?: AbortSignal,
     selectReadable?: SelectReadableOutputs,
-  ): Promise<{ output: ModelOutput; type: ModelType; method: string }[]>;
+    options?: OutputSummaryOptions,
+  ): Promise<{ output: OutputSummary; type: ModelType; method: string }[]>;
 
   /**
    * The outputs across all types started in `window`, for a caller that wants

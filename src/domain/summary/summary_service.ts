@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { ModelOutput } from "../models/model_output.ts";
+import type { OutputSummary } from "../models/output_summary.ts";
 import type { ModelType } from "../models/model_type.ts";
 import type { OutputRepository } from "../models/repositories.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
@@ -74,7 +74,9 @@ export class SummaryService {
       allDefinitions,
       allWorkflows,
     ] = await Promise.all([
-      this.outputRepo.findAllGlobalSince(cutoffDate),
+      this.outputRepo.findAllGlobalSince(cutoffDate, undefined, undefined, {
+        errorMessages: true,
+      }),
       this.workflowRunRepo.findAllGlobalSince(cutoffDate),
       this.dataRepo.findAllGlobalSince(cutoffDate),
       this.definitionRepo?.findAllGlobal() ?? Promise.resolve([]),
@@ -133,7 +135,7 @@ export class SummaryService {
   }
 
   private groupMethodExecutions(
-    outputs: { output: ModelOutput; type: ModelType; method: string }[],
+    outputs: { output: OutputSummary; type: ModelType; method: string }[],
     defNames: Map<string, string>,
     limit?: number,
   ): ModelExecutionGroup[] {
@@ -180,7 +182,7 @@ export class SummaryService {
         startedAt: output.startedAt.toISOString(),
         durationMs: output.durationMs,
         status: output.status,
-        error: output.error?.message,
+        error: output.errorMessage,
         triggeredBy: output.provenance.triggeredBy,
       };
       methodGroup.runs.push(detail);

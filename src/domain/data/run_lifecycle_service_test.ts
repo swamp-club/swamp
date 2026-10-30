@@ -73,6 +73,7 @@ function createMockOutputRepo(
     findLatestByDefinition: () => Promise.resolve(null),
     findAll: () => Promise.resolve([]),
     findAllGlobal: () => Promise.resolve([]),
+    findAllGlobalSummaries: () => Promise.resolve([]),
     findAllGlobalSince: () => Promise.resolve([]),
     findGlobalNewestFirst: () => Promise.reject(new Error("not used here")),
     findHistoryNewestFirst: () => Promise.reject(new Error("not used here")),

@@ -2111,7 +2111,7 @@ export async function handleModelOutputSearch(
     // place among the shared scan permits (swamp-club#4070).
     const deps: ModelOutputSearchDeps = {
       findAllOutputsGlobal: (selectReadable) =>
-        outputRepo.findAllGlobal(controller.signal, selectReadable),
+        outputRepo.findAllGlobalSummaries(controller.signal, selectReadable),
       findAllOutputsGlobalSince: (cutoff, selectReadable) =>
         outputRepo.findAllGlobalSince(
           cutoff,
@@ -2497,7 +2497,8 @@ export async function handleModelMethodHistorySearch(
 
     // The scan stops when the request is cancelled (swamp-club#4070).
     const deps: ModelOutputSearchDeps = {
-      findAllOutputsGlobal: () => outputRepo.findAllGlobal(controller.signal),
+      findAllOutputsGlobal: () =>
+        outputRepo.findAllGlobalSummaries(controller.signal),
       findAllDefinitions: () => definitionRepo.findAllIncludingAutoGlobal(),
       resolveModelNames: (keys) =>
         resolveModelNames(canonical, keys, controller.signal),

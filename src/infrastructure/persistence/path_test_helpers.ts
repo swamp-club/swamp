@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertMatch, assertStringIncludes } from "@std/assert";
+import { OUTPUT_SUMMARIES_DIR } from "./output_summary_index.ts";
+import { swampPath } from "./paths.ts";
 
 /**
  * Test assertion that compares two filesystem paths irrespective of
@@ -173,4 +175,15 @@ export function withMockedEnv<T>(
   }
   restore();
   return result;
+}
+
+/**
+ * Keeps the checkout at `repoDir` from holding output summaries, for a test
+ * about reading output records: a file where their directory would go makes
+ * every summary read and write fail, which only ever costs a read of the record.
+ */
+export async function disableOutputSummaries(repoDir: string): Promise<void> {
+  const path = swampPath(repoDir, OUTPUT_SUMMARIES_DIR);
+  await Deno.mkdir(swampPath(repoDir), { recursive: true });
+  await Deno.writeTextFile(path, "");
 }

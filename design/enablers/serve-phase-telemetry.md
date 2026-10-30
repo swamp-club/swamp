@@ -276,6 +276,18 @@ reads no definition files. Without a definition index, the request's one scan of
 definition answers both phases.
 
 `candidate_scan` counts `candidates`, and what the repository did to find them.
+Once the listing has chosen its files, the
+[output summary index](./output-summary-index.md) answers for the finished ones
+(lab #4145): `summary_shards_read` counts shards opened, with
+`summary_read_work_ms`, `summary_shards_left_unopened` those too large for what the
+read wanted from them, `summary_shards_rewritten` those a read rewrote to drop
+duplicate rows, `summary_stats` the records stat'ed to check rows and for rows being
+added, with `summary_stat_work_ms`, `summary_rows_used` the files answered without a
+read, `summary_rows_outdated` the rows not used because their record changed, and
+`summary_rows_backfilled` the rows a read added. On a warm window `files_read`
+stays near zero and `summary_rows_used` near `candidates`; a `files_read` near
+`candidates` is a cold index, and with `summary_rows_outdated` near it, records
+rewritten since their rows were made.
 A `since` search walks every type and method directory and skips a file whose
 name says it started before the cutoff without a stat or a read; only a file
 whose name is not in the output form is stat'ed for its mtime. A search for one
@@ -511,6 +523,7 @@ swamp.retention.batch                     retention.kind=outputs
    ├─ swamp.diagnostic.candidate_enumeration
    ├─ swamp.diagnostic.candidate_scan
    ├─ swamp.diagnostic.orphan_log_sweep   (only on a batch that did not stop at its limit)
+   ├─ swamp.diagnostic.summary_compaction (only on such a batch, and not on a dry run)
    └─ swamp.diagnostic.batch_commit
 ```
 
@@ -528,6 +541,7 @@ go one level further up.
 | `gate_wait`             | The `swamp.serve.sync_gate.wait` span, tagged: `sync_gate.mode`, `sync_gate.acquired`. Waiting, not working                                                     |
 | `candidate_enumeration` | `scan_strategy` (`full_listing`: every batch lists every output record), `files`                                                                                 |
 | `candidate_scan`        | `limit`, `dry_run`, `stopped_at_limit`; counts and work below                                                                                                    |
+| `summary_compaction`    | `shards_rewritten`, `shards_removed`; `compact_work_ms`: rows of removed records dropped from the [output summaries](./output-summary-index.md) |
 | `orphan_log_sweep`      | `dry_run`; `logs_listed`, `logs_skipped_recent`, `candidates`, `dirs_checked`, `dirs_unreadable`, `removed`, `bytes_reclaimed`; `list_work_ms`, `stat_work_ms`, `reference_read_work_ms`, `remove_work_ms` |
 | `batch_commit`          | `disposition` (`commit`, or `abandon` after the collector threw)                                                                                                 |
 

@@ -462,6 +462,8 @@ function createRemoteOutputRepository(
       >,
     findByIds: () => unsupported("outputRepository.findByIds"),
     findAllGlobal: () => unsupported("outputRepository.findAllGlobal"),
+    findAllGlobalSummaries: () =>
+      unsupported("outputRepository.findAllGlobalSummaries"),
     findAllGlobalSince: () =>
       unsupported("outputRepository.findAllGlobalSince"),
     findGlobalNewestFirst: () =>

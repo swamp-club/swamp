@@ -22,6 +22,7 @@ import {
   computeDefinitionHash,
   executionErrorFrom,
   type ExecutionProvenance,
+  isSettledStatus,
   ModelOutput,
   type ModelOutputData,
   redactedError,
@@ -866,4 +867,12 @@ Deno.test("redactedError: a thrown non-Error that echoes a secret becomes its re
   };
   assertEquals(redactedError(leaky, idle), leaky);
   assertEquals(redactedError("hunter2-long", idle), "hunter2-long");
+});
+
+Deno.test("isSettledStatus: only a finished run is settled", () => {
+  assertEquals(isSettledStatus("pending"), false);
+  assertEquals(isSettledStatus("running"), false);
+  assertEquals(isSettledStatus("succeeded"), true);
+  assertEquals(isSettledStatus("failed"), true);
+  assertEquals(isSettledStatus("cancelled"), true);
 });

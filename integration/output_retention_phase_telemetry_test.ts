@@ -296,6 +296,7 @@ Deno.test("output retention phases: a batch exports its stages through OTLP with
         "candidate_enumeration",
         "candidate_scan",
         "orphan_log_sweep",
+        "summary_compaction",
         "batch_commit",
       ]
     ) {
@@ -304,6 +305,16 @@ Deno.test("output retention phases: a batch exports its stages through OTLP with
       assertEquals(attribute(span, "swamp.outcome")?.stringValue, "ok");
     }
     assert(childOf(gateWait, phase), "gate_wait is under retention_batch");
+
+    const compaction = only(spans, "swamp.diagnostic.summary_compaction");
+    assert(
+      (intOf(compaction, "swamp.diagnostic.shards_rewritten") ?? 0) +
+          (intOf(compaction, "swamp.diagnostic.shards_removed") ?? 0) >= 1,
+    );
+    assertEquals(
+      typeof numberOf(compaction, "swamp.diagnostic.compact_work_ms"),
+      "number",
+    );
 
     const scan = only(spans, "swamp.diagnostic.candidate_scan");
     assertEquals(intOf(scan, "swamp.diagnostic.considered"), 5);

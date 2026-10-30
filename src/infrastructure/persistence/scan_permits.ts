@@ -194,6 +194,32 @@ export async function withScanPermit<T>(
 }
 
 /**
+ * How long a scan's synchronous work over many items holds the event loop before
+ * it yields, so a request running beside it waits about this long at worst.
+ */
+const SCAN_SLICE_MS = 4;
+
+/**
+ * Runs `slice` while `more` says there is work, yielding to the event loop
+ * between calls. `slice` is given the time it should stop at, and does at least
+ * one item whatever that says, so the work always ends. Once `signal` aborts, it
+ * rejects with the reason at the next yield.
+ */
+export async function inTimeSlices(
+  more: () => boolean,
+  slice: (until: number) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  while (more()) {
+    slice(performance.now() + SCAN_SLICE_MS);
+    if (more()) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      signal?.throwIfAborted();
+    }
+  }
+}
+
+/**
  * `fn` of each item, at most `limit` at once, in the items' order. Once one
  * call fails, or `signal` aborts, no further item starts, and the failure is
  * raised only after every started call has settled, so none is left running.

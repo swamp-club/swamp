@@ -341,7 +341,8 @@ Two optional fields decide which data goes to the datastore:
   `DEFAULT_DATASTORE_SUBDIRS` (`datastore_config.ts`): `auto-definitions`,
   `definitions-evaluated`, `workflows-evaluated`, `config`, `data`, `outputs`,
   `workflow-runs`, `audit`, `telemetry`, `logs`, `files`, plus the bundle
-  directories. Anything unlisted stays in local `.swamp/`. Nothing writes
+  directories. Anything unlisted stays in local `.swamp/`, as the
+  [output summaries](./output-summary-index.md) always do. Nothing writes
   `audit`, `telemetry`, `logs` or `files` through the datastore, so listing
   them moves no data (see "v3 stream directories"). The
   `ALWAYS_LOCAL_SUBDIRS` (`secrets`, `bundles`, `vault-bundles`,

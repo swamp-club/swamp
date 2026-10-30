@@ -20,6 +20,7 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
+  inTimeSlices,
   mapBounded,
   type ReleaseScanPermit,
   type ScanKind,
@@ -273,4 +274,51 @@ Deno.test("mapBounded: once the signal aborts, starts no further item and reject
     "cancelled",
   );
   assertEquals(started, [0, 1]);
+});
+
+Deno.test("inTimeSlices: runs no slice when there is no work", async () => {
+  let slices = 0;
+  await inTimeSlices(() => false, () => slices++);
+  assertEquals(slices, 0);
+});
+
+Deno.test("inTimeSlices: runs every slice with a time to stop at, yielding to the event loop between them", async () => {
+  let left = 3;
+  let turns = 0;
+  const before = performance.now();
+  const stops: number[] = [];
+  const running = inTimeSlices(
+    () => left > 0,
+    (until) => {
+      stops.push(until);
+      left--;
+    },
+  );
+  const ticking = (async () => {
+    while (left > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      turns++;
+    }
+  })();
+  await running;
+  await ticking;
+  assertEquals(stops.length, 3);
+  assertEquals(stops.every((until) => until > before), true);
+  assertEquals(turns >= 1, true);
+});
+
+Deno.test("inTimeSlices: rejects with the reason at the next yield once its signal aborts, and starts no further slice", async () => {
+  const controller = new AbortController();
+  const reason = new Error("cancelled");
+  let slices = 0;
+  const failure = await inTimeSlices(
+    () => true,
+    () => {
+      slices++;
+      controller.abort(reason);
+    },
+    controller.signal,
+  ).then(() => undefined, (error) => error);
+  assertEquals(failure, reason);
+  assertEquals(slices, 1);
 });

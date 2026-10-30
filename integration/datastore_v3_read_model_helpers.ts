@@ -49,6 +49,7 @@ import {
   readModelStateDir,
 } from "../src/infrastructure/datastore_v3/record_path_guard.ts";
 import type { PartitionKey } from "../src/domain/datastore_v3/partition_key.ts";
+import { OUTPUT_SUMMARIES_DIR } from "../src/infrastructure/persistence/output_summary_index.ts";
 
 /** The chunk size the tests store with, so content spans several chunks. */
 export const TEST_CHUNK_BYTES = 1024;
@@ -153,14 +154,17 @@ export async function withV3Env(
 
 /**
  * Every file under `root`, by forward-slash path relative to it, skipping
- * the read model's state directory.
+ * the read model's state directory and the checkout's own output summaries.
  */
 export async function readTree(root: string): Promise<Map<string, string>> {
   const files = new Map<string, string>();
   try {
     for await (const entry of walk(root, { includeDirs: false })) {
       const rel = relative(root, entry.path).split(SEPARATOR).join("/");
-      if (rel.split("/")[0] === READ_MODEL_STATE_DIR) continue;
+      const top = rel.split("/")[0];
+      if (top === READ_MODEL_STATE_DIR || top === OUTPUT_SUMMARIES_DIR) {
+        continue;
+      }
       files.set(rel, await sha256Hex(await Deno.readFile(entry.path)));
     }
   } catch (error) {

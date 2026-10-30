@@ -23,6 +23,7 @@ import {
   assertGreater,
   assertStringIncludes,
 } from "@std/assert";
+import { disableOutputSummaries } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { dirname, join } from "@std/path";
@@ -1831,6 +1832,7 @@ Deno.test("handleModelOutputSearch: a limit counts only outputs the caller may r
   await withTempDir(async (dir) => {
     const definitionRepo = new YamlDefinitionRepository(dir);
     const outputRepo = new YamlOutputRepository(dir);
+    await disableOutputSummaries(dir);
     const readable = await saveEditModel(definitionRepo, "readable");
     const hidden = await saveEditModel(definitionRepo, "hidden");
     const save = (definition: Definition, startedAt: string) =>
@@ -2125,6 +2127,7 @@ Deno.test("handleModelOutputSearch: a search cancelled during its scan stops rea
   await withTempDir(async (dir) => {
     const definitionRepo = new YamlDefinitionRepository(dir);
     const outputRepo = new YamlOutputRepository(dir);
+    await disableOutputSummaries(dir);
     const watched = await saveEditModel(definitionRepo, "watched");
     for (let day = 1; day <= 20; day++) {
       await outputRepo.save(
@@ -2212,6 +2215,7 @@ Deno.test("handleModelOutputSearch: a restricted search leaves unread the output
   await withTempDir(async (dir) => {
     const definitionRepo = new YamlDefinitionRepository(dir);
     const outputRepo = new YamlOutputRepository(dir);
+    await disableOutputSummaries(dir);
     const teamA = await saveEditModel(definitionRepo, "team-a-model", {
       team: "team-a",
     });
@@ -2572,6 +2576,7 @@ Deno.test("handleModelOutputSearch: a restricted search with a limit reads near 
   await withTempDir(async (dir) => {
     const definitionRepo = new YamlDefinitionRepository(dir);
     const outputRepo = new YamlOutputRepository(dir);
+    await disableOutputSummaries(dir);
     const readable = await saveEditModel(definitionRepo, "readable");
     const hidden = await saveEditModel(definitionRepo, "hidden");
     for (let minutes = 1; minutes <= 40; minutes++) {
@@ -2640,6 +2645,7 @@ Deno.test("handleModelOutputSearch: with authorization off, a limit stops the re
   await withTempDir(async (dir) => {
     const definitionRepo = new YamlDefinitionRepository(dir);
     const outputRepo = new YamlOutputRepository(dir);
+    await disableOutputSummaries(dir);
     const model = await saveEditModel(definitionRepo, "model");
     for (let minutes = 1; minutes <= 40; minutes++) {
       await saveMinutesIn(outputRepo, model, minutes);
@@ -2906,6 +2912,7 @@ Deno.test("handleModelOutputSearch: a model's limited search reads the same howe
   await withTempDir(async (dir) => {
     const definitionRepo = new YamlDefinitionRepository(dir);
     const outputRepo = new YamlOutputRepository(dir);
+    await disableOutputSummaries(dir);
     const model = await saveEditModel(definitionRepo, "model");
     const other = createDefinitionId(crypto.randomUUID());
     for (let minutes = 1; minutes <= 40; minutes++) {

@@ -121,7 +121,7 @@ export async function modelMethodHistorySearchAction(
     });
 
   const deps: ModelOutputSearchDeps = {
-    findAllOutputsGlobal: () => repoContext.outputRepo.findAllGlobal(),
+    findAllOutputsGlobal: () => repoContext.outputRepo.findAllGlobalSummaries(),
     findAllDefinitions: () =>
       repoContext.definitionRepo.findAllIncludingAutoGlobal(),
   };

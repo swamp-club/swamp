@@ -308,6 +308,19 @@ export async function withIndexQueue<T>(
   }
 }
 
+/** What `info` says of a record's version; undefined without an mtime. */
+export function fingerprintOf(
+  info: Deno.FileInfo,
+): RecordFingerprint | undefined {
+  if (!info.mtime) return undefined;
+  return {
+    mtimeMs: info.mtime.getTime(),
+    size: info.size,
+    ...(info.ctime ? { ctimeMs: info.ctime.getTime() } : {}),
+    ...(typeof info.ino === "number" ? { ino: info.ino } : {}),
+  };
+}
+
 /**
  * Stats a run record file. Returns null when it does not exist, and
  * undefined when the platform gives no mtime to fingerprint it by.
@@ -322,13 +335,7 @@ export async function statRecord(
     if (error instanceof Deno.errors.NotFound) return null;
     throw error;
   }
-  if (!info.mtime) return undefined;
-  return {
-    mtimeMs: info.mtime.getTime(),
-    size: info.size,
-    ...(info.ctime ? { ctimeMs: info.ctime.getTime() } : {}),
-    ...(typeof info.ino === "number" ? { ino: info.ino } : {}),
-  };
+  return fingerprintOf(info);
 }
 
 /**
