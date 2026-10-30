@@ -777,6 +777,40 @@ Deno.test("createRepairDatastoresRenderer: json mode records a refusal under con
   });
 });
 
+Deno.test("DatastoreRepairJsonReport: warnings appear only when there are some", () => {
+  const report = new DatastoreRepairJsonReport();
+  assertEquals(
+    "warnings" in JSON.parse(captureStdout(() => report.print())),
+    false,
+  );
+  report.warn("Could not release the lock.");
+  assertEquals(JSON.parse(captureStdout(() => report.print())).warnings, [
+    "Could not release the lock.",
+  ]);
+});
+
+Deno.test("createUnpushedFilesRepairRenderer: a run that uploaded warns what the upload may have restored, in both modes", () => {
+  const report = new DatastoreRepairJsonReport();
+  createUnpushedFilesRepairRenderer("json", report).handlers().completed({
+    kind: "completed",
+    summary: unpushed({ uploaded: 2 }),
+  });
+  assertStringIncludes(
+    JSON.parse(captureStdout(() => report.print())).unpushed.warning,
+    "restores it for everyone",
+  );
+  const done = stripAnsiCode(
+    captureStdout(() =>
+      createUnpushedFilesRepairRenderer("log", new DatastoreRepairJsonReport())
+        .handlers().completed({
+          kind: "completed",
+          summary: unpushed({ uploaded: 2 }),
+        })
+    ),
+  );
+  assertStringIncludes(done, "restores it for everyone");
+});
+
 Deno.test("createUnpushedFilesRepairRenderer: json mode records a failure under unpushed, and throws", () => {
   const report = new DatastoreRepairJsonReport();
   const renderer = createUnpushedFilesRepairRenderer("json", report);

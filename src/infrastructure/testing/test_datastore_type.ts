@@ -40,7 +40,7 @@ import type {
 
 /** A registered test datastore type and its disposer. */
 export interface TestDatastoreType {
-  /** The per-run type name, `@test/remote-<uuid>`. */
+  /** The type's name: `options.typeName`, or a per-run `@test/remote-<uuid>`. */
   typeName: string;
   /** Unregisters the type. Call it in a `finally`. */
   dispose: () => void;
@@ -78,7 +78,7 @@ export interface TestDatastoreTypeOptions {
 }
 
 /**
- * Registers a per-run `@test/remote-<uuid>` datastore type whose sync
+ * Registers a datastore type, per-run unless named, whose sync
  * service is `remote.connect(cachePath)`. The cache lives at
  * `<repoDir>/.test-cache`. Point a repo at it with
  * {@link configureTestDatastore}. Each of `datastoreControlPlaneStore`,

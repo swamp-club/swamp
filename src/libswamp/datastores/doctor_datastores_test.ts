@@ -2716,6 +2716,28 @@ Deno.test("repairDatastoreContamination: after a failed re-pull each invalidatio
   }
 });
 
+Deno.test("repairDatastoreContamination: a wipe that fails partway still invalidates what it may have removed", async () => {
+  const callLog: string[] = [];
+  await collect<RepairDatastoresEvent>(
+    repairDatastoreContamination(
+      createLibSwampContext(),
+      makeRepairDeps({
+        wipeLocalCache: () => Promise.reject(new Error("permission denied")),
+        invalidateWorkflowRunIndexes: () => {
+          callLog.push("indexes");
+          return Promise.resolve(0);
+        },
+        invalidateCatalog: () => {
+          callLog.push("catalog");
+          return Promise.resolve();
+        },
+      }),
+      { confirm: true },
+    ),
+  );
+  assertEquals(callLog, ["indexes", "catalog"]);
+});
+
 Deno.test("repairDatastoreContamination: a failed index invalidation still invalidates the catalog", async () => {
   const callLog: string[] = [];
   await collect<RepairDatastoresEvent>(

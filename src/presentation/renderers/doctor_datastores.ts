@@ -39,6 +39,13 @@ import {
   escapeControlCharactersInMessage,
 } from "../../domain/control_characters.ts";
 
+import type { UnpushedFilesSummary } from "../../domain/datastore/datastore_sync_service.ts";
+import type { EventHandlers } from "../../libswamp/stream.ts";
+import type { RetentionCheckSummary } from "../../libswamp/datastores/retention_check.ts";
+import { UserError } from "../../domain/errors.ts";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import type { OutputMode } from "../output/output.ts";
+
 /** What a list of unpushed files can hold that must not be uploaded. */
 const PEER_DELETED_LOOKS_UNPUSHED =
   "A file a peer deleted before your datastore extension recorded such deletes looks the same, and uploading it restores it for everyone";
@@ -46,12 +53,6 @@ const PEER_DELETED_LOOKS_UNPUSHED =
 /** What to do with files a real repair left unpushed. */
 const UNINDEXABLE_ADVICE =
   "The datastore could not index the files still listed, so repeating the repair does not clear them. Copy them out of the datastore cache and remove them.";
-import type { UnpushedFilesSummary } from "../../domain/datastore/datastore_sync_service.ts";
-import type { EventHandlers } from "../../libswamp/stream.ts";
-import type { RetentionCheckSummary } from "../../libswamp/datastores/retention_check.ts";
-import { UserError } from "../../domain/errors.ts";
-import { writeOutput } from "../../infrastructure/logging/logger.ts";
-import type { OutputMode } from "../output/output.ts";
 
 // ============================================================================
 // Doctor datastores renderer (detection)
@@ -556,12 +557,29 @@ export class DatastoreRepairJsonReport {
     contamination: null,
   };
 
+  readonly #warnings: string[] = [];
+
   record(stage: DatastoreRepairStage, result: Record<string, unknown>): void {
     this.#stages[stage] = result;
   }
 
+  /**
+   * A warning about the run rather than a stage. The logger is silent under
+   * --json, so this is the only place such a warning reaches a script.
+   */
+  warn(message: string): void {
+    this.#warnings.push(message);
+  }
+
   print(): void {
-    console.log(JSON.stringify(this.#stages, null, 2));
+    console.log(JSON.stringify(
+      {
+        ...this.#stages,
+        ...(this.#warnings.length > 0 ? { warnings: this.#warnings } : {}),
+      },
+      null,
+      2,
+    ));
   }
 }
 
@@ -780,6 +798,9 @@ class LogUnpushedFilesRepairRenderer implements UnpushedFilesRepairRenderer {
         );
         const details = unpushedFilesDetailLines(e.summary);
         if (details.length > 0) writeOutput(details.join("\n"));
+        if (e.summary.uploaded > 0) {
+          writeOutput(dim(`\n  ${PEER_DELETED_LOOKS_UNPUSHED}.`));
+        }
         if (e.summary.unpushed > 0) {
           writeOutput(
             dim(
@@ -837,6 +858,9 @@ class JsonUnpushedFilesRepairRenderer implements UnpushedFilesRepairRenderer {
           ...(this.overallStatus === "fail"
             ? { advice: UNINDEXABLE_ADVICE }
             : {}),
+          ...(e.summary.uploaded > 0
+            ? { warning: `${PEER_DELETED_LOOKS_UNPUSHED}.` }
+            : {}),
         });
       },
       not_needed: () => {
@@ -856,7 +880,7 @@ class JsonUnpushedFilesRepairRenderer implements UnpushedFilesRepairRenderer {
           status: "unpushed_failed",
           message: e.error.message,
         });
-        throw new UserError(e.error.message);
+        throw new UserError(e.error.message, e.error.code);
       },
     };
   }
@@ -870,7 +894,7 @@ export function renderUnpushedFilesCheckFailure(
   mode: OutputMode,
   message: string,
 ): void {
-  if (mode === "log") writeOutput(`${yellow("⚠")} ${message}`);
+  if (mode === "log") writeOutput(`${red("✗")} ${message}`);
 }
 
 export function createUnpushedFilesRepairRenderer(

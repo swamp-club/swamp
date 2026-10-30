@@ -1603,8 +1603,9 @@ export function createInMemoryRemote(
 
     /**
      * Models the `repairUnpushedFiles` contract. The fake compares bytes, so
-     * `exact` changes nothing and `unknown` is always 0. Its index is never split into shards, so
-     * the created files are committed in one batch. With no namespace every
+     * `exact` changes nothing and `unknown` is always 0. Its index is never
+     * split into shards, so the created files are committed in one batch. With
+     * no namespace every
      * cache file is in scope: the fake keeps no foreign namespace
      * directories to leave out.
      */

@@ -9319,8 +9319,10 @@ datastore extensions, close it.
   (swamp-club#3617; "v3 opt-in" and "Format Marker"). With `--json` the v2
   repair prints one document keyed by stage (`unmigrated`, `unreadableVersions`,
   `catalog`, `duplicateLatest`, `unpushed`, `contamination`), each the stage's
-  result object or null
-  when it did not run; the stage renderers record into a
+  result object or null when it did not run, plus `warnings` when something about
+  the run itself went wrong, such as a failed lock release, since the logger is
+  silent under `--json`. `unpushed_skipped` tells a stage that was skipped from
+  one that does not apply, which stays null. The stage renderers record into a
   `DatastoreRepairJsonReport` that the command prints once, also when a stage
   throws (swamp-club#4011). The
   completeness check walks the data dir every command reads

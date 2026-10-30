@@ -1024,16 +1024,18 @@ export async function* repairDatastoreContamination(
           namespace: config.namespace,
         };
       } catch (err) {
-        // After the wipe a re-run finds nothing to repair, so it would never
-        // reach the invalidation steps. Each is tried here on its own.
+        // Once the foreign objects are gone a re-run finds nothing to repair,
+        // so it would never reach the invalidation steps. A wipe that failed
+        // partway may have removed files they describe. Each is tried here on
+        // its own.
         const invalidations: Array<[string, () => Promise<unknown>]> = [];
-        if (lastCompletedStep === 2) {
+        if (lastCompletedStep === 1 || lastCompletedStep === 2) {
           invalidations.push([
             "workflow run indexes",
             deps.invalidateWorkflowRunIndexes,
           ]);
         }
-        if (lastCompletedStep === 2 || lastCompletedStep === 3) {
+        if (lastCompletedStep >= 1 && lastCompletedStep <= 3) {
           invalidations.push(["data catalog", deps.invalidateCatalog]);
         }
         let invalidationFailure = "";
@@ -1057,7 +1059,7 @@ export async function* repairDatastoreContamination(
               (lastCompletedStep >= 2
                 ? `Local cache was wiped — run 'swamp datastore sync --pull' to restore.${invalidationFailure}`
                 : lastCompletedStep >= 1
-                ? `Foreign objects were deleted but local cache was not refreshed — run 'swamp datastore sync --pull' to restore.`
+                ? `Foreign objects were deleted but local cache was not refreshed — run 'swamp datastore sync --pull' to restore.${invalidationFailure}`
                 : `Some foreign objects may already be deleted, and the local cache was not touched. Run 'swamp doctor datastores --repair -y' again; if it finds nothing to repair, run 'swamp datastore sync --pull'.`),
             cause: err instanceof Error ? err : undefined,
           },

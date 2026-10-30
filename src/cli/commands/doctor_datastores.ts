@@ -1024,6 +1024,11 @@ async function runDatastoreRepairs(
     if (unpushed && unmigratedFailed) {
       cliCtx.logger
         .warn`Skipping the unpushed cache files repair: the root-level unmigrated data repair did not complete.`;
+      report.record("unpushed", {
+        status: "unpushed_skipped",
+        message:
+          "The root-level unmigrated data repair did not complete, so cache files the remote never received were not looked for.",
+      });
       unpushedStatus = "skipped";
       failed = true;
     } else if (unpushed) {
@@ -1099,9 +1104,12 @@ async function runDatastoreRepairs(
     try {
       await lock?.release();
     } catch (error) {
-      cliCtx.logger.warn`Could not release the datastore lock: ${
-        error instanceof Error ? error.message : String(error)
-      }. It expires after its TTL.`;
+      const reason = error instanceof Error ? error.message : String(error);
+      cliCtx.logger
+        .warn`Could not release the datastore lock: ${reason}. It expires after its TTL.`;
+      report.warn(
+        `Could not release the datastore lock: ${reason}. It expires after its TTL, and other writers wait until then.`,
+      );
     }
   }
 }

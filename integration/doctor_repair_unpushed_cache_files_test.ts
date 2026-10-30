@@ -559,7 +559,12 @@ Deno.test("doctor datastores --repair -y: a failed lock release keeps a complete
       const run = await doctor("--repair", "-y");
 
       assertEquals(run.error, undefined);
-      assertEquals(JSON.parse(run.out).contamination.status, "completed");
+      const report = JSON.parse(run.out);
+      assertEquals(report.contamination.status, "completed");
+      assertStringIncludes(
+        report.warnings[0],
+        "Could not release the datastore lock",
+      );
       assertEquals(remoteText(remote, STRANDED), '{"a":1}');
       assertEquals(events.at(-1), "release");
     },
@@ -673,4 +678,19 @@ Deno.test("doctor datastores --repair: a cache that never pulled is told to pull
       assertStringIncludes(report.unpushed.message, "Nothing was uploaded");
     },
   );
+});
+
+Deno.test("doctor datastores --repair --json: a skipped stage says so, unlike one that does not apply (swamp-club#4138)", async () => {
+  // A namespace named after a layout directory cannot run the unmigrated
+  // repair, which skips this stage.
+  await withHarness({ namespace: "data" }, async ({ doctor }) => {
+    const run = await doctor("--repair");
+    // Deno.exit set this before the test runner turned it into an error.
+    Deno.exitCode = 0;
+
+    assertStringIncludes((run.error as Error).message, "exit code: 1");
+    const report = JSON.parse(run.out);
+    assertEquals(report.unpushed.status, "unpushed_skipped");
+    assertStringIncludes(report.unpushed.message, "unmigrated data repair");
+  });
 });
