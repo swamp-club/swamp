@@ -1282,6 +1282,9 @@ export function createInMemoryRemote(
           recorded.add(rel);
         }
       }
+      for (const rel of [...recorded]) {
+        if (!(await isRegularFile(cacheDir, rel))) recorded.delete(rel);
+      }
       peerDeletedKeys.set(key, recorded);
     }
 
@@ -1491,9 +1494,11 @@ export function createInMemoryRemote(
       for (const rel of committed.keys()) {
         if (!scoped || isInSubdirs(rel, subdirs)) state.pulledKeys.add(rel);
       }
-      // A subdir-scoped pull saves the whole index too.
-      await recordPeerDeleted(committed);
-      syncedIndexes.set(key, new Map(committed));
+      // A subdir-scoped pull saves the whole index too. One snapshot feeds
+      // both, so a peer's delete during the record's awaits is not lost.
+      const next = new Map(committed);
+      await recordPeerDeleted(next);
+      syncedIndexes.set(key, next);
       if (!scoped) {
         if (semantics.pullClearsPendingPush) state.localDirty = false;
         state.commitSeq = commitSeq;

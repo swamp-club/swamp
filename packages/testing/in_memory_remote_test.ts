@@ -1958,6 +1958,31 @@ Deno.test("repairUnpushedFiles: forgets a peer-deleted key once the remote holds
   });
 });
 
+Deno.test("repairUnpushedFiles: a marked-path push forgets a peer-deleted key whose copy is gone", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(
+      dir,
+      { "data/m/x": "v1", "data/m/keep": "k" },
+      { semantics: EXTENSION_2026_10_01_SEMANTICS },
+    );
+    const { b, bCache } = machines;
+    await peerDeletes(machines, ["data/m/x"]);
+    await b.pullChanged();
+    await remove(bCache, "data/m/x");
+    await b.markDirty({ relPath: "data/m/x" });
+    await write(bCache, "data/m/other", "o");
+    await b.markDirty({ relPath: "data/m/other" });
+    await b.pushChanged();
+    // Written behind the sync service after the record was dropped.
+    await write(bCache, "data/m/x", "new");
+
+    const summary = await b.repairUnpushedFiles!({ dryRun: true });
+
+    assertEquals(summary.peerDeleted, 0);
+    assertEquals(summary.samplePaths, ["data/m/x"]);
+  });
+});
+
 Deno.test("repairUnpushedFiles: a delete this cache pushed is not recorded, so a file written there later is unpushed", async () => {
   await withTempDir(async (dir) => {
     const { b, bCache } = await syncedPair(dir, {

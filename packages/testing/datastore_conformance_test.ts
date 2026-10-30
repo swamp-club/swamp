@@ -955,16 +955,20 @@ const BROKEN_IMPLEMENTATIONS: BrokenImplementation[] = [
   },
   {
     caseName: "repair-unpushed-classifies",
-    bug: "repairUnpushedFiles reports no local edit",
+    bug: "repairUnpushedFiles uploads the files it reports as locally modified",
     breakFixture: (fixture) => {
       const { service } = fixture.first;
       return withFirst(fixture, {
         ...service,
-        repairUnpushedFiles: async (options) => ({
-          ...(await service.repairUnpushedFiles!(options)),
-          locallyModified: 0,
-          sampleModified: [],
-        }),
+        repairUnpushedFiles: async (options) => {
+          const summary = await service.repairUnpushedFiles!(options);
+          if (options?.dryRun || summary.locallyModified === 0) return summary;
+          for (const relPath of summary.sampleModified) {
+            await service.markDirty({ relPath });
+          }
+          await service.pushChanged();
+          return summary;
+        },
       });
     },
   },

@@ -1504,15 +1504,19 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
       const stale = `${dir}/stale/raw`;
       const both = `${dir}/both/raw`;
       const peerDeleted = `${dir}/peer-deleted/raw`;
-      for (const rel of [edited, stale, both, peerDeleted]) {
+      const editedV1 = sampleBytes("edited-v1");
+      const staleV2 = sampleBytes("stale-v2");
+      const bothV2 = sampleBytes("both-v2");
+      await markAndWrite(second, edited, editedV1);
+      for (const rel of [stale, both, peerDeleted]) {
         await markAndWrite(second, rel, sampleBytes(`v1-${rel}`));
       }
       assertChanged(await second.service.pushChanged(), "second pushChanged()");
       assertChanged(await first.service.pullChanged(), "first pullChanged()");
       await writeLocal(first.cacheDir, edited, sampleBytes("edited-local"));
       await writeLocal(first.cacheDir, both, sampleBytes("both-local"));
-      await markAndWrite(second, stale, sampleBytes("stale-v2"));
-      await markAndWrite(second, both, sampleBytes("both-v2"));
+      await markAndWrite(second, stale, staleV2);
+      await markAndWrite(second, both, bothV2);
       await markAndDelete(second, peerDeleted);
       assertChanged(await second.service.pushChanged(), "second pushChanged()");
 
@@ -1547,6 +1551,19 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
         peerDeleted,
         "repairUnpushedFiles must not bring back a file a peer deleted",
       );
+      const peersBytes = [
+        [edited, editedV1],
+        [stale, staleV2],
+        [both, bothV2],
+      ] as const;
+      for (const [rel, bytes] of peersBytes) {
+        await assertHasBytes(
+          second,
+          rel,
+          bytes,
+          "a real repair reports a local edit or stale copy and never uploads it (contract rule 2)",
+        );
+      }
     },
   },
   {
@@ -1696,7 +1713,8 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
  * - `repair-unpushed-classifies`: against the last sync, a local edit is
  *   `locallyModified` (also when a peer changed the file too), a stale copy
  *   is not, files a peer changed count as `remoteMovedOn`, and a file a peer
- *   deleted is neither reported nor brought back.
+ *   deleted is neither reported nor brought back. A real run uploads none
+ *   of them.
  * - `repair-unpushed-peer-deleted`: an edited copy a pull kept after a peer
  *   deleted its key is `peerDeleted`, not unpushed, and is never uploaded.
  * - `repair-unpushed-already-present`: a local file whose key a peer pushed
