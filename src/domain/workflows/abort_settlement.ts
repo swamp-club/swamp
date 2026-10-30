@@ -97,10 +97,10 @@ export function shouldStepRun(step: Step, jobRun: JobRun): boolean {
  * True for a cleanup step: one that would still run had all the work before
  * the run's abort failed. Every `dependsOn` condition must hold with its
  * dependency failed, or, for a dependency that is itself a cleanup step and
- * succeeded, with that real status, so a teardown chain runs to its end. A
- * dependency that was skipped answers failed like work does: had the work
- * failed it might have run, so its skip says nothing. A step with no
- * `dependsOn` is work. Conditions are evaluated, so `and`, `or` and `not` need
+ * succeeded or was skipped by its guard, with that real status, so a teardown
+ * chain runs to its end. A dependency skipped on its `dependsOn` answers failed
+ * like work does: had the work failed it might have run, so its skip says
+ * nothing. A step with no `dependsOn` is work. Conditions are evaluated, so `and`, `or` and `not` need
  * no special case. Read from the definition and the records, so it does not
  * matter when the abort fired or which walk finished a dependency.
  */
@@ -116,10 +116,11 @@ export function runsAfterFailure(
     const afterFailure: TriggerEvaluationContext = {
       getStatus: (ref) => {
         const dependency = job.getStep(ref);
-        return dependency && jobRun.getStatus(ref) === "succeeded" &&
-            isCleanup(dependency)
-          ? "succeeded"
-          : "failed";
+        const status = jobRun.getStatus(ref);
+        const ran = status === "succeeded" ||
+          (status === "skipped" &&
+            jobRun.getStep(ref)?.skipReason?.kind === "guarded");
+        return dependency && ran && isCleanup(dependency) ? status : "failed";
       },
     };
     const cleanup = candidate.dependsOn.length > 0 &&

@@ -23993,3 +23993,91 @@ Deno.test("abort cleanup: a step recorded running beside a settled step in a fir
     assertCancelledBeforeStart(run, "main", ["other"]);
   });
 });
+
+Deno.test("abort cleanup: a rollback can read the status of a step settled after the abort", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run, executor } = await runThroughAbort(
+      tempDir,
+      "read-settled-wf",
+      [
+        modelStep("a"),
+        modelStep("b", onStep("a", TriggerCondition.succeeded())),
+        modelStep("rollback", {
+          ...onStep("b", TriggerCondition.failed()),
+          guard: "${{ steps.b.status == 'succeeded' }}",
+        }),
+      ],
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertCancelledBeforeStart(run, "main", ["b"]);
+    assertEquals(run.getJob("main")!.getStep("rollback")!.status, "succeeded");
+    assertRanAsCleanup(executor, ["rollback"]);
+  });
+});
+
+Deno.test("abort cleanup: a teardown chain goes on past a link its guard found already done", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run, executor } = await runThroughAbort(
+      tempDir,
+      "chain-guarded-wf",
+      [
+        modelStep("a"),
+        modelStep("t1", {
+          ...onStep("a", TriggerCondition.always()),
+          guard: '${{ model.method("infra", "gone") }}',
+        }),
+        modelStep(
+          "t2",
+          onStep(
+            "t1",
+            TriggerCondition.or([
+              TriggerCondition.succeeded(),
+              TriggerCondition.skipped(),
+            ]),
+          ),
+        ),
+      ],
+      new SignalRecordingAbortingExecutor("a", "succeed", { gone: true }),
+    );
+
+    assertEquals(run.status, "cancelled");
+    const t1 = run.getJob("main")!.getStep("t1")!;
+    assertEquals(t1.status, "skipped");
+    assertEquals(t1.skipReason?.kind, "guarded");
+    assertRanAsCleanup(executor, ["t2"]);
+  });
+});
+
+Deno.test("abort cleanup: a settled step's concurrency does not limit the cleanup steps beside it", async () => {
+  await withTempDir(async (tempDir) => {
+    // c1 finishes only once c2 has started, so a limit of one would hold them
+    // until the cleanup signal ran out.
+    let c2Started = () => {};
+    const c2Start = new Promise<void>((resolve) => c2Started = resolve);
+    class TogetherExecutor extends SignalRecordingAbortingExecutor {
+      override async execute(
+        step: Step,
+        ctx: StepExecutionContext,
+      ): Promise<unknown> {
+        if (ctx.stepName === "c2") c2Started();
+        if (ctx.stepName === "c1") await c2Start;
+        return await super.execute(step, ctx);
+      }
+    }
+    const { run } = await runThroughAbort(tempDir, "conc-wf", [
+      modelStep("a"),
+      modelStep("work", {
+        ...onStep("a", TriggerCondition.succeeded()),
+        concurrency: 1,
+      }),
+      modelStep("c1", onStep("a", TriggerCondition.always())),
+      modelStep("c2", onStep("a", TriggerCondition.always())),
+    ], new TogetherExecutor("a", "succeed"));
+
+    assertEquals(run.status, "cancelled");
+    assertCancelledBeforeStart(run, "main", ["work"]);
+    assertEquals(run.getJob("main")!.getStep("c1")!.status, "succeeded");
+    assertEquals(run.getJob("main")!.getStep("c2")!.status, "succeeded");
+  });
+});

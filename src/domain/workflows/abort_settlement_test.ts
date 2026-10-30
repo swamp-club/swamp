@@ -819,3 +819,15 @@ Deno.test("runsAfterFailure: a skipped cleanup dependency answers failed, so a s
   jobRun.getStep("b")!.skip({ kind: "dependency" });
   assertEquals(runsAfterFailure(c, definition, jobRun), false);
 });
+
+Deno.test("runsAfterFailure: a cleanup dependency its guard skipped answers skipped", () => {
+  const { always, skipped } = TriggerCondition;
+  const { c, definition, jobRun } = chain(always(), skipped(), {
+    a: "succeeded",
+  });
+  jobRun.getStep("b")!.skip({
+    kind: "guarded",
+    expression: "${{ true }}",
+  });
+  assertEquals(runsAfterFailure(c, definition, jobRun), true);
+});

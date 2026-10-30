@@ -3824,8 +3824,8 @@ When a workflow is cancelled (by `--timeout`, Ctrl+C, or `swamp workflow
 cancel`), steps with `always`, `completed` or `failed` dependency conditions
 still run, whether the cancellation stopped an in-flight step, interrupted a
 level, or found every step so far finished successfully, so cleanup branches
-(notifications, resource teardown, metric reporting, rollback) can run. The engine evaluates the remaining steps in topological
-order:
+(notifications, resource teardown, metric reporting, rollback) can run. The
+engine evaluates the remaining steps in topological order:
 
 - Steps whose dependency conditions are met run with a fresh 30-second cleanup
   signal. `always` is true unconditionally; `completed` is true when the
@@ -3893,13 +3893,16 @@ order:
   any later level of that job. A step that is yet to start runs only if it is a
   cleanup step: one that would still run had all the work before the
   cancellation failed (`runsAfterFailure`,
-  `src/domain/workflows/abort_settlement.ts`). A step gated `succeeded` on a
-  cleanup step that succeeded counts, whenever that step ran, so a teardown
-  chain runs to its end. A step gated on a skipped step or on a work step's
-  success does not. A cleanup step gets the cleanup signal. Every other step is
-  settled as above, so a resume runs it. A `failed`-gated rollback on a settled
-  step runs. A step recorded `running` fails as cancelled rather than starting,
-  and a finished step or one re-entering a wait is not decided here.
+  `src/domain/workflows/abort_settlement.ts`). A step gated on a cleanup step
+  that succeeded, or that its guard skipped, counts, whenever that step ran, so
+  a teardown chain runs to its end. A step gated on a step skipped by its
+  `dependsOn`, or on a work step's success, does not. So a forward step gated
+  `succeeded` on a `completed`-gated step counts as cleanup and starts. A cleanup
+  step gets the cleanup signal, and can read the status of a settled step. Every
+  other step is settled as above, so a resume runs it. A `failed`-gated rollback
+  on a settled step runs. A step recorded `running` fails as cancelled rather
+  than starting, and a finished step or one re-entering a wait is not decided
+  here.
 - Across a serve shutdown such a cleanup step, like any cleanup step, runs at
   least once rather than once: it can outlast `SHUTDOWN_ABORT_GRACE_MS`, the run
   write fence then drops its saves, and a resume after `workflow recover` can

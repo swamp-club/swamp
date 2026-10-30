@@ -5735,6 +5735,14 @@ export class WorkflowExecutionService {
           const stepRun = jobRun.getStep(stepName);
           if (stepRun?.status !== "pending") return;
           settleUnstartedStep(levelSteps.get(stepName), stepRun, jobRun);
+          // A later cleanup step can read the outcome, as it can a started
+          // step's. An undecided step has none.
+          if (stepRun.status !== "pending" && expressionContext?.steps) {
+            expressionContext.steps[stepName] = attachStepOutputSources(
+              { status: stepRun.status, outputs: undefined },
+              undefined,
+            );
+          }
           stepWaits.get(stepName)?.end("cancelled");
           stepWaits.delete(stepName);
           const entry = progress.get(stepName);
@@ -5766,12 +5774,6 @@ export class WorkflowExecutionService {
             }
           }
 
-          // Collect step-level concurrency for this level
-          const stepConc = originalStep?.concurrency ??
-            job.getStep(stepName)?.concurrency;
-          if (stepConc && stepConc > 0) {
-            stepConcurrencies.push(stepConc);
-          }
           const levelStep = originalStep ?? job.getStep(stepName);
           if (levelStep) levelSteps.set(stepName, levelStep);
           if (forEachVar?.name) levelIterations.add(stepName);
@@ -5792,6 +5794,13 @@ export class WorkflowExecutionService {
             }
             levelStartsCleanup = true;
             stepOptions = cleanupOptions;
+          }
+
+          // Collect step-level concurrency for this level
+          const stepConc = originalStep?.concurrency ??
+            job.getStep(stepName)?.concurrency;
+          if (stepConc && stepConc > 0) {
+            stepConcurrencies.push(stepConc);
           }
 
           return this.runStep(
