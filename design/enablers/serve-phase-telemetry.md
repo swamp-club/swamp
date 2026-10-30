@@ -266,11 +266,12 @@ these phases.
 `definition_names` names the outputs from the request's owner lookups
 (lab #4141): it looks up each definition owning an output that is not already
 named, once, and reads only those definitions' files (`files_read`), never a
-definition that owns none. A restricted search can run it twice: inside
-`candidate_scan` for the listed keys, then under the search for any output still
-unnamed (see below). `authorization` then judges each item on the same lookups,
-so its `owner_lookups` are all `owner_lookups_reused` and it reads no definition
-files. Without a definition index, the request's one scan of every
+definition that owns none. It looks up 8 of them at a time (lab #4150), so its
+`read_work_ms` can exceed its wall time. A restricted search can run it twice:
+inside `candidate_scan` for the listed keys, then under the search for any output
+still unnamed (see below). `authorization` then judges each item on the same
+lookups, so its `owner_lookups` are all `owner_lookups_reused` and it reads no
+definition files. Without a definition index, the request's one scan of every
 definition answers both phases.
 
 `candidate_scan` counts `candidates`, and what the repository did to find them.
