@@ -65,7 +65,6 @@ import {
 import type { CommitLogUnitOfWork } from "../src/domain/datastore_v3/commit_log_unit_of_work.ts";
 import { V3_REPLICA_ENV } from "../src/infrastructure/datastore_v3/litestream/replica_setting.ts";
 
-/** The pinned Litestream, when the run provides one. */
 /**
  * Kills a sidecar a test started, with its whole process group, at
  * teardown. Resumed first, in case the test stopped it. On macOS, signalling
@@ -82,6 +81,7 @@ export function killSidecarAtTeardown(pid: number): void {
   }
 }
 
+/** The pinned Litestream, when the run provides one. */
 export const LITESTREAM_BINARY = Deno.env.get("SWAMP_LITESTREAM_PATH");
 
 /** Why the sidecar tests are ignored here, if they are. */
