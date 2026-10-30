@@ -73,7 +73,9 @@ const inputSchema = {
  * One shell step that echoes `run` and then fails, so the run reaches a
  * `failed` status that `resume --from` will accept. The command is echoed
  * before the failure, so if a runtime expression is wrongly resolved the
- * plaintext is in the event stream either way.
+ * plaintext is in the event stream either way. The separator is `;` because
+ * `powershell.exe` 5.1 cannot parse `&&`, and a command that does not parse
+ * never prints.
  */
 function failingWorkflow(name: string, run: string): Workflow {
   return Workflow.create({
@@ -89,7 +91,7 @@ function failingWorkflow(name: string, run: string): Workflow {
               "command/shell",
               `${name}-shell`,
               "execute",
-              { run: `${run} && exit 1` },
+              { run: `${run}; exit 1` },
             ),
           }),
         ],

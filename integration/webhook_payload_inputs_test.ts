@@ -603,7 +603,9 @@ Deno.test({
       assertEquals(results.length, 1, "the shell step must record its result");
       assertEquals(
         results[0].attributes?.command,
-        'echo "VALUE=${__SWAMP_IN_0}"',
+        Deno.build.os === "windows"
+          ? 'echo "VALUE=${env:__SWAMP_IN_0}"'
+          : 'echo "VALUE=${__SWAMP_IN_0}"',
       );
       assertEquals(
         (results[0].attributes?.stdout as string).trim(),
