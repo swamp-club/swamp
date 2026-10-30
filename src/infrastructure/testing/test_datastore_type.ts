@@ -49,6 +49,11 @@ export interface TestDatastoreType {
 /** Options for {@link registerTestDatastoreType}. */
 export interface TestDatastoreTypeOptions {
   /**
+   * The type's name, for a test of behavior specific to one. Default a unique
+   * `@test/remote-` name.
+   */
+  typeName?: string;
+  /**
    * Called each time one of the type's locks is released, including at the
    * end of `withLock`, so a test can place pushes relative to lock release.
    */
@@ -95,7 +100,7 @@ export function registerTestDatastoreType(
   options: TestDatastoreTypeOptions = {},
 ): TestDatastoreType {
   const released = (): void => options.onLockRelease?.();
-  const typeName = `@test/remote-${crypto.randomUUID()}`;
+  const typeName = options.typeName ?? `@test/remote-${crypto.randomUUID()}`;
   datastoreTypeRegistry.register({
     type: typeName,
     name: "In-memory test remote",

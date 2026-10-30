@@ -64,7 +64,10 @@ import {
 import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { datastoreGlobalLock } from "../../infrastructure/persistence/datastore_global_lock.ts";
 import { loadedDatastoreExtension } from "../../infrastructure/persistence/datastore_extension_version.ts";
-import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync_service.ts";
+import {
+  type DatastoreSyncService,
+  UNPUSHED_REPAIR_EXTENSIONS,
+} from "../../domain/datastore/datastore_sync_service.ts";
 import {
   type CommandContext,
   createContext,
@@ -373,7 +376,18 @@ async function createDoctorDatastoresDeps(
       const cachePath = provider.resolveCachePath?.(repoDir) ??
         config.cachePath ?? config.datastorePath;
       const syncService = provider.createSyncService?.(repoDir, cachePath);
-      if (!syncService?.repairUnpushedFiles) return null;
+      if (!syncService) return null;
+      if (!syncService.repairUnpushedFiles) {
+        // Those on an s3 or gcs release too old to check are the ones most
+        // likely to have stranded files, so the advisory tells them.
+        if (!UNPUSHED_REPAIR_EXTENSIONS.includes(config.type)) return null;
+        throw new Error(
+          unpushedRepairUnsupportedMessage(
+            config.type,
+            loadedDatastoreExtension(repoDir, config.type)?.name ?? config.type,
+          ),
+        );
+      }
       return await boundedRepairUnpushed(syncService, config, "pull", {
         dryRun: true,
       });
@@ -656,13 +670,21 @@ async function createRepairDeps(
 
   return {
     getDatastoreConfig: () => Promise.resolve(config),
+    // Each remote call is bounded: with -y it runs under the datastore lock
+    // the unpushed files stage takes (swamp-club#4112), which a hung call
+    // would hold, and the lock's heartbeat keeps renewing it.
     detectContamination: () =>
-      syncService.repairNamespaceContamination!({
-        namespace,
-        dryRun: true,
-      }),
-    // Bounded: with -y it runs under the datastore lock the unpushed files
-    // stage takes (swamp-club#4112), which a hung call would hold.
+      runBoundedSync(
+        config.type,
+        "pull",
+        timeoutMs,
+        (signal) =>
+          syncService.repairNamespaceContamination!({
+            namespace,
+            dryRun: true,
+            signal,
+          }),
+      ),
     deleteContamination: () =>
       runBoundedSync(
         config.type,
@@ -1008,10 +1030,17 @@ async function runDatastoreRepairs(
         cliCtx.outputMode,
         report,
       );
-      await consumeStream(
-        repairUnpushedCacheFiles(libCtx, unpushed.deps, { confirm }),
-        unpushedRenderer.handlers(),
-      );
+      try {
+        await consumeStream(
+          repairUnpushedCacheFiles(libCtx, unpushed.deps, { confirm }),
+          unpushedRenderer.handlers(),
+        );
+      } catch (error) {
+        // A preview changes nothing, so a failed check still leaves the
+        // contamination preview to show. A confirmed run stops here.
+        if (confirm || !(error instanceof UserError)) throw error;
+        cliCtx.logger.warn`${error.message}`;
+      }
       unpushedStatus = unpushedRenderer.overallStatus;
       if (unpushedStatus === "fail") failed = true;
     }
@@ -1040,11 +1069,16 @@ async function runDatastoreRepairs(
       if (unpushed.deps.unsupported !== undefined) {
         return `Refusing to wipe the local cache: ${unpushed.deps.unsupported}`;
       }
+      if (unpushedStatus === "skipped") {
+        return "Refusing to wipe the local cache: the root-level unmigrated " +
+          "data repair did not complete, so the unpushed cache files repair " +
+          "did not run. Fix that and run this again.";
+      }
       if (unpushedStatus !== "pass") {
         return "Refusing to wipe the local cache: the unpushed cache files " +
-          `repair did not complete, so ${unpushed.cachePath} may hold files ` +
-          "the remote never received. See that stage's result: run it again, " +
-          "or copy out and remove the files it could not upload.";
+          `repair did not complete, so ${unpushed.cachePath} holds files the ` +
+          "remote never received. See that stage's result, and copy out and " +
+          "remove the files it could not upload.";
       }
       return cacheWipeRefusal(await unpushed.deps.detect(), unpushed.cachePath);
     };

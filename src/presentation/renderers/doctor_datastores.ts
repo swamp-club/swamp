@@ -279,6 +279,15 @@ export function unpushedFilesDetailLines(
     );
     for (const line of pathLines(shown, total, "    ")) lines.push(line);
   }
+  if (
+    summary.alreadyPresent + summary.locallyModified + summary.unknown > 0
+  ) {
+    lines.push(
+      dim(
+        "  The remote does not hold these versions. Copy out any you want to keep before a pull, which overwrites them.",
+      ),
+    );
+  }
   if (summary.peerDeleted > 0) {
     lines.push(
       `  ${
@@ -371,7 +380,7 @@ class LogDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
             );
             writeOutput(
               dim(
-                "\n  No push sends these. Run 'swamp doctor datastores --repair' to preview uploading them.",
+                "\n  No push sends these. Run 'swamp doctor datastores --repair' to preview uploading them. A file a peer deleted before your datastore extension recorded such deletes looks the same, and uploading it restores it for everyone.",
               ),
             );
           }
@@ -727,7 +736,7 @@ class LogUnpushedFilesRepairRenderer implements UnpushedFilesRepairRenderer {
         if (e.summary.unpushed > 0) {
           writeOutput(
             dim(
-              "\n  Run with -y to upload them. Uploads only create files the remote lacks; nothing is deleted.",
+              "\n  Run with -y to upload them. Uploads only create files the remote lacks; nothing is deleted. A file a peer deleted before your datastore extension recorded such deletes looks the same, and uploading it restores it for everyone, so check these first.",
             ),
           );
         }
@@ -747,7 +756,8 @@ class LogUnpushedFilesRepairRenderer implements UnpushedFilesRepairRenderer {
         writeOutput(
           `  Uploaded ${e.summary.uploaded.toLocaleString()} file(s)`,
         );
-        writeOutput(unpushedFilesDetailLines(e.summary).join("\n"));
+        const details = unpushedFilesDetailLines(e.summary);
+        if (details.length > 0) writeOutput(details.join("\n"));
         if (e.summary.unpushed > 0) {
           writeOutput(
             dim(
@@ -814,6 +824,10 @@ class JsonUnpushedFilesRepairRenderer implements UnpushedFilesRepairRenderer {
       },
       error: (e) => {
         this.overallStatus = "fail";
+        this.#report.record("unpushed", {
+          status: "unpushed_failed",
+          message: e.error.message,
+        });
         throw new UserError(e.error.message);
       },
     };

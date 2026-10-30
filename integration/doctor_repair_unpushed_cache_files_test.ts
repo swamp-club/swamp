@@ -61,12 +61,15 @@ interface HarnessOptions {
   onContaminationDetect?: (
     cachePath: string,
     remote: ReturnType<typeof createInMemoryRemote>,
+    signal: AbortSignal | undefined,
   ) => Promise<void>;
   /** The repo's namespace; null for none. Default {@link NS}. */
   namespace?: string | null;
   remote?: InMemoryRemoteOptions;
   /** Makes the lock's release reject. */
   releaseFails?: boolean;
+  /** The datastore type's name, for behavior specific to one. */
+  typeName?: string;
   /** Replaces what a real, not dry, repair returns. */
   repairResult?: UnpushedFilesSummary;
 }
@@ -111,10 +114,12 @@ async function withHarness(
   const remote = createInMemoryRemote(options.remote);
   const events: string[] = [];
   const contamination = async (
-    o?: { dryRun?: boolean },
+    o?: { dryRun?: boolean; signal?: AbortSignal },
   ): Promise<NamespaceContaminationSummary> => {
     events.push(o?.dryRun ? "contamination-detect" : "contamination-delete");
-    if (o?.dryRun) await options.onContaminationDetect?.(cachePath, remote);
+    if (o?.dryRun) {
+      await options.onContaminationDetect?.(cachePath, remote, o.signal);
+    }
     return {
       foreignNamespaces: [{ namespace: "other", objectCount: 1 }],
       totalForeignObjects: 1,
@@ -143,6 +148,7 @@ async function withHarness(
       },
     },
     {
+      ...(options.typeName ? { typeName: options.typeName } : {}),
       connect: { repairUnpushedFiles: options.repairUnpushed ?? true },
       createLock: () => ({
         acquire: () => {
@@ -310,7 +316,7 @@ Deno.test("doctor datastores --repair -y: refuses the contamination wipe while t
       assertStringIncludes(message, "Refusing to wipe the local cache");
       assertStringIncludes(message, TEAMMATE);
       assertStringIncludes(message, "do not pull first");
-      assertStringIncludes(message, "No changes were made.");
+      assertStringIncludes(message, "was not wiped");
       assertEquals(
         await Deno.readTextFile(join(cachePath, TEAMMATE)),
         '{"t":"edited"}',
@@ -385,7 +391,7 @@ Deno.test("doctor datastores --repair: an extension without repairUnpushedFiles 
       );
       assertStringIncludes(
         (run.error as Error).message,
-        "No changes were made",
+        "was not wiped",
       );
       assertEquals(
         await Deno.readTextFile(join(cachePath, STRANDED)),
@@ -488,7 +494,7 @@ Deno.test("doctor datastores --repair -y: a wipe check that fails refuses the wi
       assertStringIncludes((run.error as Error).message, "could not check");
       assertStringIncludes(
         (run.error as Error).message,
-        "No changes were made",
+        "was not wiped",
       );
       assertEquals(events.includes("contamination-delete"), false);
       assertEquals(events.at(-1), "release");
@@ -567,3 +573,60 @@ Deno.test("doctor datastores --repair -y: a failed lock release keeps a stage's 
     },
   );
 });
+
+Deno.test("doctor datastores --repair -y: contamination detection is bounded, since it runs under the lock (swamp-club#4138)", async () => {
+  let signal: AbortSignal | undefined;
+  await withHarness(
+    {
+      contamination: true,
+      onContaminationDetect: (_cachePath, _remote, received) => {
+        signal = received;
+        return Promise.resolve();
+      },
+    },
+    async ({ doctor }) => {
+      assertEquals((await doctor("--repair", "-y")).error, undefined);
+      assertEquals(signal instanceof AbortSignal, true);
+    },
+  );
+});
+
+Deno.test("doctor datastores --repair: a failed unpushed check is reported, exits 1, and the contamination preview still shows (swamp-club#4138)", async () => {
+  await withHarness(
+    { contamination: true, remote: { monolithIndex: true } },
+    async ({ cachePath, events, doctor }) => {
+      await writeFile(join(cachePath, STRANDED), '{"a":1}');
+
+      const preview = await doctor("--repair");
+      // Deno.exit set this before the test runner turned it into an error.
+      Deno.exitCode = 0;
+
+      assertStringIncludes((preview.error as Error).message, "exit code: 1");
+      const report = JSON.parse(preview.out);
+      assertEquals(report.unpushed.status, "unpushed_failed");
+      assertStringIncludes(report.unpushed.message, "Nothing was uploaded");
+      assertEquals(report.contamination.status, "preview");
+      assertEquals(events.includes("contamination-delete"), false);
+    },
+  );
+});
+
+for (const typeName of ["@swamp/s3-datastore", "@swamp/gcs-datastore"]) {
+  Deno.test(`doctor datastores: ${typeName} too old to check says what to update to, without failing (swamp-club#4138)`, async () => {
+    await withHarness(
+      { repairUnpushed: false, typeName },
+      async ({ doctor }) => {
+        const check = await doctor();
+        assertEquals(check.error, undefined);
+        const finding = JSON.parse(check.out).unpushedFilesFinding;
+        assertEquals(finding.unpushed, 0);
+        assertStringIncludes(finding.error, "2026.10.30.1 or later");
+        assertStringIncludes(finding.error, "swamp extension update");
+
+        const repair = JSON.parse((await doctor("--repair")).out);
+        assertEquals(repair.unpushed.status, "unpushed_not_supported");
+        assertStringIncludes(repair.unpushed.message, "2026.10.30.1 or later");
+      },
+    );
+  });
+}

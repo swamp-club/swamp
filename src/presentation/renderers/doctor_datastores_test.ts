@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
@@ -708,6 +708,50 @@ Deno.test("unpushedFilesDetailLines: a copy a peer deleted is named, and what a 
   assertStringIncludes(lines, "1 file(s) a peer deleted");
   assertStringIncludes(lines, "wipe removes them");
   assertStringIncludes(lines, "ns/gone");
+});
+
+Deno.test("unpushedFilesDetailLines: local versions the remote lacks say what to do with them", () => {
+  const lines = stripAnsiCode(
+    unpushedFilesDetailLines(
+      unpushed({ locallyModified: 1, sampleModified: ["ns/m"] }),
+    ).join("\n"),
+  );
+  assertStringIncludes(lines, "Copy out any you want to keep");
+});
+
+Deno.test("createUnpushedFilesRepairRenderer: json mode records a failure under unpushed, and throws", () => {
+  const report = new DatastoreRepairJsonReport();
+  const renderer = createUnpushedFilesRepairRenderer("json", report);
+  assertThrows(
+    () =>
+      renderer.handlers().error({
+        kind: "error",
+        error: { code: "repair_failed", message: "Checking failed." },
+      }),
+    UserError,
+    "Checking failed.",
+  );
+  const printed = captureStdout(() => report.print());
+  assertEquals(JSON.parse(printed).unpushed, {
+    status: "unpushed_failed",
+    message: "Checking failed.",
+  });
+});
+
+Deno.test("createUnpushedFilesRepairRenderer: log mode warns that a preview's list can hold a file a peer deleted", () => {
+  const renderer = createUnpushedFilesRepairRenderer(
+    "log",
+    new DatastoreRepairJsonReport(),
+  );
+  const preview = stripAnsiCode(
+    captureStdout(() =>
+      renderer.handlers().preview({
+        kind: "preview",
+        summary: unpushed({ unpushed: 1, samplePaths: ["ns/a"] }),
+      })
+    ),
+  );
+  assertStringIncludes(preview, "uploading it restores it for everyone");
 });
 
 Deno.test("createUnpushedFilesRepairRenderer: log mode says what to do with files a repair left, and fails", () => {

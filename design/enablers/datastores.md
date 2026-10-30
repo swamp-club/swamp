@@ -9291,7 +9291,9 @@ datastore extensions, close it.
   no longer; a failed release warns, since the lock expires after its TTL, and
   an interrupt mid-stage likewise leaves the lock until then. Contamination
   repair checks before it changes anything, from a fresh exact dry run under
-  that lock. It refuses with `repair_refused` when anything is unpushed, already
+  that lock, which does not drain writers already running: a per-model run can
+  still write to the cache after the check, as it could before. It refuses with
+  `repair_refused` when anything is unpushed, already
   present, locally modified or unknown, or a push is pending; when that check
   fails; when the unpushed stage did not pass; and when the extension lacks the
   method. For `@swamp/s3-datastore` and `@swamp/gcs-datastore` that message names
@@ -9302,8 +9304,14 @@ datastore extensions, close it.
   so blocking would stall the repair. The stage's output names them and says the
   wipe removes them. A file still `unpushed` after a real repair is one the
   extension cannot index, which repeating the repair does not clear, so the output
-  says to copy it out and remove it. The contamination stage's delete and pull
-  are bounded by the sync timeout, since they run under the lock. Plain `doctor
+  says to copy it out and remove it. A file a peer deleted before the extension kept
+  its peer-deleted record cannot be told from a stranded one, so it reads as
+  unpushed and uploading it restores it; the advisory and preview warn of this.
+  The contamination stage's detection, delete and pull are bounded by the sync
+  timeout, since they run under the lock. If the bounded re-pull fails, the stage
+  still invalidates the workflow run indexes and catalog, because a re-run then
+  finds nothing to repair. A failed dry run in a preview is reported and the
+  contamination preview still shows. Plain `doctor
   datastores` adds an advisory `unpushedFilesFinding` (never a failure) from a
   size-and-mtime dry run, costing one remote index read and cache walk, like the
   contamination check. On v3 it

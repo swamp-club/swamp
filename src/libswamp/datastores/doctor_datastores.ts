@@ -948,7 +948,8 @@ export async function* repairDatastoreContamination(
           kind: "error",
           error: {
             code: "repair_refused",
-            message: `${refusal} No changes were made.`,
+            message:
+              `${refusal} The cache was not wiped and no foreign objects were deleted.`,
           },
         };
         return;
@@ -1020,6 +1021,20 @@ export async function* repairDatastoreContamination(
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        // A re-pull cut off by the sync timeout leaves nothing to repair on
+        // the next run, so the invalidation steps would never run.
+        let invalidationFailure = "";
+        if (lastCompletedStep === 2) {
+          try {
+            await deps.invalidateWorkflowRunIndexes();
+            await deps.invalidateCatalog();
+          } catch (invalidateErr) {
+            invalidationFailure =
+              ` Invalidating the workflow run indexes and data catalog failed too: ${
+                errorText(invalidateErr)
+              }.`;
+          }
+        }
         yield {
           kind: "error",
           error: {
@@ -1029,10 +1044,10 @@ export async function* repairDatastoreContamination(
                 lastCompletedStep + 1
               }/${REPAIR_STEPS}: ${message}. ` +
               (lastCompletedStep >= 2
-                ? `Local cache was wiped — run 'swamp datastore sync --pull' to restore.`
+                ? `Local cache was wiped — run 'swamp datastore sync --pull' to restore.${invalidationFailure}`
                 : lastCompletedStep >= 1
                 ? `Foreign objects were deleted but local cache was not refreshed — run 'swamp datastore sync --pull' to restore.`
-                : `No changes were made.`),
+                : `Some foreign objects may already be deleted, and the local cache was not touched. Run 'swamp doctor datastores --repair -y' again.`),
             cause: err instanceof Error ? err : undefined,
           },
         };
@@ -1071,7 +1086,7 @@ export interface RepairUnpushedFilesDeps {
 function errorText(err: unknown): string {
   return escapeControlCharacters(
     err instanceof Error ? err.message : String(err),
-  );
+  ).replace(/\.+$/, "");
 }
 
 /**
@@ -1086,7 +1101,7 @@ export function unpushedRepairUnsupportedMessage(
 ): string {
   return UNPUSHED_REPAIR_EXTENSIONS.includes(datastoreType)
     ? `The ${datastoreType} datastore extension cannot find cache files the remote never received: that needs ${UNPUSHED_REPAIR_MIN_EXTENSION_VERSION} or later. Run \`swamp extension update ${extension}\` to update it.`
-    : `The ${datastoreType} datastore extension does not implement repairUnpushedFiles, so it cannot find cache files the remote never received.`;
+    : `The ${datastoreType} datastore extension does not implement repairUnpushedFiles, so it cannot find cache files the remote never received. Ask its author to add it.`;
 }
 
 /**
@@ -1190,9 +1205,13 @@ export async function* repairUnpushedCacheFiles(
           kind: "error",
           error: {
             code: "repair_failed",
-            message: `Repairing unpushed cache files failed: ${
-              errorText(err)
-            }. Files uploaded before the failure stay uploaded and nothing was deleted, so running the repair again continues from there.`,
+            message: options.confirm
+              ? `Repairing unpushed cache files failed: ${
+                errorText(err)
+              }. Files uploaded before the failure stay uploaded and nothing was deleted. Once the cause is fixed, running the repair again continues from there.`
+              : `Checking for unpushed cache files failed: ${
+                errorText(err)
+              }. Nothing was uploaded or deleted.`,
             cause: err instanceof Error ? err : undefined,
           },
         };

@@ -2406,7 +2406,10 @@ Deno.test("repairDatastoreContamination: a refused wipe changes nothing", async 
   assertEquals(last?.kind, "error");
   if (last?.kind === "error") {
     assertEquals(last.error.code, "repair_refused");
-    assertStringIncludes(last.error.message, "No changes were made.");
+    assertStringIncludes(
+      last.error.message,
+      "The cache was not wiped and no foreign objects were deleted.",
+    );
   }
 });
 
@@ -2438,7 +2441,10 @@ Deno.test("repairDatastoreContamination: a wipe check that rejects refuses, and 
   if (last?.kind === "error") {
     assertEquals(last.error.code, "repair_refused");
     assertStringIncludes(last.error.message, "timed out\\x1b[31m on ns/a");
-    assertStringIncludes(last.error.message, "No changes were made.");
+    assertStringIncludes(
+      last.error.message,
+      "The cache was not wiped and no foreign objects were deleted.",
+    );
   }
 });
 
@@ -2545,6 +2551,49 @@ Deno.test("repairUnpushedCacheFiles: a failure escapes the extension's message a
   if (last?.kind === "error") {
     assertStringIncludes(last.error.message, "failed ns/a\\x1b[2Jb");
     assertStringIncludes(last.error.message, "running the repair again");
+  }
+});
+
+Deno.test("repairUnpushedCacheFiles: a failed preview says nothing was uploaded, and does not promise a re-run continues", async () => {
+  const events = await collect<RepairUnpushedFilesEvent>(
+    repairUnpushedCacheFiles(createLibSwampContext(), {
+      detect: () => Promise.reject(new Error("run migrate-index first.")),
+      repair: () => Promise.reject(new Error("must not be called")),
+    }, { confirm: false }),
+  );
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertEquals(
+      last.error.message,
+      "Checking for unpushed cache files failed: run migrate-index first. Nothing was uploaded or deleted.",
+    );
+  }
+});
+
+Deno.test("repairDatastoreContamination: a failed re-pull still invalidates what a re-run would not reach", async () => {
+  const callLog: string[] = [];
+  const deps = makeRepairDeps({
+    pullScoped: () => Promise.reject(new Error("timed out")),
+    invalidateWorkflowRunIndexes: () => {
+      callLog.push("indexes");
+      return Promise.resolve(0);
+    },
+    invalidateCatalog: () => {
+      callLog.push("catalog");
+      return Promise.resolve();
+    },
+  });
+  const events = await collect<RepairDatastoresEvent>(
+    repairDatastoreContamination(createLibSwampContext(), deps, {
+      confirm: true,
+    }),
+  );
+  assertEquals(callLog, ["indexes", "catalog"]);
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertStringIncludes(last.error.message, "swamp datastore sync --pull");
   }
 });
 
