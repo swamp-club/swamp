@@ -21,6 +21,7 @@ import {
   assert,
   assertEquals,
   assertNotEquals,
+  assertRejects,
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
@@ -363,12 +364,14 @@ Deno.test("AgentSessionRecordV2Schema: model is optional", () => {
   assertEquals(parses({ ...sampleSession(), model: "" }), false);
 });
 
-Deno.test("AgentSessionRecordV2Schema: agentType is only for a child session", () => {
+Deno.test("AgentSessionRecordV2Schema: agentId and agentType are only for a child session", () => {
   assertEquals(parses({ ...sampleSession(), agentType: "Explore" }), false);
+  assertEquals(parses({ ...sampleSession(), agentId: "A1b2" }), false);
   assert(
     parses({
       ...sampleSession(),
       parentSessionId: "parent-1",
+      agentId: "A1b2",
       agentType: "Explore",
     }),
   );
@@ -431,21 +434,38 @@ Deno.test("AgentSessionRecordV2Schema: a finding can be info", () => {
   assert(parses(info));
 });
 
-Deno.test("agentSessionChildId: joins the parent id and the harness's agent id, lowercased", () => {
+Deno.test("agentSessionChildId: the parent id, then a hash of both ids", async () => {
+  // SHA-256 of ["3b1c9e2a-0f4d","A1B2C3d4e5f6a7b8c"] as JSON, first 32 hex.
   assertEquals(
-    agentSessionChildId("3b1c9e2a-0f4d", "A1B2C3d4e5f6a7b8c"),
-    "3b1c9e2a-0f4d_a1b2c3d4e5f6a7b8c",
+    await agentSessionChildId("3b1c9e2a-0f4d", "A1B2C3d4e5f6a7b8c"),
+    "3b1c9e2a-0f4d_0789f6bf2eaf2134f3b956d4f043bd78",
   );
 });
 
-Deno.test("agentSessionChildId: refuses an id the record schema refuses", () => {
-  assertThrows(() => agentSessionChildId("parent", "a/b"));
-  assertThrows(() =>
-    agentSessionChildId(
-      "a".repeat(AGENT_SESSION_LIMITS.sessionIdLength),
-      "b",
-    )
+Deno.test("agentSessionChildId: ids that differ only in case or in where an underscore falls stay apart", async () => {
+  assertNotEquals(
+    await agentSessionChildId("parent", "A1b"),
+    await agentSessionChildId("parent", "a1B"),
   );
+  assertNotEquals(
+    await agentSessionChildId("x_y", "z"),
+    await agentSessionChildId("x", "y_z"),
+  );
+});
+
+Deno.test("agentSessionChildId: a longest parent id still gives a valid child id", async () => {
+  const parent = "a".repeat(AGENT_SESSION_LIMITS.sessionIdLength);
+  const id = await agentSessionChildId(parent, "b".repeat(200));
+  assertEquals(id.length, AGENT_SESSION_LIMITS.sessionIdLength);
+  assert(
+    parses({ ...sampleSession(), id, parentSessionId: parent, agentId: "b" }),
+  );
+});
+
+Deno.test("agentSessionChildId: refuses a parent id the record schema refuses, or an empty or over-long agent id", async () => {
+  await assertRejects(() => agentSessionChildId("Parent/1", "a"));
+  await assertRejects(() => agentSessionChildId("parent", ""));
+  await assertRejects(() => agentSessionChildId("parent", "a".repeat(201)));
 });
 
 Deno.test("agentSessionSummary: counts the session's own calls, tokens and findings", () => {
@@ -489,6 +509,24 @@ Deno.test("agentSessionSummary: a turn that ends before it starts adds no active
   const summary = agentSessionSummary(record(session));
   assertEquals(summary.activeMs, 4200);
   assertEquals(summary.wallMs, 9150);
+});
+
+Deno.test("agentSessionSummary: totals stop at the largest safe integer, so the tag still reads", () => {
+  const session = sampleSession();
+  for (const turn of turns(session)) {
+    Object.assign(turn, { start: 0, end: Number.MAX_VALUE });
+    (turn.tokens as Record<string, number>).input = Number.MAX_SAFE_INTEGER;
+  }
+  const parsed = record(session);
+  const summary = agentSessionSummary(parsed);
+  assertEquals(summary.activeMs, Number.MAX_SAFE_INTEGER);
+  assertEquals(summary.tokens.input, Number.MAX_SAFE_INTEGER);
+  assertEquals(
+    readAgentSessionSummary(
+      agentSessionTags(parsed)[AGENT_SESSION_SUMMARY_TAG],
+    ),
+    summary,
+  );
 });
 
 Deno.test("agentSessionTags: writes the list tags of a top-level session", () => {

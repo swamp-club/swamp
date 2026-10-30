@@ -103,6 +103,7 @@ const SESSION_ID = /^[a-z0-9][a-z0-9_-]*$/;
 
 const HarnessSchema = z.string().max(L.harnessLength).regex(SLUG);
 const SessionIdSchema = z.string().max(L.sessionIdLength).regex(SESSION_ID);
+const AgentIdSchema = z.string().min(1).max(L.idLength);
 const MillisSchema = z.number().nonnegative();
 const TokenCountSchema = z.number().int().nonnegative();
 
@@ -211,8 +212,8 @@ export const FindingSchema = z.strictObject({
  * swamp-club user id (serve's OAuth `sub`) and the only identity meant for
  * access decisions; `swampUsername` is a display label that a rename can
  * make stale. Both are self-reported by the writer. `model` is absent when
- * the session ended before any model reply; `agentType` names a child
- * session's subagent type.
+ * the session ended before any model reply; `agentId` is a child session's
+ * subagent id as the harness wrote it, and `agentType` its subagent type.
  */
 export const AgentSessionRecordV2Schema = z.strictObject({
   schemaVersion: z.literal(2),
@@ -226,6 +227,7 @@ export const AgentSessionRecordV2Schema = z.strictObject({
   swampUserId: z.string().min(1).max(L.idLength).optional(),
   swampUsername: z.string().min(1).max(L.nameLength).optional(),
   parentSessionId: SessionIdSchema.optional(),
+  agentId: AgentIdSchema.optional(),
   agentType: z.string().min(1).max(L.nameLength).optional(),
   importerVersion: z.string().min(1).max(L.nameLength),
   turns: z.array(TurnSchema).max(L.turns),
@@ -246,12 +248,14 @@ export const AgentSessionRecordV2Schema = z.strictObject({
     });
     return;
   }
-  if (record.agentType !== undefined && record.parentSessionId === undefined) {
-    ctx.addIssue({
-      code: "custom",
-      message: "agentType is only for a child session",
-      path: ["agentType"],
-    });
+  for (const key of ["agentId", "agentType"] as const) {
+    if (record[key] !== undefined && record.parentSessionId === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        message: `${key} is only for a child session`,
+        path: [key],
+      });
+    }
   }
   const ids = new Set<string>();
   record.turns.forEach((turn, t) =>
@@ -426,22 +430,44 @@ export function agentSessionDataName(
   return `agent-session-${harness}_${sessionId}`;
 }
 
+// Hex digits of the child id's hash: 128 bits of SHA-256.
+const CHILD_ID_HASH_LENGTH = 32;
+
 /**
- * A child session's id: its parent's id and the harness's own subagent id,
- * which is unique only within the parent. Throws when the result is not a
- * session id the record schema accepts.
+ * A child session's id, for a harness subagent id that is unique only within
+ * its parent: the parent's id, cut to fit, then `_` and a hash of the two ids.
+ * The hash covers both ids in full and in any case, so two children never
+ * share an id however their ids are spelled. Throws when `parentSessionId` is
+ * not a session id the record schema accepts, or `agentId` is empty or
+ * longer than an id may be.
  */
-export function agentSessionChildId(
+export async function agentSessionChildId(
   parentSessionId: string,
   agentId: string,
-): string {
-  const id = `${parentSessionId}_${agentId}`.toLowerCase();
-  if (!SessionIdSchema.safeParse(id).success) {
+): Promise<string> {
+  if (!SessionIdSchema.safeParse(parentSessionId).success) {
     throw new Error(
-      "agent session child id must be letters, digits, '-' and '_', at most 128 characters",
+      "agent session id must be letters, digits, '-' and '_', starting with a letter or digit",
     );
   }
-  return id;
+  if (!AgentIdSchema.safeParse(agentId).success) {
+    throw new Error(
+      `agent id must be 1 to ${L.idLength} characters`,
+    );
+  }
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(JSON.stringify([parentSessionId, agentId])),
+  );
+  const hash = Array.from(
+    new Uint8Array(digest),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("").slice(0, CHILD_ID_HASH_LENGTH);
+  const prefix = parentSessionId.slice(
+    0,
+    L.sessionIdLength - CHILD_ID_HASH_LENGTH - 1,
+  );
+  return `${prefix}_${hash}`;
 }
 
 /**
@@ -490,10 +516,15 @@ export const AgentSessionSummaryV1Schema = z.strictObject({
 
 export type AgentSessionSummary = z.infer<typeof AgentSessionSummaryV1Schema>;
 
+function addCapped(total: number, value: number): number {
+  return Math.min(Number.MAX_SAFE_INTEGER, total + value);
+}
+
 /**
  * Derives a session's list summary from its record. `wallMs` is the latest
  * turn or call end; `activeMs` adds up turn durations, counting a negative
- * one as zero.
+ * one as zero. Totals stop at `Number.MAX_SAFE_INTEGER`, so an absurd record
+ * still gives a summary the reader accepts.
  */
 export function agentSessionSummary(
   record: AgentSessionRecord,
@@ -506,12 +537,12 @@ export function agentSessionSummary(
   let wallMs = 0;
   let activeMs = 0;
   for (const turn of record.turns) {
-    activeMs += Math.max(0, turn.end - turn.start);
+    activeMs = addCapped(activeMs, Math.max(0, turn.end - turn.start));
     wallMs = Math.max(wallMs, turn.end);
-    tokens.input += turn.tokens.input;
-    tokens.output += turn.tokens.output;
-    tokens.cacheRead += turn.tokens.cacheRead;
-    tokens.cacheWrite += turn.tokens.cacheWrite;
+    tokens.input = addCapped(tokens.input, turn.tokens.input);
+    tokens.output = addCapped(tokens.output, turn.tokens.output);
+    tokens.cacheRead = addCapped(tokens.cacheRead, turn.tokens.cacheRead);
+    tokens.cacheWrite = addCapped(tokens.cacheWrite, turn.tokens.cacheWrite);
     for (const call of turn.calls) {
       calls++;
       labels[call.label]++;

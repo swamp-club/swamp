@@ -269,8 +269,8 @@ async function list(
 Deno.test("agent session discovery: top-level sessions and one session's children are listed from tags alone", async () => {
   await withServeRepo(async (repo) => {
     const importer = await saveModel(repo, "agent-sessions");
-    const childA = agentSessionChildId("parent-a", "a1b2c3");
-    const childB = agentSessionChildId("parent-b", "d4e5f6");
+    const childA = await agentSessionChildId("parent-a", "a1b2c3");
+    const childB = await agentSessionChildId("parent-b", "d4e5f6");
     const bodies = [
       await writeSession(repo, importer, "parent-a", "user-a"),
       await writeSession(repo, importer, "parent-b", "user-a"),

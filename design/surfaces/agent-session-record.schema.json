@@ -59,6 +59,11 @@
       "maxLength": 128,
       "pattern": "^[a-z0-9][a-z0-9_-]*$"
     },
+    "agentId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
     "agentType": {
       "type": "string",
       "minLength": 1,

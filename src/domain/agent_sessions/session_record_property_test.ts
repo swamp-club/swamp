@@ -22,6 +22,7 @@ import fc from "fast-check";
 import {
   AGENT_SESSION_LIMITS,
   AGENT_SESSION_SUMMARY_TAG,
+  agentSessionChildId,
   agentSessionSummary,
   AgentSessionSummaryV1Schema,
   agentSessionTags,
@@ -194,6 +195,32 @@ Deno.test("readAgentSessionRecord: never throws on a valid record with one field
       (session, key, value) => {
         const reading = readAgentSessionRecord({ ...session, [key]: value });
         assert(reading.kind === "record" || reading.kind === "skipped");
+      },
+    ),
+  );
+});
+
+Deno.test("agentSessionChildId: every parent and agent id give a child id the record accepts", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.stringMatching(/^[a-z0-9][a-z0-9_-]{0,127}$/),
+      fc.string({ minLength: 1, maxLength: AGENT_SESSION_LIMITS.idLength }),
+      async (parent, agentId) => {
+        const id = await agentSessionChildId(parent, agentId);
+        const reading = readAgentSessionRecord({
+          schemaVersion: 2,
+          id,
+          repo: "repo",
+          harness: "claude-code",
+          startedAt: "2026-10-29T15:58:12.000Z",
+          invocation: "headless",
+          parentSessionId: parent,
+          agentId,
+          importerVersion: "1",
+          turns: [],
+          findings: [],
+        });
+        assertEquals(reading.kind, "record");
       },
     ),
   );

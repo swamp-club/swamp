@@ -41,14 +41,18 @@ so a record that passes the JSON Schema can still be skipped as `invalid`:
 - `subagentSessionId` is set only on a call whose `toolKind` is `subagent`;
 - a call labelled `unlabeled` has no `category` or `rule`, and any other call
   has both;
-- `agentType` is set only on a child session (one with `parentSessionId`).
+- `agentId` and `agentType` are set only on a child session (one with
+  `parentSessionId`);
+- a child's `id` is the one `agentSessionChildId` gives for its
+  `parentSessionId` and `agentId` (nothing checks this on read; the importer
+  calls the helper).
 
 The Zod schema is the authority. The extension's copy follows these rules by
 hand.
 
 | Level   | Fields                                                                                                                                                               |
 | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Session | `schemaVersion`, `id`, `repo`, `harness` (a slug), `harnessVersion`?, `model`?, `startedAt` (ISO 8601 UTC), `invocation` (`interactive`, `headless`, `unknown`), `swampUserId`?, `swampUsername`?, `parentSessionId`?, `agentType`?, `importerVersion` |
+| Session | `schemaVersion`, `id`, `repo`, `harness` (a slug), `harnessVersion`?, `model`?, `startedAt` (ISO 8601 UTC), `invocation` (`interactive`, `headless`, `unknown`), `swampUserId`?, `swampUsername`?, `parentSessionId`?, `agentId`?, `agentType`?, `importerVersion` |
 | Turn    | `n`, `start`, `end`, `tokens` (`input`, `output`, `cacheRead`, `cacheWrite`), `calls` |
 | Call    | `id`, `tool`, `toolKind`, `start`, `end`, `ok`, `exitCode`?, `text`, `truncated`?, `label` (`swamp`, `bypass`, `neutral`, `unlabeled`), `category`?, `rule`?, `subagentSessionId`?, `swampSpans`? |
 | Span    | per swamp command: `offset` from the call's start, then `spans` of `name`, `start`, `duration`, `depth`, `error` |
@@ -103,11 +107,18 @@ turns, far inside the limits.
 
 A subagent is its own session record, a child of the session that started it.
 
-- **Ids.** A child's `id` is `<parent id>_<agent id>`, built by
-  `agentSessionChildId`. A harness's subagent id is unique only within its
-  parent, so it never stands alone in the global name space. The child sets
-  `parentSessionId`, and may set `agentType`, the harness's subagent type
-  (`general-purpose`, `Explore`, or a user-defined agent's name).
+- **Ids.** A harness's subagent id is unique only within its parent, so it
+  never stands alone in the global name space. A child's `id` is
+  `<parent id>_<hash>`, built by `agentSessionChildId`: the hash is the first
+  32 hex digits of SHA-256 over `[parent id, agent id]` as JSON, and the
+  parent id is cut so the whole id fits in 128 characters. The hash covers
+  both ids in full and keeps the agent id's case, so ids that differ only in
+  case, or in where a `_` falls, never meet. The helper is async (Web Crypto),
+  for the importer only; the page follows `subagentSessionId` and never
+  rebuilds an id. The child sets `parentSessionId` and `agentId` (the
+  harness's own subagent id, unchanged), and may set `agentType`, the
+  harness's subagent type (`general-purpose`, `Explore`, or a user-defined
+  agent's name).
 - **The link.** The parent's call that started the child has `toolKind:
   subagent` and `subagentSessionId` set to the child's id.
 - **Loading.** The page loads a session's children with one bounded query on
@@ -194,7 +205,9 @@ cannot drift from it.
   children through the children query; `subagents` counts the session's
   subagent calls, so the list can show "3 subagents" without that query.
 - `wallMs` is the latest turn or call end. `activeMs` adds up turn durations,
-  counting a negative one as zero.
+  counting a negative one as zero. `activeMs` and the token totals stop at
+  `Number.MAX_SAFE_INTEGER`, so an absurd record still gives a summary the
+  page can read.
 - Every string in it is bounded, and `readAgentSessionSummary` refuses a tag
   over 4096 characters before parsing it.
 
