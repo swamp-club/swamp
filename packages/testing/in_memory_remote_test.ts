@@ -2056,8 +2056,9 @@ Deno.test("repairUnpushedFiles: a key a peer commits while the repair reads file
   // Under any interleaving the peer's bytes win: committed before the
   // repair reads the key, it is alreadyPresent; after the repair commits,
   // the peer's push replaces it; in between, the create is refused
-  // (contract rule 7). The peer walks its whole cache and the repair has
-  // more files to read after the key, so the commit tends to land in between.
+  // (contract rule 7). Either way the key is counted once and never left
+  // unpushed. The peer walks its whole cache and the repair has more files
+  // to read after the key, so the commit tends to land in between.
   const synced: Record<string, string> = {};
   for (let i = 0; i < 100; i++) synced[`data/m/s${i}`] = "v1";
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -2068,13 +2069,17 @@ Deno.test("repairUnpushedFiles: a key a peer commits while the repair reads file
       await write(bCache, "data/m/k", "theirs");
       await b.markDirty();
 
-      await Promise.all([a.repairUnpushedFiles!(), b.pushChanged()]);
+      const [summary] = await Promise.all([
+        a.repairUnpushedFiles!(),
+        b.pushChanged(),
+      ]);
 
       assertEquals(
         remoteText(remote, "data/m/k"),
         "theirs",
         `attempt ${attempt}`,
       );
+      assertEquals(summary.unpushed, 0, `attempt ${attempt}`);
     });
   }
 });

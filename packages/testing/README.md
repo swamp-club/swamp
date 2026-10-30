@@ -516,7 +516,7 @@ Litestream would; its `removePath` deletes two objects per listing page.
 Holds a `DatastoreSyncService` to the `markDirty` contract, delete propagation
 and two-phase push. The factory returns two services bound to two different
 cache directories on **one** fresh backend, plus a cleanup. The suite calls it
-once per case (twenty fixtures), pulls on both caches, then runs:
+once per case (twenty-one fixtures), pulls on both caches, then runs:
 
 | Case                                | Asserts                                                                                                                                              |
 | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -538,6 +538,7 @@ once per case (twenty fixtures), pulls on both caches, then runs:
 | `clear-dirty`                       | A directory mark `clearDirty` dropped makes the next push delete and send nothing, and a mark made after it is still pushed                          |
 | `repair-unpushed`                   | A file written into the cache without a mark is reported by a `repairUnpushedFiles` dry run and uploaded by a real run                               |
 | `repair-unpushed-keeps-pending`     | A recorded delete is reported as pending, survives `repairUnpushedFiles`, and is applied by the next push                                            |
+| `repair-unpushed-keeps-fingerprint` | After a real `repairUnpushedFiles`, the next pull still receives a peer's commit made before it                                                      |
 | `repair-unpushed-classifies`        | A local edit is `locallyModified`, a stale copy is not, a peer's change is `remoteMovedOn`, and a peer's delete is neither reported nor brought back |
 | `repair-unpushed-peer-deleted`      | An edited copy a pull kept after a peer deleted its key is `peerDeleted`, never unpushed, and is never uploaded                                      |
 | `repair-unpushed-already-present`   | A local file whose key a peer pushed with other bytes is `alreadyPresent`, and the peer's bytes stay                                                 |

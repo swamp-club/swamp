@@ -1475,6 +1475,27 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
     },
   },
   {
+    name: "repair-unpushed-keeps-fingerprint",
+    skip: skipWithoutRepairUnpushed,
+    run: async ({ first, second }) => {
+      const peers = `${ROOT}/repair-keeps-fingerprint/peers/raw`;
+      const stranded = `${ROOT}/repair-keeps-fingerprint/stranded/raw`;
+      const bytes = sampleBytes("repair-fingerprint-peer");
+      await markAndWrite(second, peers, bytes);
+      assertChanged(await second.service.pushChanged(), "second pushChanged()");
+      await writeLocal(first.cacheDir, stranded, sampleBytes("repair-fp"));
+
+      await first.service.repairUnpushedFiles!();
+      await first.service.pullChanged();
+      await assertHasBytes(
+        first,
+        peers,
+        bytes,
+        "a repair must not advance the sync fingerprint, or the next pull skips a peer's earlier commit (contract rule 8)",
+      );
+    },
+  },
+  {
     name: "repair-unpushed-classifies",
     skip: skipWithoutRepairUnpushed,
     run: async ({ first, second }) => {
@@ -1666,10 +1687,12 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
  *   `clearDirty`.
  * - `repair-unpushed`: a file written into the cache without a mark, which
  *   no push sends, is reported by a `repairUnpushedFiles` dry run and
- *   uploaded by a real run. Skipped, like the four cases below, when
+ *   uploaded by a real run. Skipped, like the five cases below, when
  *   `first.service` has no `repairUnpushedFiles`.
  * - `repair-unpushed-keeps-pending`: a recorded delete is reported as
  *   pending, survives the repair, and is applied by the next push.
+ * - `repair-unpushed-keeps-fingerprint`: after a real repair, the next pull
+ *   still receives a peer's commit made before it.
  * - `repair-unpushed-classifies`: against the last sync, a local edit is
  *   `locallyModified` (also when a peer changed the file too), a stale copy
  *   is not, files a peer changed count as `remoteMovedOn`, and a file a peer

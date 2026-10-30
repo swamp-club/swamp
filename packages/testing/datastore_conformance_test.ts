@@ -273,6 +273,7 @@ const ALL_ROUND_TRIP_CASES = [
   "clear-dirty",
   "repair-unpushed",
   "repair-unpushed-keeps-pending",
+  "repair-unpushed-keeps-fingerprint",
   "repair-unpushed-classifies",
   "repair-unpushed-peer-deleted",
   "repair-unpushed-already-present",
@@ -354,6 +355,7 @@ Deno.test("assertSyncServiceRoundTripConformance: skips every repair-unpushed ca
     [
       { name: "repair-unpushed", reason },
       { name: "repair-unpushed-keeps-pending", reason },
+      { name: "repair-unpushed-keeps-fingerprint", reason },
       { name: "repair-unpushed-classifies", reason },
       { name: "repair-unpushed-peer-deleted", reason },
       { name: "repair-unpushed-already-present", reason },
@@ -924,6 +926,29 @@ const BROKEN_IMPLEMENTATIONS: BrokenImplementation[] = [
           const summary = await service.repairUnpushedFiles!(options);
           if (!options?.dryRun) await service.markDirty();
           return summary;
+        },
+      });
+    },
+  },
+  {
+    caseName: "repair-unpushed-keeps-fingerprint",
+    bug: "repairUnpushedFiles advances the sync fingerprint",
+    breakFixture: (fixture) => {
+      const { service } = fixture.first;
+      // Stamping the commit sequence after the repair's commit sends the
+      // next pull down the fast path, which fetches nothing.
+      let stamped = false;
+      return withFirst(fixture, {
+        ...service,
+        repairUnpushedFiles: async (options) => {
+          const summary = await service.repairUnpushedFiles!(options);
+          if (!options?.dryRun) stamped = true;
+          return summary;
+        },
+        pullChanged: (options) => {
+          if (!stamped) return service.pullChanged(options);
+          stamped = false;
+          return Promise.resolve(0);
         },
       });
     },

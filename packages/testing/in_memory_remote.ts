@@ -1670,6 +1670,7 @@ export function createInMemoryRemote(
       }
 
       const created = new Map<string, Uint8Array>();
+      const refused = new Set<string>();
       if (!dryRun) {
         for (const [rel, bytes] of unpushed) {
           // A peer may have committed or stored the key while the walk
@@ -1678,6 +1679,7 @@ export function createInMemoryRemote(
           const current = committed.get(rel) ?? objects.get(rel);
           if (current && !sameBytes(bytes, current)) {
             alreadyPresent.push(rel);
+            refused.add(rel);
             continue;
           }
           if (!objects.has(rel)) objects.set(rel, bytes);
@@ -1694,8 +1696,9 @@ export function createInMemoryRemote(
           deleted: [],
         });
       }
+      // A refused create is settled as alreadyPresent, not left unpushed.
       const remaining = unpushed.map(([rel]) => rel).filter((rel) =>
-        !created.has(rel)
+        !created.has(rel) && !refused.has(rel)
       );
       const sample = (paths: string[]) => paths.sort().slice(0, SAMPLE_LIMIT);
       return {
