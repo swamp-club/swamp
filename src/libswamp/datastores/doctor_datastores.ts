@@ -30,7 +30,10 @@ import {
   UNPUSHED_REPAIR_MIN_EXTENSION_VERSION,
   type UnpushedFilesSummary,
 } from "../../domain/datastore/datastore_sync_service.ts";
-import { escapeControlCharacters } from "../../domain/control_characters.ts";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInMessage,
+} from "../../domain/control_characters.ts";
 
 import {
   isReservedNamespaceName,
@@ -940,8 +943,8 @@ export async function* repairDatastoreContamination(
       } catch (err) {
         refusal =
           `Refusing to wipe the local cache: could not check what it holds: ${
-            errorText(err)
-          }.`;
+            errorText(err).trimEnd()
+          }`;
       }
       if (refusal !== undefined) {
         yield {
@@ -1021,18 +1024,26 @@ export async function* repairDatastoreContamination(
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        // A re-pull cut off by the sync timeout leaves nothing to repair on
-        // the next run, so the invalidation steps would never run.
-        let invalidationFailure = "";
+        // After the wipe a re-run finds nothing to repair, so it would never
+        // reach the invalidation steps. Each is tried here on its own.
+        const invalidations: Array<[string, () => Promise<unknown>]> = [];
         if (lastCompletedStep === 2) {
+          invalidations.push([
+            "workflow run indexes",
+            deps.invalidateWorkflowRunIndexes,
+          ]);
+        }
+        if (lastCompletedStep === 2 || lastCompletedStep === 3) {
+          invalidations.push(["data catalog", deps.invalidateCatalog]);
+        }
+        let invalidationFailure = "";
+        for (const [what, invalidate] of invalidations) {
           try {
-            await deps.invalidateWorkflowRunIndexes();
-            await deps.invalidateCatalog();
+            await invalidate();
           } catch (invalidateErr) {
-            invalidationFailure =
-              ` Invalidating the workflow run indexes and data catalog failed too: ${
-                errorText(invalidateErr)
-              }.`;
+            invalidationFailure += ` Invalidating the ${what} failed too: ${
+              errorText(invalidateErr).trimEnd()
+            }`;
           }
         }
         yield {
@@ -1047,7 +1058,7 @@ export async function* repairDatastoreContamination(
                 ? `Local cache was wiped — run 'swamp datastore sync --pull' to restore.${invalidationFailure}`
                 : lastCompletedStep >= 1
                 ? `Foreign objects were deleted but local cache was not refreshed — run 'swamp datastore sync --pull' to restore.`
-                : `Some foreign objects may already be deleted, and the local cache was not touched. Run 'swamp doctor datastores --repair -y' again.`),
+                : `Some foreign objects may already be deleted, and the local cache was not touched. Run 'swamp doctor datastores --repair -y' again; if it finds nothing to repair, run 'swamp datastore sync --pull'.`),
             cause: err instanceof Error ? err : undefined,
           },
         };
@@ -1080,13 +1091,16 @@ export interface RepairUnpushedFilesDeps {
 }
 
 /**
- * An extension's error message as it can be printed: its batch failures name
- * files, and a file name can hold an escape sequence.
+ * An extension's error message as it can be printed, ending a sentence: its
+ * batch failures name files, and a file name can hold an escape sequence. A
+ * message that spans lines, such as a timeout's remedies, ends its last line,
+ * so what follows starts a new one.
  */
 function errorText(err: unknown): string {
-  return escapeControlCharacters(
+  const text = escapeControlCharactersInMessage(
     err instanceof Error ? err.message : String(err),
-  ).replace(/\.+$/, "");
+  ).trimEnd();
+  return text.includes("\n") ? `${text}\n` : `${text.replace(/\.+$/, "")}. `;
 }
 
 /**
@@ -1147,7 +1161,7 @@ export function cacheWipeRefusal(
     reasons.push(
       `${localOnly} local version(s) the remote does not hold (${
         firstOf(samples.map(escapeControlCharacters), localOnly)
-      }); copy them out of ${cacheDir} before deciding what to keep, and do not pull first: a pull overwrites them`,
+      }); copy any you want to keep out of ${cacheDir}, remove them there, and run this again. Do not pull first: a pull overwrites them`,
     );
   }
   if (summary.pendingChanges) {
@@ -1177,7 +1191,11 @@ export async function* repairUnpushedCacheFiles(
     (async function* () {
       yield { kind: "scanning" };
       if (deps.unsupported !== undefined) {
-        yield { kind: "not_supported", message: deps.unsupported };
+        yield {
+          kind: "not_supported",
+          message:
+            `${deps.unsupported} Until then, namespace contamination repair refuses to wipe the cache.`,
+        };
         return;
       }
       try {
@@ -1208,10 +1226,10 @@ export async function* repairUnpushedCacheFiles(
             message: options.confirm
               ? `Repairing unpushed cache files failed: ${
                 errorText(err)
-              }. Files uploaded before the failure stay uploaded and nothing was deleted. Once the cause is fixed, running the repair again continues from there.`
+              }Files uploaded before the failure stay uploaded and nothing was deleted. Once the cause is fixed, running the repair again continues from there.`
               : `Checking for unpushed cache files failed: ${
                 errorText(err)
-              }. Nothing was uploaded or deleted.`,
+              }Nothing was uploaded or deleted.`,
             cause: err instanceof Error ? err : undefined,
           },
         };

@@ -2373,7 +2373,7 @@ Deno.test("cacheWipeRefusal: refuses for unpushed files, local-only versions and
   );
   assertStringIncludes(localOnly!, "3 local version(s)");
   assertStringIncludes(localOnly!, "/cache");
-  assertStringIncludes(localOnly!, "do not pull first");
+  assertStringIncludes(localOnly!, "Do not pull first");
   const pending = cacheWipeRefusal(
     unpushedSummary({ pendingChanges: true }),
     "/cache",
@@ -2627,4 +2627,109 @@ Deno.test("unpushedRepairUnsupportedMessage: any other extension is not told to 
   );
   assertStringIncludes(message, "does not implement repairUnpushedFiles");
   assertEquals(message.includes("swamp extension update"), false);
+});
+
+Deno.test("repairUnpushedCacheFiles: a multi-line failure such as a timeout's remedies keeps its lines", async () => {
+  const events = await collect<RepairUnpushedFilesEvent>(
+    repairUnpushedCacheFiles(createLibSwampContext(), {
+      detect: () => Promise.reject(new Error("must not be called")),
+      repair: () =>
+        Promise.reject(new Error("timed out. Try one of:\n  • more time")),
+    }, { confirm: true }),
+  );
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertStringIncludes(
+      last.error.message,
+      "timed out. Try one of:\n  • more time\nFiles uploaded before",
+    );
+    assertEquals(last.error.message.includes("\\x0a"), false);
+  }
+});
+
+Deno.test("repairUnpushedCacheFiles: an unsupported datastore is told what that blocks", async () => {
+  const events = await collect<RepairUnpushedFilesEvent>(
+    repairUnpushedCacheFiles(createLibSwampContext(), {
+      unsupported: "Too old.",
+      detect: () => Promise.reject(new Error("must not be called")),
+      repair: () => Promise.reject(new Error("must not be called")),
+    }, { confirm: false }),
+  );
+  const last = events.at(-1);
+  assertEquals(last?.kind, "not_supported");
+  if (last?.kind === "not_supported") {
+    assertStringIncludes(last.message, "Too old.");
+    assertStringIncludes(last.message, "refuses to wipe the cache");
+  }
+});
+
+Deno.test("repairDatastoreContamination: a failed delete says objects may be gone and what to do if a re-run finds nothing", async () => {
+  const events = await collect<RepairDatastoresEvent>(
+    repairDatastoreContamination(
+      createLibSwampContext(),
+      makeRepairDeps({
+        deleteContamination: () => Promise.reject(new Error("timed out")),
+      }),
+      { confirm: true },
+    ),
+  );
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertStringIncludes(last.error.message, "may already be deleted");
+    assertStringIncludes(last.error.message, "swamp datastore sync --pull");
+  }
+});
+
+Deno.test("repairDatastoreContamination: after a failed re-pull each invalidation is tried, and a failure names only itself", async () => {
+  const callLog: string[] = [];
+  const events = await collect<RepairDatastoresEvent>(
+    repairDatastoreContamination(
+      createLibSwampContext(),
+      makeRepairDeps({
+        pullScoped: () => Promise.reject(new Error("timed out")),
+        invalidateWorkflowRunIndexes: () => {
+          callLog.push("indexes");
+          return Promise.reject(new Error("no access"));
+        },
+        invalidateCatalog: () => {
+          callLog.push("catalog");
+          return Promise.resolve();
+        },
+      }),
+      { confirm: true },
+    ),
+  );
+  assertEquals(callLog, ["indexes", "catalog"]);
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertStringIncludes(
+      last.error.message,
+      "Invalidating the workflow run indexes failed too: no access.",
+    );
+    assertEquals(last.error.message.includes("data catalog failed"), false);
+  }
+});
+
+Deno.test("repairDatastoreContamination: a failed index invalidation still invalidates the catalog", async () => {
+  const callLog: string[] = [];
+  await collect<RepairDatastoresEvent>(
+    repairDatastoreContamination(
+      createLibSwampContext(),
+      makeRepairDeps({
+        invalidateWorkflowRunIndexes: () => {
+          callLog.push("indexes");
+          return Promise.reject(new Error("no access"));
+        },
+        invalidateCatalog: () => {
+          callLog.push("catalog");
+          return Promise.resolve();
+        },
+      }),
+      { confirm: true },
+    ),
+  );
+  assertEquals(callLog, ["indexes", "catalog"]);
 });

@@ -66,6 +66,8 @@ interface HarnessOptions {
   /** The repo's namespace; null for none. Default {@link NS}. */
   namespace?: string | null;
   remote?: InMemoryRemoteOptions;
+  /** Leaves the cache with no last-synced index. */
+  neverPulled?: boolean;
   /** Makes the lock's release reject. */
   releaseFails?: boolean;
   /** The datastore type's name, for behavior specific to one. */
@@ -194,9 +196,11 @@ async function withHarness(
     await teammate.markDirty({ relPath: teammateKey });
     await teammate.pushChanged(namespace ? { namespace } : undefined);
     // An earlier pull left the cache clean, as before swamp-club#4100.
-    await remote.connect(cachePath, { instance: "earlier" }).pullChanged(
-      namespace ? { namespace } : undefined,
-    );
+    if (!options.neverPulled) {
+      await remote.connect(cachePath, { instance: "earlier" }).pullChanged(
+        namespace ? { namespace } : undefined,
+      );
+    }
 
     const doctor = async (...args: string[]) => {
       const originalLog = console.log;
@@ -315,7 +319,7 @@ Deno.test("doctor datastores --repair -y: refuses the contamination wipe while t
       const message = (run.error as Error).message;
       assertStringIncludes(message, "Refusing to wipe the local cache");
       assertStringIncludes(message, TEAMMATE);
-      assertStringIncludes(message, "do not pull first");
+      assertStringIncludes(message, "Do not pull first");
       assertStringIncludes(message, "was not wiped");
       assertEquals(
         await Deno.readTextFile(join(cachePath, TEAMMATE)),
@@ -442,10 +446,12 @@ Deno.test("doctor datastores: points at --repair when the cache holds files the 
     assertEquals(check.error, undefined);
     const report = JSON.parse(check.out);
     assertEquals(report.overallStatus, "pass");
-    assertEquals(report.unpushedFilesFinding, {
-      unpushed: 1,
-      samplePaths: [STRANDED],
-    });
+    assertEquals(report.unpushedFilesFinding.unpushed, 1);
+    assertEquals(report.unpushedFilesFinding.samplePaths, [STRANDED]);
+    assertStringIncludes(
+      report.unpushedFilesFinding.warning,
+      "restores it for everyone",
+    );
   });
 });
 
@@ -630,3 +636,41 @@ for (const typeName of ["@swamp/s3-datastore", "@swamp/gcs-datastore"]) {
     );
   });
 }
+
+Deno.test("doctor datastores --repair -y: removing the local versions a refusal names clears it, and the wipe goes ahead (swamp-club#4138)", async () => {
+  await withHarness(
+    { contamination: true },
+    async ({ cachePath, events, doctor }) => {
+      await writeFile(join(cachePath, TEAMMATE), '{"t":"edited"}');
+
+      const refused = await doctor("--repair", "-y");
+      assertStringIncludes(
+        (refused.error as Error).message,
+        "remove them there",
+      );
+      assertEquals(events.includes("contamination-delete"), false);
+
+      await Deno.remove(join(cachePath, TEAMMATE));
+      const run = await doctor("--repair", "-y");
+
+      assertEquals(run.error, undefined);
+      assertEquals(JSON.parse(run.out).contamination.status, "completed");
+    },
+  );
+});
+
+Deno.test("doctor datastores --repair: a cache that never pulled is told to pull first, and exits 1 (swamp-club#4138)", async () => {
+  await withHarness(
+    { neverPulled: true },
+    async ({ doctor }) => {
+      const preview = await doctor("--repair");
+      // Deno.exit set this before the test runner turned it into an error.
+      Deno.exitCode = 0;
+
+      assertStringIncludes((preview.error as Error).message, "exit code: 1");
+      const report = JSON.parse(preview.out);
+      assertEquals(report.unpushed.status, "unpushed_failed");
+      assertStringIncludes(report.unpushed.message, "Nothing was uploaded");
+    },
+  );
+});

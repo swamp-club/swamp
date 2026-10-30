@@ -59,6 +59,7 @@ import {
   type DatastoreFormatMarkerRepairStatus,
   DatastoreRepairJsonReport,
   type PreV3RecordsRepairStatus,
+  renderUnpushedFilesCheckFailure,
   type UnpushedFilesRepairStatus,
 } from "../../presentation/renderers/doctor_datastores.ts";
 import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
@@ -1039,7 +1040,7 @@ async function runDatastoreRepairs(
         // A preview changes nothing, so a failed check still leaves the
         // contamination preview to show. A confirmed run stops here.
         if (confirm || !(error instanceof UserError)) throw error;
-        cliCtx.logger.warn`${error.message}`;
+        renderUnpushedFilesCheckFailure(cliCtx.outputMode, error.message);
       }
       unpushedStatus = unpushedRenderer.overallStatus;
       if (unpushedStatus === "fail") failed = true;

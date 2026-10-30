@@ -34,7 +34,18 @@ import type {
   V3ContentSummary,
 } from "../../libswamp/datastores/doctor_datastores.ts";
 import { describeUnreadableVersionReason } from "../../domain/data/unreadable_data_version.ts";
-import { escapeControlCharacters } from "../../domain/control_characters.ts";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInMessage,
+} from "../../domain/control_characters.ts";
+
+/** What a list of unpushed files can hold that must not be uploaded. */
+const PEER_DELETED_LOOKS_UNPUSHED =
+  "A file a peer deleted before your datastore extension recorded such deletes looks the same, and uploading it restores it for everyone";
+
+/** What to do with files a real repair left unpushed. */
+const UNINDEXABLE_ADVICE =
+  "The datastore could not index the files still listed, so repeating the repair does not clear them. Copy them out of the datastore cache and remove them.";
 import type { UnpushedFilesSummary } from "../../domain/datastore/datastore_sync_service.ts";
 import type { EventHandlers } from "../../libswamp/stream.ts";
 import type { RetentionCheckSummary } from "../../libswamp/datastores/retention_check.ts";
@@ -364,7 +375,7 @@ class LogDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
           if (uf.error !== undefined) {
             writeOutput(
               `\n${yellow("⚠")} Could not check for unpushed cache files: ${
-                escapeControlCharacters(uf.error)
+                escapeControlCharactersInMessage(uf.error)
               }`,
             );
           } else {
@@ -380,7 +391,7 @@ class LogDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
             );
             writeOutput(
               dim(
-                "\n  No push sends these. Run 'swamp doctor datastores --repair' to preview uploading them. A file a peer deleted before your datastore extension recorded such deletes looks the same, and uploading it restores it for everyone.",
+                `\n  No push sends these. Run 'swamp doctor datastores --repair' to preview uploading them. ${PEER_DELETED_LOOKS_UNPUSHED}.`,
               ),
             );
           }
@@ -471,7 +482,14 @@ class JsonDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
               healthFindings: data.healthFindings,
               vaultMismatchFindings: data.vaultMismatchFindings,
               contaminationFinding: data.contaminationFinding ?? null,
-              unpushedFilesFinding: data.unpushedFilesFinding ?? null,
+              unpushedFilesFinding: data.unpushedFilesFinding
+                ? {
+                  ...data.unpushedFilesFinding,
+                  ...(data.unpushedFilesFinding.unpushed > 0
+                    ? { warning: `${PEER_DELETED_LOOKS_UNPUSHED}.` }
+                    : {}),
+                }
+                : null,
               catalogCompletenessFinding: data.catalogCompletenessFinding ??
                 null,
               unreadableVersionsFinding: data.unreadableVersionsFinding ??
@@ -681,7 +699,11 @@ class JsonRepairDatastoresRenderer implements RepairDatastoresRenderer {
       },
       error: (e) => {
         this.overallStatus = "fail";
-        throw new UserError(e.error.message);
+        this.#report.record("contamination", {
+          status: e.error.code,
+          message: e.error.message,
+        });
+        throw new UserError(e.error.message, e.error.code);
       },
     };
   }
@@ -736,7 +758,7 @@ class LogUnpushedFilesRepairRenderer implements UnpushedFilesRepairRenderer {
         if (e.summary.unpushed > 0) {
           writeOutput(
             dim(
-              "\n  Run with -y to upload them. Uploads only create files the remote lacks; nothing is deleted. A file a peer deleted before your datastore extension recorded such deletes looks the same, and uploading it restores it for everyone, so check these first.",
+              `\n  Run with -y to upload them. Uploads only create files the remote lacks; nothing is deleted. ${PEER_DELETED_LOOKS_UNPUSHED}, so check these first.`,
             ),
           );
         }
@@ -761,7 +783,7 @@ class LogUnpushedFilesRepairRenderer implements UnpushedFilesRepairRenderer {
         if (e.summary.unpushed > 0) {
           writeOutput(
             dim(
-              "\n  The datastore could not index the files still listed, so repeating the repair does not clear them. Copy them out of the datastore cache and remove them.",
+              `\n  ${UNINDEXABLE_ADVICE}`,
             ),
           );
         }
@@ -799,6 +821,9 @@ class JsonUnpushedFilesRepairRenderer implements UnpushedFilesRepairRenderer {
         this.#report.record("unpushed", {
           status: "unpushed_preview",
           summary: e.summary,
+          ...(e.summary.unpushed > 0
+            ? { warning: `${PEER_DELETED_LOOKS_UNPUSHED}.` }
+            : {}),
         });
       },
       step: () => {},
@@ -809,6 +834,9 @@ class JsonUnpushedFilesRepairRenderer implements UnpushedFilesRepairRenderer {
             ? "unpushed_completed"
             : "unpushed_incomplete",
           summary: e.summary,
+          ...(this.overallStatus === "fail"
+            ? { advice: UNINDEXABLE_ADVICE }
+            : {}),
         });
       },
       not_needed: () => {
@@ -832,6 +860,17 @@ class JsonUnpushedFilesRepairRenderer implements UnpushedFilesRepairRenderer {
       },
     };
   }
+}
+
+/**
+ * Shows a preview's failed unpushed files check in log mode. The json report
+ * records it already, and the contamination preview follows it.
+ */
+export function renderUnpushedFilesCheckFailure(
+  mode: OutputMode,
+  message: string,
+): void {
+  if (mode === "log") writeOutput(`${yellow("⚠")} ${message}`);
 }
 
 export function createUnpushedFilesRepairRenderer(

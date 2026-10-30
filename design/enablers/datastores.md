@@ -9310,8 +9310,8 @@ datastore extensions, close it.
   The contamination stage's detection, delete and pull are bounded by the sync
   timeout, since they run under the lock. If the bounded re-pull fails, the stage
   still invalidates the workflow run indexes and catalog, because a re-run then
-  finds nothing to repair. A failed dry run in a preview is reported and the
-  contamination preview still shows. Plain `doctor
+  finds nothing to repair. A failed dry run in a preview is reported, as with a cache
+  that never pulled, the contamination preview still shows, and the command exits 1. Plain `doctor
   datastores` adds an advisory `unpushedFilesFinding` (never a failure) from a
   size-and-mtime dry run, costing one remote index read and cache walk, like the
   contamination check. On v3 it

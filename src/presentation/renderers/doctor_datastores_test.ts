@@ -719,6 +719,64 @@ Deno.test("unpushedFilesDetailLines: local versions the remote lacks say what to
   assertStringIncludes(lines, "Copy out any you want to keep");
 });
 
+Deno.test("createDoctorDatastoresRenderer: log mode keeps the lines of a failed unpushed files check", () => {
+  const renderer = createDoctorDatastoresRenderer("log");
+  const out = captureStdout(() =>
+    renderer.handlers().completed({
+      kind: "completed",
+      data: {
+        ...data(),
+        unpushedFilesFinding: {
+          unpushed: 0,
+          samplePaths: [],
+          error: "timed out. Try one of:\n  • more time",
+        },
+      },
+    })
+  );
+  assertStringIncludes(out, "Try one of:\n  • more time");
+});
+
+Deno.test("createUnpushedFilesRepairRenderer: json mode carries the warnings log mode shows", () => {
+  const report = new DatastoreRepairJsonReport();
+  const renderer = createUnpushedFilesRepairRenderer("json", report);
+  renderer.handlers().preview({
+    kind: "preview",
+    summary: unpushed({ unpushed: 1, samplePaths: ["ns/a"] }),
+  });
+  assertStringIncludes(
+    JSON.parse(captureStdout(() => report.print())).unpushed.warning,
+    "restores it for everyone",
+  );
+  renderer.handlers().completed({
+    kind: "completed",
+    summary: unpushed({ unpushed: 1, samplePaths: ["ns/data/x"] }),
+  });
+  assertStringIncludes(
+    JSON.parse(captureStdout(() => report.print())).unpushed.advice,
+    "repeating the repair does not clear them",
+  );
+});
+
+Deno.test("createRepairDatastoresRenderer: json mode records a refusal under contamination, with its code", () => {
+  const report = new DatastoreRepairJsonReport();
+  const renderer = createRepairDatastoresRenderer("json", report);
+  const thrown = assertThrows(
+    () =>
+      renderer.handlers().error({
+        kind: "error",
+        error: { code: "repair_refused", message: "Refused." },
+      }),
+    UserError,
+    "Refused.",
+  );
+  assertEquals((thrown as UserError).code, "repair_refused");
+  assertEquals(JSON.parse(captureStdout(() => report.print())).contamination, {
+    status: "repair_refused",
+    message: "Refused.",
+  });
+});
+
 Deno.test("createUnpushedFilesRepairRenderer: json mode records a failure under unpushed, and throws", () => {
   const report = new DatastoreRepairJsonReport();
   const renderer = createUnpushedFilesRepairRenderer("json", report);

@@ -51,8 +51,21 @@ export function mapControlCharacters(
  * without control characters is returned unchanged.
  */
 export function escapeControlCharacters(value: string): string {
+  return mapControlCharacters(value, escapeControlCharacter);
+}
+
+/**
+ * {@link escapeControlCharacters} for a message that may span lines, such as
+ * an error's list of remedies: a line feed is kept, and every other control
+ * character is escaped.
+ */
+export function escapeControlCharactersInMessage(value: string): string {
   return mapControlCharacters(
     value,
-    (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`,
+    (c) => c === "\n" ? c : escapeControlCharacter(c),
   );
+}
+
+function escapeControlCharacter(character: string): string {
+  return `\\x${character.charCodeAt(0).toString(16).padStart(2, "0")}`;
 }
