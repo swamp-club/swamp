@@ -20,6 +20,7 @@
 import { getLogger } from "@logtape/logtape";
 import type { Job } from "./job.ts";
 import type { Step } from "./step.ts";
+import type { TriggerEvaluationContext } from "./trigger_condition.ts";
 import type { Workflow } from "./workflow.ts";
 import {
   CANCELLED_STEP_ERROR,
@@ -90,6 +91,50 @@ export function shouldStepRun(step: Step, jobRun: JobRun): boolean {
   }
 
   return true;
+}
+
+/**
+ * True for a cleanup step: one that would still run had all the work before
+ * the run's abort failed. Every `dependsOn` condition must hold with its
+ * dependency failed, or, for a dependency that is itself a cleanup step and
+ * succeeded or was skipped by its guard, with that real status, so a teardown
+ * chain runs to its end. A dependency skipped on its `dependsOn` answers failed
+ * like work does: had the work failed it might have run, so its skip says
+ * nothing. A step with no `dependsOn` is work, and so is an approval gate or a
+ * wait for a signal: it would turn the cancel into a suspended run. Conditions
+ * are evaluated, so `and`, `or` and `not` need no special case. Read from the
+ * definition and the records, so it does not matter when the abort fired or
+ * which walk finished a dependency.
+ */
+export function runsAfterFailure(
+  step: Step,
+  job: Job,
+  jobRun: JobRun,
+): boolean {
+  const known = new Map<string, boolean>();
+  const isCleanup = (candidate: Step): boolean => {
+    const answer = known.get(candidate.name);
+    if (answer !== undefined) return answer;
+    const afterFailure: TriggerEvaluationContext = {
+      getStatus: (ref) => {
+        const dependency = job.getStep(ref);
+        const status = jobRun.getStatus(ref);
+        const ran = status === "succeeded" ||
+          (status === "skipped" && jobRun.skippedByGuard(ref));
+        return dependency && ran && isCleanup(dependency) ? status : "failed";
+      },
+    };
+    const taskType = candidate.task.data.type;
+    const cleanup = taskType !== "manual_approval" &&
+      taskType !== "wait_for_signal" &&
+      candidate.dependsOn.length > 0 &&
+      candidate.dependsOn.every((dep) =>
+        dep.condition.evaluate(afterFailure, dep.step)
+      );
+    known.set(candidate.name, cleanup);
+    return cleanup;
+  };
+  return isCleanup(step);
 }
 
 /**

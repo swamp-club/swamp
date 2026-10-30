@@ -22,7 +22,9 @@ import fc from "fast-check";
 import {
   cancelAndSettle,
   completeAndSettle,
+  runsAfterFailure,
   settleCancelledRun,
+  shouldStepRun,
 } from "./abort_settlement.ts";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
@@ -289,5 +291,135 @@ Deno.test("settleCancelledRun: settling a second time changes nothing", () => {
 
       assertEquals(reloaded.toData(), once);
     }),
+  );
+});
+
+const arbCondition: fc.Arbitrary<TriggerCondition> = fc.letrec<
+  { condition: TriggerCondition }
+>((tie) => ({
+  condition: fc.oneof(
+    { depthSize: "small", withCrossShrink: true },
+    fc.constantFrom(
+      TriggerCondition.always(),
+      TriggerCondition.succeeded(),
+      TriggerCondition.failed(),
+      TriggerCondition.completed(),
+      TriggerCondition.skipped(),
+    ),
+    tie("condition").map((c) => TriggerCondition.not(c)),
+    fc.array(tie("condition"), { minLength: 2, maxLength: 2 })
+      .map((cs) => TriggerCondition.and(cs)),
+    fc.array(tie("condition"), { minLength: 2, maxLength: 2 })
+      .map((cs) => TriggerCondition.or(cs)),
+  ),
+})).condition;
+
+type DependencyOutcome = "succeeded" | "failed" | "skipped";
+
+/**
+ * A job whose steps d0, d1... all ended `outcome`, and a step gated on them.
+ * With `cleanupDeps` each is always-gated on a root step, so each is a cleanup
+ * step; otherwise each is work.
+ */
+function gatedOnFinished(
+  conditions: TriggerCondition[],
+  outcome: DependencyOutcome,
+  cleanupDeps: boolean,
+) {
+  const root = Step.create({ name: "root", task: StepTask.model("m", "run") });
+  const deps = conditions.map((_, i) =>
+    Step.create({
+      name: `d${i}`,
+      task: StepTask.model("m", "run"),
+      dependsOn: cleanupDeps
+        ? [{ step: "root", condition: TriggerCondition.always() }]
+        : [],
+    })
+  );
+  const gated = Step.create({
+    name: "gated",
+    task: StepTask.model("m", "run"),
+    dependsOn: conditions.map((condition, i) => ({
+      step: `d${i}`,
+      condition,
+    })),
+  });
+  const job = Job.create({ name: "main", steps: [root, ...deps, gated] });
+  const workflow = Workflow.create({ name: "gated-wf", jobs: [job] });
+  const jobRun = WorkflowRun.create(workflow).getJob("main")!;
+  for (const dep of deps) {
+    const record = jobRun.getStep(dep.name)!;
+    if (outcome === "skipped") {
+      record.skip({ kind: "dependency" });
+      continue;
+    }
+    record.start();
+    if (outcome === "succeeded") record.succeed();
+    else record.fail("boom");
+  }
+  return { gated, job, jobRun };
+}
+
+const arbConditions = fc.array(arbCondition, { minLength: 1, maxLength: 3 });
+
+Deno.test("runsAfterFailure: agrees with shouldStepRun on a job whose dependencies failed", () => {
+  fc.assert(
+    fc.property(arbConditions, fc.boolean(), (conditions, cleanupDeps) => {
+      const { gated, job, jobRun } = gatedOnFinished(
+        conditions,
+        "failed",
+        cleanupDeps,
+      );
+      assertEquals(
+        runsAfterFailure(gated, job, jobRun),
+        shouldStepRun(gated, jobRun),
+      );
+    }),
+  );
+});
+
+Deno.test("runsAfterFailure: agrees with shouldStepRun when its dependencies are cleanup steps that ran", () => {
+  fc.assert(
+    fc.property(
+      arbConditions,
+      fc.constantFrom<DependencyOutcome>("succeeded", "failed"),
+      (conditions, outcome) => {
+        const { gated, job, jobRun } = gatedOnFinished(
+          conditions,
+          outcome,
+          true,
+        );
+        assertEquals(
+          runsAfterFailure(gated, job, jobRun),
+          shouldStepRun(gated, jobRun),
+        );
+      },
+    ),
+  );
+});
+
+Deno.test("runsAfterFailure: a dependency that was skipped, or is work, answers as if it failed", () => {
+  fc.assert(
+    fc.property(
+      arbConditions,
+      fc.record({
+        outcome: fc.constantFrom<DependencyOutcome>("succeeded", "skipped"),
+        cleanupDeps: fc.boolean(),
+      }).filter(({ outcome, cleanupDeps }) =>
+        outcome === "skipped" || !cleanupDeps
+      ),
+      (conditions, { outcome, cleanupDeps }) => {
+        const { gated, job, jobRun } = gatedOnFinished(
+          conditions,
+          outcome,
+          cleanupDeps,
+        );
+        const failed = gatedOnFinished(conditions, "failed", cleanupDeps);
+        assertEquals(
+          runsAfterFailure(gated, job, jobRun),
+          shouldStepRun(failed.gated, failed.jobRun),
+        );
+      },
+    ),
   );
 });

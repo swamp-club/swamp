@@ -14504,7 +14504,7 @@ Deno.test("abort cleanup: an always-gated cleanup reached after the abort still 
     });
     // `a` finishes despite the abort, so the next level is reached after it
     // rather than interrupted by it.
-    const executor = new AbortingStepExecutor("a", "succeed");
+    const executor = new SignalRecordingAbortingExecutor("a", "succeed");
     const { service } = await setupRetry(
       tempDir,
       workflow,
@@ -14521,6 +14521,10 @@ Deno.test("abort cleanup: an always-gated cleanup reached after the abort still 
     assertEquals(run.status, "cancelled");
     assertEquals(run.getJob("main")!.getStep("a")!.status, "succeeded");
     assertEquals(executor.count("main/cleanup"), 1);
+    assertEquals(
+      isCleanupGraceSignal(executor.signals.get("main/cleanup")!),
+      true,
+    );
   });
 });
 
@@ -23413,5 +23417,739 @@ Deno.test("WorkflowExecutionService: a nested child run inherits the run write f
       runRepo.saved.filter((r) => r.id === run.id).at(-1)?.status,
       "succeeded",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A level reached after the abort with nothing failed (swamp-club#4149)
+// ---------------------------------------------------------------------------
+
+/** Runs job main of `steps`, where `a` aborts the run and then succeeds. */
+async function runThroughAbort(
+  tempDir: string,
+  name: string,
+  steps: Step[],
+  executor = new SignalRecordingAbortingExecutor("a", "succeed"),
+) {
+  const workflow = Workflow.create({
+    name,
+    jobs: [Job.create({ name: "main", steps })],
+  });
+  const { runRepo, service } = await setupRetry(
+    tempDir,
+    workflow,
+    undefined,
+    executor,
+  );
+  service.signalWaits = inMemorySignalWaits();
+  const { run } = await runUntilAborted(
+    service,
+    workflow,
+    executor.controller.signal,
+  );
+  return { run, executor, runRepo, service, workflow };
+}
+
+/** Drains `stream`, aborting when the job starts: before its first level. */
+function abortAtJobStart(
+  stream: AsyncIterable<WorkflowExecutionEvent>,
+  controller: AbortController,
+): Promise<{ run: WorkflowRun; events: WorkflowExecutionEvent[] }> {
+  return finishedRun((async function* () {
+    for await (const event of stream) {
+      if (event.kind === "job_started") controller.abort();
+      yield event;
+    }
+  })());
+}
+
+function assertRanAsCleanup(
+  executor: SignalRecordingAbortingExecutor,
+  stepNames: string[],
+): void {
+  for (const name of stepNames) {
+    assertEquals(executor.count(`main/${name}`), 1, name);
+    assertEquals(
+      isCleanupGraceSignal(executor.signals.get(`main/${name}`)!),
+      true,
+      name,
+    );
+  }
+}
+
+Deno.test("abort cleanup: a lone step reached after the abort is settled, not started", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run, executor } = await runThroughAbort(tempDir, "lone-next-wf", [
+      modelStep("a"),
+      modelStep("b", onStep("a", TriggerCondition.succeeded())),
+    ]);
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("main")!.status, "failed");
+    assertEquals(run.getJob("main")!.getStep("a")!.status, "succeeded");
+    assertEquals(executor.count("main/b"), 0);
+    assertCancelledBeforeStart(run, "main", ["b"]);
+  });
+});
+
+Deno.test("abort cleanup: an approval gate or a nested workflow reached after the abort does not start", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run } = await runThroughAbort(tempDir, "lone-gate-wf", [
+      modelStep("a"),
+      Step.create({
+        name: "gate",
+        task: StepTask.manualApproval("go?"),
+        ...onStep("a", TriggerCondition.succeeded()),
+      }),
+      Step.create({
+        name: "nested",
+        task: StepTask.workflow("no-such-child"),
+        ...onStep("a", TriggerCondition.succeeded()),
+      }),
+    ]);
+
+    assertEquals(run.status, "cancelled");
+    assertCancelledBeforeStart(run, "main", ["gate", "nested"]);
+  });
+});
+
+Deno.test("abort cleanup: a lone gate reached after the abort does not suspend the run", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run } = await runThroughAbort(tempDir, "lone-gate-only-wf", [
+      modelStep("a"),
+      Step.create({
+        name: "gate",
+        task: StepTask.manualApproval("go?"),
+        ...onStep("a", TriggerCondition.succeeded()),
+      }),
+    ]);
+
+    assertEquals(run.status, "cancelled");
+    assertCancelledBeforeStart(run, "main", ["gate"]);
+  });
+});
+
+Deno.test("abort cleanup: always- and completed-gated steps sharing a level reached after the abort run under the cleanup signal", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run, executor } = await runThroughAbort(tempDir, "shared-wf", [
+      modelStep("a"),
+      modelStep("always", onStep("a", TriggerCondition.always())),
+      modelStep("completed", onStep("a", TriggerCondition.completed())),
+    ]);
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("main")!.status, "succeeded");
+    assertRanAsCleanup(executor, ["always", "completed"]);
+  });
+});
+
+Deno.test("abort cleanup: a level reached after the abort settles its work and runs its cleanup", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run, executor } = await runThroughAbort(tempDir, "mixed-wf", [
+      modelStep("a"),
+      modelStep("b", onStep("a", TriggerCondition.succeeded())),
+      modelStep("cleanup", onStep("a", TriggerCondition.always())),
+    ]);
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(executor.count("main/b"), 0);
+    assertCancelledBeforeStart(run, "main", ["b"]);
+    assertRanAsCleanup(executor, ["cleanup"]);
+    assertEquals(run.getJob("main")!.getStep("cleanup")!.status, "succeeded");
+  });
+});
+
+Deno.test("abort cleanup: a teardown chain reached after the abort runs to its end", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run, executor } = await runThroughAbort(tempDir, "chain-wf", [
+      modelStep("a"),
+      modelStep("t1", onStep("a", TriggerCondition.always())),
+      modelStep("t2", onStep("t1", TriggerCondition.succeeded())),
+    ]);
+
+    assertEquals(run.status, "cancelled");
+    assertRanAsCleanup(executor, ["t1", "t2"]);
+    assertEquals(run.getJob("main")!.status, "succeeded");
+  });
+});
+
+Deno.test("abort cleanup: a teardown chain whose first step fails skips the rest", async () => {
+  await withTempDir(async (tempDir) => {
+    const executor = new SignalRecordingAbortingExecutor("a", "succeed");
+    executor.failing.add("t1");
+    const { run } = await runThroughAbort(tempDir, "chain-fail-wf", [
+      modelStep("a"),
+      modelStep("t1", onStep("a", TriggerCondition.always())),
+      modelStep("t2", onStep("t1", TriggerCondition.succeeded())),
+    ], executor);
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("main")!.getStep("t1")!.status, "failed");
+    const t2 = run.getJob("main")!.getStep("t2")!;
+    assertEquals(t2.status, "skipped");
+    assertEquals(t2.settledByAbort, true);
+    assertEquals(executor.count("main/t2"), 0);
+  });
+});
+
+Deno.test("abort cleanup: a failed-gated rollback on a step settled after the abort runs in the next level", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run, executor } = await runThroughAbort(tempDir, "rollback-wf", [
+      modelStep("a"),
+      modelStep("b", onStep("a", TriggerCondition.succeeded())),
+      modelStep("rollback", onStep("b", TriggerCondition.failed())),
+      modelStep("c", onStep("b", TriggerCondition.succeeded())),
+    ]);
+
+    assertEquals(run.status, "cancelled");
+    assertCancelledBeforeStart(run, "main", ["b"]);
+    assertRanAsCleanup(executor, ["rollback"]);
+    const c = run.getJob("main")!.getStep("c")!;
+    assertEquals(c.status, "skipped");
+    assertEquals(c.settledByAbort, true);
+    assertEquals(executor.count("main/c"), 0);
+  });
+});
+
+Deno.test("abort cleanup: a guarded step reached after the abort stays undecided, and its job ends unknown", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run, executor } = await runThroughAbort(tempDir, "guarded-wf", [
+      modelStep("a"),
+      modelStep("b", {
+        ...onStep("a", TriggerCondition.succeeded()),
+        guard: '${{ model.method("infra", "exists") }}',
+      }),
+    ]);
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("main")!.status, "unknown");
+    assertEquals(executor.count("main/__guard_b"), 0);
+    assertEquals(executor.count("main/b"), 0);
+    assertUndecided(run, "main", ["b"]);
+  });
+});
+
+Deno.test("abort cleanup: forEach iterations reached after the abort are settled, so a failed-gated rollback runs", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run, executor } = await runThroughAbort(tempDir, "each-wf", [
+      modelStep("a"),
+      modelStep("each", {
+        ...onStep("a", TriggerCondition.succeeded()),
+        forEach: { item: "t", in: "${{ ['x', 'y'] }}" },
+      }),
+      modelStep("rollback", onStep("each", TriggerCondition.failed())),
+    ]);
+
+    assertEquals(run.status, "cancelled");
+    assertCancelledBeforeStart(run, "main", ["each-x", "each-y"]);
+    assertRanAsCleanup(executor, ["rollback"]);
+  });
+});
+
+Deno.test("abort cleanup: a step gated on a forEach cleanup step reached after the abort runs", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run, executor } = await runThroughAbort(tempDir, "each-chain-wf", [
+      modelStep("a"),
+      modelStep("each", {
+        ...onStep("a", TriggerCondition.always()),
+        forEach: { item: "t", in: "${{ ['x', 'y'] }}" },
+      }),
+      modelStep("after", onStep("each", TriggerCondition.succeeded())),
+    ]);
+
+    assertEquals(run.status, "cancelled");
+    assertRanAsCleanup(executor, ["each-x", "each-y", "after"]);
+  });
+});
+
+Deno.test("abort cleanup: a forEach iteration first added on resume is settled when its level is reached after the abort", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-grown-after-abort-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+            }),
+            modelStep("build", {
+              ...onStep("gate", TriggerCondition.succeeded()),
+              // targets is a late input the resume adds (swamp-club#3583).
+              forEach: {
+                item: "target",
+                in: "${{ inputs.?targets.orValue(['a', 'b']) }}",
+              },
+            }),
+            modelStep("rollback", onStep("build", TriggerCondition.failed())),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("never", "succeed");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, workflow, {});
+
+    const { run } = await abortAtJobStart(
+      service.resume(workflow.name, suspended.id, {
+        signal: executor.controller.signal,
+        inputs: { targets: ["a", "b", "c"] },
+      }),
+      executor.controller,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertCancelledBeforeStart(run, "main", ["build-a", "build-b", "build-c"]);
+    assertEquals(executor.count("main/rollback"), 1);
+  });
+});
+
+Deno.test("abort cleanup: a job's first level reached after the abort is settled", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "first-level-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("a"),
+            modelStep("b", onStep("a", TriggerCondition.succeeded())),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("never", "succeed");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await abortAtJobStart(
+      service.run(workflow.name, { signal: executor.controller.signal }),
+      executor.controller,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("main")!.status, "failed");
+    assertCancelledBeforeStart(run, "main", ["a"]);
+    const b = run.getJob("main")!.getStep("b")!;
+    assertEquals(b.status, "skipped");
+    assertEquals(b.settledByAbort, true);
+    assertEquals(executor.count("main/a"), 0);
+    assertEquals(executor.count("main/b"), 0);
+  });
+});
+
+Deno.test("abort cleanup: a step recorded running on resume is failed as stopped when its level is reached after the abort, and cleanup beside it runs", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "inherited-running-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+            }),
+            modelStep("work", onStep("gate", TriggerCondition.succeeded())),
+            modelStep("cleanup", onStep("gate", TriggerCondition.always())),
+          ],
+        }),
+      ],
+    });
+    const executor = new SignalRecordingAbortingExecutor("never", "succeed");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, workflow);
+    suspended.getJob("main")!.getStep("work")!.start();
+    await runRepo.save(workflow.id, suspended);
+
+    const { run } = await abortAtJobStart(
+      service.resume(workflow.name, suspended.id, {
+        signal: executor.controller.signal,
+      }),
+      executor.controller,
+    );
+
+    // Nothing starts a running record after the abort: it fails as abandoned.
+    assertRanAsCleanup(executor, ["cleanup"]);
+    assertEquals(executor.count("main/work"), 0);
+    const work = run.getJob("main")!.getStep("work")!;
+    assertEquals(work.status, "failed");
+    assertEquals(work.stoppedByAbort, true);
+  });
+});
+
+Deno.test("abort cleanup: a nested wait on resume re-enters when its level is reached after the abort, and the next step does not start", async () => {
+  await withTempDir(async (tempDir) => {
+    const { parent, child } = nestedGateWorkflows();
+    const { service, runRepo, executor } = await setupNestedGate(
+      tempDir,
+      [parent, child],
+    );
+    await drain(service.run(parent.name));
+    const childRun = await decideChildGate(runRepo, child, true);
+    await drain(service.resume(child.name, childRun.id));
+    const [parentRun] = await runRepo.findAllByWorkflowId(parent.id);
+
+    const controller = new AbortController();
+    const { run } = await abortAtJobStart(
+      service.resume(parent.name, parentRun.id, { signal: controller.signal }),
+      controller,
+    );
+
+    assertEquals(run.status, "cancelled");
+    const job = run.getJob("main")!;
+    // It read the child's outcome rather than being settled as unstarted.
+    assertEquals(job.getStep("call-child")!.status, "succeeded");
+    assertEquals(job.getStep("call-child")!.settledByAbort, false);
+    assertCancelledBeforeStart(run, "main", ["finish"]);
+    assertEquals(executor.executedSteps.includes("main/finish"), false);
+  });
+});
+
+Deno.test("abort cleanup: a resume after the abort runs the steps of a level reached after it", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run, executor, runRepo, service, workflow } = await runThroughAbort(
+      tempDir,
+      "lost-work-wf",
+      [
+        modelStep("a"),
+        modelStep("b", onStep("a", TriggerCondition.succeeded())),
+        modelStep("c", onStep("a", TriggerCondition.succeeded())),
+      ],
+    );
+    assertCancelledBeforeStart(run, "main", ["b", "c"]);
+
+    await interruptAndRecover(runRepo, workflow.id, run, "server_shutdown");
+    const resumed = await drainResume(service, workflow.name, run.id);
+
+    assert(resumed !== undefined, "the resume did not complete");
+    assertEquals(resumed.status, "succeeded");
+    const job = resumed.getJob("main")!;
+    assertEquals(job.steps.map((s) => s.status), [
+      "succeeded",
+      "succeeded",
+      "succeeded",
+    ]);
+    assertEquals(executor.count("main/a"), 1);
+    assertEquals(executor.count("main/b"), 1);
+    assertEquals(executor.count("main/c"), 1);
+  });
+});
+
+Deno.test("abort cleanup: a teardown chain runs to its end when the abort lands during its first step", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run, executor } = await runThroughAbort(tempDir, "chain-t1-wf", [
+      modelStep("a"),
+      modelStep("t1", onStep("a", TriggerCondition.always())),
+      modelStep("t2", onStep("t1", TriggerCondition.succeeded())),
+    ], new SignalRecordingAbortingExecutor("t1", "succeed"));
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("main")!.getStep("t1")!.status, "succeeded");
+    assertRanAsCleanup(executor, ["t2"]);
+  });
+});
+
+Deno.test("abort cleanup: a teardown chain whose first step finished before a resume runs to its end", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "chain-resume-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("a"),
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+              ...onStep("a", TriggerCondition.succeeded()),
+            }),
+            modelStep("t1", onStep("a", TriggerCondition.always())),
+            modelStep("t2", onStep("t1", TriggerCondition.succeeded())),
+          ],
+        }),
+      ],
+    });
+    const executor = new SignalRecordingAbortingExecutor("never", "succeed");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, workflow);
+    assertEquals(
+      suspended.getJob("main")!.getStep("t1")!.status,
+      "succeeded",
+    );
+
+    const { run } = await abortAtJobStart(
+      service.resume(workflow.name, suspended.id, {
+        signal: executor.controller.signal,
+      }),
+      executor.controller,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertRanAsCleanup(executor, ["t2"]);
+  });
+});
+
+Deno.test("abort cleanup: a step gated on a skipped cleanup step is work, so it does not start after the abort", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run, executor } = await runThroughAbort(tempDir, "promote-wf", [
+      modelStep("a"),
+      modelStep("rollback", onStep("a", TriggerCondition.failed())),
+      modelStep("promote", onStep("rollback", TriggerCondition.skipped())),
+    ]);
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("main")!.getStep("rollback")!.status, "skipped");
+    assertEquals(executor.count("main/rollback"), 0);
+    assertEquals(executor.count("main/promote"), 0);
+    assertCancelledBeforeStart(run, "main", ["promote"]);
+  });
+});
+
+Deno.test("abort cleanup: a step needing a work step's success stays work in a level after a settled step", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run, executor } = await runThroughAbort(tempDir, "later-work-wf", [
+      modelStep("a"),
+      modelStep("b", onStep("a", TriggerCondition.succeeded())),
+      modelStep("c", {
+        dependsOn: [
+          { step: "a", condition: TriggerCondition.succeeded() },
+          { step: "b", condition: TriggerCondition.always() },
+        ],
+      }),
+    ]);
+
+    assertEquals(run.status, "cancelled");
+    assertCancelledBeforeStart(run, "main", ["b", "c"]);
+    assertEquals(executor.count("main/c"), 0);
+  });
+});
+
+Deno.test("abort cleanup: a step recorded running beside a settled step in a first level does not start alone", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "first-level-running-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          concurrency: 1,
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+            }),
+            modelStep("work"),
+            modelStep("other"),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("never", "succeed");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, workflow);
+    const job = suspended.getJob("main")!;
+    job.getStep("work")!.resetToPending();
+    job.getStep("work")!.start();
+    job.getStep("other")!.resetToPending();
+    await runRepo.save(workflow.id, suspended);
+    const workCalls = executor.count("main/work");
+
+    const { run } = await abortAtJobStart(
+      service.resume(workflow.name, suspended.id, {
+        signal: executor.controller.signal,
+      }),
+      executor.controller,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(executor.count("main/work"), workCalls);
+    const work = run.getJob("main")!.getStep("work")!;
+    assertEquals(work.status, "failed");
+    assertEquals(work.stoppedByAbort, true);
+    assertCancelledBeforeStart(run, "main", ["other"]);
+  });
+});
+
+Deno.test("abort cleanup: a rollback can read the status of a step settled after the abort", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run, executor } = await runThroughAbort(
+      tempDir,
+      "read-settled-wf",
+      [
+        modelStep("a"),
+        modelStep("b", onStep("a", TriggerCondition.succeeded())),
+        modelStep("rollback", {
+          ...onStep("b", TriggerCondition.failed()),
+          guard: "${{ steps.b.status == 'succeeded' }}",
+        }),
+      ],
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertCancelledBeforeStart(run, "main", ["b"]);
+    assertEquals(run.getJob("main")!.getStep("rollback")!.status, "succeeded");
+    assertRanAsCleanup(executor, ["rollback"]);
+  });
+});
+
+Deno.test("abort cleanup: a teardown chain goes on past a link its guard found already done", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run, executor } = await runThroughAbort(
+      tempDir,
+      "chain-guarded-wf",
+      [
+        modelStep("a"),
+        modelStep("t1", {
+          ...onStep("a", TriggerCondition.always()),
+          guard: '${{ model.method("infra", "gone") }}',
+        }),
+        modelStep(
+          "t2",
+          onStep(
+            "t1",
+            TriggerCondition.or([
+              TriggerCondition.succeeded(),
+              TriggerCondition.skipped(),
+            ]),
+          ),
+        ),
+      ],
+      new SignalRecordingAbortingExecutor("a", "succeed", { gone: true }),
+    );
+
+    assertEquals(run.status, "cancelled");
+    const t1 = run.getJob("main")!.getStep("t1")!;
+    assertEquals(t1.status, "skipped");
+    assertEquals(t1.skipReason?.kind, "guarded");
+    assertRanAsCleanup(executor, ["t2"]);
+  });
+});
+
+Deno.test("abort cleanup: a settled step's concurrency does not limit the cleanup steps beside it", async () => {
+  await withTempDir(async (tempDir) => {
+    // c1 finishes only once c2 has started, so a limit of one would hold them
+    // until the cleanup signal ran out.
+    let c2Started = () => {};
+    const c2Start = new Promise<void>((resolve) => c2Started = resolve);
+    class TogetherExecutor extends SignalRecordingAbortingExecutor {
+      override async execute(
+        step: Step,
+        ctx: StepExecutionContext,
+      ): Promise<unknown> {
+        if (ctx.stepName === "c2") c2Started();
+        if (ctx.stepName === "c1") await c2Start;
+        return await super.execute(step, ctx);
+      }
+    }
+    const { run } = await runThroughAbort(tempDir, "conc-wf", [
+      modelStep("a"),
+      modelStep("work", {
+        ...onStep("a", TriggerCondition.succeeded()),
+        concurrency: 1,
+      }),
+      modelStep("c1", onStep("a", TriggerCondition.always())),
+      modelStep("c2", onStep("a", TriggerCondition.always())),
+    ], new TogetherExecutor("a", "succeed"));
+
+    assertEquals(run.status, "cancelled");
+    assertCancelledBeforeStart(run, "main", ["work"]);
+    assertEquals(run.getJob("main")!.getStep("c1")!.status, "succeeded");
+    assertEquals(run.getJob("main")!.getStep("c2")!.status, "succeeded");
+  });
+});
+
+Deno.test("abort cleanup: a teardown chain goes on past a forEach link whose guard skipped every iteration", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run, executor } = await runThroughAbort(
+      tempDir,
+      "chain-each-guarded-wf",
+      [
+        modelStep("a"),
+        modelStep("each", {
+          ...onStep("a", TriggerCondition.always()),
+          forEach: { item: "t", in: "${{ ['x', 'y'] }}" },
+          guard: '${{ model.method("infra", "gone") }}',
+        }),
+        modelStep("t2", onStep("each", TriggerCondition.skipped())),
+      ],
+      new SignalRecordingAbortingExecutor("a", "succeed", { gone: true }),
+    );
+
+    assertEquals(run.status, "cancelled");
+    const job = run.getJob("main")!;
+    assertEquals(job.getStep("each-x")!.skipReason?.kind, "guarded");
+    assertEquals(job.getStep("each-y")!.skipReason?.kind, "guarded");
+    assertRanAsCleanup(executor, ["t2"]);
+  });
+});
+
+for (
+  const [gated, condition] of [
+    ["always", TriggerCondition.always()],
+    ["completed", TriggerCondition.completed()],
+  ] as const
+) {
+  Deno.test(`abort cleanup: a ${gated}-gated gate or signal wait reached after the abort is settled, so the cancel does not suspend the run`, async () => {
+    await withTempDir(async (tempDir) => {
+      const { run } = await runThroughAbort(tempDir, `gate-${gated}-wf`, [
+        modelStep("a"),
+        Step.create({
+          name: "gate",
+          task: StepTask.manualApproval("go?"),
+          ...onStep("a", condition),
+        }),
+        Step.create({
+          name: "wait",
+          task: StepTask.waitForSignal(600, { type: "object" }),
+          ...onStep("a", condition),
+        }),
+        modelStep("work", onStep("a", TriggerCondition.succeeded())),
+      ]);
+
+      assertEquals(run.status, "cancelled");
+      assertCancelledBeforeStart(run, "main", ["gate", "wait", "work"]);
+    });
+  });
+}
+
+Deno.test("abort cleanup: a failed-gated gate on a settled step does not suspend the run", async () => {
+  await withTempDir(async (tempDir) => {
+    const { run } = await runThroughAbort(tempDir, "gate-failed-wf", [
+      modelStep("a"),
+      modelStep("b", onStep("a", TriggerCondition.succeeded())),
+      Step.create({
+        name: "gate",
+        task: StepTask.manualApproval("go?"),
+        ...onStep("b", TriggerCondition.failed()),
+      }),
+    ]);
+
+    assertEquals(run.status, "cancelled");
+    assertCancelledBeforeStart(run, "main", ["b", "gate"]);
   });
 });

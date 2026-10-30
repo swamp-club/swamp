@@ -92,7 +92,7 @@ function statuses(run: WorkflowRun): Record<string, string> {
   return result;
 }
 
-type Scenario = "plain" | "nested" | "nested-launched-after-abort";
+type Scenario = "plain" | "nested" | "nested-reached-after-abort";
 
 /**
  * Runs the workflow through serve, shuts serve down while the step under
@@ -163,7 +163,7 @@ async function interruptRecoverResume(scenario: Scenario): Promise<void> {
       }];
       const inFlight = scenario === "plain" ? "slow" : "call-child";
       const steps: Step[] = [];
-      if (scenario === "nested-launched-after-abort") {
+      if (scenario === "nested-reached-after-abort") {
         steps.push(
           Step.create({ name: "pre", task: StepTask.model("waiter", "trip") }),
         );
@@ -173,7 +173,7 @@ async function interruptRecoverResume(scenario: Scenario): Promise<void> {
         task: scenario === "plain"
           ? StepTask.model("waiter", "wait")
           : StepTask.workflow(child.name),
-        dependsOn: scenario === "nested-launched-after-abort"
+        dependsOn: scenario === "nested-reached-after-abort"
           ? succeeded("pre")
           : [],
       }));
@@ -231,7 +231,7 @@ async function interruptRecoverResume(scenario: Scenario): Promise<void> {
 
       const registry = new ActiveRunRegistry();
       // The shutdown's abort, fired from inside the step before the nested
-      // one so the nested step launches its child with the signal aborted.
+      // one so the nested step's level is reached with the signal aborted.
       let aborted: ReadonlyArray<ActiveRun> = [];
       onTrip = () => {
         aborted = registry.list();
@@ -248,7 +248,7 @@ async function interruptRecoverResume(scenario: Scenario): Promise<void> {
         new AbortController(),
         null,
       );
-      if (scenario === "nested-launched-after-abort") {
+      if (scenario === "nested-reached-after-abort") {
         await handled;
         await waitFor(() => registry.size === 0, "the aborted run to settle");
       } else {
@@ -270,12 +270,13 @@ async function interruptRecoverResume(scenario: Scenario): Promise<void> {
       const parentId = createWorkflowId(parent.id);
       const [interrupted] = await runRepo.findAllByWorkflowId(parentId);
       assertEquals(interrupted.status, "interrupted");
+      // A step reached after the abort never started, so it is settled for a
+      // resume to run, rather than left unknown for a recover to reopen.
+      const reachedAfterAbort = scenario === "nested-reached-after-abort";
       assertEquals(statuses(interrupted), {
-        main: "unknown",
-        ...(scenario === "nested-launched-after-abort"
-          ? { "main/pre": "succeeded" }
-          : {}),
-        [`main/${inFlight}`]: "unknown",
+        main: reachedAfterAbort ? "failed" : "unknown",
+        ...(reachedAfterAbort ? { "main/pre": "succeeded" } : {}),
+        [`main/${inFlight}`]: reachedAfterAbort ? "failed" : "unknown",
         "main/after": "skipped",
         later: "skipped",
         "later/fin": "skipped",
@@ -283,18 +284,19 @@ async function interruptRecoverResume(scenario: Scenario): Promise<void> {
       const childRuns = await runRepo.findAllByWorkflowId(
         createWorkflowId(child.id),
       );
-      if (scenario === "plain") {
+      if (scenario !== "nested") {
         assertEquals(childRuns.length, 0);
+        if (reachedAfterAbort) assertEquals(waitStarted, false);
       } else {
         // The child stays cancelled; the resume starts a fresh one.
         assertEquals(childRuns.map((r) => r.status), ["cancelled"]);
-        if (scenario === "nested-launched-after-abort") {
-          assertEquals(waitStarted, false);
-        }
       }
 
       const assessment = await assessRecoveryForRun(parent, interrupted);
-      assertEquals(assessment.unguardedSteps, [inFlight]);
+      assertEquals(
+        assessment.unguardedSteps,
+        reachedAfterAbort ? [] : [inFlight],
+      );
       assertEquals(assessment.fingerprintMismatch, false);
 
       interrupted.resetUnknownStepsForRecovery();
@@ -321,7 +323,7 @@ async function interruptRecoverResume(scenario: Scenario): Promise<void> {
         );
         assertEquals(
           after.map((r) => r.status).sort(),
-          ["cancelled", "succeeded"],
+          reachedAfterAbort ? ["succeeded"] : ["cancelled", "succeeded"],
         );
       }
     } finally {
@@ -346,7 +348,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "serve shutdown: a nested workflow step launched after the abort is interrupted as unknown, recovers and resumes (swamp-club#3369)",
+    "serve shutdown: a nested workflow step reached after the abort never launches its child, and a resume runs it (swamp-club#4149)",
   ...testOpts,
-  fn: () => interruptRecoverResume("nested-launched-after-abort"),
+  fn: () => interruptRecoverResume("nested-reached-after-abort"),
 });

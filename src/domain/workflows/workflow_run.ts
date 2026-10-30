@@ -1123,6 +1123,18 @@ export class JobRun implements TriggerEvaluationContext {
   }
 
   /**
+   * True when the step's guard skipped it, or, for a forEach template, every
+   * iteration's guard did.
+   */
+  skippedByGuard(ref: string): boolean {
+    const names = this.getStep(ref)
+      ? [ref]
+      : this._forEachMappings.get(ref) ?? [];
+    return names.length > 0 &&
+      names.every((name) => this.getStep(name)?.skipReason?.kind === "guarded");
+  }
+
+  /**
    * True when {@link registerForEachExpansion} recorded a mapping for the
    * template. A run loaded from storage has none until one is registered.
    */
