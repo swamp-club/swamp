@@ -84,7 +84,7 @@ type DroppedFields = {
 // accepting `groups` on the wire would let a caller assert its own groups.
 const _droppedFields: MutuallyAssignable<
   DroppedFields,
-  "access.check.groups" | "access.can-i.groups"
+  "access.check.groups"
 > = true;
 void _droppedFields;
 

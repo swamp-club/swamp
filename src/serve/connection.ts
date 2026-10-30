@@ -352,7 +352,6 @@ const AccessCanIRequestSchema = z.object({
     action: z.string().optional(),
     resource: z.string().optional(),
     method: z.string().optional(),
-    collectives: z.array(z.string()).optional(),
   }).refine(
     (p) => !!p.action === !!p.resource,
     "action and resource must both be present or both absent",

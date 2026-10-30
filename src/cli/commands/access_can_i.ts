@@ -74,10 +74,6 @@ export const accessCanICommand = new Command()
     "Resource to check (e.g. workflow:@acme/deploy)",
   )
   .option(
-    "--collectives <collectives:string>",
-    "Comma-separated IdP group memberships to simulate",
-  )
-  .option(
     "--method <method:string>",
     "Method name to check (e.g. read, create) — used with method-scoped grants",
   )
@@ -100,11 +96,6 @@ export const accessCanICommand = new Command()
       "can-i",
     ]);
 
-    const collectives = options.collectives
-      ? (options.collectives as string).split(",").map((c: string) => c.trim())
-        .filter((c: string) => c.length > 0)
-      : undefined;
-
     // Sent in the canonical spelling, so a server that predates the behavior
     // spelling of a selector (swamp-club#3334) still reads it.
     const resource = options.on
@@ -126,7 +117,6 @@ export const accessCanICommand = new Command()
         payload: {
           ...(options.action ? { action: options.action as string } : {}),
           ...(resource ? { resource } : {}),
-          ...(collectives ? { collectives } : {}),
           ...(options.method ? { method: options.method as string } : {}),
         },
       },
