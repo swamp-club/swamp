@@ -2302,7 +2302,7 @@ export async function handleModelUsageSummary(
 
     const deps: ModelUsageSummaryDeps = {
       findAllOutputsGlobal: (selectReadable) =>
-        outputRepo.findAllGlobal(controller.signal, selectReadable),
+        outputRepo.findAllGlobalSummaries(controller.signal, selectReadable),
       findAllOutputsGlobalSince: (cutoff, selectReadable) =>
         outputRepo.findAllGlobalSince(
           cutoff,

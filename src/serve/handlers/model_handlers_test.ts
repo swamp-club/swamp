@@ -2054,6 +2054,61 @@ Deno.test("handleModelUsageSummary: counts only what the principal may read, and
   });
 });
 
+Deno.test("handleModelUsageSummary: a warm read answers from the output summaries, with a window or without one", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const model = await saveEditModel(definitionRepo, "readable");
+    await saveUsageOutput(outputRepo, model, "execute", "2026-01-01T00:00:00Z");
+    await saveUsageOutput(
+      outputRepo,
+      model,
+      "execute",
+      "2026-01-02T00:00:00Z",
+      "failed",
+    );
+
+    const ctx = usageSummaryCtx(
+      dir,
+      definitionRepo,
+      outputRepo,
+      new YamlWorkflowRepository(dir),
+      [grant({
+        actions: ["read"],
+        resource: { kind: "model", pattern: "readable" },
+      })],
+    );
+    const read = async (payload: { since?: string }) => {
+      const socket = createMockSocket();
+      await handleModelUsageSummary(
+        socket,
+        ctx,
+        "req-1",
+        new AbortController(),
+        EDITOR,
+        payload,
+      );
+      const [response] = frames(socket);
+      assertEquals(response.type, "model.usage.summary");
+      assertEquals(response.payload.data.totals, { executions: 2, failed: 1 });
+    };
+
+    await withEditTestTypeRegistered(async () => {
+      for (const payload of [{}, { since: "2025-12-01T00:00:00Z" }]) {
+        await read(payload);
+        await withObservedSpans(async (spans) => {
+          await read(payload);
+          const scan =
+            findSpan(spans, "swamp.diagnostic.candidate_scan").attributes;
+          // A counter that stays at zero is not exported.
+          assertEquals(scan["swamp.diagnostic.files_read"], undefined);
+          assertEquals(scan["swamp.diagnostic.summary_rows_used"], 2);
+        });
+      }
+    });
+  });
+});
+
 Deno.test("handleModelUsageSummary: reports zero readable when nothing is", async () => {
   await withTempDir(async (dir) => {
     const definitionRepo = new YamlDefinitionRepository(dir);
