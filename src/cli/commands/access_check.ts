@@ -98,7 +98,7 @@ export const accessCheckCommand = new Command()
   )
   .option(
     "--collectives <collectives:string>",
-    "Comma-separated collective memberships for CEL condition evaluation (principal.collectives); use --groups to simulate idp-group: grant subjects",
+    "Comma-separated collective memberships to simulate for collective: grants and CEL conditions (principal.collectives)",
   )
   .option(
     "--groups <groups:string>",

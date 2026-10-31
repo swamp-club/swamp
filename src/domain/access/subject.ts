@@ -27,6 +27,7 @@ export const SubjectKindSchema = z.enum([
   "user",
   "group",
   "idp-group",
+  "collective",
   "service",
 ]);
 

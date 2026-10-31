@@ -112,6 +112,11 @@ function validateAdmins(admins: string[], mode: string): void {
         `Invalid --admins value "${admin}": a built-in service principal cannot be an admin`,
       );
     }
+    if (subject.kind === "collective") {
+      throw new UserError(
+        `Invalid --admins value "${admin}": a collective cannot be an admin; list its admins as users or a group instead`,
+      );
+    }
   }
 }
 

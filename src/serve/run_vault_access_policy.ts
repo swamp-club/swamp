@@ -137,9 +137,9 @@ function isAccessAdmin(
  * Whether a refusal decided with no key could change once the key is known:
  * a deny decided it and that deny's condition is on `key`, or the principal is
  * vault-scoped and an allow for `action` that applies to it (directly,
- * through a local group or through an IdP group) and matches `vaultName` has
- * a condition on `key`. An allow for another action cannot change the
- * outcome, so it never defers the refusal.
+ * through a local group, an IdP group or a collective) and matches
+ * `vaultName` has a condition on `key`. An allow for another action cannot
+ * change the outcome, so it never defers the refusal.
  */
 function refusalDependsOnKey(
   service: RunVaultDecisionService,
@@ -154,6 +154,7 @@ function refusalDependsOnKey(
     principalKey,
     ...snapshot.groupsForPrincipal(principalKey).map((g) => `group:${g}`),
     ...principal.groups.map((g) => `idp-group:${g}`),
+    ...principal.collectives.map((c) => `collective:${c}`),
   ];
   return snapshot.grantsForSubjects(subjects).some((grant) =>
     grant.resource.kind === "vault" &&

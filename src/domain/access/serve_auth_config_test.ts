@@ -207,6 +207,18 @@ Deno.test("buildServeAuthConfig: service principal in admins refuses", () => {
   );
 });
 
+Deno.test("buildServeAuthConfig: collective in admins refuses", () => {
+  assertThrows(
+    () =>
+      buildServeAuthConfig({
+        authMode: "token",
+        admins: "collective:acme",
+      }),
+    UserError,
+    "a collective cannot be an admin",
+  );
+});
+
 Deno.test("buildServeAuthConfig: admins with empty name after colon refuses", () => {
   assertThrows(
     () =>

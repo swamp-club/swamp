@@ -212,6 +212,130 @@ Deno.test("decide: does not match IdP group when not in collectives", () => {
   assertEquals(result, null);
 });
 
+Deno.test("decide: resolves a collective subject from the principal's collectives", () => {
+  const grant = makeGrant({
+    subject: { kind: "collective", name: "acme" },
+    effect: "allow",
+    actions: ["read"],
+    resource: { kind: "workflow", pattern: "*" },
+  });
+  const snapshot = new PolicySnapshot([grant], [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const result = service.decide(
+    makePrincipal("adam", ["adam", "acme"]),
+    "read",
+    makeResource(),
+  );
+  assertEquals(result?.effect, "allow");
+  assertEquals(result?.subject, { kind: "collective", name: "acme" });
+});
+
+Deno.test("decide: does not match a collective subject for a non-member", () => {
+  const grant = makeGrant({
+    subject: { kind: "collective", name: "acme" },
+    effect: "allow",
+    actions: ["read"],
+    resource: { kind: "workflow", pattern: "*" },
+  });
+  const snapshot = new PolicySnapshot([grant], [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const result = service.decide(
+    makePrincipal("adam", ["other"]),
+    "read",
+    makeResource(),
+  );
+  assertEquals(result, null);
+});
+
+Deno.test("decide: collectives and IdP groups of the same name match only their own subject kind", () => {
+  const idpGrant = makeGrant({
+    subject: { kind: "idp-group", name: "acme" },
+    effect: "allow",
+    actions: ["read"],
+    resource: { kind: "workflow", pattern: "*" },
+  });
+  const collectiveGrant = makeGrant({
+    subject: { kind: "collective", name: "acme" },
+    effect: "allow",
+    actions: ["run"],
+    resource: { kind: "workflow", pattern: "*" },
+  });
+  const snapshot = new PolicySnapshot(
+    [idpGrant, collectiveGrant],
+    [],
+    celEvaluator,
+  );
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const collectiveMember = makePrincipal("adam", ["acme"]);
+  assertEquals(service.decide(collectiveMember, "read", makeResource()), null);
+  assertEquals(
+    service.decide(collectiveMember, "run", makeResource())?.grantId,
+    collectiveGrant.id,
+  );
+
+  const idpMember = makePrincipal("bob", [], ["acme"]);
+  assertEquals(service.decide(idpMember, "run", makeResource()), null);
+  assertEquals(
+    service.decide(idpMember, "read", makeResource())?.grantId,
+    idpGrant.id,
+  );
+});
+
+Deno.test("decide: a deny to a collective wins over a user allow", () => {
+  const allow = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    effect: "allow",
+    actions: ["read"],
+    resource: { kind: "workflow", pattern: "*" },
+  });
+  const deny = makeGrant({
+    subject: { kind: "collective", name: "acme" },
+    effect: "deny",
+    actions: ["read"],
+    resource: { kind: "workflow", pattern: "*" },
+  });
+  const snapshot = new PolicySnapshot([allow, deny], [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const result = service.decide(
+    makePrincipal("adam", ["acme"]),
+    "read",
+    makeResource(),
+  );
+  assertEquals(result?.effect, "deny");
+  assertEquals(result?.grantId, deny.id);
+});
+
+Deno.test("decideAll: a deny to a collective refuses the kind for its members", () => {
+  const allow = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    effect: "allow",
+    actions: ["read"],
+    resource: { kind: "workflow", pattern: "*" },
+  });
+  const deny = makeGrant({
+    subject: { kind: "collective", name: "acme" },
+    effect: "deny",
+    actions: ["read"],
+    resource: { kind: "workflow", pattern: "@acme/*" },
+  });
+  const snapshot = new PolicySnapshot([allow, deny], [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  assertEquals(
+    service.decideAll(makePrincipal("adam", ["acme"]), "read", "workflow")
+      ?.grantId,
+    deny.id,
+  );
+  assertEquals(
+    service.decideAll(makePrincipal("adam"), "read", "workflow")?.grantId,
+    allow.id,
+  );
+});
+
 Deno.test("decide: evaluates CEL condition on grant", () => {
   const grant = makeGrant({
     subject: { kind: "user", name: "adam" },

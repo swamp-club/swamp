@@ -39,13 +39,13 @@ swamp serve --auth-mode oauth \
 Grants control what authenticated users can do. Default deny — no matching grant
 means denied.
 
-| Concept    | Format                                                                                  |
-| ---------- | --------------------------------------------------------------------------------------- |
-| Subjects   | `user:<id>`, `group:<name>`, `idp-group:<name>`, `service:scheduler`, `service:webhook` |
-| Effects    | `allow`, `deny` (deny wins)                                                             |
-| Actions    | `run`, `read`, `write`, `approve`, `signal`, `tag`, `admin`                             |
-| Resources  | `workflow:@acme/*`, `behavior:hello`, `data:*`, `vault:prod-*`, `access:*`              |
-| Conditions | CEL expressions via `--when 'tags.env == "staging"'`                                    |
+| Concept    | Format                                                                                                       |
+| ---------- | ------------------------------------------------------------------------------------------------------------ |
+| Subjects   | `user:<id>`, `group:<name>`, `idp-group:<name>`, `collective:<slug>`, `service:scheduler`, `service:webhook` |
+| Effects    | `allow`, `deny` (deny wins)                                                                                  |
+| Actions    | `run`, `read`, `write`, `approve`, `signal`, `tag`, `admin`                                                  |
+| Resources  | `workflow:@acme/*`, `behavior:hello`, `data:*`, `vault:prod-*`, `access:*`                                   |
+| Conditions | CEL expressions via `--when 'tags.env == "staging"'`                                                         |
 
 Admin on `access:*` implies all actions (superuser).
 
@@ -165,6 +165,7 @@ swamp access grant create --subject group:ops --deny read --on data:@acme/secret
 swamp access grant create --subject idp-group:platform-eng \
   --allow run,read --on workflow:@acme/* --when 'tags.env == "staging"' \
   --server wss://swamp.example.com
+swamp access grant create --subject collective:acme --allow read --on 'workflow:*'
 
 # List and revoke
 swamp access grant list [--server wss://...]
@@ -301,20 +302,36 @@ your existing org structure — no manual group management needed.
 
 Swamp serve reads two membership lists from swamp-club, for different jobs:
 
-| Concept         | Purpose                                  | Flag                    |
-| --------------- | ---------------------------------------- | ----------------------- |
-| **Collectives** | Admission gate — who can connect         | `--allowed-collectives` |
-| **Groups**      | Grant matching via `idp-group:` subjects | _(no flag — always on)_ |
+| Concept         | Admission (who can connect) | Grant subject       |
+| --------------- | --------------------------- | ------------------- |
+| **Collectives** | `--allowed-collectives`     | `collective:<slug>` |
+| **Groups**      | _(not used for admission)_  | `idp-group:<name>`  |
 
 Collectives come from the userinfo field specified by `--groups-field` (default:
-`collectives`). They decide admission only and are not a grant subject: an
-`idp-group:<collective-slug>` grant does not match a collective's members.
+`collectives`): the swamp-club collectives the user belongs to. A
+`collective:<slug>` grant matches every member of that collective, with or
+without SSO. Admission grants nothing on its own: a member admitted by
+`--allowed-collectives` is denied everything until a grant covers them. To give
+every member of a collective read access:
+
+```yaml
+# grants/acme-team.yaml
+grants:
+  - subject: collective:acme
+    effect: allow
+    actions: [read]
+    resources: [workflow:*, behavior:*, data:*]
+```
 
 Groups come from the `groups` field in the userinfo response, which holds the
 IdP groups swamp-club captures through SSO. Without SSO it is empty, and
-`idp-group:` grants match nobody. To give a team without SSO one grant, create a
-local group (`swamp access group create` / `add-member`) and grant to
-`group:<name>`, or grant each member by `user:` / `username:`.
+`idp-group:` grants match nobody. The two lists never stand in for each other:
+an `idp-group:<collective-slug>` grant does not match a collective's members,
+and a `collective:<name>` grant does not match an IdP group of that name.
+
+A collective cannot be an `--admins` entry; name the admins as users or a local
+group. Upgrade every host on the datastore before creating a `collective:`
+grant: an older build cannot read the subject.
 
 ### Background refresh
 
