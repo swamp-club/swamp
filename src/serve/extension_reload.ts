@@ -1037,6 +1037,7 @@ async function runServeReload(
 
     return {
       success: !localRefreshFailed,
+      ...(localRefreshFailed ? { localRefreshFailed: true } : {}),
       reloadedCount,
       triggerOverridesChanged,
       workflowsReloaded,

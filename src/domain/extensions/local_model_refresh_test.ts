@@ -109,6 +109,10 @@ interface Fixture {
   loader: ExtensionLoader;
   /** Runs one refresh pass over the dirs the fixture indexed. */
   refresh: () => Promise<void>;
+  /** Runs one refresh pass through a separately constructed loader. */
+  refreshWith: (loader: ExtensionLoader) => Promise<void>;
+  /** Creates the loader serve wires after its startup index pass. */
+  createRefresher: () => ExtensionLoader;
   reindexElsewhere: () => Promise<void>;
   type: (suffix: string) => string;
 }
@@ -121,7 +125,14 @@ interface Fixture {
 async function withRepo(
   fn: (f: Fixture) => Promise<void>,
   setup: (
-    f: Omit<Fixture, "loader" | "refresh" | "reindexElsewhere">,
+    f: Omit<
+      Fixture,
+      | "loader"
+      | "refresh"
+      | "refreshWith"
+      | "createRefresher"
+      | "reindexElsewhere"
+    >,
   ) => Promise<void>,
   bundler: typeof copyingBundler = copyingBundler,
 ): Promise<void> {
@@ -183,6 +194,23 @@ async function withRepo(
         loader,
         refresh: () =>
           refreshLocalModels(loader, modelsDir, { localDirs, additionalDirs }),
+        refreshWith: (refreshLoader) =>
+          refreshLocalModels(refreshLoader, modelsDir, {
+            localDirs,
+            additionalDirs,
+          }),
+        createRefresher: () =>
+          new ExtensionLoader(
+            stubDenoRuntime,
+            modelKindAdapter,
+            repoDir,
+            undefined,
+            new ExtensionRepository({
+              catalog,
+              lockfileRepository: new LockfileRepository(lockfilePath),
+              repoRoot: repoDir,
+            }),
+          ),
         reindexElsewhere: async () => {
           // A different CLI updates the shared catalog without replacing the
           // types already loaded by this long-lived process.
@@ -666,6 +694,34 @@ Deno.test("refreshLocalModels: reconciles a source another CLI already reindexed
     await reindexElsewhere();
     assertStrictEquals(await loaded(type("a")), before);
     await refresh();
+    const after = await loaded(type("a"));
+    assertEquals(after?.methods.run.description, "v2");
+    assertNotStrictEquals(after, before);
+  }, async ({ modelsDir, type }) => {
+    await Deno.writeTextFile(
+      join(modelsDir, "a.ts"),
+      modelCode(type("a"), "v1"),
+    );
+  });
+});
+
+Deno.test("refreshLocalModels: a separately constructed refresher reconciles a source indexed elsewhere", async () => {
+  await withRepo(async ({
+    modelsDir,
+    createRefresher,
+    refreshWith,
+    reindexElsewhere,
+    type,
+  }) => {
+    const before = await loaded(type("a"));
+    const refresher = createRefresher();
+    await Deno.writeTextFile(
+      join(modelsDir, "a.ts"),
+      modelCode(type("a"), "v2"),
+    );
+    await reindexElsewhere();
+    assertStrictEquals(await loaded(type("a")), before);
+    await refreshWith(refresher);
     const after = await loaded(type("a"));
     assertEquals(after?.methods.run.description, "v2");
     assertNotStrictEquals(after, before);

@@ -63,11 +63,13 @@ import {
   handleExtensionRm,
   handleExtensionUpdate,
   handleRunDoctor,
+  handleServeReload,
   handleVaultMigrate,
   handleWorkerLeaseList,
   redactServeOptions,
   serveDatastoreSetupDeps,
 } from "./admin_handlers.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
 
 import type { Grant } from "../../domain/models/access/grant_model.ts";
 import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
@@ -695,6 +697,38 @@ const TEST_EXT_ENTRY = {
     files: [],
   },
 };
+
+Deno.test("handleServeReload: refreshes audit sinks after a local source refresh failure", async () => {
+  await withTempDir(async (dir) => {
+    const { repoDir, ctx, cleanup } = await createSyncRepo(dir, false);
+    let rebuilt = 0;
+    try {
+      await writeLocalLockfile(repoDir, {});
+      ctx.hotReload = true;
+      ctx.auditEmitter = {
+        replaceSinks: () => {},
+      } as unknown as ConnectionContext["auditEmitter"];
+      ctx.auditSinkRebuilder = () => {
+        rebuilt++;
+        return Promise.resolve([]);
+      };
+      modelRegistry.setSourceRefresher(() =>
+        Promise.reject(new Error("local source unavailable"))
+      );
+      const socket = createMockSocket();
+
+      await handleServeReload(socket, ctx, "req-reload", null);
+
+      assertEquals(rebuilt, 1);
+      const response = JSON.parse(socket.sent[0]);
+      assertEquals(response.payload.success, false);
+      assertEquals(response.payload.localRefreshFailed, true);
+    } finally {
+      modelRegistry.setSourceRefresher(null);
+      cleanup();
+    }
+  });
+});
 
 Deno.test("handleExtensionRm: a --hot-reload serve reloads after the removal and reports it (swamp-club#3594)", async () => {
   await withTempDir(async (dir) => {
