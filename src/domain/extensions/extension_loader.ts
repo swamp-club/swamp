@@ -1156,9 +1156,7 @@ export class ExtensionLoader {
       const previous = this.appliedSourceRows.get(path);
       if (previous && signature(row) === signature(previous)) continue;
       if (row.state === "Tombstoned") continue;
-      if (
-        row.state === "ValidationFailed" || row.state === "BundleBuildFailed"
-      ) {
+      if (LOCAL_OVERRIDE_FAILURE_STATES.has(row.state ?? "Indexed")) {
         if (changes.failed.some((failure) => failure.sourcePath === path)) {
           continue;
         }

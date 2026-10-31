@@ -1967,7 +1967,8 @@ file serve was started with (`--config`, or `.swamp/serve.yaml`) and refreshes
 the extension trust list. It also finishes the serialized refresh of repo-local
 behavior types before acknowledging success. This refresh replaces the loaded
 definitions and their worker bundle factories, including when only an imported
-helper changed (swamp-club#4214).
+helper changed (swamp-club#4214). A failed local refresh is reported only after
+the rest of the reload has refreshed pulled extensions and serve configuration.
 
 The reload after an extension change made through serve is narrower. The
 admin extension handlers call `ConnectionContext.extensionChangeReloader`, which

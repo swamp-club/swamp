@@ -935,11 +935,20 @@ async function runServeReload(
   let triggerOverridesChanged = 0;
   let workflowsReloaded = 0;
   let webhooksReloaded = 0;
+  let localRefreshFailed = false;
 
   try {
     // A source reload must update local validators and dispatch bundles too,
     // even when a separate CLI already indexed the new source into SQLite.
-    await modelRegistry.refreshSources(withExtensionMutation);
+    try {
+      await modelRegistry.refreshSources(withExtensionMutation);
+    } catch (err) {
+      localRefreshFailed = true;
+      errors.push(
+        "Failed to refresh local behaviors: " +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
     reloadedCount = await withExtensionMutation(() =>
       reloadPulledExtensions(
         repoDir,
@@ -1027,7 +1036,7 @@ async function runServeReload(
     }
 
     return {
-      success: true,
+      success: !localRefreshFailed,
       reloadedCount,
       triggerOverridesChanged,
       workflowsReloaded,

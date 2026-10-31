@@ -2260,6 +2260,7 @@ Deno.test("performServeReload: explicitly refreshes local source types before ac
 
 Deno.test("performServeReload: a failed local source refresh refuses acceptance", async () => {
   const tmpDir = await Deno.makeTempDir();
+  let discovered = 0;
   modelRegistry.setSourceRefresher(() =>
     Promise.reject(new Error("local source unavailable"))
   );
@@ -2268,8 +2269,16 @@ Deno.test("performServeReload: a failed local source refresh refuses acceptance"
     const result = await performServeReload(
       tmpDir,
       join(tmpDir, "missing.json"),
+      {
+        extensionDiscoverer: () => {
+          discovered++;
+          return Promise.resolve(1);
+        },
+      },
     );
     assertEquals(result.success, false);
+    assertEquals(result.reloadedCount, 1);
+    assertEquals(discovered, 1);
     assertEquals(
       result.errors.some((error) => error.includes("local source unavailable")),
       true,
