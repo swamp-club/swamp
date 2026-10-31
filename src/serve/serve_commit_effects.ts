@@ -38,6 +38,13 @@
  * the commits its read model has applied: a reload any sooner reads the files
  * as they were, and no later commit would correct it.
  *
+ * Serve's reads on a follower page no further than the commits whose
+ * effects were applied ({@link ServeCommitEffects.appliedCursor}), so every
+ * page is filtered under a policy that covers it (swamp-club#4207). Effects
+ * a pass could not apply stay pending for the next poke, and a reload that
+ * failed leaves the policy unknown until one succeeds: a follower refuses
+ * reads meanwhile ({@link ServeCommitEffects.policyKnown}).
+ *
  * @module
  */
 
@@ -76,7 +83,14 @@ const EVERY_EFFECT: ReadonlySet<CommitEffect> = new Set([
 /** See the module documentation. */
 export class ServeCommitEffects {
   readonly #deps: ServeCommitEffectsDeps;
+  /** The last cursor a pass read. */
   #cursor: number;
+  /** The last cursor whose effects were applied. */
+  #applied: number;
+  /** Effects read and not yet applied. */
+  readonly #pending = new Set<CommitEffect>();
+  #policyKnown = true;
+  readonly #appliedListeners = new Set<() => void>();
   #running: Promise<void> | undefined;
   #again = false;
   #replaced = false;
@@ -87,6 +101,8 @@ export class ServeCommitEffects {
   constructor(deps: ServeCommitEffectsDeps) {
     this.#deps = deps;
     this.#cursor = deps.source.datastore.commitStore.highWaterMark().cursor;
+    // Serve loaded its policy from this copy before it started watching.
+    this.#applied = this.#cursor;
   }
 
   start(): void {
@@ -124,6 +140,29 @@ export class ServeCommitEffects {
     if (this.#off !== undefined) this.#schedule();
   }
 
+  /**
+   * The last cursor whose effects were applied: on a follower, the last
+   * commit serve may page to, since its policy and catalog hold everything
+   * up to it.
+   */
+  appliedCursor(): number {
+    return this.#applied;
+  }
+
+  /**
+   * Whether this node's policy can answer reads: false while a reload that
+   * access commits asked for has not succeeded.
+   */
+  policyKnown(): boolean {
+    return this.#policyKnown;
+  }
+
+  /** Calls `listener` whenever {@link appliedCursor} moves. */
+  onApplied(listener: () => void): () => void {
+    this.#appliedListeners.add(listener);
+    return () => this.#appliedListeners.delete(listener);
+  }
+
   /** Settles once no pass is running. */
   async settled(): Promise<void> {
     // A pass ending starts the one a poke queued meanwhile.
@@ -148,7 +187,7 @@ export class ServeCommitEffects {
 
   async #pass(): Promise<void> {
     const store = this.#deps.source.datastore.commitStore;
-    const effects = new Set<CommitEffect>();
+    const effects = this.#pending;
     if (this.#replaced) {
       this.#replaced = false;
       for (const effect of EVERY_EFFECT) effects.add(effect);
@@ -159,7 +198,9 @@ export class ServeCommitEffects {
         : store.highWaterMark().cursor;
       if (head < this.#cursor) {
         // The copy was replaced behind what was read: refresh everything.
+        // What was applied past its head is gone from it.
         this.#cursor = head;
+        if (head < this.#applied) this.#advance(head);
         for (const effect of EVERY_EFFECT) effects.add(effect);
         break;
       }
@@ -185,16 +226,49 @@ export class ServeCommitEffects {
       }
       this.#cursor = page[page.length - 1].cursor;
     }
-    await this.#apply(effects);
+    const cursor = this.#cursor;
+    try {
+      await this.#apply(effects);
+    } catch (error) {
+      // Applied on the next pass: the effects stay pending, and the policy
+      // is unknown until a reload succeeds.
+      if (effects.has("access")) this.#policyKnown = false;
+      throw error;
+    }
+    effects.clear();
+    this.#advance(cursor);
   }
 
   async #apply(effects: ReadonlySet<CommitEffect>): Promise<void> {
-    if (effects.size === 0) return;
     if (effects.has("config") || effects.has("lockfile")) {
       this.#deps.checkConfig();
     }
-    if (!this.#deps.isFollower()) return;
+    if (!this.#deps.isFollower()) {
+      // A node that took the lead with an unknown policy reloads it: its own
+      // writes keep it current only from a known start.
+      if (!this.#policyKnown) {
+        await this.#deps.reloadPolicy();
+        this.#policyKnown = true;
+      }
+      return;
+    }
+    if (effects.size === 0) return;
     this.#deps.catalogInvalidate();
-    if (effects.has("access")) await this.#deps.reloadPolicy();
+    if (effects.has("access")) {
+      await this.#deps.reloadPolicy();
+      this.#policyKnown = true;
+    }
+  }
+
+  #advance(cursor: number): void {
+    if (cursor === this.#applied) return;
+    this.#applied = cursor;
+    for (const listener of [...this.#appliedListeners]) {
+      try {
+        listener();
+      } catch {
+        // A listener's failure is its own.
+      }
+    }
   }
 }

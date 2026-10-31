@@ -1,0 +1,232 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 Elder Swamp Club, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import { assertEquals } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
+import { ModelType } from "../domain/models/model_type.ts";
+import {
+  type PartitionKey,
+  partitionOf,
+} from "../domain/datastore_v3/partition_key.ts";
+import { initializeLogging } from "../infrastructure/logging/logger.ts";
+import type { V3CommitFeedSource } from "../infrastructure/datastore_v3/v3_repo_context.ts";
+import type { FollowerGate } from "./follower_requests.ts";
+import { wireFollowerPolicy } from "./follower_policy_wiring.ts";
+
+await initializeLogging({});
+
+const GRANT = partitionOf({
+  kind: "model",
+  type: ModelType.create("swamp/grant"),
+  id: "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b",
+});
+
+/**
+ * A copy whose head the test moves; the source bound is its head, and its
+ * read model applies a commit only once the test says so.
+ */
+function fakeSource() {
+  const rows: { cursor: number; partition: PartitionKey }[] = [];
+  let readModelCursor = 0;
+  const listeners = new Set<(replaced: boolean) => void>();
+  const head = () => rows.at(-1)?.cursor ?? 0;
+  const source = {
+    datastore: {
+      readModel: { cursor: () => readModelCursor },
+      commitStore: {
+        highWaterMark: () => ({ cursor: head() }),
+        changesSince: (cursor: number, limit: number) =>
+          Promise.resolve(
+            rows.filter((row) => row.cursor > cursor).slice(0, limit).map((
+              row,
+            ) => ({
+              cursor: row.cursor,
+              commit: { partition: row.partition },
+            })),
+          ),
+      },
+    },
+    bound: head,
+    onMoved: (listener: (replaced: boolean) => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  } as unknown as V3CommitFeedSource;
+  return {
+    source,
+    /** A leader commit lands in the copy; the read model has not applied it. */
+    land(partition: PartitionKey) {
+      rows.push({ cursor: head() + 1, partition });
+      for (const listener of listeners) listener(false);
+    },
+    /** The read model catches up to the head. */
+    applied() {
+      readModelCursor = head();
+    },
+    restored() {
+      for (const listener of listeners) listener(true);
+    },
+  };
+}
+
+function leadership(role: "leader" | "follower", stale = false): FollowerGate {
+  return { role, leader: () => undefined, isStale: () => stale };
+}
+
+function setup(
+  role: { current: "leader" | "follower" },
+  fail: () => boolean = () => false,
+) {
+  const store = fakeSource();
+  const wiring = wireFollowerPolicy({
+    source: store.source,
+    catalogInvalidate: () => {},
+    reloadPolicy: () =>
+      fail() ? Promise.reject(new Error("unreadable")) : Promise.resolve(),
+    checkConfig: () => {},
+    isFollower: () => role.current === "follower",
+  });
+  wiring.effects.start();
+  return {
+    store,
+    wiring,
+    /** As the follower feed does once it applied a frame. */
+    async catchUp() {
+      store.applied();
+      wiring.effects.poke();
+      await wiring.effects.settled();
+    },
+  };
+}
+
+Deno.test("wireFollowerPolicy: a follower's feed ends at the last commit whose effects were applied, and moves when they are", async () => {
+  const t = setup({ current: "follower" });
+  const moved: number[] = [];
+  const off = t.wiring.commitFeed.onMoved(() =>
+    moved.push(t.wiring.commitFeed.bound())
+  );
+  try {
+    t.store.land(GRANT);
+    assertEquals(t.wiring.commitFeed.bound(), 0);
+    await t.catchUp();
+    assertEquals(t.wiring.commitFeed.bound(), 1);
+    assertEquals(moved.at(-1), 1);
+  } finally {
+    off();
+    await t.wiring.effects.stop();
+  }
+});
+
+Deno.test("wireFollowerPolicy: the leader's feed is bounded only by its source", async () => {
+  const t = setup({ current: "leader" });
+  try {
+    t.store.land(GRANT);
+    assertEquals(t.wiring.commitFeed.bound(), 1);
+  } finally {
+    await t.wiring.effects.stop();
+  }
+});
+
+Deno.test("wireFollowerPolicy: a follower keeps answering reads through a replaced copy, bounded at what its policy covers (swamp-club#4207)", async () => {
+  const t = setup({ current: "follower" });
+  try {
+    const follower = t.wiring.gate(leadership("follower"));
+    t.store.land(GRANT);
+    await t.catchUp();
+    // A failover: the tick restores the copy, then catches up and pokes.
+    t.store.restored();
+    t.store.land(GRANT);
+    assertEquals(follower.isStale(), false);
+    assertEquals(t.wiring.commitFeed.bound(), 1);
+    await t.catchUp();
+    assertEquals(t.wiring.commitFeed.bound(), 2);
+  } finally {
+    await t.wiring.effects.stop();
+  }
+});
+
+Deno.test("wireFollowerPolicy: a follower whose reload failed reads as stale until one succeeds; a leader never does (swamp-club#4207)", async () => {
+  let fail = true;
+  const t = setup({ current: "follower" }, () => fail);
+  try {
+    const follower = t.wiring.gate(leadership("follower"));
+    const leader = t.wiring.gate(leadership("leader"));
+    assertEquals(follower.isStale(), false);
+    t.store.land(GRANT);
+    await t.catchUp();
+    assertEquals(follower.isStale(), true);
+    assertEquals(leader.isStale(), false);
+    assertEquals(follower.role, "follower");
+    fail = false;
+    await t.catchUp();
+    assertEquals(follower.isStale(), false);
+    // A stale copy still reads as stale.
+    assertEquals(t.wiring.gate(leadership("follower", true)).isStale(), true);
+  } finally {
+    await t.wiring.effects.stop();
+  }
+});
+
+Deno.test("wireFollowerPolicy: a forwarded write's barrier waits for the effects of what the feed brought in", async () => {
+  const t = setup({ current: "follower" });
+  try {
+    let barrierDone = false;
+    const barrier = t.wiring.barrier(() => {
+      t.store.land(GRANT);
+      return Promise.resolve();
+    })().then(() => barrierDone = true);
+    await waitFor(() => t.wiring.commitFeed.bound() === 0, "landed");
+    assertEquals(barrierDone, false);
+    await t.catchUp();
+    await barrier;
+    assertEquals(t.wiring.commitFeed.bound(), 1);
+  } finally {
+    await t.wiring.effects.stop();
+  }
+});
+
+Deno.test("wireFollowerPolicy: a forwarded write's barrier returns once its commits are applied, though more keep landing", async () => {
+  const t = setup({ current: "follower" });
+  try {
+    const barrier = t.wiring.barrier(() => {
+      // The feed barrier returns once the copy holds the write: the poke
+      // that applies it is the feed's, and does not wait for passes.
+      t.store.land(GRANT);
+      t.store.applied();
+      t.wiring.effects.poke();
+      return Promise.resolve();
+    })();
+    // A busy feed: a pass is always queued behind the one running.
+    let landing = true;
+    const busy = (async () => {
+      while (landing) {
+        t.store.land(GRANT);
+        t.store.applied();
+        t.wiring.effects.poke();
+        await new Promise((tick) => setTimeout(tick, 0));
+      }
+    })();
+    await barrier;
+    landing = false;
+    await busy;
+    assertEquals(t.wiring.commitFeed.bound() >= 1, true);
+  } finally {
+    await t.wiring.effects.stop();
+  }
+});
