@@ -7,6 +7,8 @@
 - [Workflow Task Fields](#workflow-task-fields)
 - [Nested Workflow with forEach](#nested-workflow-with-foreach)
 - [Data Access in Sub-Workflows](#data-access-in-sub-workflows)
+- [Reading the Child's Outputs](#reading-the-childs-outputs)
+- [Authorization, Identity and Versions](#authorization-identity-and-versions)
 - [Approval Gates in a Child Workflow](#approval-gates-in-a-child-workflow)
 - [Limitations](#limitations)
 
@@ -249,6 +251,66 @@ attributes:
 
 See [data-chaining.md](data-chaining.md) for more details on expression choice
 and data chaining patterns.
+
+## Reading the Child's Outputs
+
+A parent reads a child's outputs whether or not the child has an approval gate.
+The `type: workflow` step's outputs are the child's succeeded behavior steps,
+keyed by child step name:
+
+```yaml
+# parent — the child `segment-audit` has a step named raise_ticket
+- name: audit
+  task:
+    type: workflow
+    workflowIdOrName: segment-audit
+    inputs:
+      summary: ${{ inputs.summary }}
+- name: announce
+  dependsOn:
+    - step: audit
+      condition:
+        type: succeeded
+  task:
+    type: behavior
+    behavior: slack-notify
+    methodName: post
+    inputs:
+      text: "Ticket ${{ steps.audit.outputs.raise_ticket.key }}"
+```
+
+- One level deep: a workflow the child calls is not propagated.
+- Only steps that wrote JSON resources contribute (see
+  [data-chaining.md](data-chaining.md#step-results-steps)); `dependsOn` on the
+  nested step is required.
+- Use bracket access for child step names that are not CEL identifiers:
+  `steps.audit.outputs["raise-ticket"].key`.
+- When the parent suspends and resumes later, child outputs are reloaded from
+  the datastore, so ephemeral-lifetime data is gone by then.
+
+## Authorization, Identity and Versions
+
+- **Grants (`swamp serve`).** `run` on the parent covers the whole run: the
+  child and the behaviors it calls are not checked again. Only adding a step
+  that targets a workflow the parent does not already call needs `run` on that
+  workflow. To keep a shared child from being started directly, withhold `run`
+  on it (or deny it) and give it no schedule or webhook trigger; nested calls
+  still work. There is no "only callable from" setting, and local CLI runs do no
+  authorization.
+- **Vaults.** Vault operations in the child are judged against the principal
+  that started the parent, and the child's `vaults:` list is intersected with
+  the parent's, so a parent that declares `vaults:` must list every vault the
+  child uses.
+- **Identity.** The child inherits the parent's `initiatedBy`
+  (`run.initiatedBy`) and records a `parentRun` link to the parent's run and
+  step.
+- **Versions.** The child is looked up by name or ID when the step runs, so
+  every caller gets the current definition; nothing pins a version. Stage
+  changes with versioned names (`segment-audit-v2`) when callers must move one
+  at a time.
+- **Approvals.** A gate inside the child is approved against the child's
+  workflow, so one `approve` grant covers every caller. Keep the gate in each
+  parent when approver grants must differ per caller.
 
 ## Approval Gates in a Child Workflow
 

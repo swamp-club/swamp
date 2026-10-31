@@ -1322,8 +1322,13 @@ reflected.
 
 On a `workflow.run` request, the handler checks that the principal has `run` on
 `workflow:<name>`. If so, the workflow runs, including every method call
-in its steps, with no further checks. The workflow is the unit of authorization:
-the caller may run all of it or none of it.
+in its steps and every nested workflow it calls (with theirs), with no further
+checks. The workflow is the unit of authorization: the caller may run all of it
+or none of it. A nested workflow's own grants play no part in its parent's run,
+so withholding or denying `run` on a workflow stops it being started directly
+but not called from a parent. A gate inside a nested workflow is decided on the
+child's run, so `approve` is checked against the child's workflow, whichever
+parent called it.
 
 Vault operations are the exception: once the policy holds a vault grant, each
 one in the run is judged against the triggering principal by the run-time rule
@@ -1349,8 +1354,13 @@ computed by an expression can resolve to any behavior, restricted and
 control-plane ones included, which the engine does not gate, so it needs
 `admin`; a computed nested workflow needs `run` on every workflow. Steps already
 stored are not re-checked, and neither is a run, so users running a workflow an
-admin wrote are unaffected. The exception is a stored step the edit changes —
-its inputs, method or `dependsOn`, or its name or job — that runs a restricted
+admin wrote are unaffected. A nested workflow is checked only when the
+workflow does not already call it by that name: a step added that calls a
+nested workflow another stored step already names needs nothing more, and
+neither does a change to a stored nested workflow step's inputs (an expression
+the change adds is still checked, see
+[Expression references](#expression-references)). The exception is a stored
+step the edit changes — its inputs, method or `dependsOn`, or its name or job — that runs a restricted
 or control-plane behavior, or a behavior it computes: what the step holds is
 what that behavior runs with, so the change needs `admin` (swamp-club#3131).
 Removing a step, a retag, or a change to the workflow's input defaults or a
