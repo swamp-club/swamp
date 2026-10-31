@@ -152,6 +152,9 @@ function notPlainUsernameReason(username: string): string | undefined {
   if (username.startsWith("group:") || username.startsWith("idp-group:")) {
     return "groups are not supported in --admins / --allowed-users with --auth-mode oauth; list the user names instead";
   }
+  if (username.startsWith("collective:")) {
+    return "collectives are not supported in --admins / --allowed-users with --auth-mode oauth; admit a collective with --allowed-collectives and list admins by user name";
+  }
   return "not a plain username: it contains ':', so it can never match a provider account";
 }
 

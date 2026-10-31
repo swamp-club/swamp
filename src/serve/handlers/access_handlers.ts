@@ -501,8 +501,14 @@ export async function handleAccessCheck(
     const groups = isSelfCheck
       ? getConnectionGroups(socket)
       : simulatedGroups ?? [];
-    const idpGroupsOmitted = !isSelfCheck && simulatedGroups === undefined &&
-      targetPrincipal.kind !== "service";
+    // A service principal has no memberships to omit.
+    const omittedMemberships = isSelfCheck ||
+        targetPrincipal.kind === "service"
+      ? []
+      : [
+        ...(simulatedGroups === undefined ? ["IdP-group"] : []),
+        ...(simulatedCollectives === undefined ? ["collective"] : []),
+      ];
     const service = ctx.policySnapshotLoader.decisionService;
     const explained = await explainedResource(
       ctx,
@@ -526,7 +532,7 @@ export async function handleAccessCheck(
       actionResult.data,
       resource.pattern,
       explained,
-      idpGroupsOmitted,
+      omittedMemberships,
     );
 
     send(socket, {
@@ -653,6 +659,9 @@ export async function handleAccessCanI(
       }
       for (const group of groups) {
         subjects.push(`idp-group:${group}`);
+      }
+      for (const collective of collectives) {
+        subjects.push(`collective:${collective}`);
       }
 
       const grants = snapshot.grantsForSubjects(subjects);
@@ -1369,8 +1378,9 @@ function stringList(value: unknown): string[] | undefined {
  * The run-time decision of a concrete `vault:<name>` read or write for
  * `principal` (swamp-club#2676), reported beside the request decision so one
  * check answers both. A wildcard, another kind or another action has none.
- * `idpGroupsOmitted` marks a decision made without the principal's IdP
- * groups (another subject, with none simulated), and the reason says so.
+ * `omittedMemberships` names the memberships the decision was made without
+ * (another subject, with none of that kind simulated), and the reason says
+ * so.
  */
 function runVaultAccessReport(
   service: GrantBasedAccessDecisionService,
@@ -1378,7 +1388,7 @@ function runVaultAccessReport(
   action: Action,
   pattern: string,
   explained: AccessResource,
-  idpGroupsOmitted = false,
+  omittedMemberships: readonly string[] = [],
 ): RunVaultAccessReport | undefined {
   if (explained.kind !== "vault" || pattern.includes("*")) return undefined;
   if (action !== "read" && action !== "write") return undefined;
@@ -1404,8 +1414,10 @@ function runVaultAccessReport(
     allowed: decision.allowed,
     restricted: decision.restricted,
     rule: decision.rule,
-    reason: idpGroupsOmitted
-      ? `${decision.reason} (IdP-group memberships are not included: the server knows them only for the caller's own session)`
+    reason: omittedMemberships.length > 0
+      ? `${decision.reason} (${
+        omittedMemberships.join(" and ")
+      } memberships are not included: the server knows them only for the caller's own session)`
       : decision.reason,
     ...(decision.grantId !== undefined ? { grantId: decision.grantId } : {}),
     ...(principal.principal.kind === "service"

@@ -1310,7 +1310,10 @@ Deno.test("handleAccessCheck: another subject's run-time vault decision without 
   }, RESUMER);
   const report = JSON.parse(other.sent[0]).payload.runVaultAccess;
   assertEquals(report.rule, "unscoped");
-  assertStringIncludes(report.reason, "IdP-group memberships are not included");
+  assertStringIncludes(
+    report.reason,
+    "IdP-group and collective memberships are not included",
+  );
   // The caller's own check uses its session's groups, so it has no note.
   const self = createMockSocket();
   await handleAccessCheck(self, ctx, "req-2", {
@@ -1320,6 +1323,98 @@ Deno.test("handleAccessCheck: another subject's run-time vault decision without 
   }, RESUMER);
   const selfReport = JSON.parse(self.sent[0]).payload.runVaultAccess;
   assertEquals(selfReport.reason.includes("not included"), false);
+});
+
+Deno.test("handleAccessCheck: another subject's run-time vault decision names only the memberships it was not given", async () => {
+  const policyCtx = createPolicyCtx([
+    makeGrant({
+      subject: { kind: "collective", name: "acme" },
+      actions: ["read"],
+      resource: { kind: "vault", pattern: "prod-db" },
+    }),
+  ], true);
+  const ctx = withVaultRepo({
+    ...policyCtx,
+    authConfig: { ...policyCtx.authConfig!, mode: "none" },
+  });
+  const groupsOnly = createMockSocket();
+  await handleAccessCheck(groupsOnly, ctx, "req-1", {
+    subject: "user:stranger",
+    action: "read",
+    resource: "vault:prod-db",
+    groups: ["ops"],
+  }, RESUMER);
+  const groupsOnlyReport = JSON.parse(groupsOnly.sent[0]).payload
+    .runVaultAccess;
+  assertStringIncludes(
+    groupsOnlyReport.reason,
+    "(collective memberships are not included",
+  );
+  // A simulated collective is used, so its grant decides and there is no
+  // note about collectives.
+  const withCollective = createMockSocket();
+  await handleAccessCheck(withCollective, ctx, "req-2", {
+    subject: "user:stranger",
+    action: "read",
+    resource: "vault:prod-db",
+    collectives: ["acme"],
+  }, RESUMER);
+  const withCollectiveReport = JSON.parse(withCollective.sent[0]).payload
+    .runVaultAccess;
+  assertEquals(withCollectiveReport.rule, "vault-allow");
+  assertStringIncludes(
+    withCollectiveReport.reason,
+    "(IdP-group memberships are not included",
+  );
+});
+
+// --- collective: subjects ---
+
+Deno.test("handleAccessCanI: a collective grant allows a member whose session has no IdP groups", async () => {
+  const collectiveGrant = makeGrant({
+    subject: { kind: "collective", name: "blaze-commerce" },
+    actions: ["read"],
+    resource: { kind: "workflow", pattern: "*" },
+  });
+  const idpGrant = makeGrant({
+    subject: { kind: "idp-group", name: "blaze-commerce" },
+    actions: ["run"],
+    resource: { kind: "workflow", pattern: "*" },
+  });
+  const ctx = createPolicyCtx([collectiveGrant, idpGrant], true);
+  const member: Principal = { kind: "user", id: "6ae1559c2f9a1d891ab4d056" };
+
+  const check = createMockSocket();
+  setConnectionCollectives(check, ["jayr", "blaze-commerce"], []);
+  await handleAccessCanI(check, ctx, "req-1", {
+    action: "read",
+    resource: "workflow:plugin-health",
+  }, member);
+  const decisions = JSON.parse(check.sent[0]).payload.decisions;
+  assertEquals(decisions.length, 1);
+  assertEquals(decisions[0].effect, "allow");
+  assertEquals(decisions[0].grantId, collectiveGrant.id);
+  assertEquals(decisions[0].via, "collective:blaze-commerce");
+
+  // The listing shows the collective grant and not the IdP-group grant of
+  // the same name.
+  const listing = createMockSocket();
+  setConnectionCollectives(listing, ["jayr", "blaze-commerce"], []);
+  await handleAccessCanI(listing, ctx, "req-2", {}, member);
+  const listed = JSON.parse(listing.sent[0]).payload.decisions;
+  assertEquals(
+    [...new Set(listed.map((d: { grantId: string }) => d.grantId))],
+    [collectiveGrant.id],
+  );
+
+  // A user outside the collective is not covered.
+  const outsider = createMockSocket();
+  setConnectionCollectives(outsider, ["someone-else"], []);
+  await handleAccessCanI(outsider, ctx, "req-3", {
+    action: "read",
+    resource: "workflow:plugin-health",
+  }, { kind: "user", id: "outsider" });
+  assertEquals(JSON.parse(outsider.sent[0]).payload.decisions, []);
 });
 
 // --- access.reload: grant-file usernames (swamp-club#3123) ---

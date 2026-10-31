@@ -109,6 +109,10 @@ const accessGrantCreateCommand = new Command()
     "swamp access grant create --subject idp-group:platform-eng --allow run --on 'workflow:@acme/*'",
   )
   .example(
+    "Allow every member of a swamp-club collective to read workflows",
+    "swamp access grant create --subject collective:acme --allow read --on 'workflow:*'",
+  )
+  .example(
     "With a CEL condition",
     "swamp access grant create --subject idp-group:platform-eng --allow run --on 'workflow:@acme/*' --when 'tags.env == \"staging\"'",
   )
@@ -118,7 +122,7 @@ const accessGrantCreateCommand = new Command()
   )
   .option(
     "--subject <subject:string>",
-    "Grant subject (e.g. user:adam, group:release-managers, idp-group:platform-eng)",
+    "Grant subject (e.g. user:adam, group:release-managers, idp-group:platform-eng, collective:acme)",
     { required: true },
   )
   .option("--allow <actions:string>", "Actions to allow (comma-separated)")

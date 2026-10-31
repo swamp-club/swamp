@@ -95,14 +95,22 @@ Implementation: `src/domain/access/admission.ts`.
 
 ## Subjects
 
-A grant targets a _subject_, not a principal. There are four subject kinds:
+A grant targets a _subject_, not a principal. There are five subject kinds:
 
-| Kind        | Format             | Matches when                                       |
-| ----------- | ------------------ | -------------------------------------------------- |
-| `user`      | `user:<name>`      | The principal is `user:<name>`                     |
-| `group`     | `group:<name>`     | The principal is in the named local group          |
-| `idp-group` | `idp-group:<name>` | The principal's IdP group claims include the group |
-| `service`   | `service:<name>`   | The principal is the built-in `service:<name>`     |
+| Kind         | Format              | Matches when                                            |
+| ------------ | ------------------- | ------------------------------------------------------- |
+| `user`       | `user:<name>`       | The principal is `user:<name>`                          |
+| `group`      | `group:<name>`      | The principal is in the named local group               |
+| `idp-group`  | `idp-group:<name>`  | The principal's IdP group claims include the group      |
+| `collective` | `collective:<slug>` | The principal's swamp-club collectives include the slug |
+| `service`    | `service:<name>`    | The principal is the built-in `service:<name>`          |
+
+IdP groups and collectives are separate lists from the OAuth userinfo response
+(`groups` and the `--groups-field` field) and never stand in for each other: a
+team without SSO has no IdP groups, so it grants its members by `collective:`.
+Only OAuth logins carry either list; a manually minted token, a no-auth session
+and the built-in service principals carry neither. A collective cannot be a
+serve admin (`--admins`).
 
 In OAuth mode a grant file can also write `username:<name>`, which serve
 resolves to `user:<sub>`; see [Usernames in grant files](#usernames-in-grant-files).
@@ -120,6 +128,7 @@ For each request, the decision service builds the principal's subject list:
 1. `<kind>:<id>`: the principal itself.
 2. `group:<name>`: every local group the principal belongs to.
 3. `idp-group:<name>`: every IdP group claim carried on the connection.
+4. `collective:<slug>`: every collective carried on the connection.
 
 Every grant whose subject is in this list is a candidate.
 
@@ -1295,9 +1304,9 @@ scheduled or webhook run. The run-time decision uses the same memberships as
 the request explanation: the caller's own session for a self-check; for another
 subject (`access.check` with a different `subject`), only the IdP groups and
 collectives the request supplies in its `groups` and `collectives` fields.
-Without supplied groups the server knows none for another user, so the reason
-says IdP-group memberships are not included and an `idp-group:` grant is not
-reflected.
+Without supplied groups or collectives the server knows none for another user,
+so the reason names the memberships that are not included, and an `idp-group:`
+or `collective:` grant through them is not reflected.
 
 ### Compatibility
 

@@ -98,7 +98,7 @@ export const accessCheckCommand = new Command()
   )
   .option(
     "--collectives <collectives:string>",
-    "Comma-separated collective memberships for CEL condition evaluation (principal.collectives); use --groups to simulate idp-group: grant subjects",
+    "Comma-separated collective memberships to simulate for collective: grants and CEL conditions (principal.collectives)",
   )
   .option(
     "--groups <groups:string>",
@@ -138,12 +138,12 @@ export const accessCheckCommand = new Command()
       }
       if (options.groups) {
         throw new UserError(
-          "--groups is not supported with --server: the server resolves IdP groups from the subject's own session",
+          "--groups is not supported with --server: the server uses the caller's own session for a self-check and knows no IdP groups for another subject; check locally with --groups",
         );
       }
       if (options.collectives) {
         throw new UserError(
-          "--collectives is not supported with --server: the server resolves collectives from the subject's own session",
+          "--collectives is not supported with --server: the server uses the caller's own session for a self-check and knows no collectives for another subject; check locally with --collectives",
         );
       }
 

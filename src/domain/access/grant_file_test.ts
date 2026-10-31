@@ -57,6 +57,22 @@ grants:
   });
 });
 
+Deno.test("parseGrantFile: parses a collective subject", () => {
+  const content = `
+grants:
+  - subject: collective:blaze-commerce
+    effect: allow
+    actions: [read]
+    resources: [workflow:*, behavior:*, data:*]
+`;
+  const result = parseGrantFile("blaze-team.yaml", content);
+  assertEquals(result.errors, []);
+  assertEquals(result.entries.length, 3);
+  for (const entry of result.entries) {
+    assertEquals(entry.subject, { kind: "collective", name: "blaze-commerce" });
+  }
+});
+
 Deno.test("parseGrantFile: parses multiple entries", () => {
   const content = `
 grants:

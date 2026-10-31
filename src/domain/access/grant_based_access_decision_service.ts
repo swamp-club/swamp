@@ -67,6 +67,10 @@ function resolveSubjects(
     subjects.push(`idp-group:${group}`);
   }
 
+  for (const collective of accessPrincipal.collectives) {
+    subjects.push(`collective:${collective}`);
+  }
+
   return subjects;
 }
 

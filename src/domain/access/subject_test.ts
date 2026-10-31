@@ -35,6 +35,11 @@ Deno.test("parseSubject: parses idp-group subject", () => {
   assertEquals(s, { kind: "idp-group", name: "platform-eng" });
 });
 
+Deno.test("parseSubject: parses collective subject", () => {
+  const s = parseSubject("collective:blaze-commerce");
+  assertEquals(s, { kind: "collective", name: "blaze-commerce" });
+});
+
 Deno.test("parseSubject: handles name containing colons", () => {
   const s = parseSubject("group:team:alpha");
   assertEquals(s, { kind: "group", name: "team:alpha" });
@@ -60,7 +65,7 @@ Deno.test("parseSubject: rejects invalid kind", () => {
   assertThrows(
     () => parseSubject("worker:build-1"),
     Error,
-    'expected "user", "group", "idp-group", or "service"',
+    'expected "user", "group", "idp-group", "collective", or "service"',
   );
 });
 

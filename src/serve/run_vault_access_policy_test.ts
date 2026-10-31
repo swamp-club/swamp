@@ -342,6 +342,38 @@ Deno.test("decideRunVaultAccess: a key-conditioned deny through an IdP group is 
   );
 });
 
+Deno.test("decideRunVaultAccess: a key-conditioned deny through a collective is undetermined only without the key", () => {
+  const svc = service([
+    grant({
+      actions: ["read", "write"],
+      resource: { kind: "vault", pattern: "*" },
+    }),
+    grant({
+      subject: { kind: "collective", name: "acme" },
+      effect: "deny",
+      actions: ["write"],
+      resource: { kind: "vault", pattern: "out*" },
+      condition: 'key == ""',
+    }),
+  ]);
+  const member: AccessPrincipal = { ...user(), collectives: ["acme"] };
+  assertEquals(
+    decideRunVaultAccess(svc, member, "outputs", "write").rule,
+    "vault-deny",
+  );
+  assertEquals(
+    decideRunVaultAccess(svc, member, "outputs", "write", undefined, {
+      keyUnknown: true,
+    }).undetermined,
+    true,
+  );
+  // Outside the collective the deny does not apply to the principal.
+  assertEquals(
+    decideRunVaultAccess(svc, user(), "outputs", "write").allowed,
+    true,
+  );
+});
+
 Deno.test("decideRunVaultAccess: with keyUnknown a deny that holds for every key still refuses", () => {
   const deny = grant({
     effect: "deny",

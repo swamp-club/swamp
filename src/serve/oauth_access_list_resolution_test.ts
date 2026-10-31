@@ -472,6 +472,25 @@ for (const entry of ["group:eng", "idp-group:eng", "user:group:eng"]) {
   });
 }
 
+for (const entry of ["collective:acme", "user:collective:acme"]) {
+  Deno.test(`resolveAccessLists: ${entry} is skipped as a collective`, async () => {
+    const { resolve, calls } = fakeResolver(["alice"]);
+    const result = await run({
+      admins: ["alice", entry],
+      allowedUsers: [entry],
+      mode: "full",
+      resolve,
+    });
+    assertEquals(calls, ["alice"]);
+    assertEquals(result.admins, ["user:sub-alice"]);
+    assertEquals(result.unresolved.length, 2);
+    for (const u of result.unresolved) {
+      assertStringIncludes(u.reason ?? "", "collectives are not supported");
+      assertStringIncludes(u.reason ?? "", "--allowed-collectives");
+    }
+  });
+}
+
 // ── resolveAccessLists: cached mode ────────────────────────────────────
 
 Deno.test("resolveAccessLists: a restart never promotes a skipped name", async () => {
