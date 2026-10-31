@@ -7682,10 +7682,13 @@ commits it pages:
   (`ServeCommitEffects.appliedCursor`). A cursor never moves past a commit
   filtered under an older policy. Filtering by a grant that denies is still
   correct, and the cursor moves past those commits.
-- **Unknown policy.** After a replaced copy (a lineage restore), the policy is
-  unknown until the refresh has rebuilt the read model and reloaded the
-  policy. The same holds while a reload that access commits asked for has not
-  yet succeeded. While the policy is unknown, the follower refuses reads with
+- **Replaced copy.** A lineage restore replaces the copy (a failover does
+  this). The follower then goes on answering reads under the policy it last
+  loaded, still bounded, and reloads once the refresh has rebuilt the read
+  model. Reads continue through a takeover. A node that takes the lead on a
+  copy replaced while it followed reloads its policy.
+- **Unknown policy.** While a reload that access commits or a replaced copy
+  asked for has failed and not yet succeeded, the follower refuses reads with
   the stale follower's retryable `503`. `wireFollowerPolicy` composes the
   effects, the bounded feed and this gate for serve.
 

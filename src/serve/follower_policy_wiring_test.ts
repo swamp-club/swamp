@@ -138,27 +138,56 @@ Deno.test("wireFollowerPolicy: the leader's feed is bounded only by its source",
   }
 });
 
-Deno.test("wireFollowerPolicy: a follower whose policy is unknown reads as stale until the refresh pokes; a leader never does", async () => {
+Deno.test("wireFollowerPolicy: a follower keeps answering reads through a replaced copy, bounded at what its policy covers (swamp-club#4207)", async () => {
   const t = setup({ current: "follower" });
   try {
     const follower = t.wiring.gate(leadership("follower"));
-    const leader = t.wiring.gate(leadership("leader"));
-    assertEquals(follower.isStale(), false);
-    t.store.restored();
+    t.store.land(GRANT);
     await t.wiring.effects.settled();
+    // A failover: the feed stops and the tick restores the copy.
+    t.store.restored();
+    t.store.land(GRANT);
+    await t.wiring.effects.settled();
+    assertEquals(follower.isStale(), false);
+    assertEquals(t.wiring.commitFeed.bound(), 1);
+    t.wiring.effects.poke();
+    await t.wiring.effects.settled();
+    assertEquals(t.wiring.commitFeed.bound(), 2);
+  } finally {
+    await t.wiring.effects.stop();
+  }
+});
+
+Deno.test("wireFollowerPolicy: a follower whose reload failed reads as stale until one succeeds; a leader never does", async () => {
+  let fail = true;
+  const store = fakeSource();
+  const wiring = wireFollowerPolicy({
+    source: store.source,
+    catchUpReadModel: () => Promise.resolve(),
+    catalogInvalidate: () => {},
+    reloadPolicy: () =>
+      fail ? Promise.reject(new Error("unreadable")) : Promise.resolve(),
+    checkConfig: () => {},
+    isFollower: () => true,
+  });
+  wiring.effects.start();
+  try {
+    const follower = wiring.gate(leadership("follower"));
+    const leader = wiring.gate(leadership("leader"));
+    assertEquals(follower.isStale(), false);
+    store.land(GRANT);
+    await wiring.effects.settled();
     assertEquals(follower.isStale(), true);
     assertEquals(leader.isStale(), false);
     assertEquals(follower.role, "follower");
-    t.wiring.effects.poke();
-    await t.wiring.effects.settled();
+    fail = false;
+    wiring.effects.poke();
+    await wiring.effects.settled();
     assertEquals(follower.isStale(), false);
     // A stale copy still reads as stale.
-    assertEquals(
-      t.wiring.gate(leadership("follower", true)).isStale(),
-      true,
-    );
+    assertEquals(wiring.gate(leadership("follower", true)).isStale(), true);
   } finally {
-    await t.wiring.effects.stop();
+    await wiring.effects.stop();
   }
 });
 

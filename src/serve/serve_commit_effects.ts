@@ -35,12 +35,15 @@
  * A follower applies a commit's effects only from a read model that holds it
  * (swamp-club#4207): the leader's commits land in its copy before its read
  * model catches up, and a policy reloaded in between misses the grants they
- * carry. After a replaced copy its policy is unknown until the refresh that
- * replaced it has rebuilt the read model and pokes; a reload that fails
- * leaves it unknown until one succeeds. Serve's reads on a follower refuse
- * while the policy is unknown ({@link ServeCommitEffects.policyKnown}) and
- * page no further than the commits whose effects were applied
- * ({@link ServeCommitEffects.appliedCursor}).
+ * carry. Serve's reads on a follower page no further than the commits whose
+ * effects were applied ({@link ServeCommitEffects.appliedCursor}), so every
+ * page is filtered under a policy that covers it. After a replaced copy the
+ * follower goes on answering under the policy it last loaded, still bounded,
+ * and reloads once the refresh that replaced the copy has rebuilt the read
+ * model and pokes: a failover restores the copy, and reads must continue
+ * through it. A reload that fails leaves the policy unknown until one
+ * succeeds, and reads refuse meanwhile
+ * ({@link ServeCommitEffects.policyKnown}).
  *
  * @module
  */
@@ -152,9 +155,8 @@ export class ServeCommitEffects {
   }
 
   /**
-   * Whether this node's policy was loaded from its copy as it is now: false
-   * on a follower after a replaced copy until the refresh's poke reloads
-   * it, or while a reload that access commits asked for has not succeeded.
+   * Whether this node's policy can answer reads: false while a reload that
+   * access commits or a replaced copy asked for has not succeeded.
    */
   policyKnown(): boolean {
     return this.#policyKnown;
@@ -245,9 +247,10 @@ export class ServeCommitEffects {
     if (effects.has("config") || effects.has("lockfile")) {
       this.#deps.checkConfig();
     }
-    // A node that took the lead while following with an unknown policy
-    // reloads it: its own writes keep it current only from a known start.
-    if (!this.#policyKnown) {
+    // A node that took the lead with an unknown policy, or on a copy
+    // replaced while it followed, reloads it: its own writes keep it current
+    // only from a start that matches its copy.
+    if (!this.#policyKnown || this.#awaitingRefresh) {
       await this.#deps.reloadPolicy();
       this.#policyKnown = true;
     }
@@ -257,12 +260,10 @@ export class ServeCommitEffects {
   }
 
   async #applyAsFollower(poked: boolean): Promise<void> {
-    if (this.#awaitingRefresh) {
-      this.#policyKnown = false;
-      // The refresh that replaced the copy rebuilds its read model, then
-      // pokes: a reload before that reads the read model mid-rebuild.
-      if (!poked) return;
-    }
+    // The refresh that replaced the copy rebuilds its read model, then
+    // pokes: a reload before that reads the read model mid-rebuild. Reads
+    // go on meanwhile under the last policy, bounded at what it covers.
+    if (this.#awaitingRefresh && !poked) return;
     const cursor = this.#cursor;
     const effects = new Set(this.#pending);
     if (effects.size === 0 && cursor === this.#applied) return;

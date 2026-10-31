@@ -280,40 +280,48 @@ Deno.test("ServeCommitEffects: a follower's applied cursor moves only once a com
   }
 });
 
-Deno.test("ServeCommitEffects: after a replaced copy a follower's policy is unknown until the refresh pokes, then reloaded", async () => {
+Deno.test("ServeCommitEffects: after a replaced copy a follower answers under its last policy, bounded, and reloads once the refresh pokes", async () => {
   const { store, calls, effects } = setup();
   try {
     store.land(GRANT);
     await waitFor(() => calls.policy === 1, "the first reload");
     await effects.settled();
     store.restored();
+    store.land(GRANT);
     await effects.settled();
-    assertEquals(effects.policyKnown(), false);
+    // A failover restores the copy: reads go on (swamp-club#4207), paged
+    // no further than the last policy covers.
+    assertEquals(effects.policyKnown(), true);
+    assertEquals(effects.appliedCursor(), 1);
     assertEquals(calls.policy, 1);
     effects.poke();
     await waitFor(() => calls.policy === 2, "the reload after the refresh");
     await effects.settled();
-    assertEquals(effects.policyKnown(), true);
+    assertEquals(effects.appliedCursor(), 2);
   } finally {
     await effects.stop();
   }
 });
 
-Deno.test("ServeCommitEffects: a refresh that fails after a restore leaves the policy unknown only until a later refresh pokes", async () => {
+Deno.test("ServeCommitEffects: a refresh that fails after a restore holds the applied cursor until a later refresh pokes", async () => {
   const { store, calls, effects } = setup();
   try {
     // The restore replaced the copy, then the refresh threw before it
-    // poked: more commits land meanwhile, and the policy stays unknown.
+    // poked: more commits land meanwhile, past what the policy covers.
     store.restored();
     await effects.settled();
     store.land(GRANT);
     await effects.settled();
-    assertEquals(effects.policyKnown(), false);
+    assertEquals(effects.appliedCursor(), 0);
     assertEquals(calls.policy, 0);
     // The next tick's refresh succeeds and pokes.
     effects.poke();
-    await waitFor(() => effects.policyKnown(), "the policy reloaded");
-    assertEquals(effects.appliedCursor(), 1);
+    await waitFor(
+      () => effects.appliedCursor() === 1,
+      "applied after the poke",
+    );
+    assertEquals(calls.policy, 1);
+    assertEquals(effects.policyKnown(), true);
   } finally {
     await effects.stop();
   }
@@ -352,7 +360,6 @@ Deno.test("ServeCommitEffects: a copy replaced below what was applied moves the 
     store.replace(1);
     await effects.settled();
     assertEquals(effects.appliedCursor(), 1);
-    assertEquals(effects.policyKnown(), false);
   } finally {
     await effects.stop();
   }
@@ -385,6 +392,39 @@ Deno.test("ServeCommitEffects: a node that takes the lead while its policy is un
     store.land(partitionOf({ kind: "lockfile" }));
     await waitFor(() => effects.policyKnown(), "the policy reloaded");
     assertEquals(reloads, 2);
+  } finally {
+    await effects.stop();
+  }
+});
+
+Deno.test("ServeCommitEffects: a node that takes the lead on a copy replaced while it followed reloads its policy", async () => {
+  let follower = true;
+  const store = fakeSource();
+  let reloads = 0;
+  const effects = new ServeCommitEffects({
+    source: store.source,
+    catchUpReadModel: () => Promise.resolve(),
+    catalogInvalidate: () => {},
+    reloadPolicy: () => {
+      reloads++;
+      return Promise.resolve();
+    },
+    checkConfig: () => {},
+    isFollower: () => follower,
+  });
+  effects.start();
+  try {
+    // The takeover's own restore replaces the copy before the node leads.
+    store.restored();
+    await effects.settled();
+    assertEquals(reloads, 0);
+    follower = false;
+    store.land(partitionOf({ kind: "lockfile" }));
+    await waitFor(() => reloads === 1, "the reload on taking the lead");
+    await effects.settled();
+    store.land(partitionOf({ kind: "lockfile" }));
+    await effects.settled();
+    assertEquals(reloads, 1);
   } finally {
     await effects.stop();
   }
