@@ -8402,12 +8402,12 @@ export const serveCommand = new Command()
             bootLead = false;
             return;
           }
-          // While this node still counts as a follower: what its takeover
-          // restored reaches the catalog and policy before it leads on them.
+          // Before its role flips: what its takeover restored reaches the
+          // catalog and policy before it leads on them.
           await leaderStep(
             "applying the commits the takeover restored",
             async () => {
-              await v3DatastoreFor(resolvedRepoDir, location).catchUp();
+              await connectionCtx.commitFeed?.datastore.catchUp();
               serveCommitEffects?.poke();
               await serveCommitEffects?.settled();
             },
