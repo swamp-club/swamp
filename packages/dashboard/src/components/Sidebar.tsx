@@ -251,6 +251,11 @@ interface SidebarProps {
   onNavigate: (view: View) => void;
   health: HealthSnapshot | null;
   approvalCount: number;
+  /**
+   * True when the viewer can read at least one agent session. The Agent
+   * sessions item shows only then; see the comment on the item.
+   */
+  agentSessionsVisible?: boolean;
   /** False once serve said it runs without an audit log. */
   auditEnabled?: boolean;
   /**
@@ -276,6 +281,7 @@ export function Sidebar({
   onNavigate,
   health,
   approvalCount,
+  agentSessionsVisible = false,
   auditEnabled = true,
   local = false,
   onLogout,
@@ -501,6 +507,22 @@ export function Sidebar({
           onClick={onNavigate}
           off={off.activity}
         />
+        {
+          // Hidden, not "Off": this deliberately departs from the faded
+          // items operationsOff() gives (swamp-club#4155). A Preview page
+          // shows only when the viewer can read session data; with none,
+          // there is nothing to turn on here. Hiding is not access control:
+          // the route still answers a direct URL, and every request it
+          // sends is read-gated by serve.
+          agentSessionsVisible && (
+            <NavItem
+              label="Agent sessions"
+              view="agent-sessions"
+              active={activeView === "agent-sessions"}
+              onClick={onNavigate}
+            />
+          )
+        }
       </div>
 
       <div style={{ padding: "0 8px", marginBottom: 24 }}>

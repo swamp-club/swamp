@@ -61,7 +61,9 @@ const SERVE_ONLY_OFF: NavOff = {
 /**
  * Which operations are off. Activity is off when serve runs without an
  * audit log; the local dashboard (no serve behind it) also turns off
- * Schedules and Webhooks, which only a running serve fires.
+ * Schedules and Webhooks, which only a running serve fires. Agent sessions
+ * is not here on purpose: with no session the viewer can read it is hidden,
+ * not off (Sidebar.tsx, swamp-club#4155).
  */
 export function operationsOff(
   options: { auditEnabled: boolean; local: boolean },

@@ -22,7 +22,8 @@
     "js-yaml": "^5.4.2",
     "marked": "^14.1.4",
     "react": "^19.2.5",
-    "react-dom": "^19.2.5"
+    "react-dom": "^19.2.5",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
