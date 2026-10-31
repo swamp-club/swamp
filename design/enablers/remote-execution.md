@@ -1964,7 +1964,10 @@ either trigger. `serve.reload` on a server started without `--hot-reload` is
 refused with `hot_reload_disabled` (`src/serve/handlers/admin_handlers.ts`).
 Besides extension types, a reload re-reads the trigger overrides from the config
 file serve was started with (`--config`, or `.swamp/serve.yaml`) and refreshes
-the extension trust list.
+the extension trust list. It also finishes the serialized refresh of repo-local
+behavior types before acknowledging success. This refresh replaces the loaded
+definitions and their worker bundle factories, including when only an imported
+helper changed (swamp-club#4214).
 
 The reload after an extension change made through serve is narrower. The
 admin extension handlers call `ConnectionContext.extensionChangeReloader`, which
@@ -2094,7 +2097,12 @@ the check ends there, at about 1 ms for 200 models. Otherwise it runs
    the [Catalog Safety Constraint](#catalog-safety-constraint) rules out for
    a running serve; its catalog writes are the ones every CLI command's warm
    start makes. It returns the sources it rebundled, the ones that failed, and
-   the rows it dropped.
+   the rows it dropped. The loader compares the catalog's local source rows with
+   the rows this process last applied. A separate CLI can already have rebundled
+   and indexed the edit; an up-to-date shared row does not prove serve replaced
+   its own registered definition. Such previously indexed changes join the same
+   reconcile pass, including helper-only edits, deletion, type renames and
+   add-on changes (swamp-club#4214).
 2. For each repo-local change, the type the source claimed or claims, and the
    type an edited add-on extends, is swapped: `invalidateType`,
    `removeAttachedExtensionsForType`, re-registered from its catalog row, then

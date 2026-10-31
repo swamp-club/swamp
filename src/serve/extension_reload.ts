@@ -937,6 +937,9 @@ async function runServeReload(
   let webhooksReloaded = 0;
 
   try {
+    // A source reload must update local validators and dispatch bundles too,
+    // even when a separate CLI already indexed the new source into SQLite.
+    await modelRegistry.refreshSources(withExtensionMutation);
     reloadedCount = await withExtensionMutation(() =>
       reloadPulledExtensions(
         repoDir,

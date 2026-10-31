@@ -305,6 +305,9 @@ export class ExtensionLoader {
    */
   private readonly moduleGraphReader: ModuleGraphReaderFactory | undefined;
 
+  /** Catalog source state last applied by this loader, not by another CLI. */
+  private appliedSourceRows = new Map<string, ExtensionTypeRow>();
+
   constructor(
     denoRuntime: DenoRuntime,
     adapter: KindAdapter,
@@ -322,6 +325,7 @@ export class ExtensionLoader {
     this.datastoreResolver = datastoreResolver;
     this.repository = repository;
     this.logger = getLogger(["swamp", adapter.kind, "loader"]);
+    this.appliedSourceRows = this.localSourceRows();
   }
 
   /** The catalog's recorded source modules, or none without a catalog. */
@@ -863,7 +867,9 @@ export class ExtensionLoader {
     },
   ): Promise<ExtensionLoadResult> {
     try {
-      return await this.buildIndexPass(dir, options);
+      const result = await this.buildIndexPass(dir, options);
+      this.appliedSourceRows = this.localSourceRows();
+      return result;
     } finally {
       // No probe outlives the pass that asked for it.
       await this.bundleProber?.release();
@@ -1103,7 +1109,82 @@ export class ExtensionLoader {
       // As for buildIndex: no probe outlives the pass that asked for it.
       await this.bundleProber?.release();
     }
+    this.includePreviouslyIndexedChanges(changes);
     return changes;
+  }
+
+  /** A shared catalog describes disk, not what this process registered. */
+  private localSourceRows(): Map<string, ExtensionTypeRow> {
+    const catalog = this.repository?.getCatalogStore();
+    if (!catalog) return new Map();
+    return new Map(
+      this.adapter.catalogKinds.flatMap((kind) =>
+        catalog.findByKind(kind).filter((row) =>
+          !this.isPulledSourcePath(row.source_path)
+        ).map((row) => [row.source_path, row] as const)
+      ),
+    );
+  }
+
+  private includePreviouslyIndexedChanges(changes: SourceRefreshChanges): void {
+    const current = this.localSourceRows();
+    const primaryKind = this.adapter.catalogKinds[0];
+    const signature = (row: ExtensionTypeRow) =>
+      JSON.stringify([
+        row.kind,
+        row.type_normalized,
+        row.extends_type,
+        row.version,
+        row.source_fingerprint,
+        row.state,
+        row.bundle_path,
+      ]);
+    for (const [path, previous] of this.appliedSourceRows) {
+      const next = current.get(path);
+      if (next && signature(next) === signature(previous)) continue;
+      // Clear the old provider even if another process removed or renamed it,
+      // or retargeted an add-on, before this process scanned the catalog.
+      changes.removed.push({
+        sourcePath: path,
+        kind: previous.kind,
+        type: previous.kind === primaryKind
+          ? previous.type_normalized || undefined
+          : previous.extends_type || previous.type_normalized || undefined,
+      });
+    }
+    for (const [path, row] of current) {
+      const previous = this.appliedSourceRows.get(path);
+      if (previous && signature(row) === signature(previous)) continue;
+      if (row.state === "Tombstoned") continue;
+      if (
+        row.state === "ValidationFailed" || row.state === "BundleBuildFailed"
+      ) {
+        if (changes.failed.some((failure) => failure.sourcePath === path)) {
+          continue;
+        }
+        changes.failed.push({
+          sourcePath: path,
+          previousType: previous?.kind === primaryKind
+            ? previous.type_normalized || undefined
+            : undefined,
+          extendsType: previous?.extends_type || undefined,
+          error: row.last_error ||
+            "Source indexed as unavailable by another process",
+        });
+      } else {
+        changes.rebundled.push({
+          sourcePath: path,
+          previousType: previous?.kind === primaryKind
+            ? previous.type_normalized || undefined
+            : undefined,
+          type: row.kind === primaryKind
+            ? row.type_normalized || undefined
+            : undefined,
+          extendsType: row.extends_type || undefined,
+        });
+      }
+    }
+    this.appliedSourceRows = current;
   }
 
   /** True when the source lives under one of the repo's pulled roots. */
