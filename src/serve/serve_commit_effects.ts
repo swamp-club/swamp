@@ -32,6 +32,12 @@
  * the copy was replaced (a lineage restore, a compaction past what was
  * read), the individual commits are not seen, so everything is refreshed.
  *
+ * A follower's copy moves before its read model catches up, and the policy
+ * and catalog read the read model. So a follower applies effects only when
+ * told its copy is caught up ({@link ServeCommitEffects.poke}), and only of
+ * the commits that had landed by then: a reload any sooner reads the files
+ * as they were, and no later commit would correct it.
+ *
  * @module
  */
 
@@ -71,6 +77,8 @@ const EVERY_EFFECT: ReadonlySet<CommitEffect> = new Set([
 export class ServeCommitEffects {
   readonly #deps: ServeCommitEffectsDeps;
   #cursor: number;
+  /** The head when a follower's copy was last caught up. */
+  #caughtUp: number;
   #running: Promise<void> | undefined;
   #again = false;
   #replaced = false;
@@ -79,6 +87,7 @@ export class ServeCommitEffects {
   constructor(deps: ServeCommitEffectsDeps) {
     this.#deps = deps;
     this.#cursor = deps.source.datastore.commitStore.highWaterMark().cursor;
+    this.#caughtUp = this.#cursor;
   }
 
   start(): void {
@@ -86,7 +95,7 @@ export class ServeCommitEffects {
       // A replaced copy may have rewritten rows already read: their
       // effects are not seen one by one, so everything is refreshed.
       if (replaced) this.#replaced = true;
-      this.#schedule();
+      if (!this.#deps.isFollower()) this.#schedule();
     });
   }
 
@@ -98,12 +107,15 @@ export class ServeCommitEffects {
   }
 
   /**
-   * Looks for new commits now. A follower on a datastore that does not
-   * replicate opens the leader's own `commits.db`, so the leader's commits
-   * move no head in this process: the feed and the tick's refresh call
-   * this after they caught the copy up.
+   * Looks for new commits now: the copy and its read model are caught up.
+   * The feed and the tick's refresh call this after catching the copy up.
+   * A follower's effects wait for it, and on a datastore that does not
+   * replicate the follower opens the leader's own `commits.db`, so the
+   * leader's commits move no head in this process.
    */
   poke(): void {
+    this.#caughtUp =
+      this.#deps.source.datastore.commitStore.highWaterMark().cursor;
     if (this.#off !== undefined) this.#schedule();
   }
 
@@ -136,7 +148,9 @@ export class ServeCommitEffects {
       for (const effect of EVERY_EFFECT) effects.add(effect);
     }
     for (;;) {
-      const head = store.highWaterMark().cursor;
+      const head = this.#deps.isFollower()
+        ? this.#caughtUp
+        : store.highWaterMark().cursor;
       if (head < this.#cursor) {
         // The copy was replaced behind what was read: refresh everything.
         this.#cursor = head;
@@ -146,7 +160,8 @@ export class ServeCommitEffects {
       if (head === this.#cursor) break;
       let page;
       try {
-        page = await store.changesSince(this.#cursor, PAGE);
+        page = (await store.changesSince(this.#cursor, PAGE))
+          .filter((change) => change.cursor <= head);
       } catch (error) {
         if (!(error instanceof CommitsCompactedError)) throw error;
         this.#cursor = head;

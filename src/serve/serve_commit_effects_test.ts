@@ -114,6 +114,7 @@ Deno.test("ServeCommitEffects: a grant commit reloads the policy and the catalog
         id: ID,
       }),
     );
+    effects.poke();
     await waitFor(() => calls.policy === 1, "calls.policy === 1");
     await effects.settled();
     assertEquals(calls, { catalog: 1, policy: 1, config: 0 });
@@ -126,14 +127,17 @@ Deno.test("ServeCommitEffects: a lockfile or definition commit runs the config c
   const { store, calls, effects } = setup();
   try {
     store.land(partitionOf({ kind: "run", workflowId: ID, runId: ID }));
+    effects.poke();
     await waitFor(() => calls.catalog === 1, "calls.catalog === 1");
     await effects.settled();
     assertEquals(calls, { catalog: 1, policy: 0, config: 0 });
     store.land(partitionOf({ kind: "lockfile" }));
+    effects.poke();
     await waitFor(() => calls.config === 1, "calls.config === 1");
     store.land(
       partitionOf({ kind: "config", definitionKind: "model", name: "web" }),
     );
+    effects.poke();
     await waitFor(() => calls.config === 2, "calls.config === 2");
   } finally {
     await effects.stop();
@@ -145,9 +149,11 @@ Deno.test("ServeCommitEffects: a copy replaced behind what was read refreshes ev
   try {
     store.land(partitionOf({ kind: "run", workflowId: ID, runId: ID }));
     store.land(partitionOf({ kind: "run", workflowId: ID, runId: ID }));
+    effects.poke();
     await waitFor(() => calls.catalog >= 1, "calls.catalog >= 1");
     await effects.settled();
     store.replace(0);
+    effects.poke();
     await waitFor(
       () => calls.policy === 1 && calls.config === 1,
       "calls.policy === 1 && calls.config === 1",
@@ -201,13 +207,70 @@ Deno.test("ServeCommitEffects: a replaced copy refreshes everything, even with i
   const { store, calls, effects } = setup();
   try {
     store.land(partitionOf({ kind: "run", workflowId: ID, runId: ID }));
+    effects.poke();
     await waitFor(() => calls.catalog === 1, "the first pass");
     await effects.settled();
     store.restored();
+    effects.poke();
     await waitFor(
       () => calls.policy === 1 && calls.config === 1,
       "a full refresh",
     );
+  } finally {
+    await effects.stop();
+  }
+});
+
+Deno.test("ServeCommitEffects: a follower reloads only once its copy is caught up, so a restore reads the restored grants", async () => {
+  const { store, calls, effects } = setup();
+  try {
+    store.restored();
+    store.land(
+      partitionOf({
+        kind: "model",
+        type: ModelType.create("swamp/grant"),
+        id: ID,
+      }),
+    );
+    await effects.settled();
+    assertEquals(calls, { catalog: 0, policy: 0, config: 0 });
+    effects.poke();
+    await waitFor(() => calls.policy === 1, "the policy reloaded");
+  } finally {
+    await effects.stop();
+  }
+});
+
+Deno.test("ServeCommitEffects: a commit that lands after a poke waits for the poke that follows its catch-up", async () => {
+  const store = fakeSource();
+  const calls = { catalog: 0, policy: 0, config: 0 };
+  const effects = new ServeCommitEffects({
+    source: store.source,
+    catalogInvalidate: () => calls.catalog++,
+    reloadPolicy: () => {
+      calls.policy++;
+      return Promise.resolve();
+    },
+    checkConfig: () => calls.config++,
+    isFollower: () => true,
+  });
+  effects.start();
+  try {
+    store.land(partitionOf({ kind: "run", workflowId: ID, runId: ID }));
+    effects.poke();
+    // Lands while the poke's pass is reading: its read model is not caught up.
+    store.land(
+      partitionOf({
+        kind: "model",
+        type: ModelType.create("swamp/grant"),
+        id: ID,
+      }),
+    );
+    await waitFor(() => calls.catalog === 1, "the first pass");
+    await effects.settled();
+    assertEquals(calls.policy, 0);
+    effects.poke();
+    await waitFor(() => calls.policy === 1, "the policy reloaded");
   } finally {
     await effects.stop();
   }
