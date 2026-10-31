@@ -47,6 +47,7 @@ import {
   agentSessionDataName,
   type AgentSessionRecord,
   agentSessionTags,
+  readAgentSessionRecord,
   readAgentSessionSummary,
 } from "../src/domain/agent_sessions/session_record.ts";
 import {
@@ -246,6 +247,7 @@ Deno.test("agent session discovery: a viewer without read on the owning behavior
 
 interface ListRow {
   name: string;
+  modelName: string;
   tags: Record<string, string>;
 }
 
@@ -296,6 +298,10 @@ Deno.test("agent session discovery: top-level sessions and one session's childre
       [agentSessionDataName("claude-code", childA)],
     );
     assertEquals(children[0].tags[AGENT_SESSION_PARENT_TAG], "parent-a");
+    // The behavior name is what data.get needs to open a listed session.
+    for (const row of [...topLevel, ...children]) {
+      assertEquals(row.modelName, importer.name);
+    }
 
     for (const row of [...topLevel, ...children]) {
       const summary = readAgentSessionSummary(
@@ -320,5 +326,39 @@ Deno.test("agent session discovery: a list without the select reads the bodies i
     // The unreadable body shows the query read it: the select above is what
     // keeps the list off the bodies.
     assert(errorFrame(frames), JSON.stringify(frames));
+  });
+});
+
+async function getSession(
+  ctx: ReturnType<typeof createServeCtx>,
+  row: ListRow,
+): Promise<{ frames: Array<{ type: string }>; content?: string }> {
+  const frames = await sendRequest(ctx, {
+    type: "data.get",
+    id: crypto.randomUUID(),
+    payload: { modelIdOrName: row.modelName, dataName: row.name },
+  }) as Array<{ type: string; payload?: { data?: { content?: string } } }>;
+  const frame = frames.find((f) => f.type === "data.get");
+  return { frames, content: frame?.payload?.data?.content };
+}
+
+Deno.test("agent session discovery: a listed session opens with data.get from its row, and only for a reader", async () => {
+  await withServeRepo(async (repo) => {
+    const importer = await saveModel(repo, "agent-sessions");
+    await writeSession(repo, importer, "parent-a", "user-a");
+    const [row] = await list(
+      createServeCtx(repo, [ALLOW_DATA]),
+      AGENT_SESSION_TOP_LEVEL_PREDICATE,
+    );
+
+    const opened = await getSession(createServeCtx(repo, [ALLOW_DATA]), row);
+    assertEquals(errorFrame(opened.frames), undefined);
+    assert(opened.content, JSON.stringify(opened.frames));
+    const reading = readAgentSessionRecord(JSON.parse(opened.content));
+    assertEquals(reading.kind, "record");
+
+    // Hiding the page is not access control: a direct read is refused too.
+    const refused = await getSession(createServeCtx(repo, []), row);
+    assert(errorFrame(refused.frames), JSON.stringify(refused.frames));
   });
 });

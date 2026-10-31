@@ -60,11 +60,13 @@ export const AGENT_SESSION_QUERY_PREDICATE =
   `tags.type == "${AGENT_SESSION_TYPE_TAG}"`;
 
 /**
- * The `data.query` select for a list of sessions. It reads only the data name
- * and tags, so with a predicate over tags the query never loads a record body;
- * without a select, the query loads the body of every match.
+ * The `data.query` select for a list of sessions. It reads only the data
+ * name, the owning behavior's name and tags, so with a predicate over tags
+ * the query never loads a record body; without a select, the query loads the
+ * body of every match. `data.get` needs the behavior name to open a session.
  */
-export const AGENT_SESSION_LIST_SELECT = `{"name": name, "tags": tags}`;
+export const AGENT_SESSION_LIST_SELECT =
+  `{"name": name, "modelName": modelName, "tags": tags}`;
 
 /** The predicate that lists top-level sessions only, leaving out subagents. */
 export const AGENT_SESSION_TOP_LEVEL_PREDICATE =

@@ -75,6 +75,8 @@ serve's (`client/workspace_path.ts`, `serverPath`). In local mode:
   their pages, deep links included, explain what serve gives and how to run it
   (`views/ServeOnlyStates.tsx`), in the Activity page's audit-off style.
   Activity shows its own audit-off state as under serve.
+- Agent sessions is never "Off": like under serve, its sidebar item is hidden
+  until the viewer can read a session ([agent-sessions](./agent-sessions.md#the-page)).
 - There is no Logout, the System page skips Serve Configuration, the loading
   screen says "Connecting to The Swamp", and a run that can't be read says it
   is not recorded in this repo (`views/run_load_error.ts`).

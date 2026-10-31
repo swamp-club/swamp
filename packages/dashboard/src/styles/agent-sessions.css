@@ -1,0 +1,989 @@
+/* Agent sessions page (views/AgentSessions.tsx, views/agent_sessions/). */
+/* Colours come from the theme tokens only, so both themes follow. */
+
+.as-preview-chip {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 10px;
+  color: var(--info);
+  background: var(--info-bg);
+  border: 1px solid var(--info);
+  vertical-align: middle;
+  margin-left: 10px;
+}
+
+.as-title {
+  display: flex;
+  align-items: center;
+}
+
+.as-notice {
+  font-size: 0.85rem;
+  color: var(--text-2);
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.as-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.as-chip {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 3px 10px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.as-chip[aria-pressed="true"] {
+  color: var(--text-1);
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+.as-chip:focus-visible,
+.as-row:focus-visible,
+.as-call:focus-visible,
+.as-turn-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Label colours: swamp, bypass, neutral, not classified. */
+.as-l-swamp {
+  background: var(--accent);
+}
+.as-l-bypass {
+  background: var(--warning);
+}
+.as-l-neutral {
+  background: var(--text-3);
+}
+.as-l-unlabeled {
+  background: var(--border);
+}
+
+.as-mix {
+  display: flex;
+  width: 120px;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--surface-inset);
+}
+
+.as-mix > span {
+  display: block;
+  height: 100%;
+}
+
+.as-row {
+  cursor: pointer;
+}
+
+.as-row:hover td {
+  background: var(--surface-hover);
+}
+
+/* The open session: accent tint, an accent bar on its left edge and lines
+   above and below, so it stands out from hover in both themes. */
+.as-row[aria-selected="true"] td {
+  background: var(--accent-subtle);
+  box-shadow:
+    inset 0 1px 0 var(--accent),
+    inset 0 -1px 0 var(--accent);
+}
+
+.as-row[aria-selected="true"] td:first-child {
+  box-shadow:
+    inset 3px 0 0 var(--accent),
+    inset 0 1px 0 var(--accent),
+    inset 0 -1px 0 var(--accent);
+}
+
+.as-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.as-failed {
+  color: var(--danger);
+}
+
+.as-flag {
+  display: inline-block;
+  font-size: 0.72rem;
+  padding: 1px 7px;
+  border-radius: 10px;
+  margin-right: 4px;
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.as-sev-high {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: var(--danger);
+}
+.as-sev-medium {
+  color: var(--warning);
+  background: var(--warning-bg);
+  border-color: var(--warning);
+}
+.as-sev-low {
+  color: var(--info);
+  background: var(--info-bg);
+  border-color: var(--info);
+}
+.as-sev-info {
+  color: var(--text-2);
+  background: var(--surface-inset);
+}
+.as-sev-clean {
+  color: var(--accent);
+  background: var(--accent-subtle);
+  border-color: var(--accent);
+}
+
+.as-detail {
+  display: grid;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.as-section {
+  padding: 14px 16px;
+}
+
+.as-section h2 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.as-finding {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 4px 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border-subtle);
+  align-items: start;
+}
+
+.as-finding:first-of-type {
+  border-top: none;
+}
+
+.as-finding-title {
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.as-finding-body {
+  grid-column: 2 / 3;
+  font-size: 0.85rem;
+  color: var(--text-2);
+}
+
+.as-finding-tune {
+  grid-column: 2 / 3;
+  font-size: 0.85rem;
+  color: var(--text-1);
+}
+
+.as-strip {
+  position: relative;
+  height: 28px;
+  background: var(--surface-inset);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.as-strip-turn {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 3px;
+  overflow: hidden;
+  cursor: pointer;
+  padding: 0;
+}
+
+.as-strip-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+}
+
+.as-strip-legend {
+  display: flex;
+  gap: 14px;
+  font-size: 0.75rem;
+  color: var(--text-2);
+  margin-top: 6px;
+}
+
+.as-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 5px;
+  vertical-align: middle;
+}
+
+.as-turn {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.as-turn-head {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  padding: 8px 4px;
+  background: none;
+  border: none;
+  font: inherit;
+  color: var(--text-1);
+  text-align: left;
+  cursor: pointer;
+}
+
+.as-turn-meta {
+  font-size: 0.82rem;
+  color: var(--text-2);
+}
+
+.as-turn-count {
+  font-weight: 600;
+  color: var(--tone, var(--text-1));
+}
+
+.as-turn-count[data-none="true"] {
+  color: var(--text-2);
+  font-weight: 400;
+}
+
+.as-call {
+  display: grid;
+  grid-template-columns: 14px 90px minmax(0, 1fr) minmax(120px, 38%);
+  gap: 8px;
+  align-items: center;
+  height: 26px;
+  padding: 0 4px;
+  font-size: 0.82rem;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.as-call:hover,
+.as-call[aria-selected="true"] {
+  background: var(--surface-hover);
+}
+
+.as-call[data-dim="true"] {
+  opacity: 0.35;
+}
+
+.as-call-text {
+  font-family: "JetBrains Mono", monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-2);
+}
+
+.as-call-track {
+  position: relative;
+  height: 10px;
+  background: var(--surface-inset);
+  border-radius: 2px;
+}
+
+.as-call-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 2px;
+  border-radius: 2px;
+}
+
+.as-call-bar[data-failed="true"] {
+  outline: 2px solid var(--danger);
+}
+
+.as-subagent {
+  margin: 4px 0 10px 18px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+}
+
+.as-subagent-head {
+  font-size: 0.82rem;
+  color: var(--text-2);
+  margin: 6px 0;
+}
+
+.as-inspector dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 14px;
+  font-size: 0.85rem;
+}
+
+.as-inspector dt {
+  color: var(--text-2);
+}
+
+.as-inspector pre {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: var(--surface-inset);
+  padding: 8px 10px;
+  border-radius: 4px;
+  color: var(--text-1);
+}
+
+.as-span {
+  font-size: 0.8rem;
+  font-family: "JetBrains Mono", monospace;
+  color: var(--text-2);
+}
+
+.as-span[data-error="true"] {
+  color: var(--danger);
+}
+
+.as-span ul {
+  list-style: none;
+  padding-left: 14px;
+}
+
+.as-muted {
+  color: var(--text-2);
+  font-size: 0.85rem;
+}
+
+.as-link-button {
+  font: inherit;
+  font-size: 0.8rem;
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  white-space: nowrap;
+}
+
+.as-link-button:disabled {
+  color: var(--text-3);
+  cursor: default;
+}
+
+/* Sessions table: compact columns. */
+.as-table th,
+.as-table td {
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+.as-type-col {
+  width: 1%;
+  text-align: center;
+}
+
+.as-type {
+  display: inline-flex;
+  color: var(--text-2);
+}
+
+.as-type svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.as-nowrap {
+  white-space: nowrap;
+}
+
+.as-share {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.as-flags {
+  white-space: nowrap;
+}
+
+/* A count in a small coloured badge. */
+.as-count {
+  display: inline-block;
+  min-width: 20px;
+  padding: 0 6px;
+  margin-right: 4px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.as-count-plain {
+  margin: 0 0 0 6px;
+  font-weight: 500;
+  color: var(--text-2);
+  background: var(--surface-inset);
+}
+
+/*
+ * Turns timeline: the strip and every turn row share one grid, a label
+ * column and a track column, so a turn's track sits under its piece of the
+ * strip.
+ */
+.as-tl-row {
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.as-tl-head {
+  padding: 4px 4px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.as-tl-label {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.85rem;
+}
+
+.as-turn-head.as-tl-row {
+  display: grid;
+}
+
+.as-tl-track {
+  position: relative;
+  height: 18px;
+  background: var(--surface-inset);
+  border-radius: 3px;
+}
+
+.as-tl-track .as-strip-turn {
+  top: 2px;
+  bottom: 2px;
+  cursor: inherit;
+}
+
+.as-strip-turn[data-hover="true"],
+.as-turn[data-hover="true"] .as-tl-track .as-strip-turn {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.as-turn[data-hover="true"] > .as-turn-head {
+  background: var(--surface-hover);
+}
+
+.as-turn > .as-turn-head[aria-expanded="true"] {
+  background: var(--surface-hover);
+}
+
+/* What to look at: one headline per finding, opened on demand. */
+.as-findings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.as-findings .as-finding {
+  display: block;
+  padding: 0;
+}
+
+.as-finding-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 7px 4px;
+  background: none;
+  border: none;
+  font: inherit;
+  text-align: left;
+  color: var(--text-1);
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.as-finding-head:hover {
+  background: var(--surface-hover);
+}
+
+.as-finding[data-open="true"] > .as-finding-head {
+  background: none;
+}
+
+.as-finding-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.as-finding-head .as-count {
+  min-width: 58px;
+}
+
+.as-finding-head .as-finding-title {
+  flex: 1;
+  font-weight: 500;
+}
+
+.as-finding-calls {
+  white-space: nowrap;
+}
+
+.as-finding-more {
+  padding: 4px 8px 12px 76px;
+  display: grid;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: var(--text-2);
+}
+
+.as-finding-more .as-chip {
+  justify-self: start;
+}
+
+.as-turns-title {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.as-turns-title .as-muted {
+  font-weight: 400;
+}
+
+.as-finding-more p {
+  grid-column: auto;
+  margin: 0;
+}
+
+.as-finding-more .as-finding-tune {
+  color: var(--text-1);
+}
+
+.as-totals {
+  margin-bottom: 16px;
+}
+
+.as-totals /* The inspector docks to the bottom of the window, full width, so the
+   turns keep their width; it scrolls on its own. */ /* `.panel.` so these win over the shared panel rule. Over the turns, a
+   band of page background, the accent edge and a shadow keep it apart. */ .panel.as-inspector {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  max-height: 42vh;
+  overflow: auto;
+  margin-top: 8px;
+  padding: 0 16px 14px;
+  border-top: 3px solid var(--accent);
+  border-radius: 8px 8px 0 0;
+  box-shadow:
+    0 -12px 0 0 var(--bg),
+    0 -14px 32px rgba(0, 0, 0, 0.45);
+}
+
+.as-inspector-head {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0 8px;
+  background: var(--surface);
+}
+
+.as-inspector-head {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 10px;
+}
+
+.as-inspector-head h2 {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.as-inspector-kicker {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.as-inspector-tool {
+  font-family: "JetBrains Mono", monospace;
+}
+
+.as-inspector-body {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(240px, 2fr);
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .as-inspector-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.as-turns-hint {
+  margin-left: auto;
+  font-weight: 400;
+}
+
+/* A shown finding's calls take the finding's colour, in the turns and in
+   the finding itself, so the two read as one. */
+.as-call[data-sev="high"] {
+  background: var(--danger-bg);
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+.as-call[data-sev="medium"] {
+  background: var(--warning-bg);
+  box-shadow: inset 3px 0 0 var(--warning);
+}
+.as-call[data-sev="low"] {
+  background: var(--info-bg);
+  box-shadow: inset 3px 0 0 var(--info);
+}
+.as-call[data-sev="info"] {
+  background: var(--surface-inset);
+  box-shadow: inset 3px 0 0 var(--text-2);
+}
+
+.as-finding-open-high {
+  background: var(--danger-bg);
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+.as-finding-open-medium {
+  background: var(--warning-bg);
+  box-shadow: inset 3px 0 0 var(--warning);
+}
+.as-finding-open-low {
+  background: var(--info-bg);
+  box-shadow: inset 3px 0 0 var(--info);
+}
+.as-finding-open-info {
+  background: var(--surface-inset);
+  box-shadow: inset 3px 0 0 var(--text-2);
+}
+.as-finding[class*="as-finding-open-"] {
+  padding-left: 10px;
+  padding-right: 10px;
+  border-radius: 4px;
+}
+
+.as-call[aria-selected="true"] {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Filter tones: each filter's colour, shared by its chip, the count out of
+   the total, and every turn's count while it is on. */
+.as-tone-all {
+  --tone: var(--text-1);
+  --tone-bg: var(--surface-inset);
+}
+.as-tone-l-swamp {
+  --tone: var(--accent);
+  --tone-bg: var(--accent-subtle);
+}
+.as-tone-l-bypass {
+  --tone: var(--warning);
+  --tone-bg: var(--warning-bg);
+}
+.as-tone-l-neutral {
+  --tone: var(--text-1);
+  --tone-bg: var(--surface-inset);
+}
+.as-tone-l-unlabeled {
+  --tone: var(--text-2);
+  --tone-bg: var(--surface-inset);
+}
+.as-tone-failed {
+  --tone: var(--danger);
+  --tone-bg: var(--danger-bg);
+}
+.as-tone-sev-high {
+  --tone: var(--danger);
+  --tone-bg: var(--danger-bg);
+}
+.as-tone-sev-medium {
+  --tone: var(--warning);
+  --tone-bg: var(--warning-bg);
+}
+.as-tone-sev-low {
+  --tone: var(--info);
+  --tone-bg: var(--info-bg);
+}
+.as-tone-sev-info {
+  --tone: var(--text-1);
+  --tone-bg: var(--surface-inset);
+}
+
+.as-chip[aria-pressed="true"][class*="as-tone-"] {
+  color: var(--tone);
+  border-color: var(--tone);
+  background: var(--tone-bg);
+  font-weight: 600;
+}
+
+.as-chip-n {
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+
+.as-chip-total {
+  align-self: center;
+  margin-left: 6px;
+  font-size: 0.85rem;
+  color: var(--text-2);
+}
+
+.as-chip-total strong {
+  color: var(--tone);
+  font-size: 0.95rem;
+}
+
+/* Stat strips: the page totals and the open session, one row each. */
+.as-stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  padding: 10px 4px;
+  row-gap: 10px;
+}
+
+.as-stats-lead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 18px 0 12px;
+  min-width: 0;
+}
+
+.as-stats-lead .as-type svg {
+  width: 22px;
+  height: 22px;
+}
+
+.as-stats-who {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.9rem;
+  color: var(--text-1);
+}
+
+.as-stats-who .as-muted {
+  font-size: 0.78rem;
+}
+
+.as-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 18px;
+  border-left: 1px solid var(--border);
+  min-width: 0;
+}
+
+.as-stats > .as-stat:first-child {
+  border-left: none;
+}
+
+.as-stat-value {
+  font-size: 1.2rem;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.as-stat-value small {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-2);
+  margin-left: 2px;
+}
+
+.as-stat-label {
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.as-stat-sub {
+  font-size: 0.78rem;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+
+.as-stat-sub .as-mix {
+  width: 90px;
+  margin-top: 4px;
+}
+
+.as-stat-types {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.as-stat-types .as-type + .as-type,
+.as-stat-types .as-type:not(:first-child) {
+  margin-left: 8px;
+}
+
+.as-stats-lead .as-type {
+  color: var(--text-1);
+}
+
+/* A session figure that filters the turns: it looks like a figure until
+   hovered, and while its filter is on it takes the filter's colour. */
+.as-stat-button {
+  font: inherit;
+  text-align: left;
+  background: none;
+  border-top: none;
+  border-right: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  border-radius: 0;
+  padding-bottom: 4px;
+}
+
+.as-stat-button:hover {
+  background: var(--surface-hover);
+}
+
+.as-stat-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.as-stat-button[aria-pressed="true"] {
+  background: var(--tone-bg);
+  border-bottom-color: var(--tone);
+}
+
+.as-stat-button[aria-pressed="true"] .as-stat-value,
+.as-stat-button[aria-pressed="true"] .as-stat-label {
+  color: var(--tone);
+}
+
+.as-stat-findings {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.as-stat-sub:has(.as-stat-findings) {
+  max-width: none;
+  overflow: visible;
+}
+
+/* Sortable column headers: the header text is the button. */
+.as-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  background: none;
+  border: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.as-sort:hover,
+.as-sort[data-active="true"] {
+  color: var(--text-1);
+}
+
+.as-sort:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The mark sits in the header's padding, so sorting adds no width. */
+.as-sort {
+  position: relative;
+}
+
+.as-sort-mark {
+  position: absolute;
+  left: 100%;
+  margin-left: 3px;
+  font-size: 0.6rem;
+  opacity: 0;
+}
+
+.as-sort:hover .as-sort-mark,
+.as-sort:focus-visible .as-sort-mark {
+  opacity: 0.6;
+}
+
+.as-sort[data-active="true"] .as-sort-mark {
+  opacity: 1;
+  color: var(--accent);
+}
+
+.as-older {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
