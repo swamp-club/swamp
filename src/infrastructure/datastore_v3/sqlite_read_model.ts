@@ -542,6 +542,11 @@ export class SqliteReadModel implements ReadModel {
     }
   }
 
+  /** The last feed position applied: its files are on disk. */
+  cursor(): number {
+    return this.#state.cursor();
+  }
+
   catchUp(signal: AbortSignal): Promise<CatchUpResult> {
     return this.#exclusive(
       () =>

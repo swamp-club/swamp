@@ -8402,6 +8402,16 @@ export const serveCommand = new Command()
             bootLead = false;
             return;
           }
+          // Before its role flips: what its takeover restored reaches the
+          // catalog and policy before it leads on them.
+          await leaderStep(
+            "applying the commits the takeover restored",
+            async () => {
+              await connectionCtx.commitFeed?.datastore.catchUp();
+              serveCommitEffects?.poke();
+              await serveCommitEffects?.settled();
+            },
+          );
           v3Maintenance?.start();
           v3Replication ??= startV3ReplicationUpkeep(
             resolvedRepoDir,
