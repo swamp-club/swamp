@@ -2236,3 +2236,55 @@ Deno.test("reloadPulledExtensions: a malformed row type fails only that row, not
     }
   });
 });
+
+Deno.test("performServeReload: explicitly refreshes local source types before acknowledging", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  let refreshed = 0;
+  modelRegistry.setSourceRefresher(() => {
+    refreshed++;
+    return Promise.resolve();
+  });
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "missing.json"),
+    );
+    assertEquals(result.success, true);
+    assertEquals(refreshed, 1);
+  } finally {
+    modelRegistry.setSourceRefresher(null);
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("performServeReload: a failed local source refresh refuses acceptance", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  let discovered = 0;
+  modelRegistry.setSourceRefresher(() =>
+    Promise.reject(new Error("local source unavailable"))
+  );
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "missing.json"),
+      {
+        extensionDiscoverer: () => {
+          discovered++;
+          return Promise.resolve(1);
+        },
+      },
+    );
+    assertEquals(result.success, false);
+    assertEquals(result.reloadedCount, 1);
+    assertEquals(discovered, 1);
+    assertEquals(
+      result.errors.some((error) => error.includes("local source unavailable")),
+      true,
+    );
+  } finally {
+    modelRegistry.setSourceRefresher(null);
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});

@@ -26,7 +26,7 @@ import {
 } from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { withMockedCommand } from "@swamp-club/swamp-testing";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
@@ -109,6 +109,11 @@ interface Fixture {
   loader: ExtensionLoader;
   /** Runs one refresh pass over the dirs the fixture indexed. */
   refresh: () => Promise<void>;
+  /** Runs one refresh pass through a separately constructed loader. */
+  refreshWith: (loader: ExtensionLoader) => Promise<void>;
+  /** Creates the loader serve wires after its startup index pass. */
+  createRefresher: () => ExtensionLoader;
+  reindexElsewhere: () => Promise<void>;
   type: (suffix: string) => string;
 }
 
@@ -119,7 +124,17 @@ interface Fixture {
  */
 async function withRepo(
   fn: (f: Fixture) => Promise<void>,
-  setup: (f: Omit<Fixture, "loader" | "refresh">) => Promise<void>,
+  setup: (
+    f: Omit<
+      Fixture,
+      | "loader"
+      | "refresh"
+      | "refreshWith"
+      | "createRefresher"
+      | "reindexElsewhere"
+    >,
+  ) => Promise<void>,
+  bundler: typeof copyingBundler = copyingBundler,
 ): Promise<void> {
   const repoDir = await Deno.makeTempDir({ prefix: "swamp_3284_" });
   const id = crypto.randomUUID().slice(0, 8);
@@ -161,7 +176,7 @@ async function withRepo(
   const additionalDirs = [pulledModelsDir];
   const localDirs = [behaviorsDir];
   try {
-    await withMockedCommand(copyingBundler, async () => {
+    await withMockedCommand(bundler, async () => {
       modelRegistry.setTypeLoader((t, entry) =>
         loader.loadSingleType(t, entry)
       );
@@ -179,6 +194,43 @@ async function withRepo(
         loader,
         refresh: () =>
           refreshLocalModels(loader, modelsDir, { localDirs, additionalDirs }),
+        refreshWith: (refreshLoader) =>
+          refreshLocalModels(refreshLoader, modelsDir, {
+            localDirs,
+            additionalDirs,
+          }),
+        createRefresher: () =>
+          new ExtensionLoader(
+            stubDenoRuntime,
+            modelKindAdapter,
+            repoDir,
+            undefined,
+            new ExtensionRepository({
+              catalog,
+              lockfileRepository: new LockfileRepository(lockfilePath),
+              repoRoot: repoDir,
+            }),
+          ),
+        reindexElsewhere: async () => {
+          // A different CLI updates the shared catalog without replacing the
+          // types already loaded by this long-lived process.
+          const writer = new ExtensionLoader(
+            stubDenoRuntime,
+            modelKindAdapter,
+            repoDir,
+            undefined,
+            new ExtensionRepository({
+              catalog,
+              lockfileRepository: await LockfileRepository.create(lockfilePath),
+              repoRoot: repoDir,
+            }),
+          );
+          await writer.buildIndex(modelsDir, {
+            localDirs,
+            additionalDirs,
+            indexOnly: true,
+          });
+        },
       });
     });
   } finally {
@@ -629,4 +681,209 @@ Deno.test("refreshLocalModels: a model under extensions/behaviors is refreshed l
       modelCode(type("beh"), "v1"),
     );
   });
+});
+
+Deno.test("refreshLocalModels: reconciles a source another CLI already reindexed", async () => {
+  await withRepo(async ({ modelsDir, refresh, reindexElsewhere, type }) => {
+    const before = await loaded(type("a"));
+    assertEquals(before?.methods.run.description, "v1");
+    await Deno.writeTextFile(
+      join(modelsDir, "a.ts"),
+      modelCode(type("a"), "v2"),
+    );
+    await reindexElsewhere();
+    assertStrictEquals(await loaded(type("a")), before);
+    await refresh();
+    const after = await loaded(type("a"));
+    assertEquals(after?.methods.run.description, "v2");
+    assertNotStrictEquals(after, before);
+  }, async ({ modelsDir, type }) => {
+    await Deno.writeTextFile(
+      join(modelsDir, "a.ts"),
+      modelCode(type("a"), "v1"),
+    );
+  });
+});
+
+Deno.test("refreshLocalModels: a separately constructed refresher reconciles a source indexed elsewhere", async () => {
+  await withRepo(async ({
+    modelsDir,
+    createRefresher,
+    refreshWith,
+    reindexElsewhere,
+    type,
+  }) => {
+    const before = await loaded(type("a"));
+    const refresher = createRefresher();
+    await Deno.writeTextFile(
+      join(modelsDir, "a.ts"),
+      modelCode(type("a"), "v2"),
+    );
+    await reindexElsewhere();
+    assertStrictEquals(await loaded(type("a")), before);
+    await refreshWith(refresher);
+    const after = await loaded(type("a"));
+    assertEquals(after?.methods.run.description, "v2");
+    assertNotStrictEquals(after, before);
+  }, async ({ modelsDir, type }) => {
+    await Deno.writeTextFile(
+      join(modelsDir, "a.ts"),
+      modelCode(type("a"), "v1"),
+    );
+  });
+});
+
+Deno.test("refreshLocalModels: removes a source another CLI already removed from the catalog", async () => {
+  await withRepo(async ({ modelsDir, refresh, reindexElsewhere, type }) => {
+    await loaded(type("a"));
+    await Deno.remove(join(modelsDir, "a.ts"));
+    await reindexElsewhere();
+    await refresh();
+    assertEquals(await loaded(type("a")), undefined);
+  }, async ({ modelsDir, type }) => {
+    await Deno.writeTextFile(
+      join(modelsDir, "a.ts"),
+      modelCode(type("a"), "v1"),
+    );
+  });
+});
+
+Deno.test("refreshLocalModels: replaces a type another CLI already renamed", async () => {
+  await withRepo(async ({ modelsDir, refresh, reindexElsewhere, type }) => {
+    await loaded(type("a"));
+    await Deno.writeTextFile(
+      join(modelsDir, "a.ts"),
+      modelCode(type("new"), "v2"),
+    );
+    await reindexElsewhere();
+    await refresh();
+    assertEquals(await loaded(type("a")), undefined);
+    assertEquals((await loaded(type("new")))?.methods.run.description, "v2");
+  }, async ({ modelsDir, type }) => {
+    await Deno.writeTextFile(
+      join(modelsDir, "a.ts"),
+      modelCode(type("a"), "v1"),
+    );
+  });
+});
+
+Deno.test("refreshLocalModels: reconciles an add-on another CLI already reindexed", async () => {
+  await withRepo(async ({ modelsDir, refresh, reindexElsewhere, type }) => {
+    await loaded(type("b"));
+    await Deno.writeTextFile(
+      join(modelsDir, "b_extra.ts"),
+      addOnCode(type("b"), "a2", "renamed"),
+    );
+    await reindexElsewhere();
+    await refresh();
+    const after = await loaded(type("b"));
+    assertEquals(after?.methods.extra, undefined);
+    assertEquals(after?.methods.renamed?.description, "a2");
+  }, async ({ modelsDir, type }) => {
+    await Deno.writeTextFile(
+      join(modelsDir, "b.ts"),
+      modelCode(type("b"), "base"),
+    );
+    await Deno.writeTextFile(
+      join(modelsDir, "b_extra.ts"),
+      addOnCode(type("b"), "a1"),
+    );
+  });
+});
+
+Deno.test("refreshLocalModels: detaches an add-on another CLI already removed", async () => {
+  await withRepo(async ({ modelsDir, refresh, reindexElsewhere, type }) => {
+    await loaded(type("b"));
+    await Deno.remove(join(modelsDir, "b_extra.ts"));
+    await reindexElsewhere();
+    await refresh();
+    const after = await loaded(type("b"));
+    assertEquals(after?.methods.extra, undefined);
+    assertEquals(after?.methods.run.description, "base");
+  }, async ({ modelsDir, type }) => {
+    await Deno.writeTextFile(
+      join(modelsDir, "b.ts"),
+      modelCode(type("b"), "base"),
+    );
+    await Deno.writeTextFile(
+      join(modelsDir, "b_extra.ts"),
+      addOnCode(type("b"), "a1"),
+    );
+  });
+});
+
+Deno.test("refreshLocalModels: a helper-only edit indexed elsewhere replaces the schema and worker bundle", async () => {
+  const importLine = 'import { Result } from "./_lib/result.ts";';
+  const oldHelper = `export const Result = globalThis.__swamp_zod.z.object({
+    outcome: globalThis.__swamp_zod.z.enum(["succeeded", "failed"]),
+    error_code: globalThis.__swamp_zod.z.string().nullable(),
+    failed_step: globalThis.__swamp_zod.z.string().nullable(),
+  });`;
+  const newHelper =
+    `export const Result = globalThis.__swamp_zod.z.discriminatedUnion("outcome", [
+    globalThis.__swamp_zod.z.object({outcome: globalThis.__swamp_zod.z.literal("succeeded")}),
+    globalThis.__swamp_zod.z.object({
+      outcome: globalThis.__swamp_zod.z.literal("failed"),
+      error_code: globalThis.__swamp_zod.z.string().nullable(),
+      failed_step: globalThis.__swamp_zod.z.string().nullable(),
+    }),
+  ]);`;
+  // Model the bundler's inclusion of this fixture's imported module. The
+  // source graph still reads the real import and helper files from disk.
+  const helperBundler: typeof copyingBundler = async (_cmd, args) => {
+    const entry = args[args.length - 1];
+    const source = await Deno.readTextFile(entry);
+    if (!source.includes(importLine)) return copyingBundler(_cmd, args);
+    const helper = await Deno.readTextFile(
+      join(dirname(entry), "_lib", "result.ts"),
+    );
+    await Deno.writeTextFile(
+      args[args.indexOf("-o") + 1],
+      source.replace(
+        importLine,
+        helper.replace("export const Result", "const Result"),
+      ),
+    );
+    return { stdout: "", stderr: "", code: 0 };
+  };
+  await withRepo(async ({ modelsDir, refresh, reindexElsewhere, type }) => {
+    const entry = join(modelsDir, "a.ts");
+    const entryBefore = await Deno.readTextFile(entry);
+    const before = (await loaded(type("a")))!;
+    const oldFingerprint = before.sourceFingerprint;
+    const oldJs = await before.bundleSourceFactory!();
+    assertEquals(
+      before.methods.run.arguments.safeParse({ outcome: "succeeded" }).success,
+      false,
+    );
+    await Deno.writeTextFile(join(modelsDir, "_lib", "result.ts"), newHelper);
+    await reindexElsewhere();
+    assertStrictEquals(await loaded(type("a")), before);
+    await refresh();
+    const after = (await loaded(type("a")))!;
+    assertEquals(after.version, before.version);
+    assertEquals(await Deno.readTextFile(entry), entryBefore);
+    assertEquals(
+      after.methods.run.arguments.safeParse({ outcome: "succeeded" }).success,
+      true,
+    );
+    assertEquals(
+      after.methods.run.arguments.safeParse({ outcome: "failed" }).success,
+      false,
+    );
+    assertNotStrictEquals(after.sourceFingerprint, oldFingerprint);
+    const newJs = await after.bundleSourceFactory!();
+    assertNotStrictEquals(newJs, oldJs);
+    assertStringIncludes(newJs, "discriminatedUnion");
+  }, async ({ modelsDir, type }) => {
+    await Deno.mkdir(join(modelsDir, "_lib"));
+    await Deno.writeTextFile(join(modelsDir, "_lib", "result.ts"), oldHelper);
+    await Deno.writeTextFile(
+      join(modelsDir, "a.ts"),
+      importLine + "\n" + modelCode(type("a"), "unchanged").replace(
+        "      arguments: z.object({}),",
+        "      arguments: Result,",
+      ),
+    );
+  }, helperBundler);
 });

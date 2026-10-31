@@ -1406,6 +1406,8 @@ export interface AccessReloadResponse {
 
 export interface ServeReloadResponse {
   success: boolean;
+  /** Local behavior sources could not be refreshed; other reload stages completed. */
+  localRefreshFailed?: boolean;
   reloadedCount: number;
   triggerOverridesChanged?: number;
   workflowsReloaded?: number;

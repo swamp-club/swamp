@@ -2601,7 +2601,11 @@ export async function handleServeReload(
           { count: result.webhooksReloaded, who },
         );
       }
+    }
 
+    // A local behavior failure does not make the separate audit configuration
+    // stale, and the reload finished every configuration stage before reporting it.
+    if (result.success || result.localRefreshFailed) {
       if (ctx.auditEmitter && ctx.auditSinkRebuilder) {
         if (auditReloadInProgress) {
           logger.warn(
