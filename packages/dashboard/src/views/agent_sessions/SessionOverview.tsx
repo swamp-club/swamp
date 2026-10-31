@@ -32,6 +32,7 @@ import {
 } from "../../lib/agent_session_view.ts";
 import type { AgentSessionRecord } from "../../lib/agent_sessions/record.ts";
 import { InvocationIcon, LabelMix } from "./SessionsTable.tsx";
+import { repoLabel } from "../../client/agent_sessions.ts";
 import {
   formatCompactCount,
   formatDuration,
@@ -171,7 +172,7 @@ export function SessionStats(
         <>
           <InvocationIcon invocation={record.invocation} />
           <span className="as-stats-who">
-            <strong>{record.repo}</strong>
+            <strong title={record.repo}>{repoLabel(record.repo)}</strong>
             <span className="as-muted">
               {harness}
               {record.model && ` · ${record.model}`} ·{" "}

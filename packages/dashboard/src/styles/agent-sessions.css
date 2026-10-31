@@ -987,3 +987,28 @@
   align-items: center;
   gap: 10px;
 }
+
+/* The repo filter: a select styled like the filter chips. */
+.as-select {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 3px 10px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-1);
+  max-width: 260px;
+  cursor: pointer;
+}
+
+.as-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.as-repo {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

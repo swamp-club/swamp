@@ -19,12 +19,15 @@
 
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import {
   filterRows,
   formatSessionSort,
   type HeadlessFilter,
   pageOf,
   parseSessionSort,
+  repoLabel,
+  reposOf,
   SESSION_LIST_LIMIT,
   SESSION_PAGE_SIZE,
   type SessionSort,
@@ -58,7 +61,27 @@ function parseHeadless(raw: string | null): HeadlessFilter {
  * viewer can read a session.
  */
 export function AgentSessions() {
-  const sessions = useSessionList();
+  const [repo, setRepo] = useQueryState<string | undefined>(
+    "repo",
+    undefined,
+    (raw) => (raw === null || raw === "" ? undefined : raw),
+    (v) => v ?? null,
+  );
+  const sessions = useSessionList(repo);
+  // Every repo seen in any list read, so choosing one keeps the others on
+  // offer while the list holds only that repo's sessions.
+  const [knownRepos, setKnownRepos] = useState<readonly string[]>([]);
+  useEffect(() => {
+    setKnownRepos((current) => {
+      const next = [
+        ...new Set([...current, ...reposOf(sessions.list.rows)]),
+      ].sort((a, b) => a.localeCompare(b));
+      return next.length === current.length ? current : next;
+    });
+  }, [sessions.list.rows]);
+  const repoOptions = repo === undefined || knownRepos.includes(repo)
+    ? knownRepos
+    : [...knownRepos, repo].sort((a, b) => a.localeCompare(b));
   const [headless, setHeadless] = useQueryState<HeadlessFilter>(
     "headless",
     "all",
@@ -85,7 +108,10 @@ export function AgentSessions() {
     formatSessionSort,
   );
 
-  const rows = sortRows(filterRows(sessions.list.rows, headless), sort);
+  const rows = sortRows(
+    filterRows(sessions.list.rows, headless, repo),
+    sort,
+  );
   const shown = pageOf(rows, page);
   const open = sessions.list.rows.find((r) => r.name === openName) ?? null;
 
@@ -102,6 +128,27 @@ export function AgentSessions() {
           </span>
         </h1>
         <div className="header-right">
+          {repoOptions.length > 1 || repo !== undefined
+            ? (
+              <select
+                className="as-select"
+                aria-label="Repo"
+                title={repo ?? "All repos"}
+                value={repo ?? ""}
+                onChange={(e) => {
+                  setRepo(e.target.value === "" ? undefined : e.target.value);
+                  setPage(0);
+                }}
+              >
+                <option value="">All repos</option>
+                {repoOptions.map((r) => (
+                  <option key={r} value={r} title={r}>
+                    {repoLabel(r)}
+                  </option>
+                ))}
+              </select>
+            )
+            : null}
           <div className="as-chips" role="group" aria-label="Filter sessions">
             {HEADLESS_FILTERS.map(([value, label]) => (
               <button

@@ -30,6 +30,7 @@ import {
   AGENT_SESSION_LIMITS,
   AGENT_SESSION_PARENT_TAG,
   AGENT_SESSION_QUERY_PREDICATE,
+  AGENT_SESSION_REPO_TAG,
   AGENT_SESSION_SCHEMA_VERSION,
   AGENT_SESSION_STARTED_AT_TAG,
   AGENT_SESSION_SUMMARY_TAG,
@@ -39,6 +40,7 @@ import {
   agentSessionDataName,
   type AgentSessionRecord,
   AgentSessionRecordV2Schema,
+  agentSessionRepoCondition,
   agentSessionSummary,
   agentSessionTags,
   readAgentSessionRecord,
@@ -540,10 +542,12 @@ Deno.test("agentSessionTags: writes the list tags of a top-level session", () =>
     Object.keys(tags).sort(),
     [
       AGENT_SESSION_HEADLESS_TAG,
+      AGENT_SESSION_REPO_TAG,
       AGENT_SESSION_STARTED_AT_TAG,
       AGENT_SESSION_SUMMARY_TAG,
     ].sort(),
   );
+  assertEquals(tags[AGENT_SESSION_REPO_TAG], session.repo);
   // Rewritten with milliseconds, so every tag sorts in time order.
   assertEquals(tags[AGENT_SESSION_STARTED_AT_TAG], "2026-10-29T15:58:12.000Z");
   assertEquals(tags[AGENT_SESSION_HEADLESS_TAG], "false");
@@ -561,6 +565,21 @@ Deno.test("agentSessionTags: a headless child carries its parent id", () => {
   }));
   assertEquals(tags[AGENT_SESSION_PARENT_TAG], "parent-1");
   assertEquals(tags[AGENT_SESSION_HEADLESS_TAG], "true");
+  // Subagent records carry the repo too, so a repo filter finds them.
+  assertEquals(tags[AGENT_SESSION_REPO_TAG], sampleSession().repo);
+});
+
+Deno.test("agentSessionRepoCondition: quotes the repo as one string literal", () => {
+  assertEquals(
+    agentSessionRepoCondition("git.example.test/acme/platform"),
+    'tags.repo == "git.example.test/acme/platform"',
+  );
+  assertEquals(
+    agentSessionRepoCondition('x" || true || "'),
+    'tags.repo == "x\\" || true || \\""',
+  );
+  assertThrows(() => agentSessionRepoCondition(""));
+  assertThrows(() => agentSessionRepoCondition("r".repeat(201)));
 });
 
 Deno.test("readAgentSessionSummary: returns undefined for anything but a valid summary", () => {

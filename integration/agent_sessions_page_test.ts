@@ -42,6 +42,7 @@ import {
   appendWindow,
   childrenPayload,
   detailPayload,
+  filterRows,
   listPayload,
   parseDetailReply,
   parseListReply,
@@ -78,6 +79,7 @@ async function writeSession(
   repo: ServeRepo,
   owner: Definition,
   record: AgentSessionRecord,
+  tags: Record<string, string> = agentSessionTags(record),
 ): Promise<void> {
   const { writeResource } = createResourceWriter(
     repo.repoContext.unifiedDataRepo,
@@ -94,7 +96,7 @@ async function writeSession(
     "session",
     agentSessionDataName(record.harness, record.id),
     record,
-    { tags: agentSessionTags(record) },
+    { tags },
   );
 }
 
@@ -200,6 +202,68 @@ Deno.test("agent sessions page: the list pages newest first by cursor, in serve'
     const all = appendWindow(first, older);
     assertEquals(names(all.rows), newestFirst);
     assertEquals(all.nextCursor, undefined);
+  });
+});
+
+Deno.test("agent sessions page: a repo filters in the query, keeps sessions written before the repo tag, and no repo string escapes its literal", async () => {
+  await withSessions(async (repo) => {
+    const ctx = createServeCtx(repo, [ALLOW_DATA]);
+    const importer = await saveModel(repo, "agent-sessions-more");
+    const [edits, , , headless] = fixtureSessions();
+    // Written before swamp-club#4211: no repo tag, the repo only in the summary.
+    const legacy: AgentSessionRecord = {
+      ...edits,
+      id: "legacy-0001",
+      startedAt: "2026-01-02T03:04:05.000Z",
+    };
+    const { repo: _dropped, ...legacyTags } = agentSessionTags(legacy);
+    await writeSession(repo, importer, legacy, legacyTags);
+    const legacyElsewhere: AgentSessionRecord = {
+      ...legacy,
+      id: "legacy-0002",
+      repo: "acme-elsewhere",
+    };
+    const { repo: _alsoDropped, ...elsewhereTags } = agentSessionTags(
+      legacyElsewhere,
+    );
+    await writeSession(repo, importer, legacyElsewhere, elsewhereTags);
+    const tricky: AgentSessionRecord = {
+      ...headless,
+      id: "tricky-0001",
+      repo: 'x" || true || "',
+    };
+    await writeSession(repo, importer, tricky);
+
+    const listed = async (repoId: string) => {
+      const reply = await ask(
+        ctx,
+        "data.query",
+        listPayload(undefined, repoId),
+      );
+      assertEquals(reply.error, undefined);
+      const list = parseListReply(reply.data);
+      return {
+        fromServe: list.rows.map((r) => r.name).sort(),
+        shown: filterRows(list.rows, "all", repoId).map((r) => r.name).sort(),
+      };
+    };
+    const name = (s: AgentSessionRecord) =>
+      agentSessionDataName(s.harness, s.id);
+
+    // Tagged sessions of the repo, plus every untagged one, come back; the
+    // page keeps the untagged one whose summary names the repo.
+    const platform = await listed("acme-platform");
+    const [, long] = fixtureSessions();
+    assertEquals(
+      platform.fromServe,
+      [edits, long, legacy, legacyElsewhere].map(name).sort(),
+    );
+    assertEquals(platform.shown, [edits, long, legacy].map(name).sort());
+
+    // A repo string with quotes matches only itself.
+    const odd = await listed(tricky.repo);
+    assertEquals(odd.shown, [name(tricky)]);
+    assert(!odd.fromServe.includes(name(edits)));
   });
 });
 

@@ -18,9 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /** @jsxRuntime automatic */
+/** @jsxImportSource react */
 import type { KeyboardEvent } from "react";
 import {
   firstSortDir,
+  repoLabel,
+  rowRepo,
   type SessionRow,
   type SessionSort,
   type SessionSortKey,
@@ -282,7 +285,12 @@ export function SessionsTable(
                     (row.headless ? "headless" : "unknown")}
                 />
               </td>
-              <td>{row.summary?.repo ?? "—"}</td>
+              <td className="as-repo" title={rowRepo(row)}>
+                {(() => {
+                  const repo = rowRepo(row);
+                  return repo === undefined ? "—" : repoLabel(repo);
+                })()}
+              </td>
               <td
                 title={row.summary?.harnessVersion
                   ? `${row.summary.harness} ${row.summary.harnessVersion}`

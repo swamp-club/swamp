@@ -22,7 +22,7 @@
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import { renderToStaticMarkup } from "react-dom/server";
-import { VirtualRows, visibleWindow } from "./VirtualRows.tsx";
+import { OVERSCAN_ROWS, VirtualRows, visibleWindow } from "./VirtualRows.tsx";
 
 Deno.test("visibleWindow: the rows in view plus overscan", () => {
   assertEquals(visibleWindow(0, 100, 20, 500, 2), { first: 0, end: 7 });
@@ -40,7 +40,9 @@ Deno.test("visibleWindow: always a bounded slice of the rows", () => {
     (scrollTop, height, rowHeight, count) => {
       const { first, end } = visibleWindow(scrollTop, height, rowHeight, count);
       assert(0 <= first && first <= end && end <= count);
-      assert(end - first <= Math.ceil(height / rowHeight) + 2 * 8 + 1);
+      assert(
+        end - first <= Math.ceil(height / rowHeight) + 2 * OVERSCAN_ROWS + 1,
+      );
     },
   ));
 });

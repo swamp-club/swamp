@@ -55,6 +55,12 @@ export const AGENT_SESSION_HEADLESS_TAG = "headless";
 /** Tag key that carries the session's list summary as compact JSON. */
 export const AGENT_SESSION_SUMMARY_TAG = "summary";
 
+/**
+ * Tag key that carries the session's repo, the record's `repo` as is, so a
+ * list can filter by repo in the query (swamp-club#4211).
+ */
+export const AGENT_SESSION_REPO_TAG = "repo";
+
 /** The predicate that lists every agent session through `data.query`. */
 export const AGENT_SESSION_QUERY_PREDICATE =
   `tags.type == "${AGENT_SESSION_TYPE_TAG}"`;
@@ -485,6 +491,21 @@ export function agentSessionChildrenPredicate(parentSessionId: string): string {
   return `${AGENT_SESSION_QUERY_PREDICATE} && tags.${AGENT_SESSION_PARENT_TAG} == "${parentSessionId}"`;
 }
 
+/**
+ * The condition that matches sessions whose `repo` tag is `repo`. The value
+ * is any string a record's `repo` may hold, quoted as a CEL string literal
+ * (JSON's escapes are a subset of CEL's), so no value can change the
+ * predicate's meaning. Throws on a value the record schema would refuse.
+ */
+export function agentSessionRepoCondition(repo: string): string {
+  if (repo.length === 0 || repo.length > L.nameLength) {
+    throw new Error(
+      `agent session repo must be 1 to ${L.nameLength} characters`,
+    );
+  }
+  return `tags.${AGENT_SESSION_REPO_TAG} == ${JSON.stringify(repo)}`;
+}
+
 const CountSchema = z.number().int().nonnegative();
 
 /**
@@ -587,6 +608,7 @@ export function agentSessionTags(
       ? {}
       : { [AGENT_SESSION_PARENT_TAG]: record.parentSessionId }),
     [AGENT_SESSION_HEADLESS_TAG]: String(record.invocation === "headless"),
+    [AGENT_SESSION_REPO_TAG]: record.repo,
     [AGENT_SESSION_SUMMARY_TAG]: JSON.stringify(agentSessionSummary(record)),
   };
 }

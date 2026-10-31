@@ -68,9 +68,9 @@ export interface SessionListState extends ListState {
  * A re-read of the newest window (a reconnect, a retry) drops the older
  * ones, whose cursor it no longer follows.
  */
-export function useSessionList(): SessionListState {
+export function useSessionList(repo?: string): SessionListState {
   const { request } = useSwamp();
-  const req = useRequest("data.query", listPayload());
+  const req = useRequest("data.query", listPayload(undefined, repo));
   const first = useMemo(() => parseListReply(replyData(req.data)), [req.data]);
   const [older, setOlder] = useState<SessionList | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -90,7 +90,7 @@ export function useSessionList(): SessionListState {
     setLoadingOlder(true);
     setOlderError(null);
     try {
-      const reply = await request("data.query", listPayload(cursor));
+      const reply = await request("data.query", listPayload(cursor, repo));
       if (at !== generation.current) return;
       setOlder(appendWindow(list, parseListReply(replyData(reply))));
     } catch (error) {
@@ -99,7 +99,7 @@ export function useSessionList(): SessionListState {
     } finally {
       if (at === generation.current) setLoadingOlder(false);
     }
-  }, [cursor, list, request]);
+  }, [cursor, list, repo, request]);
   return {
     list,
     loading: req.loading,
@@ -167,11 +167,15 @@ export function useChildRecords(): {
   const [records, setRecords] = useState<ReadonlyMap<string, ChildRecord>>(
     () => new Map(),
   );
+  // Names asked for, read synchronously, so two clicks before a re-render
+  // still send one request.
+  const asked = useRef(new Set<string>());
   const put = useCallback((name: string, value: ChildRecord) => {
     setRecords((current) => new Map(current).set(name, value));
   }, []);
   const load = useCallback(async (row: SessionRow) => {
-    if (records.has(row.name)) return;
+    if (asked.current.has(row.name)) return;
+    asked.current.add(row.name);
     put(row.name, { state: "loading" });
     try {
       const reply = await request("data.get", detailPayload(row));
@@ -180,12 +184,17 @@ export function useChildRecords(): {
         reading: parseDetailReply(replyData(reply)),
       });
     } catch (error) {
+      // A failed read can be asked for again.
+      asked.current.delete(row.name);
       put(row.name, {
         state: "error",
         error: error instanceof Error ? error.message : String(error),
       });
     }
-  }, [records, request, put]);
-  const reset = useCallback(() => setRecords(new Map()), []);
+  }, [request, put]);
+  const reset = useCallback(() => {
+    asked.current = new Set();
+    setRecords(new Map());
+  }, []);
   return { records, load, reset };
 }

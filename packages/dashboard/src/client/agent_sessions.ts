@@ -37,6 +37,7 @@ import {
   AGENT_SESSION_TOP_LEVEL_PREDICATE,
   agentSessionChildrenPredicate,
   type AgentSessionReading,
+  agentSessionRepoCondition,
   type AgentSessionSummary,
   readAgentSessionRecord,
   readAgentSessionSummary,
@@ -59,6 +60,8 @@ export interface SessionRow {
   readonly startedAt: string;
   readonly parentSessionId?: string;
   readonly headless: boolean;
+  /** The `repo` tag; absent on sessions written before it (swamp-club#4211). */
+  readonly repo?: string;
   /** Absent when the summary tag does not read; the row still opens. */
   readonly summary?: AgentSessionSummary;
 }
@@ -88,10 +91,33 @@ export function probePayload(): Record<string, unknown> {
   };
 }
 
-/** A window of sessions, newest first: the first, or the one after `cursor`. */
-export function listPayload(cursor?: string): Record<string, unknown> {
+/**
+ * The list predicate: top-level sessions, and with a repo, those whose
+ * `repo` tag is it. Sessions written before the tag existed pass too, and
+ * `filterRows` keeps those whose summary names the repo. A repo the record
+ * schema would refuse lists everything rather than throwing.
+ */
+export function listPredicate(repo?: string): string {
+  if (repo === undefined) return AGENT_SESSION_TOP_LEVEL_PREDICATE;
+  let condition: string;
+  try {
+    condition = agentSessionRepoCondition(repo);
+  } catch {
+    return AGENT_SESSION_TOP_LEVEL_PREDICATE;
+  }
+  return `${AGENT_SESSION_TOP_LEVEL_PREDICATE} && (${condition} || !has(tags.repo))`;
+}
+
+/**
+ * A window of sessions, newest first: the first, or the one after `cursor`,
+ * of one repo's sessions or of all.
+ */
+export function listPayload(
+  cursor?: string,
+  repo?: string,
+): Record<string, unknown> {
   return {
-    predicate: AGENT_SESSION_TOP_LEVEL_PREDICATE,
+    predicate: listPredicate(repo),
     select: AGENT_SESSION_LIST_SELECT,
     limit: SESSION_LIST_LIMIT,
     sort: SESSION_LIST_SORT,
@@ -145,6 +171,7 @@ function readRow(value: unknown): SessionRow | null {
     startedAt: tag("startedAt") ?? "",
     ...(parentSessionId === undefined ? {} : { parentSessionId }),
     headless: tag("headless") === "true",
+    ...(tag("repo") === undefined ? {} : { repo: tag("repo") }),
     ...(summary === undefined ? {} : { summary }),
   };
 }
@@ -194,12 +221,44 @@ export function appendWindow(
   };
 }
 
+/** A row's repo: its tag, or for a session written before the tag, its summary's. */
+export function rowRepo(row: SessionRow): string | undefined {
+  return row.repo ?? row.summary?.repo;
+}
+
 export function filterRows(
   rows: readonly SessionRow[],
   headless: HeadlessFilter,
+  repo?: string,
 ): SessionRow[] {
-  if (headless === "all") return [...rows];
-  return rows.filter((r) => r.headless === (headless === "headless"));
+  return rows.filter((r) =>
+    (headless === "all" || r.headless === (headless === "headless")) &&
+    (repo === undefined || rowRepo(r) === repo)
+  );
+}
+
+/** The distinct repos of the rows, A to Z. */
+export function reposOf(rows: readonly SessionRow[]): string[] {
+  const repos = new Set<string>();
+  for (const row of rows) {
+    const repo = rowRepo(row);
+    if (repo !== undefined) repos.add(repo);
+  }
+  return [...repos].sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * A repo identity as the table shows it: `owner/name` for a remote URL such
+ * as `git.example.test/acme/platform`, the last folder for a path. The full
+ * identity goes in the cell's title.
+ */
+export function repoLabel(repo: string): string {
+  const parts = repo.split("/").filter((p) => p !== "");
+  if (parts.length === 0) return repo;
+  if (parts.length >= 3 && parts[0].includes(".")) {
+    return parts.slice(-2).join("/");
+  }
+  return parts[parts.length - 1];
 }
 
 /** The list's sortable columns. */
@@ -263,7 +322,7 @@ function sortValue(
     case "type":
       return s?.invocation ?? (row.headless ? "headless" : "unknown");
     case "repo":
-      return s?.repo;
+      return rowRepo(row);
     case "harness":
       return s?.harness;
     case "started":

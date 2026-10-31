@@ -181,13 +181,14 @@ Re-importing writes a new version of the same item.
 The extension's output spec sets `type: agent-session`, which replaces the
 writer's own `type: resource`. Output-spec tags are the same for every item,
 so the per-session tags are passed on each write instead: `swampUserId`, and
-the four list tags from `agentSessionTags(record)`:
+the five list tags from `agentSessionTags(record)`:
 
 | Tag               | Value                                                           | Used for                                  |
 | ----------------- | --------------------------------------------------------------- | ----------------------------------------- |
 | `startedAt`       | the record's `startedAt` as `toISOString()` writes it           | newest-first sort (swamp-club#4177)       |
 | `parentSessionId` | the parent's id; absent on a top-level session                  | listing top-level sessions, and children  |
 | `headless`        | `"true"` when `invocation` is `headless`, else `"false"`        | the headless filter, in the query         |
+| `repo`            | the record's `repo` as is, on subagent records too              | the repo filter, in the query (#4211)     |
 | `summary`         | compact JSON matching `AgentSessionSummaryV1Schema`             | the list row                              |
 
 `startedAt` is rewritten so every tag has milliseconds and sorts in time

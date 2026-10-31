@@ -34,11 +34,14 @@ import {
   filterRows,
   formatSessionSort,
   listPayload,
+  listPredicate,
   pageOf,
   parseDetailReply,
   parseListReply,
   parseSessionSort,
   probePayload,
+  repoLabel,
+  reposOf,
   SESSION_LIST_LIMIT,
   SESSION_PAGE_SIZE,
   type SessionRow,
@@ -141,7 +144,12 @@ Deno.test("sortRows: by a figure either way, ties keep newest first", () => {
 
 Deno.test("sortRows: text A to Z, and a row without a summary goes last", () => {
   const [first, ...rest] = listed();
-  const bare: SessionRow = { ...first, name: "zz-bare", summary: undefined };
+  const bare: SessionRow = {
+    ...first,
+    name: "zz-bare",
+    summary: undefined,
+    repo: undefined,
+  };
   for (const dir of ["asc", "desc"] as const) {
     const sorted = sortRows([bare, ...rest, first], { key: "repo", dir });
     assertEquals(sorted.at(-1)!.name, "zz-bare");
@@ -212,6 +220,54 @@ Deno.test("appendWindow: adds the older window, the newer row wins, the older cu
   assertEquals(merged.rows[1].headless, b.headless);
   assertEquals(merged.nextCursor, undefined);
   assertEquals(merged.limited, false);
+});
+
+Deno.test("listPredicate: a repo adds its tag, and untagged sessions still pass", () => {
+  assertEquals(listPredicate(), AGENT_SESSION_TOP_LEVEL_PREDICATE);
+  assertEquals(
+    listPredicate("acme-platform"),
+    `${AGENT_SESSION_TOP_LEVEL_PREDICATE} && (tags.repo == "acme-platform" || !has(tags.repo))`,
+  );
+  // A repo the record schema refuses lists everything instead of throwing.
+  assertEquals(listPredicate(""), AGENT_SESSION_TOP_LEVEL_PREDICATE);
+  assertEquals(listPayload("c", "r").predicate, listPredicate("r"));
+});
+
+Deno.test("filterRows: a repo matches the tag, or the summary when there is no tag", () => {
+  const [a, b, c] = listed();
+  const tagged = { ...a, repo: "git.example.test/acme/one" };
+  const untagged = { ...b, repo: undefined };
+  const rows = [tagged, untagged, c];
+  assertEquals(
+    filterRows(rows, "all", "git.example.test/acme/one").map((r) => r.name),
+    [tagged.name],
+  );
+  assertEquals(
+    filterRows(rows, "all", untagged.summary!.repo).map((r) => r.name)
+      .includes(untagged.name),
+    true,
+  );
+  assertEquals(reposOf(rows), [
+    "acme-platform",
+    "git.example.test/acme/one",
+  ]);
+});
+
+Deno.test("parseListReply: reads the repo tag", () => {
+  const [session] = fixtureSessions();
+  const row = listRow(session);
+  const list = parseListReply(reply([row]));
+  assertEquals(list.rows[0].repo, session.repo);
+});
+
+Deno.test("repoLabel: owner/name for a remote, the last folder for a path", () => {
+  assertEquals(
+    repoLabel("git.swamp-club.com/swamp-club/swamp-extensions"),
+    "swamp-club/swamp-extensions",
+  );
+  assertEquals(repoLabel("~/code/acme"), "acme");
+  assertEquals(repoLabel("acme-platform"), "acme-platform");
+  assertEquals(repoLabel("/"), "/");
 });
 
 Deno.test("pageOf: pages of the page size, clamped", () => {

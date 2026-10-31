@@ -29,6 +29,7 @@ export {
   AGENT_SESSION_TOP_LEVEL_PREDICATE,
   agentSessionChildrenPredicate,
   agentSessionDataName,
+  agentSessionRepoCondition,
   readAgentSessionRecord,
   readAgentSessionSummary,
 } from "../../../../../src/domain/agent_sessions/session_record.ts";
