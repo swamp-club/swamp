@@ -586,6 +586,14 @@ export interface SqliteCommitStoreOptions {
 }
 
 /**
+ * How many more times a serve-mode checkout's copy rebuilds a partition that
+ * went stale again because other processes reading through serve keep
+ * landing commits on it (swamp-club#4207). Each retry follows another
+ * process's progress, so this bounds only a pathological run.
+ */
+const FOLLOWER_STALE_RETRIES = 50;
+
+/**
  * The most commits one group commit appends in a transaction
  * (swamp-club#3915).
  */
@@ -1251,6 +1259,7 @@ export class SqliteCommitStore implements CommitStore {
   async #append(
     commit: Commit,
     retried: boolean,
+    staleRetries = 0,
   ): Promise<CommitStoreAppendResult> {
     const namespace = commit.namespace;
     const partitionKey = commit.partition.toString();
@@ -1291,12 +1300,20 @@ export class SqliteCommitStore implements CommitStore {
     }
     // Another connection wrote this partition: rebuild it from the file.
     this.#cache.delete(cacheKey);
-    if (retried) {
+    // A serve-mode checkout's copy is caught up from serve's feed by every
+    // process reading through serve, none holding the writer lock: another
+    // may land commits between this rebuild and the next transaction, each
+    // time progress, and this commit is then a duplicate or still to append
+    // (swamp-club#4207). A solo store's writer holds the lock, so a second
+    // stale partition is another process writing it.
+    const mayRetry = !retried ||
+      (this.#follower && staleRetries < FOLLOWER_STALE_RETRIES);
+    if (!mayRetry) {
       throw new Error(
         `Partition ${partitionKey} changed in commits.db while appending: another process is writing the store`,
       );
     }
-    return await this.#append(commit, true);
+    return await this.#append(commit, true, retried ? staleRetries + 1 : 0);
   }
 
   /**

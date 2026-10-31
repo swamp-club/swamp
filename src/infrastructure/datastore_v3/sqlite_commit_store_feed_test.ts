@@ -184,3 +184,37 @@ Deno.test("SqliteCommitStore.onHeadMoved: called after an append and a leader's 
     assertEquals(seen, [first.cursor]);
   });
 });
+
+Deno.test("SqliteCommitStore.append: a serve-mode copy takes a commit another process keeps landing commits around, however often its partition goes stale (swamp-club#4207)", async () => {
+  // Every CLI process reading through serve catches the same copy up from
+  // serve's feed, none holding the writer lock: between this process's
+  // rebuild of a stale partition and its transaction, another may land
+  // more commits, more than once.
+  const dir = await Deno.makeTempDir({ prefix: "swamp-commit-feed-" });
+  const path = join(dir, "commits.db");
+  const here = SqliteCommitStore.open(path, { follower: true });
+  const other = SqliteCommitStore.open(path, { follower: true });
+  try {
+    const commits = await Promise.all([1, 2, 3, 4, 5, 6].map((s) => save(s)));
+    await here.append(commits[0]);
+    await other.append(commits[1]);
+    const landing = (async () => {
+      for (const commit of commits.slice(2)) await other.append(commit);
+    })();
+    const result = await here.append(commits[2]);
+    await landing;
+    assertEquals(["appended", "duplicate"].includes(result.kind), true);
+    assertEquals(
+      (await here.head(commits[0].namespace, commits[0].partition)).seq,
+      6,
+    );
+  } finally {
+    await here.close();
+    await other.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
