@@ -33,6 +33,12 @@
  * commit the holder forwards under the lease, and refuses a commit to the
  * partition a live fenced lease covers unless it names that lease.
  *
+ * An explicit lease (swamp-club#4195) is also kept in the leader's shared
+ * control plane ({@link PersistedLeaseStore}), so a new leader adopts it
+ * ({@link DatastoreLockLeases.adopt}) and honours it until it expires.
+ * Shutdown never touches those records: a deposed leader's shutdown must
+ * not end the leases its successor keeps.
+ *
  * See "Model locks" under "Team mode: the CLI's serve upstream" in
  * `design/enablers/datastores.md`.
  *
@@ -41,7 +47,14 @@
 
 import type { DataNameMarks } from "../domain/datastore_v3/commit_store.ts";
 import type { PartitionKey } from "../domain/datastore_v3/partition_key.ts";
+import {
+  type PersistedLease,
+  persistedLeaseExpiresAt,
+  type PersistedLeaseStore,
+} from "../domain/datastore_v3/persisted_lease.ts";
+import { WRITER_LEASE_CLOCK_SKEW_MS } from "../domain/datastore_v3/writer_lease.ts";
 import { ModelType } from "../domain/models/model_type.ts";
+import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["serve", "datastore-locks"]);
@@ -55,13 +68,21 @@ export const DEFAULT_LOCK_TTL_MS = 30_000;
 /** The longest one acquire request waits at serve for a held lock. */
 export const MAX_LOCK_WAIT_MS = 10_000;
 /**
- * The longest an explicit lease (`swamp model lease acquire --for`) is held
- * between renewals (swamp-club#4121). Longer would let a caller keep serve's
- * own runs off a behavior for hours.
+ * The longest an explicit lease (`swamp behavior lease acquire --for`) is
+ * held between renewals (swamp-club#4121): a day, so a member can check one
+ * out before working offline (swamp-club#4195). Such a lease keeps serve's
+ * own runs off the behavior until it ends, so an admin can end one its
+ * holder abandoned (`swamp datastore lock release --force --behavior`).
  */
-export const MAX_HOLD_MS = 3_600_000;
+export const MAX_HOLD_MS = 86_400_000;
 /** The most leases one principal holds at once. */
 export const MAX_LEASES_PER_PRINCIPAL = 256;
+/** The longest wait between two tries of an adoption that keeps failing. */
+export const MAX_ADOPT_RETRY_MS = 30_000;
+/** How often removing an ended lease's kept record is tried. */
+const RECORD_REMOVE_ATTEMPTS = 3;
+/** The first wait before a failed adoption is tried again. */
+const ADOPT_RETRY_MS = 1_000;
 /** How often a waiting acquire tries the lock again. */
 const RETRY_INTERVAL_MS = 100;
 
@@ -249,6 +270,8 @@ export interface LiveLease {
   readonly principal: string;
   /** ISO time the lease ends unless renewed. */
   readonly expiresAt: string;
+  /** Whether it is an explicit lease (swamp-club#4195). */
+  readonly explicit: boolean;
 }
 
 /** A live fenced lease, as a commit check reads it. */
@@ -258,13 +281,45 @@ export interface FencedLease {
   readonly fence: number;
 }
 
+/**
+ * A forced release that ended the lease here but could not remove its kept
+ * record (swamp-club#4195): the next leader would adopt it again. Forcing
+ * the release again removes the record.
+ */
+export class LeaseRecordNotRemovedError extends Error {
+  constructor(readonly lockKey: string, cause: unknown) {
+    super(
+      `The lease on ${lockKey} ended, but its kept record could not be ` +
+        `removed, so the lease may return at the next leader takeover. ` +
+        `Force the release again once the control plane is reachable.`,
+      { cause },
+    );
+    this.name = "LeaseRecordNotRemovedError";
+  }
+}
+
 /** Who holds a lock a caller could not take, as far as it may be told. */
 export type LockHolder = "caller" | "other" | "serve";
 
 export type AcquireOutcome =
   | { readonly kind: "acquired"; readonly lease: AcquiredLease }
   | { readonly kind: "held"; readonly heldBy: LockHolder }
-  | { readonly kind: "too-many" };
+  | { readonly kind: "too-many" }
+  // An explicit lease the leader could not record, so a takeover would end
+  // it: refused rather than granted (swamp-club#4195).
+  | { readonly kind: "not-kept" };
+
+/**
+ * Where a leader keeps its explicit leases (swamp-club#4195), and the
+ * writer-lease fence it leads at: undefined while it does not lead, when
+ * nothing is recorded.
+ */
+export interface LeasePersistence {
+  readonly store: PersistedLeaseStore;
+  readonly leaderFence: () => number | undefined;
+  /** The skew allowed between two leaders' clocks; defaults to the writer lease's. */
+  readonly skewMs?: number;
+}
 
 export interface DatastoreLockLeasesOptions {
   /** Serve's own lock for `target`: the one its handlers take. */
@@ -276,6 +331,13 @@ export interface DatastoreLockLeasesOptions {
   readonly maxLeasesPerPrincipal?: number;
   readonly maxHoldMs?: number;
   readonly retryIntervalMs?: number;
+  /** Where explicit leases are kept across a takeover; none when absent. */
+  readonly persistence?: LeasePersistence;
+  /**
+   * The first wait before an adoption that failed is tried again; each
+   * retry doubles it, up to {@link MAX_ADOPT_RETRY_MS}.
+   */
+  readonly adoptRetryMs?: number;
 }
 
 interface Lease {
@@ -320,6 +382,31 @@ export class DatastoreLockLeases {
   readonly #lifetime = new AbortController();
   /** Acquires in flight, so shutdown waits for them to settle. */
   readonly #acquiring = new Set<Promise<unknown>>();
+  readonly #persistence: LeasePersistence | undefined;
+  /**
+   * Set while kept leases are being adopted: until then no lease may be
+   * taken, renewed, released or judged, or a caller could take a key an
+   * adopted lease holds (swamp-club#4195).
+   */
+  #adopting = false;
+  /**
+   * While adopting, the lock keys of kept leases not adopted yet: every key
+   * when the kept leases could not even be read. Serve's own runs wait on
+   * them ({@link whenAdopted}).
+   */
+  #pendingAdoption: ReadonlySet<string> | "all" = new Set();
+  readonly #adoptRetryMs: number;
+  /**
+   * An adoption that failed being tried again, with lease requests still
+   * waiting; awaited at shutdown.
+   */
+  #adoptRetry: Promise<void> | undefined;
+  /**
+   * Each lock key's last record write or removal: writes for one key run
+   * one at a time, so a renewal's write never lands after the removal of
+   * a lease that ended meanwhile.
+   */
+  readonly #recordWrites = new Map<string, Promise<void>>();
   #disposed = false;
 
   constructor(options: DatastoreLockLeasesOptions) {
@@ -332,6 +419,51 @@ export class DatastoreLockLeases {
       MAX_LEASES_PER_PRINCIPAL;
     this.#maxHoldMs = options.maxHoldMs ?? MAX_HOLD_MS;
     this.#retryIntervalMs = options.retryIntervalMs ?? RETRY_INTERVAL_MS;
+    this.#persistence = options.persistence;
+    this.#adopting = options.persistence !== undefined;
+    if (this.#adopting) this.#pendingAdoption = "all";
+    this.#adoptRetryMs = options.adoptRetryMs ?? ADOPT_RETRY_MS;
+  }
+
+  /**
+   * Whether kept leases are still being adopted. The API answers lease
+   * requests and commits with serve_not_leader until they are.
+   */
+  get adopting(): boolean {
+    return this.#adopting;
+  }
+
+  /**
+   * Whether serve's own lock for `lockKey` must not be taken yet: a kept
+   * lease on it, or possibly on it, is not adopted (swamp-club#4195).
+   */
+  adoptionPending(lockKey: string): boolean {
+    if (!this.#adopting) return false;
+    const pending = this.#pendingAdoption;
+    return pending === "all" || pending.has(lockKey);
+  }
+
+  /**
+   * Resolves once serve's own run may take its lock for `lockKey`: no kept
+   * lease on it is still being adopted (swamp-club#4195). Serve's runs take
+   * their locks apart from the lease API, so without this a run could take
+   * the lock of a behavior whose holder still holds its kept lease.
+   *
+   * @throws LockTimeoutError when it is still pending after `maxWaitMs`
+   */
+  async whenAdopted(lockKey: string, maxWaitMs: number): Promise<void> {
+    const started = this.#now();
+    while (this.adoptionPending(lockKey)) {
+      if (this.#disposed || this.#now() - started >= maxWaitMs) {
+        throw new LockTimeoutError(lockKey, null, this.#now() - started, {
+          message:
+            `Lock "${lockKey}" waits for a lease kept before this serve led to be adopted — timed out after ${
+              this.#now() - started
+            }ms`,
+        });
+      }
+      await delay(this.#retryIntervalMs, this.#lifetime.signal);
+    }
   }
 
   /** The TTL bounds, for the API's validation and its messages. */
@@ -458,6 +590,25 @@ export class DatastoreLockLeases {
     this.#leases.set(lease.id, lease);
     this.#byKey.set(key, lease.id);
     this.#schedule(lease);
+    // Recorded pending first, so a write that landed though its reply did
+    // not names a lease no leader adopts; refused, its record goes if it
+    // can. Then confirmed: a confirmation that fails keeps the lease, which
+    // a takeover may end, and the next renewal confirms it.
+    const pending = await this.#keep(lease, { pending: true });
+    if (pending === "failed") {
+      await this.#forget(lease);
+      await this.#end(lease, { forget: false });
+      return { kind: "not-kept" };
+    }
+    // Ended meanwhile (a forced release): its record went with it, and the
+    // caller was never granted it.
+    if (pending === "ended") return { kind: "not-kept" };
+    const confirmed = await this.#keep(lease);
+    if (confirmed === "ended") return { kind: "not-kept" };
+    if (confirmed === "failed") {
+      logger
+        .warn`The lease on ${lease.key} is granted, but a leader takeover before its next renewal ends it: its record could not be confirmed`;
+    }
     return {
       kind: "acquired",
       lease: {
@@ -514,6 +665,7 @@ export class DatastoreLockLeases {
         target: lease.target,
         principal: lease.principal,
         expiresAt: new Date(lease.expiresAt).toISOString(),
+        explicit: lease.holdMs !== undefined,
       }));
   }
 
@@ -522,12 +674,12 @@ export class DatastoreLockLeases {
    * when it holds no such lease (it was released or expired, or is
    * another's), in which case the lock may already be someone else's.
    */
-  renew(
+  async renew(
     principal: string,
     leaseId: string,
     ttlMs: number,
     holdMs?: number,
-  ): LeaseView | undefined {
+  ): Promise<LeaseView | undefined> {
     const lease = this.#leases.get(leaseId);
     if (lease === undefined || lease.principal !== principal) return undefined;
     // A hold makes it an explicit lease, held that long between renewals
@@ -536,6 +688,10 @@ export class DatastoreLockLeases {
     lease.ttlMs = ttlMs;
     lease.expiresAt = this.#now() + ttlMs;
     this.#schedule(lease);
+    // A renewal the leader could not record keeps the lease here; the
+    // record keeps its older expiry until the next renewal records it. One
+    // that ended while it was recorded (a forced release) renews nothing.
+    if (await this.#keep(lease) === "ended") return undefined;
     return view(lease);
   }
 
@@ -547,22 +703,339 @@ export class DatastoreLockLeases {
   async release(principal: string, leaseId: string): Promise<boolean> {
     const lease = this.#leases.get(leaseId);
     if (lease === undefined || lease.principal !== principal) return false;
-    await this.#end(lease);
+    await this.#end(lease, { forget: true });
+    return true;
+  }
+
+  /**
+   * Ends the lease on `target` whoever holds it (swamp-club#4195): an
+   * admin's way to recover a lease its holder abandoned. Its kept record
+   * goes too. The holder's next commit naming it is refused as lost, and
+   * its queued work is later sent without it. Resolves with who held it,
+   * or undefined when no lease held the lock.
+   */
+  async forceRelease(
+    target: LockTarget,
+  ): Promise<{ readonly principal: string } | undefined> {
+    const key = lockKeyOf(target);
+    const id = this.#byKey.get(key);
+    const lease = id === undefined ? undefined : this.#leases.get(id);
+    if (lease === undefined) {
+      // A record an earlier forced release could not remove still goes.
+      const failure = await this.#removeRecord(key);
+      if (failure !== undefined) {
+        throw new LeaseRecordNotRemovedError(key, failure);
+      }
+      return undefined;
+    }
+    logger
+      .info`Lease on ${lease.key} held for ${lease.principal} force-released`;
+    const failure = await this.#end(lease, { forget: true });
+    if (failure !== undefined) {
+      throw new LeaseRecordNotRemovedError(lease.key, failure);
+    }
+    return { principal: lease.principal };
+  }
+
+  /**
+   * Takes over the explicit leases the leader before this one kept
+   * (swamp-club#4195), once, when this node takes the lead: each still
+   * live is held again under its own id and fence, with serve's own lock
+   * for its key, until it expires. `leaseFenceOf` reads the fence its
+   * partition last recorded: a lease below it was superseded and is not
+   * adopted. Lease requests wait for it ({@link adopting}): an adoption
+   * that fails keeps them waiting and is tried again, with a growing wait,
+   * until it succeeds or serve shuts down. Opening with leases not adopted
+   * would let a caller take a key a live lease holds.
+   */
+  async adopt(options: {
+    readonly leaseFenceOf?: (target: LockTarget) => Promise<number | undefined>;
+  } = {}): Promise<void> {
+    const persistence = this.#persistence;
+    const leaderFence = persistence?.leaderFence();
+    if (persistence === undefined || leaderFence === undefined) {
+      this.#adopting = false;
+      return;
+    }
+    // Each lead adopts afresh: lease requests wait until it has, even in a
+    // process that led before.
+    this.#adopting = true;
+    this.#pendingAdoption = "all";
+    const attempt = () =>
+      this.#tryAdopt(persistence, leaderFence, options.leaseFenceOf);
+    if (await attempt()) {
+      this.#adopting = false;
+      return;
+    }
+    this.#adoptRetry = this.#retryAdopt(attempt);
+  }
+
+  /** One adoption; false, logged, when it could not finish. */
+  async #tryAdopt(
+    persistence: LeasePersistence,
+    leaderFence: number,
+    leaseFenceOf:
+      | ((target: LockTarget) => Promise<number | undefined>)
+      | undefined,
+  ): Promise<boolean> {
+    try {
+      const kept = await persistence.store.adopt(leaderFence, {
+        signal: this.#lifetime.signal,
+      });
+      const skewMs = persistence.skewMs ?? WRITER_LEASE_CLOCK_SKEW_MS;
+      // Known now: only these keys may hold a kept lease.
+      const pending = new Set(kept.map((record) => record.lockKey));
+      this.#pendingAdoption = pending;
+      let finished = true;
+      for (const record of kept) {
+        if (this.#disposed) return false;
+        // A lease whose lock serve could not take yet is still live: its
+        // record stays, and the adoption is tried again for it.
+        if (
+          !await this.#adoptOne(record, leaderFence, skewMs, leaseFenceOf)
+        ) {
+          finished = false;
+        } else {
+          pending.delete(record.lockKey);
+        }
+      }
+      return finished;
+    } catch (error) {
+      // Which keys hold a kept lease is not known: serve's own runs wait
+      // on every key until it is.
+      this.#pendingAdoption = "all";
+      logger
+        .warn`Could not adopt the leases kept before this leader; lease requests wait while it is tried again: ${error}`;
+      return false;
+    }
+  }
+
+  async #retryAdopt(attempt: () => Promise<boolean>): Promise<void> {
+    let wait = this.#adoptRetryMs;
+    while (!this.#disposed) {
+      await delay(wait, this.#lifetime.signal);
+      if (this.#disposed) return;
+      if (await attempt()) {
+        this.#adopting = false;
+        logger.info`Adopted the leases kept before this leader`;
+        return;
+      }
+      wait = Math.min(wait * 2, MAX_ADOPT_RETRY_MS);
+    }
+  }
+
+  /**
+   * Adopts `record`'s lease, or forgets a record no leader should adopt.
+   * False when it is still live but serve's own lock for its key could not
+   * be taken yet: the record stays, and the adoption is tried again.
+   */
+  async #adoptOne(
+    record: PersistedLease,
+    leaderFence: number,
+    skewMs: number,
+    leaseFenceOf:
+      | ((target: LockTarget) => Promise<number | undefined>)
+      | undefined,
+  ): Promise<boolean> {
+    const store = this.#persistence!.store;
+    const forget = async (why: string) => {
+      // A shutdown deletes nothing: the lease may be live, and the next
+      // leader adopts it.
+      if (this.#disposed) return;
+      logger.info`Not adopting the lease on ${record.lockKey}: ${why}`;
+      try {
+        await store.remove(leaderFence, record.lockKey);
+      } catch (error) {
+        logger
+          .warn`Removing the lease record for ${record.lockKey} failed: ${error}`;
+      }
+    };
+    const target = parseLockKey(record.lockKey);
+    if (target === undefined || lockKeyOf(target) !== record.lockKey) {
+      await forget("its lock key is not canonical");
+      return true;
+    }
+    const expiresAt = persistedLeaseExpiresAt(record, skewMs);
+    if (expiresAt <= this.#now()) {
+      await forget("it expired");
+      return true;
+    }
+    const holding = this.#byKey.get(record.lockKey);
+    // Adopted by an earlier try that did not finish: kept as it is.
+    if (holding === record.leaseId) return true;
+    if (holding !== undefined) {
+      await forget("this leader already holds its lock");
+      return true;
+    }
+    let partitionFence: number | undefined;
+    try {
+      partitionFence = await leaseFenceOf?.(target);
+    } catch (error) {
+      logger
+        .warn`Reading the lease fence of ${record.lockKey} failed: ${error}`;
+    }
+    if (partitionFence !== undefined && partitionFence > record.fence) {
+      await forget("a later lease superseded it");
+      return true;
+    }
+    const lock = await this.#createLock(target);
+    const deadline = this.#now() + this.#maxWaitMs;
+    let taken = await lock.tryAcquire();
+    while (!taken && this.#now() < deadline && !this.#disposed) {
+      await delay(this.#retryIntervalMs, this.#lifetime.signal);
+      taken = await lock.tryAcquire();
+    }
+    if (!taken) {
+      // The lease is live: a lock still held here (a run of the leader
+      // before, not yet past its TTL) must not cost its holder the lease.
+      logger
+        .info`Serve's own lock for ${record.lockKey} is held; adopting its lease is tried again`;
+      return false;
+    }
+    const lease: Lease = {
+      id: record.leaseId,
+      principal: record.principal,
+      key: record.lockKey,
+      target,
+      lock,
+      ttlMs: record.holdMs,
+      expiresAt,
+      timer: undefined,
+      fence: record.fence,
+      holdMs: record.holdMs,
+    };
+    this.#leases.set(lease.id, lease);
+    this.#byKey.set(lease.key, lease.id);
+    this.#issued.set(
+      lease.key,
+      Math.max(record.fence, this.#issued.get(lease.key) ?? 0),
+    );
+    this.#schedule(lease);
+    logger
+      .info`Adopted the lease on ${lease.key} held for ${lease.principal} (fence ${lease.fence})`;
     return true;
   }
 
   /**
    * Ends every lease and waits for every release under way, and for
-   * acquires still waiting to give up. Serve calls it at shutdown.
+   * acquires still waiting to give up. Serve calls it at shutdown. The
+   * kept records stay: a leader shuts down when it loses the lead, and its
+   * successor holds those leases (swamp-club#4195).
    */
   async dispose(): Promise<void> {
     this.#disposed = true;
     this.#lifetime.abort();
+    await this.#adoptRetry;
     await Promise.allSettled([...this.#acquiring]);
     await Promise.allSettled(
-      [...this.#leases.values()].map((lease) => this.#end(lease)),
+      [...this.#leases.values()].map((lease) =>
+        this.#end(lease, { forget: false })
+      ),
     );
     await Promise.allSettled([...this.#releasing]);
+  }
+
+  /**
+   * Records an explicit lease where the next leader finds it: "kept" when
+   * it is recorded, or need not be; "failed" when the write failed;
+   * "ended" when the lease ended before it could be recorded, so nothing
+   * was written. A command's lease is never recorded. The write runs after
+   * any earlier write or removal for its key, and only while the lease is
+   * still live, so it never lands after its own removal.
+   */
+  async #keep(
+    lease: Lease,
+    options: { readonly pending?: true } = {},
+  ): Promise<"kept" | "failed" | "ended"> {
+    const persistence = this.#persistence;
+    if (
+      persistence === undefined || lease.holdMs === undefined ||
+      lease.fence === undefined
+    ) {
+      return "kept";
+    }
+    const holdMs = lease.holdMs;
+    const fence = lease.fence;
+    return await this.#serialized(lease.key, async () => {
+      if (this.#leases.get(lease.id) !== lease) return "ended";
+      const leaderFence = persistence.leaderFence();
+      if (leaderFence === undefined) return "kept";
+      const now = this.#now();
+      try {
+        await persistence.store.save(leaderFence, {
+          leaseId: lease.id,
+          lockKey: lease.key,
+          principal: lease.principal,
+          fence,
+          holdMs,
+          remainingMs: Math.max(0, lease.expiresAt - now),
+          recordedAt: new Date(now).toISOString(),
+          leaderFence,
+          ...options,
+        });
+        // Ended while it was written: the removal its end queued runs after
+        // this write, so the record goes; the lease was not kept.
+        return this.#leases.get(lease.id) === lease ? "kept" : "ended";
+      } catch (error) {
+        logger.warn`Recording the lease on ${lease.key} failed: ${error}`;
+        return "failed";
+      }
+    });
+  }
+
+  /**
+   * Runs `fn` once every earlier record write or removal for `key` has
+   * settled; the next one waits for it in turn.
+   */
+  async #serialized<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const before = this.#recordWrites.get(key) ?? Promise.resolve();
+    const run = before.then(fn);
+    const settled = run.then(() => {}, () => {});
+    this.#recordWrites.set(key, settled);
+    try {
+      return await run;
+    } finally {
+      if (this.#recordWrites.get(key) === settled) {
+        this.#recordWrites.delete(key);
+      }
+    }
+  }
+
+  /**
+   * Removes an explicit lease's record, once it ended for good. Resolves
+   * with the last error when it could not be removed, else undefined.
+   */
+  async #forget(lease: Lease): Promise<unknown> {
+    if (lease.holdMs === undefined) return undefined;
+    return await this.#removeRecord(lease.key);
+  }
+
+  /**
+   * Removes `key`'s record from this leader's prefix, tried
+   * {@link RECORD_REMOVE_ATTEMPTS} times; resolves with the last error when
+   * every try failed. A missing record is no error.
+   */
+  async #removeRecord(key: string): Promise<unknown> {
+    const persistence = this.#persistence;
+    if (persistence === undefined) return undefined;
+    const leaderFence = persistence.leaderFence();
+    if (leaderFence === undefined) return undefined;
+    const failure = await this.#serialized(key, async () => {
+      let last: unknown;
+      for (let attempt = 1; attempt <= RECORD_REMOVE_ATTEMPTS; attempt++) {
+        try {
+          await persistence.store.remove(leaderFence, key);
+          return undefined;
+        } catch (error) {
+          last = error;
+        }
+      }
+      return last ?? new Error("the lease record could not be removed");
+    });
+    if (failure === undefined) return undefined;
+    logger
+      .warn`Removing the lease record for ${key} failed, so the lease may return at the next leader takeover: ${failure}`;
+    return failure;
   }
 
   #heldBy(principal: string): number {
@@ -587,31 +1060,39 @@ export class DatastoreLockLeases {
       if (this.#leases.get(lease.id) !== lease) return;
       logger
         .info`Lease on ${lease.key} held for ${lease.principal} expired without a renewal; releasing it`;
-      const ending: Promise<void> = this.#end(lease).finally(() => {
-        this.#releasing.delete(ending);
-      });
+      const ending: Promise<void> = this.#end(lease, { forget: true })
+        .then(() => {})
+        .finally(() => {
+          this.#releasing.delete(ending);
+        });
       this.#releasing.add(ending);
     }, Math.max(0, lease.expiresAt - this.#now()));
   }
 
-  async #end(lease: Lease): Promise<void> {
+  /**
+   * Ends `lease` here. `forget` removes its kept record too: on release,
+   * expiry or a forced release, never at shutdown.
+   */
+  async #end(lease: Lease, options: { forget: boolean }): Promise<unknown> {
     if (lease.timer !== undefined) {
       clearTimeout(lease.timer);
       lease.timer = undefined;
     }
-    if (this.#leases.get(lease.id) !== lease) return;
+    if (this.#leases.get(lease.id) !== lease) return undefined;
     this.#leases.delete(lease.id);
     // The fence a later lease starts above is the partition's durable one:
     // a commit names its lease by id, so reusing an ended lease's unused
     // fence lets nothing through, and the map stays bounded by live leases.
     this.#issued.delete(lease.key);
     if (this.#byKey.get(lease.key) === lease.id) this.#byKey.delete(lease.key);
+    const failure = options.forget ? await this.#forget(lease) : undefined;
     try {
       await lease.lock.release();
     } catch (error) {
       // The lock's own TTL frees it if the release did not.
       logger.warn`Releasing the lock on ${lease.key} failed: ${error}`;
     }
+    return failure;
   }
 }
 

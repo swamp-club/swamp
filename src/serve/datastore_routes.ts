@@ -46,6 +46,22 @@ export type DatastoreRoute =
     readonly kind: "lease";
     readonly namespace: string;
     readonly leaseId: string;
+  }
+  | { readonly kind: "quarantine"; readonly namespace: string }
+  | {
+    readonly kind: "quarantine-accept";
+    readonly namespace: string;
+    readonly txnId: string;
+  }
+  | {
+    readonly kind: "quarantine-discard";
+    readonly namespace: string;
+    readonly txnId: string;
+  }
+  | {
+    readonly kind: "quarantine-change";
+    readonly namespace: string;
+    readonly txnId: string;
   };
 
 /**
@@ -88,6 +104,22 @@ export function matchDatastoreRoute(
   if (rest.length === 2 && rest[0] === "locks") {
     return { kind: "lease", namespace, leaseId: rest[1] };
   }
+  if (rest.length === 1 && rest[0] === "quarantine") {
+    return { kind: "quarantine", namespace };
+  }
+  if (rest.length === 2 && rest[0] === "quarantine") {
+    return { kind: "quarantine-change", namespace, txnId: rest[1] };
+  }
+  if (
+    rest.length === 3 && rest[0] === "quarantine" && rest[2] === "accept"
+  ) {
+    return { kind: "quarantine-accept", namespace, txnId: rest[1] };
+  }
+  if (
+    rest.length === 3 && rest[0] === "quarantine" && rest[2] === "discard"
+  ) {
+    return { kind: "quarantine-discard", namespace, txnId: rest[1] };
+  }
   return undefined;
 }
 
@@ -108,5 +140,13 @@ export function datastoreRouteTemplate(route: DatastoreRoute): string {
       return "/api/v1/datastore/{namespace}/locks";
     case "lease":
       return "/api/v1/datastore/{namespace}/locks/{leaseId}";
+    case "quarantine":
+      return "/api/v1/datastore/{namespace}/quarantine";
+    case "quarantine-accept":
+      return "/api/v1/datastore/{namespace}/quarantine/{txnId}/accept";
+    case "quarantine-discard":
+      return "/api/v1/datastore/{namespace}/quarantine/{txnId}/discard";
+    case "quarantine-change":
+      return "/api/v1/datastore/{namespace}/quarantine/{txnId}";
   }
 }

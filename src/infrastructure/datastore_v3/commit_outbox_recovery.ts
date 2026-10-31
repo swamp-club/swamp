@@ -73,6 +73,8 @@ import {
 } from "../../domain/datastore_v3/process_liveness.ts";
 import { localProcess } from "./process_identity.ts";
 import { ServeCommitRefusedError } from "./serve_upstream_errors.ts";
+import { carryOfLanded } from "../../domain/datastore_v3/offline_rebase.ts";
+import { flushOfflineEntries, type OfflineFlushPort } from "./offline_flush.ts";
 import type { SqliteCommitStore } from "./sqlite_commit_store.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
@@ -93,6 +95,11 @@ export interface OutboxRecoveryTarget {
       ) => Promise<unknown>;
     };
   readonly chunkStore: Pick<ChunkStore, "missing" | "syncStored">;
+  /**
+   * A serve-mode handle's flush of what it queued offline
+   * (swamp-club#4195); absent elsewhere, where nothing is queued.
+   */
+  readonly offline?: OfflineFlushPort;
 }
 
 /** Options for {@link recoverCommitOutbox}. */
@@ -138,6 +145,11 @@ export interface OutboxRecoveryReport {
   readonly landed: number;
   /** Entries whose commit had landed before its writer died. */
   readonly settled: number;
+  /**
+   * Quarantined entries whose commit landed because an admin accepted it
+   * at serve (swamp-club#4195): settled, and counted apart.
+   */
+  readonly accepted?: number;
   /** Entries of writers that may still be running, left alone. */
   readonly skipped: number;
   readonly drops: readonly OutboxDrop[];
@@ -232,7 +244,14 @@ export async function recoverCommitOutbox(
   const drops: OutboxDrop[] = [];
   // An unreadable entry names no writer to judge; under the lease, only this
   // process's own units could still be using one, and theirs parse.
-  for (const { key, detail } of listing.unreadable) {
+  for (const { key, detail, state } of listing.unreadable) {
+    // One queued offline, rejected or quarantined may be the only record of
+    // what a run changed (swamp-club#4195): kept, never dropped.
+    if (state !== undefined) {
+      logger
+        .warn`Kept an unreadable v3 commit outbox entry for partition ${key.partition} (${state}) in this checkout's outbox; it is not sent: ${detail}`;
+      continue;
+    }
     await outbox.discard([key]);
     logger
       .warn`Dropped an unreadable v3 commit outbox entry for partition ${key.partition}: ${detail}`;
@@ -285,6 +304,8 @@ export async function recoverCommitOutbox(
   };
   let landed = 0;
   let settled = 0;
+  // Quarantined entries an admin accepted at serve (swamp-club#4195).
+  let accepted = 0;
   for (const entry of plan.settles) {
     // It landed before its writer died: run the check it never ran.
     await warnMissingChunks(
@@ -293,9 +314,19 @@ export async function recoverCommitOutbox(
       entry.commit,
       signal,
     );
+    // An offline entry a cut-off flush landed: recorded as this checkout's
+    // own, with what it renumbered, before it leaves the outbox, so the
+    // partition's later entries follow it (swamp-club#4195).
+    if (entry.state === "offline") {
+      await recordLandedOffline(target.offline, entry, clock().getTime());
+    }
     await outbox.settle([outboxKeyOf(entry.commit)]);
-    settled++;
+    if (entry.state === "quarantined") accepted++;
+    else settled++;
   }
+  // Quarantined entries an admin discarded at serve: declined, kept as
+  // rejected and never sent (swamp-club#4195).
+  const discarded = await settleDiscarded(target.offline, plan.held);
   for (const planned of plan.drops) {
     await drop(
       planned.entry,
@@ -346,16 +377,40 @@ export async function recoverCommitOutbox(
     remaining = remaining.filter((other) => !withIt.includes(other));
     for (const other of withIt) await drop(other, "unit-dropped");
   }
+  // What the checkout queued while serve was unreachable, once everything
+  // else landed (swamp-club#4195). Never dropped: kept when it cannot land.
+  if (plan.offline.length > 0 && target.offline !== undefined) {
+    await flushOfflineEntries(target.offline, plan.offline, {
+      writer: options.writer,
+      fence: options.fence,
+      clock,
+      signal,
+    });
+  }
   await outbox.raiseFloor(options.fence);
   if (landed + settled > 0) {
     logger
       .info`Landed ${landed} v3 commits a swamp process prepared before it ended, and settled ${settled} that had landed`;
   }
+  if (accepted > 0) {
+    logger
+      .info`${accepted} change(s) this checkout kept quarantined were accepted at serve by an admin and have landed; they are no longer kept in this checkout's outbox`;
+  }
+  if (discarded > 0) {
+    logger
+      .info`${discarded} change(s) this checkout kept quarantined were discarded at serve by an admin; they stay in this checkout's outbox as rejected and are never sent`;
+  }
   if (deferred > 0) {
     logger
       .info`Left ${deferred} v3 commits a swamp process prepared before it ended for a later recovery: another command's lease at serve covers their behavior now`;
   }
-  return { landed, settled, skipped: plan.skipped.length + deferred, drops };
+  return {
+    landed,
+    settled,
+    accepted,
+    skipped: plan.skipped.length + deferred + plan.held.length,
+    drops,
+  };
 }
 
 type EntryOutcome =
@@ -435,6 +490,9 @@ async function recoverEntry(
       writer: options.writer,
       ...(commit.executedAt !== undefined
         ? { executedAt: commit.executedAt }
+        : {}),
+      ...(commit.clockOffsetMs !== undefined
+        ? { clockOffsetMs: commit.clockOffsetMs }
         : {}),
       ...(commit.principal !== undefined
         ? { principal: commit.principal }
@@ -615,4 +673,65 @@ function emptyReport(): OutboxRecoveryReport {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Why a quarantined entry an admin discarded at serve is rejected. */
+export const DISCARDED_AT_SERVE_REASON = "discarded at serve by an admin";
+
+/**
+ * Marks each quarantined entry of `held` whose deposit an admin discarded
+ * at serve as rejected, with {@link DISCARDED_AT_SERVE_REASON}: kept, never
+ * sent. Serve is asked once per entry; an entry it cannot answer for stays
+ * quarantined until a later recovery asks again. Returns how many were
+ * marked.
+ */
+/**
+ * Records an offline entry found already landed as this checkout's own,
+ * with what its landing renumbered and rewrote, read from the commit the
+ * copy holds under its txnId. Without that commit nothing is carried, but
+ * the entry is still recorded as its own.
+ */
+async function recordLandedOffline(
+  port: OfflineFlushPort | undefined,
+  entry: OutboxEntry,
+  at: number,
+): Promise<void> {
+  if (port?.recordOwnLanded === undefined) return;
+  const { commit } = entry;
+  const landed = (await port.partitionCommits(
+    commit.namespace,
+    commit.partition,
+  )).find((candidate) => candidate.txnId === commit.txnId);
+  await port.recordOwnLanded(
+    outboxKeyOf(commit),
+    at,
+    landed === undefined ? undefined : carryOfLanded(commit, landed),
+  );
+}
+
+async function settleDiscarded(
+  port: OfflineFlushPort | undefined,
+  held: readonly OutboxEntry[],
+): Promise<number> {
+  if (port?.quarantineState === undefined) return 0;
+  let discarded = 0;
+  for (const entry of held) {
+    if (entry.state !== "quarantined") continue;
+    let state;
+    try {
+      state = await port.quarantineState(entry);
+    } catch (error) {
+      logger
+        .debug`Could not ask serve about the quarantined change ${entry.commit.txnId}; asking again later: ${error}`;
+      return discarded;
+    }
+    if (state !== "discarded") continue;
+    await port.mark(
+      [outboxKeyOf(entry.commit)],
+      "rejected",
+      DISCARDED_AT_SERVE_REASON,
+    );
+    discarded++;
+  }
+  return discarded;
 }

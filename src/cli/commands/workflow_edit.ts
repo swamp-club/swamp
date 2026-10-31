@@ -191,8 +191,7 @@ export const workflowEditCommand = withRemoteOptions(
               }),
               renderer.handlers(),
             ),
-        )
-      );
+        ), `the workflow definition "${editIdOrName}"`);
 
     // A stored workflow is edited on a copy and saved like a piped edit, so
     // the edit is committed (swamp-club#4107). Opening the editor loads the

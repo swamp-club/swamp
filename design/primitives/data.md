@@ -91,6 +91,26 @@ each workflow step's latest version for `findBySpec`/`findByTag`;
 `upsertNewVersion` (`catalog_store.ts`) maintains both by version order
 ([data-query.md §Step-aware versioning](../enablers/data-query.md#provenance-based-filtering)).
 
+**Latest after a rebase** (swamp-club#4195). `latest` means the newest
+observation, and it is always the highest live version. The two differ only
+when a serve-mode checkout's offline work lands: its versions are renumbered
+after everything committed meanwhile (versions follow commit order), but it may
+have been observed earlier. The flush keeps them the same. An offline write
+becomes latest only when it was observed more than 5 minutes after the current
+latest. It is judged only against versions it could not have seen: ones that
+landed after the work was queued and are not the same checkout's own offline
+work. Otherwise the flush restates the current latest as a new, higher version
+with the same content, tagged with the reserved `_swamp.restates` (the version
+whose content it holds; a number, never a time), so readers, the catalog and
+CEL keep "highest version is latest". A restatement competes with its source
+version's observation time, so each later offline write of the same flush is
+judged against that version too, and the restatement is repeated after each
+one that leaves it latest: latest is right after every commit of the flush. Observation times come from the
+serve-stamped commit time and the version's `createdAt` (the flush sets an
+offline version's `createdAt` to the corrected time it ran), never from a tag.
+See "Working offline" in
+[datastores.md](../enablers/datastores.md#team-mode-the-clis-serve-upstream-datastore-rework-phase-5).
+
 **`ModelOutput`, the run-level record.** Every method call also writes a
 `ModelOutput` (`src/domain/models/model_output.ts`) with status
 (`pending|running|succeeded|failed|cancelled`), timing, error, provenance
@@ -328,8 +348,14 @@ the hard form and removes every version.
 
 Versions only grow; `save` never overwrites. A name's `latest` moves forward on
 write, and back only when the current latest is deleted or collected (`delete`
-and `collectGarbage` recompute it from the remaining directories). These remove
-versions:
+and `collectGarbage` recompute it from the remaining directories). A rebased
+offline write keeps this: when it must not become latest, the current latest is
+restated above it ("Latest after a rebase" above), and a restatement does not
+count toward a keep-last-N cap: walking down from the highest version, every
+version is kept until N observations are kept, and everything below the N-th
+observation goes, restatements included (`keep_last_versions.ts`). So with N of
+1 or more the highest version is never collected, and a rebased write is not
+collected just because restatements sit above it. These remove versions:
 
 | Mechanism                       | Removes                                                                                                                                                | Source                                                                         |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |

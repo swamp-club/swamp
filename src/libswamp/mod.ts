@@ -263,6 +263,7 @@ export {
   unknownModelType,
 } from "./models/run.ts";
 export {
+  methodKindOf,
   type MethodRunLockMode,
   methodRunLockMode,
 } from "./models/method_run_lock_mode.ts";
@@ -1916,11 +1917,32 @@ export { todaysAuditFilePath } from "../domain/audit/audit_path.ts";
 // Datastore operations
 export {
   createDatastoreStatusDeps,
+  type DatastoreHeldLeaseStatus,
+  type DatastoreOutboxEntryStatus,
+  type DatastoreQuarantineStatus,
+  type DatastoreServeSection,
   datastoreStatus,
   type DatastoreStatusData,
   type DatastoreStatusDeps,
   type DatastoreStatusEvent,
+  outboxEntryStatusesOf,
+  quarantineStatusOf,
 } from "./datastores/status.ts";
+export {
+  datastoreQuarantineAccept,
+  type DatastoreQuarantineAcceptData,
+  type DatastoreQuarantineAcceptDeps,
+  type DatastoreQuarantineAcceptEvent,
+  type DatastoreQuarantineAcceptInput,
+  type QuarantineRenumberedVersion,
+} from "./datastores/quarantine_accept.ts";
+export {
+  datastoreQuarantineDiscard,
+  type DatastoreQuarantineDiscardData,
+  type DatastoreQuarantineDiscardDeps,
+  type DatastoreQuarantineDiscardEvent,
+  type DatastoreQuarantineDiscardInput,
+} from "./datastores/quarantine_discard.ts";
 export {
   createDatastoreSyncDeps,
   type CreateDatastoreSyncDepsOptions,
@@ -1947,6 +1969,7 @@ export {
 export {
   createDatastoreLockReleaseDeps,
   createDatastoreLockStatusDeps,
+  createServeLeaseReleaseDeps,
   type CustomModelLockSource,
   datastoreLockRelease,
   type DatastoreLockReleaseData,
@@ -1960,6 +1983,7 @@ export {
   type DatastoreLockStatusInput,
   type LockInfo,
   modelLockKey,
+  modelSpecTypeMatches,
   parseModelLockKey,
   parseModelSpec,
   type ServeLeaseStatusData,

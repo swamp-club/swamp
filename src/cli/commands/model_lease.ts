@@ -197,7 +197,7 @@ function createAcquireCommand(syntax: CommandSyntax) {
         )
         .option(
           "--for <duration:string>",
-          "How long the lease is held between renewals (5s to 60m)",
+          "How long the lease is held between renewals (5s to 24h)",
           { required: true },
         )
         .option(

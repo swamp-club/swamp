@@ -379,6 +379,21 @@ export class ServeRateLimitedError extends ServeUpstreamError {
 }
 
 /**
+ * A chunk a commit names is not in this checkout's chunk cache, so the
+ * commit cannot be sent: the commit's own failure, never serve's
+ * (swamp-club#4195). An offline flush rejects the entry and keeps it.
+ */
+export class ChunkNotCachedError extends Error {
+  constructor(readonly sha256: string, partition: string) {
+    super(
+      `Chunk ${sha256} of a commit to ${partition} is not in this ` +
+        `checkout's chunk cache`,
+    );
+    this.name = "ChunkNotCachedError";
+  }
+}
+
+/**
  * A reply whose body passed the bytes the client reads of it
  * (swamp-club#4062): serve is broken or hostile, and the body was
  * cancelled unread past the limit. `status` is the reply's.

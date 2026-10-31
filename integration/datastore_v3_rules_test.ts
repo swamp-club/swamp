@@ -193,6 +193,10 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/commands/datastore_gc.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/cli/commands/datastore_lock.ts -> src/infrastructure/datastore_v3/v3_writer_lock.ts",
   "src/cli/commands/datastore_status.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  // swamp-club#4195: a serve-mode checkout's status lists the explicit
+  // leases it holds, from its own record of them.
+  "src/cli/commands/datastore_status.ts -> src/infrastructure/datastore_v3/explicit_model_leases.ts",
+  "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/control_plane_lease_store.ts",
   "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/serve/handlers/admin_handlers.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
@@ -410,10 +414,44 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // `model lease`.
   "src/serve/datastore_locks.ts -> src/domain/datastore_v3/commit_store.ts",
   "src/serve/datastore_locks.ts -> src/domain/datastore_v3/partition_key.ts",
+  "src/serve/datastore_locks.ts -> src/domain/datastore_v3/persisted_lease.ts",
+  "src/serve/datastore_locks.ts -> src/domain/datastore_v3/writer_lease.ts",
   "src/cli/commands/datastore_lock.ts -> src/infrastructure/datastore_v3/serve_upstream_registry.ts",
   "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/explicit_model_leases.ts",
   "src/cli/commands/model_lease.ts -> src/infrastructure/datastore_v3/explicit_model_leases.ts",
   "src/cli/commands/model_lease.ts -> src/infrastructure/datastore_v3/serve_upstream_registry.ts",
+  // swamp-club#4195: offline work. A method run or workflow step is judged
+  // by the offline rules before it starts, against the explicit leases the
+  // checkout recorded and serve's clock; the refusals exit 75.
+  "src/cli/repo_context.ts -> src/domain/datastore_v3/offline_write_policy.ts",
+  "src/cli/repo_context.ts -> src/domain/datastore_v3/partition_key.ts",
+  "src/cli/repo_context.ts -> src/domain/datastore_v3/writer_lease.ts",
+  "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/serve_offline.ts",
+  // swamp-club#4195: serve's own runs wait, at a gate serve sets, for a
+  // lease kept before this leader to be adopted before they take its
+  // behavior's lock; a CLI process sets no gate.
+  "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/own_lock_gate.ts",
+  "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/own_lock_gate.ts",
+  "src/presentation/output/error_output.ts -> src/domain/datastore_v3/offline_write_policy.ts",
+  // swamp-club#4195: quarantine. Serve keeps a change refused for a grant
+  // its author lacks and lands it through the offline flush once an admin
+  // accepts it; `datastore status` lists the checkout's kept outbox entries
+  // and serve's quarantine; `datastore quarantine accept` and `discard` ask
+  // the serve the checkout writes through.
+  "src/cli/commands/datastore_quarantine.ts -> src/infrastructure/datastore_v3/serve_upstream_registry.ts",
+  "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/control_plane_quarantine_store.ts",
+  "src/libswamp/datastores/quarantine_accept.ts -> src/domain/datastore_v3/quarantine.ts",
+  "src/libswamp/datastores/quarantine_discard.ts -> src/domain/datastore_v3/quarantine.ts",
+  "src/libswamp/datastores/status.ts -> src/domain/datastore_v3/commit_outbox.ts",
+  "src/libswamp/datastores/status.ts -> src/domain/datastore_v3/quarantine.ts",
+  "src/serve/datastore_api.ts -> src/domain/datastore_v3/quarantine.ts",
+  "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/offline_flush.ts",
+  "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/serve_upstream_errors.ts",
+  "src/serve/handlers/shared.ts -> src/domain/datastore_v3/quarantine.ts",
+  // swamp-club#4195: a forced release whose kept lease record stayed is a
+  // stable, retryable code serve answers with and the CLI maps to exit 75.
+  "src/presentation/output/error_output.ts -> src/domain/datastore_v3/persisted_lease.ts",
+  "src/serve/datastore_api.ts -> src/domain/datastore_v3/persisted_lease.ts",
 ];
 
 Deno.test("datastore v3: no production code outside v3 imports it", async () => {
@@ -464,7 +502,7 @@ const CHECKPOINT = /wal_(?:auto)?checkpoint/i;
 /** v3 files that mention a checkpoint pragma, as `file:line`. */
 const PINNED_V3_CHECKPOINTS: readonly string[] = [
   // Auto-checkpoint off on a copy Litestream replicates (swamp-club#3935).
-  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2645",
+  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2665",
 ];
 
 Deno.test("datastore v3: no v3 code forces or tunes a WAL checkpoint", async () => {

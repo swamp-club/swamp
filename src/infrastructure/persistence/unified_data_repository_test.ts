@@ -36,6 +36,7 @@ import {
 } from "./unified_data_repository.ts";
 import { type CatalogRow, CatalogStore } from "./catalog_store.ts";
 import { Data } from "../../domain/data/mod.ts";
+import { RESTATES_TAG } from "../../domain/data/data.ts";
 import { createNamespace, SOLO_NAMESPACE } from "../../domain/data/mod.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type {
@@ -4822,4 +4823,150 @@ Deno.test("resetLatestMarkerToReadable: points an empty marker at the highest re
     );
     assertEquals(await Deno.readTextFile(marker), "");
   });
+});
+
+Deno.test("save and collectGarbage: a kept version with malformed metadata counts as an observation, never failing the write or the collection (swamp-club#4195)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      new CatalogStore(join(tmpDir, "_catalog.db")),
+      undefined,
+      undefined,
+      SOLO_NAMESPACE,
+      true,
+    );
+    const data = Data.create({
+      name: "capped",
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 3,
+      streaming: false,
+      tags: { type: "resource" },
+      ownerDefinition: { ownerType: "manual", ownerRef: "test" },
+    });
+    await repo.save(testType, "corrupt-model", data, encode("v1"));
+    await repo.save(testType, "corrupt-model", data, encode("v2"));
+    await repo.save(testType, "corrupt-model", data, encode("v3"));
+    await Deno.writeTextFile(
+      repo.getMetadataPath(testType, "corrupt-model", "capped", 2),
+      "tags: [unclosed\n",
+    );
+
+    // Version 2 is below the latest and inside the cap, so only the
+    // collection's restatement check reads it.
+    await repo.save(testType, "corrupt-model", data, encode("v4"));
+    assertEquals(
+      await repo.listVersions(testType, "corrupt-model", "capped"),
+      [2, 3, 4],
+    );
+    await repo.collectGarbage(testType, "corrupt-model");
+    assertEquals(
+      await repo.listVersions(testType, "corrupt-model", "capped"),
+      [2, 3, 4],
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
+
+/** Two observations, then a restatement of version 1 above them. */
+async function saveObservationsAndRestatement(
+  repo: FileSystemUnifiedDataRepository,
+  garbageCollection: number,
+): Promise<void> {
+  const create = (tags: Record<string, string>) =>
+    Data.create({
+      name: "capped",
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection,
+      streaming: false,
+      tags,
+      ownerDefinition: { ownerType: "manual", ownerRef: "test" },
+    });
+  const observation = create({ type: "resource" });
+  await repo.save(testType, "restate-model", observation, encode("v1"));
+  await repo.save(testType, "restate-model", observation, encode("v2"));
+  await repo.save(
+    testType,
+    "restate-model",
+    create({ type: "resource", [RESTATES_TAG]: "1" }),
+    encode("v1"),
+  );
+}
+
+function encode(text: string): Uint8Array {
+  return new TextEncoder().encode(text);
+}
+
+Deno.test("collectGarbage: a restatement does not count toward keep-last-N (swamp-club#4195)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      new CatalogStore(join(tmpDir, "_catalog.db")),
+    );
+    await saveObservationsAndRestatement(repo, 1);
+
+    await repo.collectGarbage(testType, "restate-model");
+
+    assertEquals(
+      await repo.listVersions(testType, "restate-model", "capped"),
+      [2, 3],
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("save: write-time pruning does not count a restatement toward the cap (swamp-club#4195)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      new CatalogStore(join(tmpDir, "_catalog.db")),
+      undefined,
+      undefined,
+      SOLO_NAMESPACE,
+      true,
+    );
+    await saveObservationsAndRestatement(repo, 2);
+    await repo.save(
+      testType,
+      "restate-model",
+      Data.create({
+        name: "capped",
+        contentType: "text/plain",
+        lifetime: "infinite",
+        garbageCollection: 2,
+        streaming: false,
+        tags: { type: "resource" },
+        ownerDefinition: { ownerType: "manual", ownerRef: "test" },
+      }),
+      encode("v4"),
+    );
+
+    assertEquals(
+      await repo.listVersions(testType, "restate-model", "capped"),
+      [2, 3, 4],
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
 });

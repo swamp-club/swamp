@@ -52,6 +52,7 @@ import type { CommitStoreAppendResult } from "../../domain/datastore_v3/commit_s
 import type { DatastoreStorage } from "../../domain/datastore/datastore_storage.ts";
 import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
+import { CommitQueuedOfflineError } from "./commit_log_unit_of_work.ts";
 import {
   createOutboxCommitSink,
   type OutboxCommitSink,
@@ -65,6 +66,7 @@ import type {
   ServeDatastoreClient,
 } from "./serve_datastore_client.ts";
 import {
+  ChunkNotCachedError,
   ServeChunksMissingError,
   ServeStaleSeqError,
   ServeUnreachableError,
@@ -129,6 +131,18 @@ export interface ServeCommitSinkOptions {
     leaseId: string,
     landed: readonly LandedVersion[],
   ) => Promise<void>;
+  /**
+   * The checkout's offline mode (swamp-club#4195): undefined while online.
+   * Offline, a commit is never sent; it is queued in the outbox when
+   * `queues` allows its partition (the backstop of the offline rules), and
+   * refused with the rules' error otherwise.
+   */
+  readonly offline?: () =>
+    | {
+      readonly queues: (partition: PartitionKey) => Promise<true | Error>;
+      readonly noteQueued: (txnId: string) => void;
+    }
+    | undefined;
 }
 
 /**
@@ -179,10 +193,7 @@ export function createServeCommitSink(
         options.signal(),
       );
       if (bytes === null) {
-        throw new Error(
-          `Internal error: chunk ${sha256} of a commit to ` +
-            `${commit.partition} is not in this checkout's chunk cache`,
-        );
+        throw new ChunkNotCachedError(sha256, commit.partition.toString());
       }
       chunks.push({ sha256, bytes });
     }
@@ -329,23 +340,41 @@ export function createServeCommitSink(
       return seq > local.seq ? { seq, txnId: undefined } : local;
     },
     // A fenced lease's floor holds versions the copy may not: ones written
-    // by commits the caller cannot read (swamp-club#4121).
+    // by commits the caller cannot read (swamp-club#4121). Versions queued
+    // offline are not in the copy either: a command allocates above them
+    // too, so two offline commands never share one (swamp-club#4195).
     dataHighWater: async (namespace, partition, name) => {
       const copy = await commitStore.dataHighWater(namespace, partition, name);
       const floor = leaseOf(partition)?.floor.find((marks) =>
         marks.name === name
       );
-      return Math.max(copy, floor?.highWater ?? 0);
+      const queued = await options.outbox.queuedDataHighWater(
+        namespace,
+        partition.toString(),
+        name,
+      );
+      return Math.max(copy, floor?.highWater ?? 0, queued);
     },
     landedSeq: async (namespace, partition, txnId) => {
       const local = await commitStore.landedSeq(namespace, partition, txnId);
       if (local !== undefined || neverSent.delete(txnId)) return local;
+      // Offline, nothing was sent (swamp-club#4195): serve cannot hold it.
+      if (options.offline?.() !== undefined) return local;
       // It may have landed at serve after the reply was lost: read the
       // partition. A failure is the caller's: the commit may land later.
       await catchUp.catchUpPartition(namespace, partition, options.signal());
       return await commitStore.landedSeq(namespace, partition, txnId);
     },
     append: async (commit) => {
+      // Offline for the rest of the command (swamp-club#4195): never sent,
+      // only queued, and only where the offline rules allow.
+      const offline = options.offline?.();
+      if (offline !== undefined) {
+        const verdict = await offline.queues(commit.partition);
+        if (verdict !== true) throw verdict;
+        offline.noteQueued(commit.txnId);
+        throw new CommitQueuedOfflineError(commit.partition);
+      }
       const lease = leaseOf(commit.partition);
       try {
         return await forward(commit, lease?.leaseId);
@@ -395,6 +424,10 @@ export function createServeCommitSink(
       },
     },
     seqGapAttempts: SERVE_SEQ_GAP_ATTEMPTS,
+    queuesOffline: async (partition) => {
+      const offline = options.offline?.();
+      return offline !== undefined && await offline.queues(partition) === true;
+    },
     upstream,
   };
 }

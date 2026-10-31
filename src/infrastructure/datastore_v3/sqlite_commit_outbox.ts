@@ -41,12 +41,19 @@ import {
   type FenceChain,
   OUTBOX_SWEEP_STALE_MS,
   type OutboxEntry,
+  type OutboxEntryState,
   type OutboxKey,
   type OutboxListing,
   type OutboxPreparation,
   type SweepState,
 } from "../../domain/datastore_v3/commit_outbox.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
+import {
+  EMPTY_REBASE_CARRY,
+  mergeRebaseCarry,
+  type OfflineRebaseCarry,
+  parseRebaseCarry,
+} from "../../domain/datastore_v3/offline_rebase.ts";
 import {
   parseProcessIdentity,
   type ProcessIdentity,
@@ -125,6 +132,40 @@ const MIGRATIONS: readonly string[] = [
   ALTER TABLE outbox_entries ADD COLUMN lease_id TEXT;
   ALTER TABLE outbox_entries ADD COLUMN lease_fence INTEGER;
   `,
+  // 5 → 6 (swamp-club#4195): what became of an entry that is not pending
+  // (queued offline, rejected, quarantined) and why. A swamp at schema 5
+  // refuses the outbox as newer: it would drop an offline entry as stale
+  // or expired, or land a rejected one.
+  `
+  ALTER TABLE outbox_entries ADD COLUMN state TEXT;
+  ALTER TABLE outbox_entries ADD COLUMN state_reason TEXT;
+  ALTER TABLE outbox_entries ADD COLUMN sent_maybe_at INTEGER;
+  CREATE TABLE outbox_versions (
+    sequence INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    PRIMARY KEY (sequence, name, version)
+  ) STRICT, WITHOUT ROWID;
+  CREATE INDEX outbox_versions_by_name ON outbox_versions (name, version);
+  CREATE TABLE outbox_landed_offline (
+    namespace TEXT NOT NULL,
+    partition TEXT NOT NULL,
+    txn_id TEXT NOT NULL,
+    landed_at INTEGER NOT NULL,
+    carry TEXT,
+    PRIMARY KEY (namespace, partition, txn_id)
+  ) STRICT, WITHOUT ROWID;
+  INSERT OR IGNORE INTO outbox_versions (sequence, name, version)
+    SELECT entry.sequence, json_extract(op.value, '$.metadata.name'),
+      json_extract(op.value, '$.metadata.version')
+    FROM outbox_entries AS entry, json_each(
+      CASE WHEN json_valid(entry.body) THEN entry.body ELSE '{}' END,
+      '$.ops'
+    ) AS op
+    WHERE json_extract(op.value, '$.kind') = 'data-version'
+      AND json_type(op.value, '$.metadata.name') = 'text'
+      AND json_type(op.value, '$.metadata.version') = 'integer';
+  `,
 ];
 
 /** The schema version this outbox writes. */
@@ -187,6 +228,23 @@ interface EntryRow {
   readonly abandoned_at: number | null;
   readonly lease_id: string | null;
   readonly lease_fence: number | null;
+  readonly state: string | null;
+  readonly state_reason: string | null;
+  readonly sent_maybe_at: number | null;
+}
+
+const ENTRY_STATES: readonly OutboxEntryState[] = [
+  "offline",
+  "rejected",
+  "quarantined",
+];
+
+function entryStateOf(raw: string | null): OutboxEntryState | undefined {
+  if (raw === null) return undefined;
+  if ((ENTRY_STATES as readonly string[]).includes(raw)) {
+    return raw as OutboxEntryState;
+  }
+  throw new Error(`its state '${raw}' is unknown`);
 }
 
 /**
@@ -300,15 +358,18 @@ export class SqliteCommitOutbox implements CommitOutbox {
     preparation: OutboxPreparation,
     process: ProcessIdentity | undefined,
   ): void {
-    const { commit, unitId, base, lease } = preparation;
+    const { commit, unitId, base, lease, queuedOffline } = preparation;
     // A prepare again is a new preparation: no recovery left it since.
     const row = db.prepare(
-      "INSERT INTO outbox_entries (namespace, partition, txn_id, unit_id, base_seq, base_txn_id, created_at, body, writer_process, lease_id, lease_fence) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+      "INSERT INTO outbox_entries (namespace, partition, txn_id, unit_id, base_seq, base_txn_id, created_at, body, writer_process, lease_id, lease_fence, state) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
         "ON CONFLICT (namespace, partition, txn_id) DO UPDATE SET unit_id = excluded.unit_id, " +
         "base_seq = excluded.base_seq, base_txn_id = excluded.base_txn_id, body = excluded.body, " +
         "writer_process = excluded.writer_process, left_at_fence = NULL, abandoned_at = NULL, " +
-        "lease_id = excluded.lease_id, lease_fence = excluded.lease_fence " +
+        "lease_id = excluded.lease_id, lease_fence = excluded.lease_fence, " +
+        // A prepare again never clears a state: an offline, rejected or
+        // quarantined entry stays one (swamp-club#4195).
+        "state = COALESCE(excluded.state, outbox_entries.state) " +
         "RETURNING sequence",
     ).get(
       commit.namespace,
@@ -322,10 +383,24 @@ export class SqliteCommitOutbox implements CommitOutbox {
       process !== undefined ? JSON.stringify(process) : null,
       lease?.leaseId ?? null,
       lease?.fence ?? null,
+      queuedOffline === true ? "offline" : null,
     ) as { sequence: number };
     db.prepare("DELETE FROM outbox_chunks WHERE sequence = ?").run(
       row.sequence,
     );
+    // The data versions it records, so a version allocation reads an index,
+    // not every entry's body (swamp-club#4195).
+    db.prepare("DELETE FROM outbox_versions WHERE sequence = ?").run(
+      row.sequence,
+    );
+    const version = db.prepare(
+      "INSERT OR IGNORE INTO outbox_versions (sequence, name, version) VALUES (?, ?, ?)",
+    );
+    for (const op of commit.ops) {
+      if (op.kind === "data-version") {
+        version.run(row.sequence, op.metadata.name, op.metadata.version);
+      }
+    }
     const insert = db.prepare(
       "INSERT OR IGNORE INTO outbox_chunks (sequence, namespace, sha256) VALUES (?, ?, ?)",
     );
@@ -370,6 +445,9 @@ export class SqliteCommitOutbox implements CommitOutbox {
       const deleteChunks = db.prepare(
         "DELETE FROM outbox_chunks WHERE sequence = ?",
       );
+      const deleteVersions = db.prepare(
+        "DELETE FROM outbox_versions WHERE sequence = ?",
+      );
       const deleteEntry = db.prepare(
         "DELETE FROM outbox_entries WHERE sequence = ?",
       );
@@ -379,6 +457,7 @@ export class SqliteCommitOutbox implements CommitOutbox {
           | undefined;
         if (row === undefined) continue;
         deleteChunks.run(row.sequence);
+        deleteVersions.run(row.sequence);
         deleteEntry.run(row.sequence);
       }
     }, { create: false, durable });
@@ -388,7 +467,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
     const rows = this.#read((db) =>
       db.prepare(
         "SELECT sequence, namespace, partition, txn_id, unit_id, base_seq, base_txn_id, created_at, body, " +
-          "writer_process, left_at_fence, abandoned_at, lease_id, lease_fence FROM outbox_entries ORDER BY sequence",
+          "writer_process, left_at_fence, abandoned_at, lease_id, lease_fence, state, state_reason, sent_maybe_at " +
+          "FROM outbox_entries ORDER BY sequence",
       ).all() as unknown as EntryRow[]
     ) ?? [];
     const entries: OutboxEntry[] = [];
@@ -409,6 +489,7 @@ export class SqliteCommitOutbox implements CommitOutbox {
           throw new Error("its body is another commit's");
         }
         const writerProcess = readWriterProcess(row.writer_process);
+        const state = entryStateOf(row.state);
         entries.push({
           sequence: row.sequence,
           createdAt: row.created_at,
@@ -425,11 +506,19 @@ export class SqliteCommitOutbox implements CommitOutbox {
           ...(row.lease_id !== null && row.lease_fence !== null
             ? { lease: { leaseId: row.lease_id, fence: row.lease_fence } }
             : {}),
+          ...(state !== undefined ? { state } : {}),
+          ...(row.state_reason !== null
+            ? { stateReason: row.state_reason }
+            : {}),
+          ...(row.sent_maybe_at !== null
+            ? { sentMaybeAt: row.sent_maybe_at }
+            : {}),
         });
       } catch (error) {
         unreadable.push({
           key,
           detail: error instanceof Error ? error.message : String(error),
+          ...(row.state !== null ? { state: row.state } : {}),
         });
       }
     }
@@ -442,6 +531,184 @@ export class SqliteCommitOutbox implements CommitOutbox {
       db.prepare("SELECT 1 AS found FROM outbox_entries LIMIT 1").get() !==
         undefined
     ) ?? false;
+  }
+
+  /**
+   * Whether any entry could still land: one pending or queued offline.
+   * Rejected and quarantined entries are kept but never sent again
+   * (swamp-club#4195), so they do not count.
+   */
+  // deno-lint-ignore require-await
+  async hasUnsettledEntries(): Promise<boolean> {
+    return this.#read((db) =>
+      db.prepare(
+        "SELECT 1 AS found FROM outbox_entries " +
+          "WHERE state IS NULL OR state = 'offline' LIMIT 1",
+      ).get() !== undefined
+    ) ?? false;
+  }
+
+  /**
+   * Empties the outbox as a new copy's would be, but for its rejected and
+   * quarantined entries, which are never discarded (swamp-club#4195): the
+   * fence chain and the sweep start over, every other entry and its chunk
+   * references go. One transaction, so a crash leaves the outbox either
+   * untouched or reset. Resolves with how many entries were kept; none when
+   * the file does not exist.
+   */
+  resetKeepingKept(): Promise<number> {
+    return this.#write((db) => {
+      db.prepare(
+        "DELETE FROM outbox_chunks WHERE sequence IN (" +
+          "SELECT sequence FROM outbox_entries WHERE state IS NULL " +
+          "OR state NOT IN ('rejected', 'quarantined'))",
+      ).run();
+      db.prepare(
+        "DELETE FROM outbox_versions WHERE sequence IN (" +
+          "SELECT sequence FROM outbox_entries WHERE state IS NULL " +
+          "OR state NOT IN ('rejected', 'quarantined'))",
+      ).run();
+      db.prepare(
+        "DELETE FROM outbox_entries WHERE state IS NULL " +
+          "OR state NOT IN ('rejected', 'quarantined')",
+      ).run();
+      db.prepare("DELETE FROM outbox_chain").run();
+      db.prepare("DELETE FROM outbox_landed_offline").run();
+      db.prepare(
+        "UPDATE outbox_sweep SET epoch = 0, instance = NULL, heartbeat_at = NULL",
+      ).run();
+      const row = db.prepare("SELECT COUNT(*) AS kept FROM outbox_entries")
+        .get() as { kept: number };
+      return row.kept;
+    }, { create: false }).then((kept) => kept ?? 0);
+  }
+
+  /**
+   * Records that the offline entry `key` landed, by a flush, at `at`
+   * (swamp-club#4195): a later flush judges the versions it wrote as this
+   * checkout's own, which its later offline work saw, and the partition's
+   * entries still queued follow what it renumbered and rewrote (`carry`).
+   * Records older than `retainMs` are dropped as one is added, except a
+   * partition's while it still has an entry queued offline, which may
+   * follow them.
+   */
+  recordLandedOffline(
+    key: OutboxKey,
+    at: number,
+    retainMs: number,
+    carry?: OfflineRebaseCarry,
+  ): Promise<void> {
+    // Fsynced: a later entry that misses it could remove another writer's
+    // version that took the number this one landed away from.
+    return this.#write((db) => {
+      db.prepare(
+        "INSERT OR REPLACE INTO outbox_landed_offline (namespace, partition, txn_id, landed_at, carry) VALUES (?, ?, ?, ?, ?)",
+      ).run(
+        key.namespace,
+        key.partition,
+        key.txnId,
+        at,
+        carry === undefined ? null : JSON.stringify(carry),
+      );
+      db.prepare(
+        "DELETE FROM outbox_landed_offline WHERE landed_at < ? AND NOT EXISTS (" +
+          "SELECT 1 FROM outbox_entries AS entry " +
+          "WHERE entry.namespace = outbox_landed_offline.namespace " +
+          "AND entry.partition = outbox_landed_offline.partition " +
+          "AND entry.state = 'offline')",
+      ).run(at - retainMs);
+    }, { create: false });
+  }
+
+  /**
+   * What `partition`'s offline entries that flushes landed renumbered and
+   * rewrote (swamp-club#4195), merged: what its queued entries follow. A
+   * record that does not parse adds nothing.
+   */
+  // deno-lint-ignore require-await
+  async landedOfflineCarry(
+    namespace: string,
+    partition: string,
+  ): Promise<OfflineRebaseCarry> {
+    const rows = this.#read((db) =>
+      db.prepare(
+        "SELECT carry FROM outbox_landed_offline WHERE namespace = ? AND partition = ? AND carry IS NOT NULL ORDER BY landed_at, txn_id",
+      ).all(namespace, partition) as { carry: string }[]
+    ) ?? [];
+    let merged = EMPTY_REBASE_CARRY;
+    for (const row of rows) {
+      const carry = parseRebaseCarry(row.carry);
+      if (carry !== undefined) merged = mergeRebaseCarry(merged, carry);
+    }
+    return merged;
+  }
+
+  /** The txnIds of `partition`'s offline entries that flushes landed. */
+  // deno-lint-ignore require-await
+  async landedOfflineTxnIds(
+    namespace: string,
+    partition: string,
+  ): Promise<ReadonlySet<string>> {
+    const rows = this.#read((db) =>
+      db.prepare(
+        "SELECT txn_id FROM outbox_landed_offline WHERE namespace = ? AND partition = ?",
+      ).all(namespace, partition) as { txn_id: string }[]
+    ) ?? [];
+    return new Set(rows.map((row) => row.txn_id));
+  }
+
+  markSentMaybe(key: OutboxKey, at: number): Promise<void> {
+    // Fsynced: a resend after serve's txnId retention could land it twice.
+    return this.#write((db) => {
+      db.prepare(
+        "UPDATE outbox_entries SET sent_maybe_at = ? " +
+          "WHERE namespace = ? AND partition = ? AND txn_id = ? " +
+          "AND sent_maybe_at IS NULL",
+      ).run(at, key.namespace, key.partition, key.txnId);
+    }, { create: false });
+  }
+
+  markState(
+    keys: readonly OutboxKey[],
+    state: OutboxEntryState,
+    reason?: string,
+  ): Promise<void> {
+    if (keys.length === 0) return Promise.resolve();
+    // The mark is what keeps the entry from every drop rule: fsynced.
+    return this.#write((db) => {
+      const mark = db.prepare(
+        "UPDATE outbox_entries SET state = ?, state_reason = ? " +
+          "WHERE namespace = ? AND partition = ? AND txn_id = ?",
+      );
+      for (const key of keys) {
+        mark.run(
+          state,
+          reason ?? null,
+          key.namespace,
+          key.partition,
+          key.txnId,
+        );
+      }
+    }, { create: false });
+  }
+
+  // deno-lint-ignore require-await
+  async queuedDataHighWater(
+    namespace: string,
+    partition: string,
+    name: string,
+  ): Promise<number> {
+    // Read from the version index the prepare writes: no entry body is
+    // parsed, so the cost does not grow with what the outbox holds.
+    const row = this.#read((db) =>
+      db.prepare(
+        "SELECT MAX(version.version) AS high FROM outbox_versions AS version " +
+          "JOIN outbox_entries AS entry ON entry.sequence = version.sequence " +
+          "WHERE entry.namespace = ? AND entry.partition = ? " +
+          "AND entry.state IS NOT NULL AND version.name = ?",
+      ).get(namespace, partition, name) as { high: number | null } | undefined
+    );
+    return row?.high ?? 0;
   }
 
   notePendingFence(fence: number): Promise<void> {

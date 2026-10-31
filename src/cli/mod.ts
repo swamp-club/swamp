@@ -311,6 +311,7 @@ import {
   serveUpstreamOf,
   setLockProgressOutputMode,
   setLockProgressQuiet,
+  setServeOfflineOutputMode,
 } from "./repo_context.ts";
 import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 export { resolveWorkflowsDir };
@@ -2876,6 +2877,7 @@ async function runInvocation(
       quietRequested = options.quiet ?? false;
       setLockProgressQuiet(quietRequested);
       setLockProgressOutputMode(outputMode);
+      setServeOfflineOutputMode(outputMode);
       enableV3RecoveryProgress();
 
       // The colour switch was already flipped at the top of `runCli`. This

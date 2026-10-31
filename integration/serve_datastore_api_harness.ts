@@ -52,6 +52,9 @@ import {
   v3DatastoreFor,
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import { runInRootUnitOfWork } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
+import { ControlPlaneQuarantineStore } from "../src/infrastructure/datastore_v3/control_plane_quarantine_store.ts";
+import { FileSystemControlPlaneStore } from "../src/infrastructure/persistence/fs_control_plane_store.ts";
+import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import { createServeCtx, grant } from "./serve_request_harness.ts";
 import { withV3RowRepos } from "./usecase_v3_fixtures.ts";
 
@@ -59,6 +62,8 @@ import { withV3RowRepos } from "./usecase_v3_fixtures.ts";
 export const TOKENS: Record<string, string> = {
   "alice-token": "user:caller",
   "bob-token": "user:bob",
+  // Neither an admin nor any test change's author (swamp-club#4195).
+  "carol-token": "user:carol",
 };
 
 export interface Server {
@@ -69,6 +74,8 @@ export interface Server {
   readonly model: Definition;
   /** The locks serve holds for callers, as serve wires them. */
   readonly locks: DatastoreLockLeases;
+  /** The changes serve keeps for an admin (swamp-club#4195). */
+  readonly quarantine: ControlPlaneQuarantineStore;
   /** Answers a request in-process, as the server does. */
   readonly handle: (req: Request) => Promise<Response>;
   policyLoads: number;
@@ -83,7 +90,14 @@ export async function withServer(
   grants: Grant[],
   fn: (server: Server) => Promise<void>,
   ledger = new UploadLedger(),
-  options: { managedConfig?: boolean } = {},
+  options: {
+    managedConfig?: boolean;
+    /**
+     * The groups each token's caller carries, as an identity provider's
+     * token names them; read live, so a test may change them mid-way.
+     */
+    tokenGroups?: Record<string, string[]>;
+  } = {},
 ): Promise<void> {
   resetRateLimitState();
   await withV3RowRepos(options, async (repos) => {
@@ -113,6 +127,10 @@ export async function withServer(
             : await createWorkflowRunLock(base.datastoreConfig, target.runId),
         ),
     });
+    // Kept in the repository's own control plane, as a solo serve keeps it.
+    const quarantine = new ControlPlaneQuarantineStore(
+      new FileSystemControlPlaneStore(swampPath(repo.repoDir)),
+    );
     const server: Server = {
       url: "",
       v3,
@@ -120,12 +138,14 @@ export async function withServer(
       modelType: repo.modelType,
       model,
       locks,
+      quarantine,
       handle: () => Promise.reject(new Error("not started")),
       policyLoads: 0,
       close: () => Promise.resolve(),
     };
     const ctx = {
       ...base,
+      quarantine,
       policySnapshotLoader: Object.assign(
         Object.create(base.policySnapshotLoader ?? null),
         {
@@ -145,6 +165,7 @@ export async function withServer(
         v3,
         ledger,
         locks,
+        quarantine,
         authenticate: (token) => {
           const principalId = TOKENS[token];
           return Promise.resolve(
@@ -154,7 +175,7 @@ export async function withServer(
                 ok: true,
                 principalId,
                 collectives: [],
-                groups: [],
+                groups: [...(options.tokenGroups?.[token] ?? [])],
                 tokenName: token,
                 tokenCreatedAt: "2026-01-01T00:00:00Z",
               },

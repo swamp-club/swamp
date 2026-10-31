@@ -214,6 +214,116 @@ Deno.test("serve team mode: the follower takes over once the leader's lease expi
   });
 });
 
+Deno.test("serve team mode: an explicit lease survives a takeover, its holder renews it at the new leader, and the old leader's shutdown leaves it kept (swamp-club#4195)", async () => {
+  await withTeam(async (team) => {
+    const lockKey = "data/aws/ec2/0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a01/.lock";
+    const a = await team.node("a");
+    await a.send({ kind: "start", ttlMs: 1_500, tickMs: 3_600_000 });
+    const b = await team.node("b");
+    await b.send({ kind: "start", tickMs: 3_600_000 });
+    const taken = await a.send({
+      kind: "lease-acquire",
+      principal: "user:alice",
+      lockKey,
+      holdMs: 86_400_000,
+    }) as { kind: string; leaseId: string };
+    assertEquals(taken.kind, "acquired");
+    const before = (await a.state()).fence!;
+
+    const stalled = a.send({ kind: "pause", ms: STALL_MS });
+    await waitFor(
+      async () => {
+        await b.send({ kind: "tick" });
+        return (await b.state()).role === "leader";
+      },
+      "the follower to take the lead",
+      { timeoutMs: 30_000 },
+    );
+    await stalled;
+
+    // The new leader honours the lease: another caller's commit to the
+    // behavior is judged against it, and its holder renews it.
+    const held = await b.send({ kind: "lease-on", lockKey }) as {
+      leaseId: string;
+      principal: string;
+    };
+    assertEquals([held.leaseId, held.principal], [taken.leaseId, "user:alice"]);
+    assertEquals(
+      await b.send({
+        kind: "lease-acquire",
+        principal: "user:bob",
+        lockKey,
+        holdMs: 60_000,
+      }),
+      { kind: "held" },
+    );
+    assertEquals(
+      await b.send({
+        kind: "lease-renew",
+        principal: "user:alice",
+        leaseId: taken.leaseId,
+        holdMs: 86_400_000,
+      }),
+      taken.leaseId,
+    );
+
+    // The old leader shuts down, as it does once it notices; the new
+    // leader's records stay, and only under its own prefix.
+    await a.send({ kind: "lease-dispose" });
+    const after = (await b.state()).fence!;
+    assert(after > before);
+    const records = await b.send({ kind: "lease-records" }) as string[];
+    assert(
+      records.some((key) => key.startsWith(`leases/${after}/`)) &&
+        records.every((key) => key.startsWith(`leases/${after}/`)),
+      records.join(", "),
+    );
+  });
+});
+
+Deno.test("serve team mode: a single serve that restarts leads from boot and keeps the explicit lease it granted before (swamp-club#4195)", async () => {
+  await withTeam(async (team) => {
+    const lockKey = "data/aws/ec2/0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a01/.lock";
+    const first = await team.node("a");
+    assertEquals(
+      await first.send({ kind: "start", tickMs: 3_600_000 }),
+      "writer",
+    );
+    const taken = await first.send({
+      kind: "lease-acquire",
+      principal: "user:alice",
+      lockKey,
+      holdMs: 86_400_000,
+    }) as { kind: string; leaseId: string };
+    assertEquals(taken.kind, "acquired");
+    const before = (await first.state()).fence!;
+    // Serve stops, as at a restart: its leases end in memory, their
+    // records stay.
+    await first.send({ kind: "close" });
+
+    const restarted = await team.node("a");
+    assertEquals(
+      await restarted.send({ kind: "start", tickMs: 3_600_000 }),
+      "writer",
+    );
+    assert((await restarted.state()).fence! > before);
+    const held = await restarted.send({ kind: "lease-on", lockKey }) as {
+      leaseId: string;
+      principal: string;
+    };
+    assertEquals([held.leaseId, held.principal], [taken.leaseId, "user:alice"]);
+    assertEquals(
+      await restarted.send({
+        kind: "lease-acquire",
+        principal: "user:bob",
+        lockKey,
+        holdMs: 60_000,
+      }),
+      { kind: "held" },
+    );
+  });
+});
+
 Deno.test("serve team mode: a claimed datastore keeps its owner across a takeover (swamp-club#4063)", async () => {
   await withTeam(async (team) => {
     const claimer = await team.node("claimer");

@@ -31,6 +31,7 @@ import { exists } from "@std/fs";
 import { join } from "@std/path";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { V3_SERVE_UNREACHABLE_CODE } from "../src/infrastructure/datastore_v3/serve_upstream_errors.ts";
+import { OFFLINE_LEASE_REQUIRED_CODE } from "../src/domain/datastore_v3/offline_write_policy.ts";
 import { serveUpstreamLocalRoot } from "../src/infrastructure/datastore_v3/serve_upstream_binding.ts";
 import { v3DatastoreFor } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import {
@@ -117,7 +118,7 @@ async function outboxEntries(
 
 Deno.test({
   name:
-    "serve upstream errors: with serve unreachable a read goes on from the local copy with a warning, and a write is refused with exit 75, changing nothing",
+    "serve upstream errors: with serve unreachable a read goes on from the local copy with a warning, and a write the offline rules do not allow is refused with exit 75, changing nothing",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -180,14 +181,15 @@ Deno.test({
         `the warning interpolates the error object: ${JSON.stringify(logs)}`,
       );
 
-      // The write: refused before anything changed.
+      // The write: the command works offline (swamp-club#4195), and a save
+      // to a behavior it holds no lease on, by a command no offline rule
+      // judged at its start, is refused at its commit by the serve sink's
+      // backstop, before anything changed. (A method run is judged before
+      // it starts: integration/serve_v3_offline_flush_test.ts.)
       // Its local lease raises the copy's writer fence, so the files are
       // compared by what they hold: commits and outbox entries.
       const before = await copyContent(client, serve.origin);
       assert(before.commits.length > 0, "the copy holds no commits");
-      // Refused as the write context opens, before the command's action
-      // runs: a method run's side effects must not happen when its result
-      // could not be committed.
       let actionRan = false;
       const error = await assertRejects(() =>
         writeCommand(
@@ -207,14 +209,10 @@ Deno.test({
       );
       assertEquals(
         (error as { code?: string }).code,
-        V3_SERVE_UNREACHABLE_CODE,
+        OFFLINE_LEASE_REQUIRED_CODE,
         String(error),
       );
-      assertEquals(
-        actionRan,
-        false,
-        "the command's action ran before the refusal",
-      );
+      assert(actionRan, "the write context was refused as it opened");
       assertEquals(exitCodeForError(error), 75);
       assertEquals(
         await copyContent(client, serve.origin),
@@ -865,3 +863,70 @@ Deno.test({
     });
   },
 });
+
+for (const state of ["rejected", "quarantined"] as const) {
+  Deno.test({
+    name:
+      `serve upstream errors: a ${state} entry never holds a token switch, and the reset keeps it (swamp-club#4195)`,
+    sanitizeOps: false,
+    sanitizeResources: false,
+    fn: async () => {
+      await withScratch(async (scratch) => {
+        const serve = await scratch.serve();
+        const bucket = scratch.bucket();
+        const client = await scratch.client("a", { bucket });
+        const aliceEnv = serveEnv(serve, "alice-token");
+        const bobEnv = serveEnv(serve, "bob-token");
+        const type = serve.modelType;
+        const web = serve.models.web;
+
+        await leaveUnsettledWrite(
+          scratch,
+          client,
+          aliceEnv,
+          (repos) =>
+            repos.unifiedDataRepo.save(type, web, dataOf("vpc"), json(1)),
+        );
+        // A flush marked it: kept, never sent again.
+        const outbox = new SqliteCommitOutbox(
+          copyFiles(client, serve.origin).outbox,
+        );
+        try {
+          const keys = (await outbox.entries()).entries.map((entry) => ({
+            namespace: entry.commit.namespace,
+            partition: entry.commit.partition.toString(),
+            txnId: entry.commit.txnId,
+          }));
+          assertEquals(keys.length, 1);
+          await outbox.markState(keys, state, "kept by the test");
+        } finally {
+          await outbox.close();
+        }
+        const kept = await outboxEntries(client, serve.origin);
+
+        // Bob's token resets the copy: not refused, and the entry stays.
+        assertEquals(
+          await readCommand(
+            scratch,
+            client,
+            bobEnv,
+            (repos) => latestOf(repos, type, web, "vpc"),
+          ),
+          null,
+        );
+        const reopened = new SqliteCommitOutbox(
+          copyFiles(client, serve.origin).outbox,
+        );
+        try {
+          const { entries } = await reopened.entries();
+          assertEquals(entries.map((entry) => entry.commit.txnId), kept);
+          assertEquals(entries.map((entry) => entry.state), [state]);
+          assertEquals(await reopened.hasUnsettledEntries(), false);
+        } finally {
+          await reopened.close();
+        }
+        assertEquals(bucket.touched(), []);
+      });
+    },
+  });
+}

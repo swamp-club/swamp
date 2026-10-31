@@ -146,7 +146,28 @@ export interface OutboxPreparation {
    * once the lease has changed hands.
    */
   readonly lease?: OutboxLease;
+  /**
+   * True when the commit is about to be queued rather than sent
+   * (swamp-club#4195): the entry is written marked `offline`, so a process
+   * that dies before the queue's mark leaves it offline, never pending.
+   */
+  readonly queuedOffline?: boolean;
 }
+
+/**
+ * What became of an entry that is not simply waiting to land
+ * (swamp-club#4195). An entry with none is pending: its unit is landing
+ * it, or a recovery will.
+ *
+ * - `offline`: queued while serve was unreachable. The next command that
+ *   reaches serve flushes it, rebased onto what landed meanwhile. No drop
+ *   rule takes it: it may be the only record of a change a run made.
+ * - `rejected`: the flush could not land it (a removal whose target
+ *   changed, a commit serve refused for its content). Kept and reported.
+ * - `quarantined`: serve refused it because the caller lacks a grant it
+ *   needs. Kept, shown by `swamp datastore status`, for an admin to accept.
+ */
+export type OutboxEntryState = "offline" | "rejected" | "quarantined";
 
 /** A fenced model lease, as an outbox entry records it. */
 export interface OutboxLease {
@@ -179,6 +200,17 @@ export interface OutboxEntry extends OutboxPreparation {
    * state, a left entry included.
    */
   readonly abandonedAt?: number;
+  /** What became of it, when it is not pending (swamp-club#4195). */
+  readonly state?: OutboxEntryState;
+  /** Why it is rejected or quarantined. */
+  readonly stateReason?: string;
+  /**
+   * When a flush first sent it without learning whether serve took it
+   * (swamp-club#4195), epoch milliseconds. Serve keeps a landed commit's
+   * txnId for {@link COMPACTED_TXN_RETENTION_MS}; once that has passed
+   * since, the flush cannot tell whether it landed and never sends it again.
+   */
+  readonly sentMaybeAt?: number;
 }
 
 /** The fences a copy of `commits.db` took, as {@link decideFenceChain} keeps them. */
@@ -319,6 +351,13 @@ export interface OutboxRecoveryPlan {
   readonly drops: readonly OutboxDrop[];
   /** Entries of writers that may still be running, left as they are. */
   readonly skipped: readonly OutboxEntry[];
+  /**
+   * Entries queued offline and not landed (swamp-club#4195), in order: the
+   * flush rebases and sends them. Never dropped.
+   */
+  readonly offline: readonly OutboxEntry[];
+  /** Rejected and quarantined entries: kept as they are, never sent. */
+  readonly held: readonly OutboxEntry[];
 }
 
 /**
@@ -340,7 +379,19 @@ export function planOutboxRecovery(
   const settles: OutboxEntry[] = [];
   const drops: OutboxDrop[] = [];
   const kept: OutboxEntry[] = [];
+  const offline: OutboxEntry[] = [];
+  const held: OutboxEntry[] = [];
   for (const entry of ordered) {
+    // An entry queued offline, or kept after a rejection, may be the only
+    // record of what a run changed: no drop rule takes it (swamp-club#4195).
+    // One its unit gave up was never acknowledged, so its caller was told
+    // it failed: it is dropped as abandoned, never flushed.
+    if (entry.state !== undefined && entry.abandonedAt === undefined) {
+      if (judgement.landed?.(entry) === true) settles.push(entry);
+      else if (entry.state === "offline") offline.push(entry);
+      else held.push(entry);
+      continue;
+    }
     const reason = dropReason(entry, judgement);
     if (reason === "skip") skipped.push(entry);
     else if (reason === "settle") settles.push(entry);
@@ -362,7 +413,14 @@ export function planOutboxRecovery(
       drops.push({ entry, reason: "unit-dropped" });
     } else runs.push(entry);
   }
-  return { settles, sends: [...sends, ...runs], drops, skipped };
+  return {
+    settles,
+    sends: [...sends, ...runs],
+    drops,
+    skipped,
+    offline,
+    held,
+  };
 }
 
 /**
@@ -434,10 +492,16 @@ export function sweepMayOverlap(
 /** What {@link CommitOutbox.entries} lists. */
 export interface OutboxListing {
   readonly entries: readonly OutboxEntry[];
-  /** Entries whose commit can no longer be read; recovery drops them. */
+  /**
+   * Entries whose commit can no longer be read. Recovery drops a pending
+   * one; one with a `state` (swamp-club#4195) is kept and reported, since
+   * it may be the only record of what a run changed.
+   */
   readonly unreadable: readonly {
     readonly key: OutboxKey;
     readonly detail: string;
+    /** The entry's stored state, as written, when it has one. */
+    readonly state?: string;
   }[];
 }
 
@@ -473,6 +537,34 @@ export interface CommitOutbox {
   entries(): Promise<OutboxListing>;
   /** Whether any entry is held. */
   hasEntries(): Promise<boolean>;
+  /**
+   * Marks entries with what became of them (swamp-club#4195), durably:
+   * `offline` keeps one a failing unit would discard, `rejected` and
+   * `quarantined` keep one a flush could not land. A later prepare of the
+   * same key keeps the mark.
+   */
+  markState(
+    keys: readonly OutboxKey[],
+    state: OutboxEntryState,
+    reason?: string,
+  ): Promise<void>;
+  /**
+   * Records that a flush sent the entry `key` without learning whether
+   * serve took it, at `at` (epoch milliseconds). An earlier record is kept:
+   * serve's txnId retention runs from the first time it may have landed.
+   */
+  markSentMaybe(key: OutboxKey, at: number): Promise<void>;
+  /**
+   * The highest version of data name `name` in `partition` that a kept
+   * entry (offline, rejected or quarantined) records; 0 when none does. A
+   * command allocates above it, so work queued offline never reuses a
+   * version another queued commit holds (swamp-club#4195).
+   */
+  queuedDataHighWater(
+    namespace: string,
+    partition: string,
+    name: string,
+  ): Promise<number>;
   /**
    * Notes, durably, that this copy took `fence` and is about to raise and
    * record it (swamp-club#3586); the note only ever rises. A note left one

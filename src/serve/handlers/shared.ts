@@ -117,6 +117,7 @@ import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
 import type { FollowerGate } from "../follower_requests.ts";
 import type { LeaderLink } from "../leader_link.ts";
 import type { V3CommitFeedSource } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
+import type { QuarantineStore } from "../../domain/datastore_v3/quarantine.ts";
 
 const pushLogger = getSwampLogger(["serve", "sync"]);
 const streamLogger = getSwampLogger(["serve", "stream"]);
@@ -386,6 +387,22 @@ export interface ConnectionContext {
    * (swamp-club#4120). Absent when the datastore is not v3.
    */
   commitFeed?: V3CommitFeedSource;
+  /**
+   * The changes serve keeps because their author lacks a grant they need
+   * (swamp-club#4195), as `datastore status --server` lists them to an
+   * admin. Absent when the datastore is not v3.
+   */
+  quarantine?: QuarantineStore;
+  /**
+   * The explicit leases this node holds for callers of its datastore API
+   * (swamp-club#4195), as `datastore status --server` lists them to an
+   * admin. Absent when serve holds none for callers.
+   */
+  explicitLeases?: () => readonly {
+    readonly lockKey: string;
+    readonly principal: string;
+    readonly expiresAt: string;
+  }[];
   /**
    * Serializes `run.gc` and `data.gc` with serve's retention pass
    * (swamp-club#3473). Absent in contexts built without the retention timer.

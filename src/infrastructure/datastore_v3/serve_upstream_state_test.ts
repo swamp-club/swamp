@@ -396,7 +396,8 @@ Deno.test("ServeUpstreamState: a file at schema version 3 upgrades with no acces
     const id = made.copyId();
     made.close();
     const db = new DatabaseSync(path);
-    db.exec(`ALTER TABLE copy DROP COLUMN access_built;
+    db.exec(`DROP TABLE contact;
+       ALTER TABLE copy DROP COLUMN access_built;
        ALTER TABLE copy DROP COLUMN access_seen;
        ALTER TABLE copy DROP COLUMN access_reset_at;
        PRAGMA user_version=3;`);
@@ -530,6 +531,45 @@ Deno.test("ServeUpstreamState: a handle opened while another resets the copy rec
       }
     } finally {
       resetter.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState.recordContact: the last contact and serve's clock offset persist, and a contact with no measurement keeps the offset (swamp-club#4195)", async () => {
+  await withTempDir((dir) => {
+    const path = join(dir, "serve_upstream.db");
+    const state = ServeUpstreamState.open(path);
+    try {
+      assertEquals(state.lastContact(), undefined);
+      state.recordContact(new Date("2026-10-30T10:00:00.000Z"), 1500.4);
+      state.recordContact(new Date("2026-10-30T11:00:00.000Z"), undefined);
+    } finally {
+      state.close();
+    }
+    const reopened = ServeUpstreamState.open(path);
+    try {
+      assertEquals(reopened.lastContact(), {
+        at: "2026-10-30T11:00:00.000Z",
+        clockOffsetMs: 1500,
+      });
+    } finally {
+      reopened.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState: a file at schema version 4 upgrades with no contact recorded (swamp-club#4195)", async () => {
+  await withTempDir((dir) => {
+    const path = join(dir, "serve_upstream.db");
+    ServeUpstreamState.open(path).close();
+    const db = new DatabaseSync(path);
+    db.exec(`DROP TABLE contact; PRAGMA user_version=4;`);
+    db.close();
+    const state = ServeUpstreamState.open(path);
+    try {
+      assertEquals(state.lastContact(), undefined);
+    } finally {
+      state.close();
     }
   });
 });

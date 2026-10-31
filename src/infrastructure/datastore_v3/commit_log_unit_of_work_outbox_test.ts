@@ -48,7 +48,10 @@ import {
   savePut,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import { MemorySink } from "./commit_log_test_helpers.ts";
-import { createCommitLogUnitOfWork } from "./commit_log_unit_of_work.ts";
+import {
+  CommitQueuedOfflineError,
+  createCommitLogUnitOfWork,
+} from "./commit_log_unit_of_work.ts";
 import { FileSystemStorage } from "../persistence/fs_datastore_storage.ts";
 import {
   AT,
@@ -960,4 +963,76 @@ Deno.test("commit-log unit with an outbox: a failed file sync prepares nothing a
       assertEquals(left, []);
     }
   });
+});
+
+Deno.test("commit-log unit with an outbox: a commit the sink queues offline keeps its entry, marked, and the unit commits (swamp-club#4195)", async () => {
+  const sink = new OutboxMemorySink();
+  const queued: string[] = [];
+  sink.outbox.queue = (keys) => {
+    for (const key of keys) queued.push(key.txnId);
+    return Promise.resolve();
+  };
+  sink.beforeAppend = (commit) => {
+    throw new CommitQueuedOfflineError(commit.partition);
+  };
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory()),
+  );
+  await uow.stageOp({ partition: MODEL, op: await savePut("a", 1) });
+  await uow.commit();
+  const [txnId] = [...sink.entries.keys()];
+  assertEquals(queued, [txnId]);
+  assertEquals(removals(sink), []);
+  assertEquals(sink.entries.size, 1);
+});
+
+Deno.test("commit-log unit with an outbox: a commit the sink will queue offline is prepared already marked offline, before it is appended (swamp-club#4195)", async () => {
+  const sink = new OutboxMemorySink();
+  const queuesOffline = sink as { queuesOffline?: () => Promise<boolean> };
+  queuesOffline.queuesOffline = () => Promise.resolve(true);
+  let atAppend: boolean | undefined;
+  sink.outbox.queue = () => Promise.resolve();
+  sink.beforeAppend = (commit) => {
+    // What a process that dies now, before the queue's mark, leaves.
+    atAppend = sink.entries.get(commit.txnId)?.queuedOffline;
+    throw new CommitQueuedOfflineError(commit.partition);
+  };
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory()),
+  );
+  await uow.stageOp({ partition: MODEL, op: await savePut("a", 1) });
+  await uow.commit();
+  assertEquals(atAppend, true);
+
+  // A sink that would send it prepares it pending, as before.
+  const online = new OutboxMemorySink();
+  let pendingAtAppend: boolean | undefined;
+  online.beforeAppend = (commit) => {
+    pendingAtAppend = online.entries.get(commit.txnId)?.queuedOffline;
+  };
+  const onlineUow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(online, memory()),
+  );
+  await onlineUow.stageOp({ partition: MODEL, op: await savePut("a", 1) });
+  await onlineUow.commit();
+  assertEquals(pendingAtAppend, undefined);
+});
+
+Deno.test("commit-log unit with an outbox: a commit that may have landed keeps its entry for the next recovery, and says it may land (swamp-club#4195)", async () => {
+  const sink = new OutboxMemorySink();
+  sink.outbox.landedSeq = () => Promise.reject(new Error("serve is down"));
+  sink.beforeAppend = () => {
+    throw new Error("the reply was lost");
+  };
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory()),
+  );
+  await uow.stageOp({ partition: MODEL, op: await savePut("a", 1) });
+  await assertRejects(() => uow.commit(), MayLandLaterError);
+  assertEquals(removals(sink), []);
+  assertEquals(sink.entries.size, 1, "the entry was given up");
 });

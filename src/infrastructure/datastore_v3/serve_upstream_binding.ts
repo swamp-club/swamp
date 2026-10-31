@@ -82,6 +82,7 @@ import {
   v3OutboxPath,
 } from "./v3_datastore.ts";
 import { acquireV3WriterLock, V3WriterBusyError } from "./v3_writer_lock.ts";
+import { SqliteCommitOutbox } from "./sqlite_commit_outbox.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "serve"]);
 
@@ -231,6 +232,21 @@ export function registerCheckoutLeases(
 const COPY_DATABASE_SUFFIXES = ["", "-wal", "-shm", "-journal"] as const;
 
 /**
+ * Resets the outbox at `path` in place when it keeps rejected or
+ * quarantined entries, which are never discarded (swamp-club#4195): true
+ * when it kept any, so the reset leaves the file; false when it may be
+ * removed with the copy.
+ */
+async function outboxKeepsEntries(path: string): Promise<boolean> {
+  const outbox = new SqliteCommitOutbox(path);
+  try {
+    return await outbox.resetKeepingKept() > 0;
+  } finally {
+    await outbox.close();
+  }
+}
+
+/**
  * Makes the copy at `root` hold the view of serve that `target`'s token is
  * given (swamp-club#3985), under the caller's current read access
  * (swamp-club#4089). A copy with no caller recorded is stamped with this
@@ -327,7 +343,13 @@ async function resetCopyForCaller(
       }
       state.beginCallerReset();
       const commitsDb = v3CommitsDbPath(root, repoDir);
-      for (const file of [commitsDb, v3OutboxPath(commitsDb)]) {
+      // Rejected and quarantined entries are never discarded
+      // (swamp-club#4195): an outbox holding any is reset in place, keeping
+      // them, rather than removed with the copy.
+      const files = await outboxKeepsEntries(v3OutboxPath(commitsDb))
+        ? [commitsDb]
+        : [commitsDb, v3OutboxPath(commitsDb)];
+      for (const file of files) {
         for (const suffix of COPY_DATABASE_SUFFIXES) {
           await Deno.remove(`${file}${suffix}`).catch((error) => {
             if (!(error instanceof Deno.errors.NotFound)) throw error;

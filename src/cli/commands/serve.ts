@@ -174,9 +174,15 @@ import {
   hasJsonContentType,
   matchSignalRoute,
 } from "../../serve/signal_http.ts";
-import { handleDatastoreRequest } from "../../serve/datastore_api.ts";
+import {
+  handleDatastoreRequest,
+  leaseBaseOf,
+} from "../../serve/datastore_api.ts";
 import { matchDatastoreRoute } from "../../serve/datastore_routes.ts";
 import { asTryLock, DatastoreLockLeases } from "../../serve/datastore_locks.ts";
+import { setOwnLockGate } from "../../infrastructure/datastore_v3/own_lock_gate.ts";
+import { ControlPlaneLeaseStore } from "../../infrastructure/datastore_v3/control_plane_lease_store.ts";
+import { ControlPlaneQuarantineStore } from "../../infrastructure/datastore_v3/control_plane_quarantine_store.ts";
 import { UploadLedger } from "../../infrastructure/datastore_v3/upload_ledger.ts";
 import {
   parsePrincipal,
@@ -575,6 +581,7 @@ import {
   startV3ReplicationUpkeep,
   v3CommitFeedSource,
   v3CommitMark,
+  type V3DatastoreConfig,
   v3DatastoreConfigOf,
   v3DatastoreFor,
   V3MaintenanceTimer,
@@ -3391,7 +3398,20 @@ export const serveCommand = new Command()
     // The model and workflow-run locks serve holds for the CLI's serve
     // upstream: serve's own locks, so client work and serve's runs exclude
     // each other (swamp-club#3985). Released at shutdown.
+    // On a v3 datastore its explicit leases are also kept in the shared
+    // control plane, under this leader's writer fence, so a new leader
+    // adopts them (swamp-club#4195).
     const datastoreApiLocks = new DatastoreLockLeases({
+      ...(v3Location !== undefined
+        ? {
+          persistence: {
+            store: new ControlPlaneLeaseStore(
+              v3ServeControlPlaneAt(v3Location),
+            ),
+            leaderFence: () => v3WriterFence(v3Location.path),
+          },
+        }
+        : {}),
       createLock: async (target) =>
         asTryLock(
           target.kind === "model"
@@ -3403,6 +3423,27 @@ export const serveCommand = new Command()
             : await createWorkflowRunLock(datastoreConfig, target.runId),
         ),
     });
+    // Serve's own runs take a behavior's lock only once no lease kept on it
+    // is still being adopted (swamp-club#4195): they lock apart from the
+    // lease API, which adoption already holds back.
+    if (v3Location !== undefined) {
+      setOwnLockGate((lockKey, maxWaitMs) =>
+        datastoreApiLocks.whenAdopted(lockKey, maxWaitMs)
+      );
+    }
+    // Takes over the explicit leases the leader before this node kept
+    // (swamp-club#4195). A lease whose partition recorded a later fence was
+    // superseded and is not adopted.
+    const adoptKeptLeases = async (location: V3DatastoreConfig) => {
+      await datastoreApiLocks.adopt({
+        leaseFenceOf: async (target) =>
+          (await leaseBaseOf(
+            v3DatastoreFor(resolvedRepoDir, location),
+            repoContext.workflowRunRepo,
+            target,
+          )).leaseFence,
+      });
+    };
     // Its Litestream sidecar, kept while serve holds the lease; nothing
     // while the datastore does not replicate (swamp-club#3416). A follower
     // starts it once it leads (swamp-club#4096): the first hold sets up the
@@ -4007,6 +4048,10 @@ export const serveCommand = new Command()
       logger.info(
         "Control-plane store: the v3 datastore, shared by its serve nodes",
       );
+      // A node that leads from boot adopts the explicit leases kept before
+      // it before it listens (swamp-club#4195); a follower adopts them when
+      // it takes the lead.
+      if (!v3Follows) await adoptKeptLeases(v3Location);
     } else if (hasRemoteControlPlane && syncService?.controlPlaneStore) {
       controlPlaneStore = syncService.controlPlaneStore();
       logger.info("Control-plane store: remote datastore");
@@ -5435,6 +5480,11 @@ export const serveCommand = new Command()
         ? { caCerts: [await readServeCaCert(merged.caCert)] }
         : {}),
     });
+    // Changes serve refused for a grant their author lacks, kept for an admin
+    // in the shared control plane (swamp-club#4195).
+    const datastoreQuarantine = new ControlPlaneQuarantineStore(
+      controlPlaneStore,
+    );
     const connectionCtx: import("../../serve/connection.ts").ConnectionContext =
       {
         repoDir: resolvedRepoDir,
@@ -5442,6 +5492,17 @@ export const serveCommand = new Command()
         gcMutex,
         eventLoopLag,
         definitionIndex,
+        ...(v3Location !== undefined
+          ? { quarantine: datastoreQuarantine }
+          : {}),
+        explicitLeases: () =>
+          datastoreApiLocks.list().filter((lease) => lease.explicit).map((
+            lease,
+          ) => ({
+            lockKey: lease.lockKey,
+            principal: lease.principal,
+            expiresAt: lease.expiresAt,
+          })),
         ...(ownerAddress !== undefined && { ownerAddress }),
         datastoreConfig,
         datastoreResolver,
@@ -7197,6 +7258,11 @@ export const serveCommand = new Command()
                 : undefined,
               ledger: datastoreApiLedger,
               locks: datastoreApiLocks,
+              // Changes refused for a grant their author lacks, kept in
+              // the shared control plane for an admin (swamp-club#4195).
+              ...(v3Location !== undefined
+                ? { quarantine: datastoreQuarantine }
+                : {}),
               authenticate: (token, sourceIp) =>
                 authenticateServerToken(token, resolvedRepoDir, repoContext, {
                   emitter: connectionCtx.auditEmitter,
@@ -8009,6 +8075,7 @@ export const serveCommand = new Command()
       // The locks callers of the datastore API hold, once no request can
       // take another: released, and acquires still waiting given up.
       await datastoreApiLocks.dispose();
+      setOwnLockGate(undefined);
       if (workerGcService) {
         await workerGcService.dispose();
       }
@@ -8417,6 +8484,8 @@ export const serveCommand = new Command()
             resolvedRepoDir,
             location,
           );
+          // Before any lease request or commit is taken as leader.
+          await adoptKeptLeases(location);
           leaderWorkStarted = true;
           for (const start of leaderStarts.splice(0)) start();
           await leaderStep(

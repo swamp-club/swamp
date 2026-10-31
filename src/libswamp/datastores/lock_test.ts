@@ -26,6 +26,7 @@ import { assertCompletes, collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   createDatastoreLockStatusDeps,
+  createServeLeaseReleaseDeps,
   datastoreLockRelease,
   type DatastoreLockReleaseDeps,
   type DatastoreLockReleaseEvent,
@@ -34,6 +35,7 @@ import {
   type DatastoreLockStatusEvent,
   type LockInfo,
   modelLockKey,
+  modelSpecTypeMatches,
   parseModelLockKey,
   parseModelSpec,
   stripNamespacePrefix,
@@ -259,6 +261,30 @@ Deno.test("datastoreLockRelease: successful release", async () => {
     },
   );
   assertEquals(releasedNonce, "abc-123");
+});
+
+Deno.test("datastoreLockRelease: a serve-mode checkout's behavior asks serve to end its lease, and names who held it (swamp-club#4195)", async () => {
+  let asked = 0;
+  const deps = createServeLeaseReleaseDeps(() => {
+    asked++;
+    return Promise.resolve({ released: true, heldBy: "user:alice" });
+  });
+  await assertCompletes<DatastoreLockReleaseEvent>(
+    datastoreLockRelease(createLibSwampContext(), deps, {}),
+    { kind: "completed", data: { released: true, leaseHolder: "user:alice" } },
+  );
+  assertEquals(asked, 1);
+  await assertCompletes<DatastoreLockReleaseEvent>(
+    datastoreLockRelease(
+      createLibSwampContext(),
+      createServeLeaseReleaseDeps(() => Promise.resolve({ released: false })),
+      {},
+    ),
+    {
+      kind: "completed",
+      data: { released: false, reason: "serve holds no lease on it" },
+    },
+  );
 });
 
 Deno.test("datastoreLockRelease: nonce mismatch (holder changed)", async () => {
@@ -799,4 +825,11 @@ Deno.test("datastoreLockStatus: a serve that cannot list its leases still lets t
     ),
   );
   assertEquals(events.map((event) => event.kind), ["completed"]);
+});
+
+Deno.test("modelSpecTypeMatches: a --behavior spec acts only on a behavior of the type it names (swamp-club#4195)", () => {
+  assertEquals(modelSpecTypeMatches("aws-ec2", "aws-ec2"), true);
+  assertEquals(modelSpecTypeMatches("AWS-EC2", "aws-ec2"), true);
+  assertEquals(modelSpecTypeMatches("gcp-vm", "aws-ec2"), false);
+  assertEquals(modelSpecTypeMatches("", "aws-ec2"), false);
 });

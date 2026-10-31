@@ -23,6 +23,7 @@ import type {
 } from "../../domain/datastore/distributed_lock.ts";
 import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
 import { walk } from "@std/fs";
 import { relative, SEPARATOR } from "@std/path";
 import type { LibSwampContext } from "../context.ts";
@@ -128,6 +129,22 @@ export function parseModelSpec(
     modelType: spec.slice(0, lastSlash),
     modelId: spec.slice(lastSlash + 1),
   };
+}
+
+/**
+ * Whether the type a `--behavior type/id` spec names is `foundType`, the
+ * normalized type of the behavior its id or name found: a spec whose type
+ * names another type never acts on the behavior found (swamp-club#4195).
+ */
+export function modelSpecTypeMatches(
+  specType: string,
+  foundType: string,
+): boolean {
+  try {
+    return ModelType.create(specType).normalized === foundType;
+  } catch {
+    return false;
+  }
 }
 
 // ── Lock status ────────────────────────────────────────────────────────
@@ -273,6 +290,11 @@ export interface DatastoreLockReleaseData {
   released: boolean;
   reason?: string;
   previousHolder?: LockInfo;
+  /**
+   * Who held the lease serve ended, for a serve-mode checkout's behavior
+   * (swamp-club#4195).
+   */
+  leaseHolder?: string;
 }
 
 export type DatastoreLockReleaseEvent =
@@ -286,6 +308,14 @@ export type DatastoreLockReleaseInput = Record<string, never>;
 export interface DatastoreLockReleaseDeps {
   inspectLock: () => Promise<LockInfo | null>;
   forceRelease: (nonce: string) => Promise<boolean>;
+  /**
+   * For a behavior of a checkout written through serve (swamp-club#4195):
+   * asks serve to end the lease it holds on the behavior's lock, whoever
+   * holds it, in place of inspecting and releasing a lock here.
+   */
+  releaseServeLease?: () => Promise<
+    { readonly released: boolean; readonly heldBy?: string }
+  >;
 }
 
 /** Force-releases a stuck datastore lock. */
@@ -298,6 +328,23 @@ export async function* datastoreLockRelease(
     "swamp.datastore.lock.release",
     {},
     (async function* () {
+      if (deps.releaseServeLease !== undefined) {
+        ctx.logger.debug`Asking serve to end the lease on the behavior`;
+        const outcome = await deps.releaseServeLease();
+        yield {
+          kind: "completed",
+          data: outcome.released
+            ? {
+              released: true,
+              ...(outcome.heldBy !== undefined
+                ? { leaseHolder: outcome.heldBy }
+                : {}),
+            }
+            : { released: false, reason: "serve holds no lease on it" },
+        };
+        return;
+      }
+
       ctx.logger.debug`Checking lock before force-release`;
 
       const info = await deps.inspectLock();
@@ -518,6 +565,22 @@ export function createDatastoreLockStatusDeps(
   return {
     inspectGlobalLock: () => globalLock.inspect(),
     scanModelLocks: () => scanModelLocks(config.path, config.namespace),
+  };
+}
+
+/**
+ * DatastoreLockReleaseDeps for a behavior of a checkout written through
+ * serve (swamp-club#4195): serve ends the lease it holds on the behavior.
+ */
+export function createServeLeaseReleaseDeps(
+  release: () => Promise<
+    { readonly released: boolean; readonly heldBy?: string }
+  >,
+): DatastoreLockReleaseDeps {
+  return {
+    inspectLock: () => Promise.resolve(null),
+    forceRelease: () => Promise.resolve(false),
+    releaseServeLease: release,
   };
 }
 

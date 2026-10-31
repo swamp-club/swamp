@@ -54,6 +54,7 @@ import {
 import {
   createDatastoreStatusDeps,
   datastoreStatus,
+  quarantineStatusOf,
 } from "../../libswamp/datastores/status.ts";
 import {
   createDoctorSecretsDeps,
@@ -279,6 +280,9 @@ import {
 import { normalizeOwnerAddress } from "../../domain/datastore_v3/datastore_owner.ts";
 import type { DatastoreClaimPayload } from "../protocol.ts";
 import { UserError } from "../../domain/errors.ts";
+
+/** The most accepted quarantined changes `datastore status --server` lists. */
+const MAX_LISTED_ACCEPTED_QUARANTINE = 50;
 
 /**
  * Derives the extension lockfile path from the connection context's
@@ -664,7 +668,32 @@ export async function handleDatastoreStatus(
   try {
     const libCtx = handlerLibSwampContext(ctx);
     const config = ctx.datastoreResolver.config();
+    const explicitLeases = ctx.explicitLeases;
+    const quarantine = ctx.quarantine;
     const deps = await createDatastoreStatusDeps(ctx.datastoreResolver, {
+      // The changes serve keeps for an admin to accept (swamp-club#4195).
+      ...(quarantine !== undefined
+        ? {
+          listQuarantine: async () => {
+            const { records, truncated } = await quarantine.list(
+              MAX_LISTED_ACCEPTED_QUARANTINE,
+            );
+            return { entries: records.map(quarantineStatusOf), truncated };
+          },
+        }
+        : {}),
+      // The explicit leases this node holds (swamp-club#4195); the caller
+      // is an admin, so each names its holder.
+      ...(explicitLeases !== undefined
+        ? {
+          listExplicitLeases: () =>
+            explicitLeases().map((lease) => ({
+              lockKey: lease.lockKey,
+              holder: lease.principal,
+              expiresAt: lease.expiresAt,
+            })),
+        }
+        : {}),
       ...(resolverEngine(ctx.datastoreResolver) === "v3"
         ? {
           describeCommitLog: async () =>

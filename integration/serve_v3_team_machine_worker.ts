@@ -46,6 +46,13 @@ import {
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { ServeLeadership } from "../src/serve/serve_leadership.ts";
 import { DatastoreOwner } from "../src/domain/datastore_v3/datastore_owner.ts";
+import {
+  DatastoreLockLeases,
+  lockKeyOf,
+  type LockTarget,
+  parseLockKey,
+} from "../src/serve/datastore_locks.ts";
+import { ControlPlaneLeaseStore } from "../src/infrastructure/datastore_v3/control_plane_lease_store.ts";
 import { commitIn } from "./datastore_v3_litestream_helpers.ts";
 
 /** What the test asks a node to do. */
@@ -77,6 +84,26 @@ export type TeamNodeRequest =
   | { readonly kind: "tick" }
   | { readonly kind: "pause"; readonly ms: number }
   /**
+   * The leases serve holds for callers (swamp-club#4195): an explicit lease
+   * taken, renewed or looked up at this node, its shutdown, and the lease
+   * records in the shared control plane.
+   */
+  | {
+    readonly kind: "lease-acquire";
+    readonly principal: string;
+    readonly lockKey: string;
+    readonly holdMs: number;
+  }
+  | {
+    readonly kind: "lease-renew";
+    readonly principal: string;
+    readonly leaseId: string;
+    readonly holdMs: number;
+  }
+  | { readonly kind: "lease-on"; readonly lockKey: string }
+  | { readonly kind: "lease-dispose" }
+  | { readonly kind: "lease-records" }
+  /**
    * Burns the worker's thread for up to `ms`, as a node stuck in a busy
    * loop would: the test's request deadline must cut it off
    * (swamp-club#4152).
@@ -102,6 +129,27 @@ declare const self: Worker;
 let init: Extract<TeamNodeRequest, { kind: "init" }> | undefined;
 let leadership: ServeLeadership | undefined;
 let shortLease: (() => Promise<void>) | undefined;
+let locks: DatastoreLockLeases | undefined;
+/** Serve's own locks on this node, in memory: a node's locks are its own. */
+const nodeLocks = new Set<string>();
+
+function nodeLock(target: LockTarget) {
+  const key = lockKeyOf(target);
+  let mine = false;
+  return Promise.resolve({
+    tryAcquire: () => {
+      if (nodeLocks.has(key)) return Promise.resolve(false);
+      nodeLocks.add(key);
+      mine = true;
+      return Promise.resolve(true);
+    },
+    release: () => {
+      if (mine) nodeLocks.delete(key);
+      mine = false;
+      return Promise.resolve();
+    },
+  });
+}
 const events: string[] = [];
 
 function config(): FilesystemDatastoreConfig {
@@ -154,6 +202,17 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
           ownerCheck,
         });
       const role = await take();
+      // As serve wires them: explicit leases kept in the shared control
+      // plane under the writer fence, adopted on taking the lead.
+      const leases = new DatastoreLockLeases({
+        createLock: nodeLock,
+        persistence: {
+          store: new ControlPlaneLeaseStore(v3ServeControlPlaneAt(config())),
+          leaderFence: () => v3WriterFence(datastorePath),
+        },
+      });
+      locks = leases;
+      if (role === "writer") await leases.adopt();
       const node = new ServeLeadership({
         instanceId: init!.instanceId,
         address: `http://${init!.hostname}:9090`,
@@ -164,9 +223,9 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
         },
         store: v3ServeControlPlaneAt(config()),
         refreshCopy: () => refreshV3FollowerCopy(init!.repoDir, config()),
-        onLead: () => {
+        onLead: async () => {
           events.push("lead");
-          return Promise.resolve();
+          if (role !== "writer") await leases.adopt();
         },
         onLostLead: () => {
           events.push("lost");
@@ -236,7 +295,37 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
       while (Date.now() < end) spins++;
       return spins;
     }
+    case "lease-acquire": {
+      const outcome = await locks!.acquire({
+        principal: request.principal,
+        target: parseLockKey(request.lockKey)!,
+        ttlMs: request.holdMs,
+        holdMs: request.holdMs,
+        waitMs: 0,
+        signal: new AbortController().signal,
+        fenced: () => Promise.resolve({ leaseFence: undefined, names: [] }),
+      });
+      return outcome.kind === "acquired"
+        ? { kind: outcome.kind, leaseId: outcome.lease.leaseId }
+        : { kind: outcome.kind };
+    }
+    case "lease-renew":
+      return (await locks!.renew(
+        request.principal,
+        request.leaseId,
+        request.holdMs,
+      ))?.leaseId;
+    case "lease-on": {
+      if (locks!.adopting) return "adopting";
+      return locks!.fencedLeaseOn(parseLockKey(request.lockKey)!);
+    }
+    case "lease-dispose":
+      await locks!.dispose();
+      return undefined;
+    case "lease-records":
+      return await v3ServeControlPlaneAt(config()).list("leases/");
     case "close":
+      await locks?.dispose();
       await leadership?.stop();
       await closeV3Datastores();
       await shortLease?.().catch(() => {});

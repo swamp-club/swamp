@@ -112,6 +112,14 @@ const MIGRATIONS: readonly string[] = [
   `ALTER TABLE copy ADD COLUMN access_built TEXT;
    ALTER TABLE copy ADD COLUMN access_seen TEXT;
    ALTER TABLE copy ADD COLUMN access_reset_at INTEGER;`,
+  // The last contact with serve (swamp-club#4195): when, and serve's clock
+  // against this one then, which offline work judges a lease's expiry and
+  // corrects its times by.
+  `CREATE TABLE contact (
+     id INTEGER PRIMARY KEY CHECK (id = 1),
+     at TEXT NOT NULL,
+     clock_offset_ms INTEGER
+   );`,
 ];
 
 /**
@@ -398,6 +406,41 @@ export class ServeUpstreamState {
          ON CONFLICT (namespace, partition)
          DO UPDATE SET seq = MAX(seq, excluded.seq)`,
       ).run(namespace, partition, seq);
+    });
+  }
+
+  /**
+   * The checkout's last contact with serve (swamp-club#4195): when, by the
+   * local clock, and serve's clock minus the local one then, if measured.
+   */
+  lastContact():
+    | { readonly at: string; readonly clockOffsetMs?: number }
+    | undefined {
+    this.#assertOpen();
+    const row = this.#db.prepare(
+      "SELECT at, clock_offset_ms FROM contact WHERE id = 1",
+    ).get() as { at: string; clock_offset_ms: number | null } | undefined;
+    if (row === undefined) return undefined;
+    return {
+      at: row.at,
+      ...(row.clock_offset_ms !== null
+        ? { clockOffsetMs: row.clock_offset_ms }
+        : {}),
+    };
+  }
+
+  /** Records a contact with serve; see {@link lastContact}. */
+  recordContact(at: Date, clockOffsetMs: number | undefined): void {
+    this.#assertOpen();
+    this.#transaction(() => {
+      this.#db.prepare(
+        `INSERT INTO contact (id, at, clock_offset_ms) VALUES (1, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET at = excluded.at,
+           clock_offset_ms = COALESCE(excluded.clock_offset_ms, clock_offset_ms)`,
+      ).run(
+        at.toISOString(),
+        clockOffsetMs === undefined ? null : Math.round(clockOffsetMs),
+      );
     });
   }
 

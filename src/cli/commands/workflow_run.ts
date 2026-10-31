@@ -30,6 +30,7 @@ import {
   AssertSeveritySchema,
 } from "../../domain/workflows/step_task.ts";
 import {
+  assertOfflineRunAllowed,
   cancelOnLeaseLost,
   createLockProgressWriter,
   createWorkflowRunClaims,
@@ -38,6 +39,7 @@ import {
   signalWaitsOf,
 } from "../repo_context.ts";
 import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
+import { methodKindOf } from "../../libswamp/models/method_run_lock_mode.ts";
 import { UserError } from "../../domain/errors.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { holdFromOutcome } from "../committed_output.ts";
@@ -147,7 +149,7 @@ export function workflowStepLockHook(
   /** Cancels the run when a step's lease at serve lapses (swamp-club#4121). */
   onLeaseLost?: (reason: unknown) => void,
 ): StepLockHook {
-  return createStepLockHook(
+  const hook = createStepLockHook(
     repoDir,
     repoContext,
     datastoreConfig,
@@ -156,6 +158,21 @@ export function workflowStepLockHook(
     createLockProgressWriter,
     onLeaseLost,
   );
+  // A serve-mode checkout working offline judges each step before it
+  // starts: one that changes things needs its behavior's lease
+  // (swamp-club#4195).
+  return async (modelType, modelId, step) => {
+    if (step !== undefined) {
+      await assertOfflineRunAllowed(datastoreConfig, {
+        modelType,
+        modelId,
+        behaviorName: step.behaviorName,
+        methodName: step.methodName,
+        methodKind: await methodKindOf(modelType, step.methodName),
+      });
+    }
+    return await hook(modelType, modelId, step);
+  };
 }
 
 export const workflowRunCommand = new Command()

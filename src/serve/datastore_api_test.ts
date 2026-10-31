@@ -81,6 +81,22 @@ Deno.test("matchDatastoreRoute: each route, with its segments decoded once", () 
     namespace: "ns",
     leaseId: "lease-1",
   });
+  assertEquals(matchDatastoreRoute("/api/v1/datastore/ns/quarantine"), {
+    kind: "quarantine",
+    namespace: "ns",
+  });
+  assertEquals(
+    matchDatastoreRoute("/api/v1/datastore/ns/quarantine/txn-1/accept"),
+    { kind: "quarantine-accept", namespace: "ns", txnId: "txn-1" },
+  );
+  assertEquals(
+    matchDatastoreRoute("/api/v1/datastore/ns/quarantine/txn-1"),
+    { kind: "quarantine-change", namespace: "ns", txnId: "txn-1" },
+  );
+  assertEquals(
+    matchDatastoreRoute("/api/v1/datastore/ns/quarantine/txn-1/discard"),
+    { kind: "quarantine-discard", namespace: "ns", txnId: "txn-1" },
+  );
 });
 
 Deno.test("matchDatastoreRoute: anything else is not a datastore route", () => {
@@ -92,6 +108,8 @@ Deno.test("matchDatastoreRoute: anything else is not a datastore route", () => {
       "/api/v1/datastore/ns/partitions/p",
       "/api/v1/datastore/ns/changes/extra",
       "/api/v1/datastore/ns/locks/lease-1/extra",
+      "/api/v1/datastore/ns/quarantine/txn-1/accept/now",
+      "/api/v1/datastore/ns/quarantine/txn-1/reject",
       "/api/v1/datastore/%E0%A4%A/changes",
       "/api/v1/health",
     ]
@@ -115,6 +133,12 @@ Deno.test("resolveHttpRoute: datastore paths are named by their template, never 
   assertEquals(
     resolveHttpRoute(`/api/v1/datastore/ns/locks/${crypto.randomUUID()}`),
     "/api/v1/datastore/{namespace}/locks/{leaseId}",
+  );
+  assertEquals(
+    resolveHttpRoute(
+      `/api/v1/datastore/ns/quarantine/${crypto.randomUUID()}/accept`,
+    ),
+    "/api/v1/datastore/{namespace}/quarantine/{txnId}/accept",
   );
 });
 

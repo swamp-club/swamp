@@ -116,6 +116,28 @@ import {
   ServeUpstreamState,
 } from "./serve_upstream_state.ts";
 import { serveUpstreamAt } from "./serve_upstream_registry.ts";
+import type { OfflineFlushPort } from "./offline_flush.ts";
+import { createQuarantineDeposit } from "./quarantine_deposit.ts";
+import { ModelChanges } from "../../domain/datastore_v3/repository_changes.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
+import { DataMetadataSchema } from "../../domain/data/data_metadata.ts";
+import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import type { Commit } from "../../domain/datastore_v3/commit.ts";
+import { CommitsCompactedError } from "../../domain/datastore_v3/commit_store.ts";
+import {
+  emitServeOfflineNotice,
+  enterServeOffline,
+  noteQueuedOffline,
+  offlineContextAt,
+  offlineRegisteredAt,
+  serveClockOf,
+  serveOfflineAt,
+} from "./serve_offline.ts";
+import {
+  checkOfflineCommit,
+  OfflineConfigEditError,
+  OfflineLeaseRequiredError,
+} from "../../domain/datastore_v3/offline_write_policy.ts";
 import {
   dropUnconfirmedServeLease,
   heldServeLeaseOf,
@@ -238,6 +260,12 @@ export function v3OutboxPath(commitsDbPath: string): string {
 }
 
 const logger = getSwampLogger(["datastore", "v3"]);
+
+/**
+ * The most bytes read of a compacted version's file for an offline rebase
+ * (swamp-club#4195): one larger is not restated, and its time not read.
+ */
+const COMPACTED_VERSION_MAX_BYTES = 64 * 1024 * 1024;
 
 /**
  * The `commits.db` the checkout at `repoDir` uses for the v3 datastore at
@@ -618,14 +646,25 @@ export interface V3Datastore {
   /**
    * For a checkout whose upstream is serve (swamp-club#3985), and only
    * then: brings its copy up to serve's log before a write, refusing the
-   * write when serve cannot be reached.
+   * write when serve cannot be reached. With `mayGoOffline`, the writer
+   * hold's catch-up at a command's start, a copy that has read serve's feed
+   * puts the checkout in offline mode instead (swamp-club#4195); once it
+   * is, every later catch-up of the command reads the copy as it is.
    */
-  catchUpForWrite?(signal?: AbortSignal): Promise<void>;
+  catchUpForWrite?(
+    signal?: AbortSignal,
+    options?: { readonly mayGoOffline?: boolean },
+  ): Promise<void>;
   /**
    * For a checkout whose upstream is serve, and only then: the commit store
    * outbox recovery lands entries through, which forwards them to serve.
    */
   readonly serveUpstreamStore?: ServeUpstreamCommitStore;
+  /**
+   * For a checkout whose upstream is serve, and only then: what the outbox
+   * recovery flushes the work queued offline through (swamp-club#4195).
+   */
+  readonly offlineFlushPort?: OfflineFlushPort;
   /**
    * The id of the serve copy this handle reads, when its upstream is serve
    * (swamp-club#4049): a copy started afresh at the same root has another.
@@ -850,6 +889,40 @@ function checkoutUnitsFor(stateDir: string): CheckoutUnits {
 }
 
 /**
+ * The refusal of an offline commit the rules do not let queue
+ * (swamp-club#4195): a definition's, or a behavior's held by no lease.
+ */
+function offlineRefusalFor(partition: PartitionKey): Error {
+  const identity = partition.identity;
+  if (identity.kind === "model") {
+    return new OfflineLeaseRequiredError(
+      `${identity.type} ${identity.id}`,
+      "this command",
+    );
+  }
+  return new OfflineConfigEditError(offlineSubjectOf(partition));
+}
+
+/** How an offline refusal names what `partition` holds, as a user knows it. */
+export function offlineSubjectOf(partition: PartitionKey): string {
+  const identity = partition.identity;
+  switch (identity.kind) {
+    case "config": {
+      const kind = identity.definitionKind === "model"
+        ? "behavior"
+        : identity.definitionKind;
+      return `the ${kind} definition "${identity.name}"`;
+    }
+    case "lockfile":
+      return "the extension lockfile";
+    case "definition":
+      return `the behavior definition ${identity.id}`;
+    default:
+      return partition.toString();
+  }
+}
+
+/**
  * Opens the v3 datastore at `options.datastorePath` for the checkout at
  * `options.repoDir`. Creates `commits.db` when absent (setup created the
  * marker first) and the checkout's read-model state directory.
@@ -907,7 +980,10 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     ? new CachedServeStorage(
       datastorePath,
       new ServeChunkStorage(serveClient),
-      { orderedBefore: v3ChunksOrderedBefore(datastorePath, commitsDbPath) },
+      {
+        orderedBefore: v3ChunksOrderedBefore(datastorePath, commitsDbPath),
+        offline: () => serveOfflineAt(options.datastorePath) !== undefined,
+      },
     )
     : new FileSystemStorage(datastorePath, {
       orderedBefore: v3ChunksOrderedBefore(datastorePath, commitsDbPath),
@@ -977,6 +1053,29 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       leaseOf: (partition) => heldServeLeaseOf(serve!.root, partition),
       dropUnconfirmedLease: (partition, leaseId) =>
         dropUnconfirmedServeLease(serve!.root, partition, leaseId),
+      // Offline (swamp-club#4195), commits queue where the rules allow:
+      // the backstop for any entry point that skipped the command's check.
+      offline: () => {
+        if (serveOfflineAt(options.datastorePath) === undefined) {
+          return undefined;
+        }
+        return {
+          queues: async (partition) => {
+            const context = await offlineContextAt(options.datastorePath);
+            if (
+              checkOfflineCommit(partition, {
+                ...context,
+                registered: offlineRegisteredAt(options.datastorePath),
+              })
+            ) {
+              return true;
+            }
+            return offlineRefusalFor(partition);
+          },
+          noteQueued: (txnId) =>
+            noteQueuedOffline(options.datastorePath, txnId),
+        };
+      },
       onLeasedCommit: async (partition, leaseId, landed) => {
         raiseServeLeaseFloor(serve!.root, partition, leaseId, landed);
         try {
@@ -989,6 +1088,139 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       },
     })
     : undefined;
+  // The flush of what the checkout queued offline (swamp-club#4195): run by
+  // the outbox recovery under the writer hold, once serve is reachable.
+  const offlineFlushPort: OfflineFlushPort | undefined =
+    serveSink !== undefined && serveCatchUp !== undefined
+      ? {
+        catchUpPartition: async (ns, partition) => {
+          await serveCatchUp.catchUpPartition(ns, partition, lifetime.signal);
+        },
+        partitionState: (ns, partition) =>
+          commitStore.partitionState(ns, partition),
+        partitionCommits: async (ns, partition) => {
+          const commits: Commit[] = [];
+          let from = 1;
+          while (true) {
+            let page;
+            try {
+              page = await commitStore.readPartition(ns, partition, from, 500);
+            } catch (error) {
+              // What was compacted is not read: those versions' times are
+              // unknown to the rebase.
+              if (
+                error instanceof CommitsCompactedError &&
+                error.compactedSeq !== undefined && error.compactedSeq >= from
+              ) {
+                from = error.compactedSeq + 1;
+                continue;
+              }
+              throw error;
+            }
+            if (page.length === 0) return commits;
+            for (const change of page) commits.push(change.commit);
+            from = page[page.length - 1].commit.seq + 1;
+          }
+        },
+        head: (ns, partition) => serveCatchUp.headOf(ns, partition),
+        send: (commit, leaseId) =>
+          serveSink.upstream.appendUnderLease(commit, leaseId),
+        encodeMetadata: (metadata) =>
+          new TextEncoder().encode(
+            stringifyYaml(
+              JSON.parse(JSON.stringify(metadata)) as Record<string, unknown>,
+            ),
+          ),
+        storeChunks: async (_ns, bytes) => {
+          const batch = chunkStore.beginBatch(unitNamespace);
+          try {
+            const blob = await chunkStore.write(
+              unitNamespace,
+              bytes,
+              lifetime.signal,
+              batch,
+            );
+            await batch.commit(lifetime.signal);
+            return blob;
+          } finally {
+            await batch.discard();
+          }
+        },
+        mark: (keys, state, reason) => outbox.markState(keys, state, reason),
+        settle: (keys) => outbox.settle(keys),
+        recordOwnLanded: (key, at, carry) =>
+          outbox.recordLandedOffline(
+            key,
+            at,
+            COMPACTED_TXN_RETENTION_MS,
+            carry,
+          ),
+        ownLanded: (ns, partition) =>
+          outbox.landedOfflineTxnIds(ns, partition.toString()),
+        landedCarry: (ns, partition) =>
+          outbox.landedOfflineCarry(ns, partition.toString()),
+        // Kept by serve for an admin to accept (swamp-club#4195).
+        ...(serveClient !== undefined
+          ? {
+            quarantined: createQuarantineDeposit({
+              client: serveClient,
+              chunkCache: fsStorage!,
+              signal: () => lifetime.signal,
+            }),
+            quarantineState: (entry) =>
+              serveClient.quarantineState(
+                entry.commit.txnId,
+                lifetime.signal,
+              ),
+          }
+          : {}),
+        markSentMaybe: (key, at) => outbox.markSentMaybe(key, at),
+        compactedThrough: async (ns, partition) => {
+          try {
+            await commitStore.readPartition(ns, partition, 1, 1);
+            return 0;
+          } catch (error) {
+            if (error instanceof CommitsCompactedError) {
+              return error.compactedSeq ?? 0;
+            }
+            throw error;
+          }
+        },
+        // A compacted version's metadata and raw bytes, as the checkout's
+        // files hold them: its time is then its writer's `createdAt`.
+        compactedVersion: async (ns, partition, name, version) => {
+          const identity = partition.identity;
+          if (identity.kind !== "model") return undefined;
+          const model = new ModelChanges(
+            ModelType.create(identity.type),
+            identity.id,
+          );
+          const read = (file: "metadata.yaml" | "raw") =>
+            readModel.recordBytes(
+              ns,
+              partition,
+              model.dataKey(name, version, file).toString(),
+              COMPACTED_VERSION_MAX_BYTES,
+            );
+          const metadataFile = await read("metadata.yaml");
+          if (metadataFile === undefined) return undefined;
+          let parsed;
+          try {
+            parsed = DataMetadataSchema.safeParse(
+              parseYaml(new TextDecoder().decode(metadataFile.bytes)),
+            );
+          } catch {
+            return undefined;
+          }
+          if (!parsed.success) return undefined;
+          const raw = await read("raw");
+          return {
+            metadata: parsed.data,
+            ...(raw !== undefined ? { raw: raw.bytes } : {}),
+          };
+        },
+      }
+      : undefined;
   const baseSink: OutboxCommitSink = serveSink ??
     createOutboxCommitSink({
       commitStore,
@@ -1004,14 +1236,56 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
    * catches up from it. A read that cannot reach serve goes on with what
    * the copy holds and says so; a write is refused (swamp-club#3985).
    */
+  /** Whether this handle recorded its contact with serve yet. */
+  let contactRecorded = false;
   const catchUpFromServe = async (
     signal: AbortSignal,
     mode: "read" | "write",
+    mayGoOffline = false,
   ): Promise<void> => {
     if (serveCatchUp === undefined) return;
+    // Offline for the rest of the command (swamp-club#4195): the copy is
+    // read as it is, and nothing waits on a serve it could not reach.
+    if (serveOfflineAt(options.datastorePath) !== undefined) return;
     try {
       await serveCatchUp.catchUp(signal);
+      // Once per command: the last contact, and serve's clock then, are what
+      // a later offline command judges its leases and times by.
+      if (!contactRecorded && serveState !== undefined) {
+        contactRecorded = true;
+        try {
+          serveState.recordContact(
+            clock(),
+            serveClockOf(serveClient!.baseUrl)?.offsetMs,
+          );
+        } catch (recordError) {
+          logger
+            .debug`Could not record this checkout's contact with serve: ${recordError}`;
+        }
+      }
     } catch (error) {
+      if (
+        mode === "write" && mayGoOffline &&
+        error instanceof ServeUnreachableError &&
+        serveState !== undefined && serveState.hasReadFeed()
+      ) {
+        const contact = serveState.lastContact();
+        enterServeOffline(
+          options.datastorePath,
+          {
+            serveUrl: error.serveUrl,
+            since: clock().getTime(),
+            ...(contact !== undefined ? { lastContactAt: contact.at } : {}),
+            ...(contact?.clockOffsetMs !== undefined
+              ? { clockOffsetMs: contact.clockOffsetMs }
+              : {}),
+          },
+          error.cause instanceof Error
+            ? error.cause.message
+            : String(error.cause),
+        );
+        return;
+      }
       if (mode === "read" && error instanceof ServeUnreachableError) {
         // A copy that never read serve's feed holds nothing: an empty answer
         // would pass for an empty datastore.
@@ -1026,6 +1300,16 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
             : String(error.cause);
           logger
             .warn`Could not reach serve at ${error.serveUrl}, so this reads the datastore as this checkout last saw it, which may be out of date: ${reason}`;
+          // The logger is silent in json mode: said there as a notice, as
+          // a writing command says it works offline (swamp-club#4195).
+          const contact = serveState?.lastContact();
+          emitServeOfflineNotice({
+            notice: "datastore_offline",
+            serveUrl: error.serveUrl,
+            ...(contact !== undefined ? { lastContactAt: contact.at } : {}),
+            message: `This command reads the datastore as this checkout ` +
+              `last saw it, which may be out of date: ${reason}`,
+          });
         }
         return;
       }
@@ -1106,6 +1390,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     ...(serveSink !== undefined
       ? { serveUpstreamStore: serveSink.upstream }
       : {}),
+    ...(offlineFlushPort !== undefined ? { offlineFlushPort } : {}),
     ...(serveState !== undefined ? { serveCopyId: serveState.copyId() } : {}),
     async catchUp(signal) {
       await catchUpFromServe(signal ?? lifetime.signal, "read");
@@ -1115,8 +1400,15 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     },
     ...(serveCatchUp !== undefined
       ? {
-        async catchUpForWrite(signal?: AbortSignal) {
-          await catchUpFromServe(signal ?? lifetime.signal, "write");
+        async catchUpForWrite(
+          signal?: AbortSignal,
+          catchUpOptions?: { readonly mayGoOffline?: boolean },
+        ) {
+          await catchUpFromServe(
+            signal ?? lifetime.signal,
+            "write",
+            catchUpOptions?.mayGoOffline === true,
+          );
         },
       }
       : {}),
@@ -1217,6 +1509,16 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
             partition,
             key,
           ),
+        // A serve-mode commit records when it ran and serve's clock then,
+        // so one queued offline is judged by when it ran (swamp-club#4195).
+        ...(serveClient !== undefined && serveState !== undefined
+          ? {
+            clockOffsetMs: () =>
+              serveClockOf(serveClient.baseUrl)?.offsetMs ??
+                serveOfflineAt(options.datastorePath)?.clockOffsetMs ??
+                serveState.lastContact()?.clockOffsetMs,
+          }
+          : {}),
       };
       return {
         openUnit(): UnitOfWork {

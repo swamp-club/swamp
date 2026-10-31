@@ -160,6 +160,8 @@ import { assertV3CheckoutJoinable } from "./v3_checkout_join.ts";
 import { v3ForeignContentFetcher } from "./v3_foreign_content.ts";
 import { isChunkQuarantine } from "../../domain/datastore/datastore_storage.ts";
 import { serveUpstreamAt } from "./serve_upstream_registry.ts";
+import { ServeUnreachableError } from "./serve_upstream_errors.ts";
+import { reportQueuedOffline, resetServeOffline } from "./serve_offline.ts";
 import { type ServeFeedWatch, watchServeFeed } from "./serve_feed_client.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
@@ -782,10 +784,14 @@ export async function holdV3Writer(
   }
   // A checkout whose upstream is serve holds only its local lease, which
   // orders this machine's processes; serve orders the writers. Its copy is
-  // brought up to serve's log before it writes, and a serve it cannot reach
-  // refuses the write (swamp-club#3985).
+  // brought up to serve's log before it writes (swamp-club#3985). A serve
+  // it cannot reach puts it in offline mode for the command, when its copy
+  // has read serve's feed (swamp-club#4195): the offline rules then judge
+  // each piece of work.
   if (role === "writer" && serveUpstreamAt(config.path) !== undefined) {
-    await v3DatastoreFor(repoDir, config).catchUpForWrite?.();
+    await v3DatastoreFor(repoDir, config).catchUpForWrite?.(undefined, {
+      mayGoOffline: true,
+    });
   }
   return role;
 }
@@ -1294,14 +1300,34 @@ async function recoverV3Outbox(
   // A serve-mode checkout lands its entries through serve, never only in
   // its copy of serve's log (swamp-club#3985).
   const upstream = handle.serveUpstreamStore;
-  await recoverCommitOutbox(
-    upstream === undefined ? handle : { ...handle, commitStore: upstream },
-    {
-      fence,
-      writer: handle.writer,
-      ...(upstream !== undefined ? { forwarded: true } : {}),
-    },
-  );
+  try {
+    await recoverCommitOutbox(
+      upstream === undefined ? handle : {
+        ...handle,
+        commitStore: upstream,
+        // What the checkout queued offline is flushed here, under the
+        // writer hold (swamp-club#4195): read-only commands never flush.
+        ...(handle.offlineFlushPort !== undefined
+          ? { offline: handle.offlineFlushPort }
+          : {}),
+      },
+      {
+        fence,
+        writer: handle.writer,
+        ...(upstream !== undefined ? { forwarded: true } : {}),
+      },
+    );
+  } catch (error) {
+    // Serve unreachable: what the outbox holds waits for the next command
+    // that reaches it. The writer hold's catch-up then decides whether this
+    // one works offline or is refused (swamp-club#4195).
+    if (upstream !== undefined && error instanceof ServeUnreachableError) {
+      logger
+        .debug`Could not reach serve to land this checkout's outbox; a later command lands it: ${error}`;
+      return;
+    }
+    throw error;
+  }
   outboxRecoveredAt.set(store, fence);
 }
 
@@ -1912,6 +1938,10 @@ export async function closeV3Datastores(
   commandStartMarks.clear();
   serveHolds.clear();
   serveTeams.clear();
+  // Offline mode lasts the command (swamp-club#4195); json mode says what
+  // it queued now, after its result.
+  reportQueuedOffline();
+  resetServeOffline();
   const entries = [...opened.entries()];
   const handles = entries.map(([, handle]) => handle);
   opened.clear();

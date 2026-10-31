@@ -47,6 +47,7 @@ import {
   initializeV3Datastore,
   isFreshV3Skeleton,
   listV3Namespaces,
+  offlineSubjectOf,
   openV3Datastore,
   referencedChunksOf,
   restoreV3FormatMarker,
@@ -1685,4 +1686,23 @@ Deno.test("unreachableAsCatchUpError: a catch-up the storage cut off fails with 
   );
   assertEquals(thrown, other);
   assertEquals(await unreachableAsCatchUpError(() => Promise.resolve(3)), 3);
+});
+
+Deno.test("offlineSubjectOf: names a definition by its kind and name, never by its partition key (swamp-club#4195)", () => {
+  assertEquals(
+    offlineSubjectOf(
+      partitionOf({ kind: "config", definitionKind: "model", name: "delta" }),
+    ),
+    'the behavior definition "delta"',
+  );
+  assertEquals(
+    offlineSubjectOf(
+      partitionOf({ kind: "config", definitionKind: "workflow", name: "w" }),
+    ),
+    'the workflow definition "w"',
+  );
+  assertEquals(
+    offlineSubjectOf(partitionOf({ kind: "lockfile" })),
+    "the extension lockfile",
+  );
 });

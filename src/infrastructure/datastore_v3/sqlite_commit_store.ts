@@ -1091,6 +1091,26 @@ export class SqliteCommitStore implements CommitStore {
   }
 
   /**
+   * A copy of `key` as this store holds it now (swamp-club#4195), for a
+   * rebase to read: its versions, latest and high-water marks. It holds no
+   * txnIds and never changes with later appends.
+   */
+  partitionState(namespace: string, key: PartitionKey): Promise<Partition> {
+    if (this.#closed) return Promise.reject(closedError());
+    return this.#enqueue(async () => {
+      let partition = await this.#partition(namespace, key);
+      const head = this.#selectHead.get(namespace, key.toString()) as
+        | { seq: number }
+        | undefined;
+      if ((head?.seq ?? 0) !== partition.seq) {
+        this.#cache.delete(cacheKeyOf(namespace, key.toString()));
+        partition = await this.#partition(namespace, key);
+      }
+      return Partition.restore(key, partition.snapshot(), () => false);
+    });
+  }
+
+  /**
    * Appends a commit a team follower received from its leader's commit feed
    * (swamp-club#4120) at the leader's own `cursor`, so cursors mean the same
    * commit on every node. The commit goes through the same rules as any

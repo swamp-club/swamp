@@ -148,6 +148,7 @@ import {
 import { RepoService } from "../domain/repo/repo_service.ts";
 import { UserError } from "../domain/errors.ts";
 import { VERSION } from "./commands/version.ts";
+import { setOwnLockGate } from "../infrastructure/datastore_v3/own_lock_gate.ts";
 
 // Initialize logging for tests
 await initializeLogging({});
@@ -1124,6 +1125,39 @@ Deno.test("createModelLock - caps backoff so queued waiters stay near the releas
 // ============================================================================
 // acquireModelLocks Tests
 // ============================================================================
+
+Deno.test("acquireModelLocks: in serve, waits at the own-lock gate before taking a behavior's lock, and takes none while it is shut (swamp-club#4195)", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+    const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+    const asked: string[] = [];
+    setOwnLockGate((lockKey) => {
+      asked.push(lockKey);
+      return Promise.reject(
+        new LockTimeoutError(lockKey, null, 0, { message: "pending" }),
+      );
+    });
+    try {
+      await assertRejects(
+        () =>
+          acquireModelLocks(datastoreConfig, [
+            { modelType: "aws-ec2", modelId: "server-1" },
+          ], dir),
+        LockTimeoutError,
+      );
+      assertEquals(asked, ["data/aws-ec2/server-1/.lock"]);
+      // Nothing was taken while it was shut.
+      const lock = await createModelLock(
+        datastoreConfig,
+        "aws-ec2",
+        "server-1",
+      );
+      assertEquals(await lock.inspect(), null);
+    } finally {
+      setOwnLockGate(undefined);
+    }
+  });
+});
 
 Deno.test("acquireModelLocks - acquires and releases per-model locks", async () => {
   await withTempDir(async (dir) => {

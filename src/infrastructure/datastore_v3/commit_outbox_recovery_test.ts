@@ -19,6 +19,7 @@
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
+import { DatabaseSync } from "node:sqlite";
 import { SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
 import { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
 import type { Commit, CommitWriter } from "../../domain/datastore_v3/commit.ts";
@@ -34,6 +35,12 @@ import {
   modelPartition,
   savePut,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
+import {
+  fixtureCommit,
+  saveOps,
+} from "../../domain/datastore_v3/offline_rebase_test_helpers.ts";
+import type { OfflineRebaseCarry } from "../../domain/datastore_v3/offline_rebase.ts";
+import type { OfflineFlushPort } from "./offline_flush.ts";
 import { runPartition, runPut } from "./commit_log_test_helpers.ts";
 import {
   CommitOutboxUnreadableError,
@@ -168,6 +175,19 @@ Deno.test("recoverCommitOutbox: settles an entry whose commit landed before its 
     const report = await recover(2);
     assertEquals([report.landed, report.settled], [0, 1]);
     assertEquals((await commitsOf(store)).length, 1);
+    assertEquals(await outbox.hasEntries(), false);
+  });
+});
+
+Deno.test("recoverCommitOutbox: a quarantined entry whose commit an admin accepted at serve settles, counted as accepted (swamp-club#4195)", async () => {
+  await withFixture(async ({ store, outbox, prepare, recover }) => {
+    const commit = prepared(1, [await savePut("a", 1)], "t1");
+    await prepare(commit);
+    await outbox.markState([outboxKeyOf(commit)], "quarantined", "no grant");
+    // The admin's accept lands it under its original txnId.
+    await store.append(commit);
+    const report = await recover(2);
+    assertEquals([report.landed, report.settled, report.accepted], [0, 0, 1]);
     assertEquals(await outbox.hasEntries(), false);
   });
 });
@@ -836,5 +856,85 @@ Deno.test("recoverCommitOutbox: a forwarded entry built outside any lease is lef
     // A later recovery, once the lease is gone, lands both.
     const later = await recoverForwarded(fixture, 3);
     assertEquals(later.report.landed, 2);
+  });
+});
+
+Deno.test("recoverCommitOutbox: keeps an unreadable entry queued offline, rejected or quarantined, and drops an unreadable pending one (swamp-club#4195)", async () => {
+  await withFixture(async ({ outbox, dir, prepare, recover }) => {
+    const kept = prepared(1, [await savePut("a", 1)], "t-offline");
+    const dropped = prepared(1, [await savePut("b", 1)], "t-pending");
+    await prepare(kept);
+    await prepare(dropped);
+    await outbox.markState([outboxKeyOf(kept)], "offline");
+    const db = new DatabaseSync(join(dir, "outbox.db"));
+    db.exec("UPDATE outbox_entries SET body = '{\"v\":3}'");
+    db.close();
+    await recover(2);
+    const listing = await outbox.entries();
+    assertEquals(
+      listing.unreadable.map((entry) => [entry.key.txnId, entry.state]),
+      [["t-offline", "offline"]],
+    );
+  });
+});
+
+Deno.test("recoverCommitOutbox: an offline entry a cut-off flush landed is recorded as this checkout's own, with what its landing renumbered, before it settles (swamp-club#4195)", async () => {
+  await withFixture(async ({ store, outbox, chunkStore, prepare }) => {
+    const queued = fixtureCommit({
+      seq: 1,
+      txnId: "t-offline",
+      fence: 1,
+      ops: await saveOps({ name: "out", version: 3 }),
+    });
+    await prepare(queued, { base: { seq: 0, txnId: undefined } });
+    await outbox.markState([outboxKeyOf(queued)], "offline");
+    // The flush landed it as version 5, then the process ended.
+    await store.append(fixtureCommit({
+      seq: 1,
+      txnId: "t-offline",
+      fence: 1,
+      ops: await saveOps({
+        name: "out",
+        version: 5,
+        createdAt: "2026-10-15T09:00:00.000Z",
+      }),
+    }));
+    const recorded: { txnId: string; carry?: OfflineRebaseCarry }[] = [];
+    const port = {
+      partitionCommits: async (namespace, partition) =>
+        await commitsOf(store, partition).then((commits) =>
+          commits.filter((commit) => commit.namespace === namespace)
+        ),
+      recordOwnLanded: (key, _at, carry) => {
+        recorded.push({ txnId: key.txnId, carry });
+        return Promise.resolve();
+      },
+    } as Pick<OfflineFlushPort, "partitionCommits" | "recordOwnLanded">;
+    await store.raiseWriterFence(2);
+    await outbox.recordFence(2);
+    await recoverCommitOutbox(
+      {
+        outbox,
+        commitStore: store,
+        chunkStore,
+        offline: port as OfflineFlushPort,
+      },
+      {
+        fence: 2,
+        writer: RECOVERER,
+        writerAlive: () => false,
+        clock: () => NOW,
+      },
+    );
+    assertEquals(await outbox.hasEntries(), false);
+    assertEquals(recorded.map((record) => record.txnId), ["t-offline"]);
+    assertEquals(recorded[0].carry?.versions, [
+      { name: "out", from: 3, to: 5 },
+    ]);
+    assertEquals(recorded[0].carry?.createdAt, [{
+      name: "out",
+      version: 5,
+      createdAt: "2026-10-15T09:00:00.000Z",
+    }]);
   });
 });

@@ -79,6 +79,9 @@ export const SENT_ARGUMENTS: ReadonlySet<string> = new Set([
   "slug",
   "step_name",
   "token-id",
+  // `datastore quarantine accept|discard <txn_id>`: a quarantined change's
+  // txnId.
+  "txn_id",
   "type",
   "vault_name",
   "vault_name_or_id",

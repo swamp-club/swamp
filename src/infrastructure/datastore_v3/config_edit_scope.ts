@@ -28,11 +28,26 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import { OfflineConfigEditError } from "../../domain/datastore_v3/offline_write_policy.ts";
+import { anyServeOffline } from "./serve_offline.ts";
 
 const userConfigEdit = new AsyncLocalStorage<true>();
 
-/** Runs `fn` as a user's edit or delete of managed config. */
-export function runAsUserConfigEdit<T>(fn: () => Promise<T>): Promise<T> {
+/**
+ * Runs `fn` as a user's edit or delete of managed config. Refused while the
+ * command works offline (swamp-club#4195): whether an edit is stale is
+ * serve's to decide.
+ *
+ * @throws OfflineConfigEditError when a checkout of this command is offline
+ */
+export function runAsUserConfigEdit<T>(
+  fn: () => Promise<T>,
+  what = "the definition",
+  verb = "edited",
+): Promise<T> {
+  if (anyServeOffline()) {
+    return Promise.reject(new OfflineConfigEditError(what, verb));
+  }
   return userConfigEdit.run(true, fn);
 }
 

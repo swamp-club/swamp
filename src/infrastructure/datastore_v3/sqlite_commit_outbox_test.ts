@@ -31,6 +31,10 @@ import {
   savePut,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import {
+  fixtureCommit,
+  saveOps,
+} from "../../domain/datastore_v3/offline_rebase_test_helpers.ts";
+import {
   COMMIT_OUTBOX_SCHEMA_NEWER_CODE,
   COMMIT_OUTBOX_SCHEMA_VERSION,
   SqliteCommitOutbox,
@@ -342,7 +346,12 @@ async function schemaOneOutbox(path: string): Promise<void> {
   await outbox.close();
   const db = new DatabaseSync(path);
   db.exec(
-    "ALTER TABLE outbox_entries DROP COLUMN lease_id; " +
+    "ALTER TABLE outbox_entries DROP COLUMN state; " +
+      "ALTER TABLE outbox_entries DROP COLUMN state_reason; " +
+      "ALTER TABLE outbox_entries DROP COLUMN sent_maybe_at; " +
+      "DROP TABLE outbox_versions; " +
+      "DROP TABLE outbox_landed_offline; " +
+      "ALTER TABLE outbox_entries DROP COLUMN lease_id; " +
       "ALTER TABLE outbox_entries DROP COLUMN lease_fence; " +
       "ALTER TABLE outbox_entries DROP COLUMN abandoned_at; " +
       "ALTER TABLE outbox_chain DROP COLUMN pending_fence; " +
@@ -370,7 +379,12 @@ async function schemaTwoOutbox(path: string): Promise<void> {
   await outbox.close();
   const db = new DatabaseSync(path);
   db.exec(
-    "ALTER TABLE outbox_entries DROP COLUMN lease_id; " +
+    "ALTER TABLE outbox_entries DROP COLUMN state; " +
+      "ALTER TABLE outbox_entries DROP COLUMN state_reason; " +
+      "ALTER TABLE outbox_entries DROP COLUMN sent_maybe_at; " +
+      "DROP TABLE outbox_versions; " +
+      "DROP TABLE outbox_landed_offline; " +
+      "ALTER TABLE outbox_entries DROP COLUMN lease_id; " +
       "ALTER TABLE outbox_entries DROP COLUMN lease_fence; " +
       "ALTER TABLE outbox_entries DROP COLUMN abandoned_at; " +
       "ALTER TABLE outbox_chain DROP COLUMN pending_fence; " +
@@ -709,5 +723,355 @@ Deno.test("SqliteCommitOutbox.prepare: ungrouped prepares each write their own t
     ));
     assertEquals(modes, [2, 2, 2]);
     await outbox.close();
+  });
+});
+
+Deno.test("SqliteCommitOutbox.markState: an entry marked offline, rejected or quarantined lists its state and reason, and a prepare again keeps it (swamp-club#4195)", async () => {
+  await withTempDir(async (dir) => {
+    const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"));
+    try {
+      const queued = modelCommit(1, [await savePut("a", 1)]);
+      const kept = modelCommit(2, [await savePut("b", 1)]);
+      for (const commit of [queued, kept]) {
+        await outbox.prepare({
+          commit,
+          unitId: "u",
+          base: { seq: 0, txnId: undefined },
+        });
+      }
+      await outbox.markState([outboxKeyOf(queued)], "offline");
+      await outbox.markState(
+        [outboxKeyOf(kept)],
+        "quarantined",
+        "a grant was revoked",
+      );
+      // A unit's rebuild prepares it again: the mark stays.
+      await outbox.prepare({
+        commit: queued,
+        unitId: "u",
+        base: { seq: 0, txnId: undefined },
+      });
+      const { entries } = await outbox.entries();
+      assertEquals(
+        entries.map((entry) => [entry.state, entry.stateReason]),
+        [["offline", undefined], ["quarantined", "a grant was revoked"]],
+      );
+    } finally {
+      await outbox.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitOutbox.prepare: an entry prepared to be queued offline is written offline, so a process that dies before the queue's mark leaves it offline (swamp-club#4195)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "outbox.db");
+    const outbox = new SqliteCommitOutbox(path);
+    const commit = modelCommit(1, [await savePut("a", 1)]);
+    await outbox.prepare({
+      commit,
+      unitId: "u",
+      base: { seq: 0, txnId: undefined },
+      queuedOffline: true,
+    });
+    // The process dies here: no markState, no close.
+    const reopened = new SqliteCommitOutbox(path);
+    try {
+      const { entries } = await reopened.entries();
+      assertEquals(entries.map((entry) => entry.state), ["offline"]);
+      assertEquals(await reopened.hasUnsettledEntries(), true);
+    } finally {
+      await reopened.close();
+      await outbox.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitOutbox.resetKeepingKept: keeps rejected and quarantined entries, drops the rest and starts the chain over; hasUnsettledEntries counts only pending and offline ones (swamp-club#4195)", async () => {
+  await withTempDir(async (dir) => {
+    const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"));
+    try {
+      assertEquals(await outbox.resetKeepingKept(), 0);
+      const commits = await Promise.all(
+        ["p", "o", "r", "q"].map(async (name, index) =>
+          modelCommit(index + 1, [await savePut(name, 1)])
+        ),
+      );
+      for (const commit of commits) {
+        await outbox.prepare({
+          commit,
+          unitId: "u",
+          base: { seq: 0, txnId: undefined },
+        });
+      }
+      const [pending, offline, rejected, quarantined] = commits;
+      await outbox.markState([outboxKeyOf(offline)], "offline");
+      await outbox.markState([outboxKeyOf(rejected)], "rejected", "changed");
+      await outbox.markState(
+        [outboxKeyOf(quarantined)],
+        "quarantined",
+        "no grant",
+      );
+      await outbox.recordFence(3);
+      assertEquals(await outbox.hasUnsettledEntries(), true);
+      await outbox.markState([outboxKeyOf(pending)], "rejected", "x");
+      assertEquals(await outbox.hasUnsettledEntries(), true);
+      await outbox.settle([outboxKeyOf(offline)]);
+      assertEquals(await outbox.hasUnsettledEntries(), false);
+      assertEquals(await outbox.hasEntries(), true);
+
+      await outbox.prepare({
+        commit: modelCommit(5, [await savePut("again", 1)]),
+        unitId: "u",
+        base: { seq: 0, txnId: undefined },
+      });
+      assertEquals(await outbox.resetKeepingKept(), 3);
+      const { entries } = await outbox.entries();
+      assertEquals(
+        entries.map((entry) => [entry.commit.txnId, entry.state]),
+        [
+          [pending.txnId, "rejected"],
+          [rejected.txnId, "rejected"],
+          [quarantined.txnId, "quarantined"],
+        ],
+      );
+      assertEquals(await outbox.chain(), undefined);
+    } finally {
+      await outbox.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitOutbox.queuedDataHighWater: counts the versions kept entries record, not pending ones (swamp-club#4195)", async () => {
+  await withTempDir(async (dir) => {
+    const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"));
+    try {
+      const queued = fixtureCommit({
+        seq: 1,
+        txnId: "t-queued",
+        ops: await saveOps({ name: "out", version: 4 }),
+      });
+      const pending = fixtureCommit({
+        seq: 1,
+        txnId: "t-pending",
+        ops: await saveOps({ name: "out", version: 9 }),
+      });
+      for (const commit of [queued, pending]) {
+        await outbox.prepare({
+          commit,
+          unitId: "u",
+          base: { seq: 0, txnId: undefined },
+        });
+      }
+      await outbox.markState([outboxKeyOf(queued)], "offline");
+      const partition = queued.partition.toString();
+      assertEquals(await outbox.queuedDataHighWater("", partition, "out"), 4);
+      assertEquals(await outbox.queuedDataHighWater("", partition, "x"), 0);
+      // Settled, it no longer counts.
+      await outbox.settle([outboxKeyOf(queued)]);
+      assertEquals(await outbox.queuedDataHighWater("", partition, "out"), 0);
+    } finally {
+      await outbox.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitOutbox: a schema 5 outbox migrates to 6, its entries pending and their data versions indexed (swamp-club#4195)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "outbox.db");
+    const outbox = new SqliteCommitOutbox(path);
+    const commit = fixtureCommit({
+      seq: 1,
+      txnId: "t-old",
+      ops: await saveOps({ name: "out", version: 7 }),
+    });
+    await outbox.prepare({
+      commit,
+      unitId: "u",
+      base: { seq: 0, txnId: undefined },
+    });
+    await outbox.close();
+    const db = new DatabaseSync(path);
+    db.exec(
+      "ALTER TABLE outbox_entries DROP COLUMN state; " +
+        "ALTER TABLE outbox_entries DROP COLUMN state_reason; " +
+        "ALTER TABLE outbox_entries DROP COLUMN sent_maybe_at; " +
+        "DROP TABLE outbox_versions; " +
+        "DROP TABLE outbox_landed_offline; " +
+        "PRAGMA user_version=5",
+    );
+    db.close();
+    assertEquals(COMMIT_OUTBOX_SCHEMA_VERSION, 6);
+    const migrated = new SqliteCommitOutbox(path);
+    try {
+      const { entries } = await migrated.entries();
+      assertEquals(entries.map((entry) => entry.state), [undefined]);
+      assertEquals(schemaOf(path), 6);
+      // The migration indexed the version the old entry records.
+      await migrated.markState([outboxKeyOf(commit)], "offline");
+      assertEquals(
+        await migrated.queuedDataHighWater(
+          "",
+          commit.partition.toString(),
+          "out",
+        ),
+        7,
+      );
+    } finally {
+      await migrated.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitOutbox.markSentMaybe: records the first time a flush sent an entry without an answer, keeping it over a later one (swamp-club#4195)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "outbox.db");
+    const outbox = new SqliteCommitOutbox(path);
+    try {
+      const commit = modelCommit(1, [await savePut("a", 1)]);
+      await outbox.prepare({
+        commit,
+        unitId: "u",
+        base: { seq: 0, txnId: undefined },
+      });
+      await outbox.markState([outboxKeyOf(commit)], "offline");
+      await outbox.markSentMaybe(outboxKeyOf(commit), 1_000);
+      await outbox.markSentMaybe(outboxKeyOf(commit), 2_000);
+      const [entry] = (await outbox.entries()).entries;
+      assertEquals(entry.sentMaybeAt, 1_000);
+      assertEquals(entry.state, "offline");
+    } finally {
+      await outbox.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitOutbox: an unreadable entry's listing carries its stored state (swamp-club#4195)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "outbox.db");
+    const outbox = new SqliteCommitOutbox(path);
+    try {
+      const commit = modelCommit(1, [await savePut("a", 1)]);
+      await outbox.prepare({
+        commit,
+        unitId: "u",
+        base: { seq: 0, txnId: undefined },
+      });
+      await outbox.markState([outboxKeyOf(commit)], "quarantined", "no grant");
+      const db = new DatabaseSync(path);
+      db.exec("UPDATE outbox_entries SET body = '{\"v\":3}'");
+      db.close();
+      const listing = await outbox.entries();
+      assertEquals(listing.unreadable.map((entry) => entry.state), [
+        "quarantined",
+      ]);
+    } finally {
+      await outbox.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitOutbox: one schema 5 entry whose body does not parse leaves the migration to 6 standing, listed as unreadable (swamp-club#4195)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "outbox.db");
+    const outbox = new SqliteCommitOutbox(path);
+    const good = fixtureCommit({
+      seq: 1,
+      txnId: "t-good",
+      ops: await saveOps({ name: "out", version: 7 }),
+    });
+    const bad = modelCommit(1, [await savePut("a", 1)]);
+    for (const commit of [good, bad]) {
+      await outbox.prepare({
+        commit,
+        unitId: "u",
+        base: { seq: 0, txnId: undefined },
+      });
+    }
+    await outbox.close();
+    const db = new DatabaseSync(path);
+    db.exec(
+      "ALTER TABLE outbox_entries DROP COLUMN state; " +
+        "ALTER TABLE outbox_entries DROP COLUMN state_reason; " +
+        "ALTER TABLE outbox_entries DROP COLUMN sent_maybe_at; " +
+        "DROP TABLE outbox_versions; " +
+        "DROP TABLE outbox_landed_offline; " +
+        "PRAGMA user_version=5",
+    );
+    db.prepare("UPDATE outbox_entries SET body = 'not json' WHERE txn_id = ?")
+      .run(bad.txnId);
+    db.close();
+    const migrated = new SqliteCommitOutbox(path);
+    try {
+      const listing = await migrated.entries();
+      assertEquals(schemaOf(path), 6);
+      assertEquals(listing.entries.map((entry) => entry.commit.txnId), [
+        good.txnId,
+      ]);
+      assertEquals(listing.unreadable.map((entry) => entry.key), [
+        outboxKeyOf(bad),
+      ]);
+    } finally {
+      await migrated.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitOutbox.recordLandedOffline: keeps what a landed offline entry renumbered for its partition's queued entries, past the retention while one is queued (swamp-club#4195)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "outbox.db");
+    const outbox = new SqliteCommitOutbox(path);
+    try {
+      const first = fixtureCommit({
+        seq: 1,
+        txnId: "t-first",
+        ops: await saveOps({ name: "out", version: 3 }),
+      });
+      const queued = fixtureCommit({
+        seq: 1,
+        txnId: "t-queued",
+        ops: await saveOps({ name: "out", version: 4 }),
+      });
+      await outbox.prepare({
+        commit: queued,
+        unitId: "u",
+        base: { seq: 0, txnId: undefined },
+      });
+      await outbox.markState([outboxKeyOf(queued)], "offline");
+      const carry = {
+        versions: [{ name: "out", from: 3, to: 5 }],
+        digests: [["a".repeat(64), "b".repeat(64)] as const],
+        createdAt: [{
+          name: "out",
+          version: 5,
+          createdAt: "2026-10-30T09:00:00.000Z",
+        }],
+      };
+      await outbox.recordLandedOffline(outboxKeyOf(first), 1_000, 10, carry);
+      const partition = first.partition.toString();
+      assertEquals(await outbox.landedOfflineCarry("", partition), carry);
+      // Long past the retention, a later record keeps it: an entry of the
+      // partition is still queued and may follow it.
+      const later = { ...outboxKeyOf(first), txnId: "t-other" };
+      await outbox.recordLandedOffline(later, 1_000_000, 10);
+      assertEquals(await outbox.landedOfflineCarry("", partition), carry);
+      // Once nothing of the partition is queued, it goes with the retention.
+      await outbox.settle([outboxKeyOf(queued)]);
+      await outbox.recordLandedOffline(later, 2_000_000, 10);
+      assertEquals(
+        (await outbox.landedOfflineCarry("", partition)).versions,
+        [],
+      );
+      // A record that does not parse adds nothing.
+      const db = new DatabaseSync(path);
+      db.prepare("UPDATE outbox_landed_offline SET carry = '{\"versions\":1}'")
+        .run();
+      db.close();
+      assertEquals(
+        (await outbox.landedOfflineCarry("", partition)).versions,
+        [],
+      );
+    } finally {
+      await outbox.close();
+    }
   });
 });

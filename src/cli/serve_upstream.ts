@@ -103,17 +103,30 @@ export const SERVE_UPSTREAM_LOCAL_FAMILIES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Control-plane subcommands that, in a v3 checkout written through serve,
+ * still run locally (swamp-club#4195): `datastore status` reports the
+ * checkout's own copy and the work it saved offline, which serve cannot
+ * see, and adds serve's own section when serve answers. An explicit
+ * `--server` still sends it to serve. Keyed `"<command> <subcommand>"`.
+ */
+export const SERVE_UPSTREAM_LOCAL_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  "datastore status",
+]);
+
+/**
  * Whether the command at `commandPath` runs locally with serve as its v3
- * datastore's upstream rather than on serve: a data-plane family that
- * serve mode applies to.
+ * datastore's upstream rather than on serve: a data-plane family, or one
+ * of {@link SERVE_UPSTREAM_LOCAL_SUBCOMMANDS}, that serve mode applies to.
  */
 export function serveUpstreamRunsLocally(
   commandPath: readonly string[],
 ): boolean {
-  const [command] = commandPath;
-  return command !== undefined &&
-    SERVE_UPSTREAM_LOCAL_FAMILIES.has(command) &&
-    serveUpstreamAppliesTo(commandPath);
+  const [command, subcommand] = commandPath;
+  if (command === undefined) return false;
+  const local = SERVE_UPSTREAM_LOCAL_FAMILIES.has(command) ||
+    (subcommand !== undefined &&
+      SERVE_UPSTREAM_LOCAL_SUBCOMMANDS.has(`${command} ${subcommand}`));
+  return local && serveUpstreamAppliesTo(commandPath);
 }
 
 export const SERVE_UPSTREAM_COMMANDS: Readonly<
@@ -146,8 +159,9 @@ export const SERVE_UPSTREAM_COMMANDS: Readonly<
         reason: "searches the datastore type registry; opens no storage",
       },
       status: {
-        applies: false,
-        reason: "reports the bound storage's health and configuration",
+        applies: true,
+        reason:
+          "reports this checkout's datastore: through serve, its copy and the work it saved offline (swamp-club#4195)",
       },
       setup: {
         applies: false,
@@ -158,8 +172,14 @@ export const SERVE_UPSTREAM_COMMANDS: Readonly<
         reason: "pulls and pushes against the storage explicitly",
       },
       lock: {
-        applies: false,
-        reason: "inspects and force-releases the storage's writer lock",
+        applies: true,
+        reason:
+          "lists the leases serve holds and force-releases one through the serve a checkout writes through; a checkout without serve still binds the storage's writer lock (swamp-club#4195)",
+      },
+      quarantine: {
+        applies: true,
+        reason:
+          "asks the serve this checkout writes through to land a change it keeps (swamp-club#4195)",
       },
       compact: {
         applies: false,
