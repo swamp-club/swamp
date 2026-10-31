@@ -518,7 +518,8 @@ the children finished. Once the children finished, the resume re-enters the
 nested step without evaluating its trigger or guard again and reads the
 child's outcome (`settleNestedWait`):
 
-- succeeded: the step adopts the child's outputs. The step output records the
+- succeeded: the step adopts the child's outputs, as a child that never
+  suspended gives them (see [Steps](#steps)). The step output records the
   key names of any inputs the child's resume was given, and the adoption is
   logged. Who could resume or retry the child is governed by the child
   workflow's own authorization; nesting it accepts that.
@@ -2981,6 +2982,17 @@ and run only if either failed.
 
 Each step has a name, a description, and a task: a method to run or a
 nested workflow to invoke. Steps use the same dependency logic as jobs.
+
+A nested workflow step runs its child as a run of its own. The child is looked
+up by name or ID when the step runs (`lookupWorkflow`), so it runs the current
+definition; nothing pins a version. It inherits the parent's `initiatedBy` and
+triggering principal, records a `parentRun` link, and its `vaults:` list is
+intersected with the parent's. When the child succeeds, gated or not, the
+step's outputs are the outputs of the child's succeeded method steps keyed by
+child step name (`StepOutputResolver.resolveChildOutputs`); a workflow the
+child calls is not followed. A child that suspends suspends its parent (see
+"Gates inside a nested workflow"). Serve authorizes only the parent's `run`
+(see "Workflow execution context" in `design/enablers/access-control.md`).
 
 When a step calls a method that is not a read or list kind (`get`, `read`,
 `describe`, `show`, `list`, `search`, `find`, or a declared `kind: "read"` or
