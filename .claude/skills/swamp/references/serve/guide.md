@@ -310,7 +310,8 @@ Swamp serve reads two membership lists from swamp-club, for different jobs:
 Collectives come from the userinfo field specified by `--groups-field` (default:
 `collectives`): the swamp-club collectives the user belongs to. A
 `collective:<slug>` grant matches every member of that collective, with or
-without SSO. Admission grants nothing on its own: a member admitted by
+without SSO. The slug is matched exactly, so write it as `swamp auth whoami`
+lists it. Admission grants nothing on its own: a member admitted by
 `--allowed-collectives` is denied everything until a grant covers them. To give
 every member of a collective read access:
 
@@ -331,7 +332,8 @@ and a `collective:<name>` grant does not match an IdP group of that name.
 
 A collective cannot be an `--admins` entry; name the admins as users or a local
 group. Upgrade every host on the datastore before creating a `collective:`
-grant: an older build cannot read the subject.
+grant: an older build cannot read the subject and leaves the grant out, so a
+`collective:` deny is not enforced on that host until it is upgraded.
 
 ### Background refresh
 
