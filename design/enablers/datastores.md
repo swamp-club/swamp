@@ -7673,7 +7673,7 @@ A follower's access policy follows its copy (swamp-club#4207). On a bucket
 the leader's commits land in the follower's own `commits.db` before its read
 model catches up, so `ServeCommitEffects` applies a commit's effects (the
 catalog rebuild, the policy reload) only after the read model holds it. A
-policy reloaded earlier would miss the grants those commits carry. Two
+policy reloaded earlier would miss the grants those commits carry. Three
 further rules keep a read from being filtered under a policy older than the
 commits it pages:
 
