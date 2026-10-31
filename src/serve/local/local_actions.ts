@@ -52,6 +52,8 @@ export const FORWARDED_READS: ReadonlySet<string> = new Set([
   "audit.unsubscribe",
   "cluster.instances",
   "data.get",
+  // The agent sessions page lists sessions by their tags (swamp-club#4155).
+  "data.query",
   "data.search",
   "data.versions",
   "datastore.status",

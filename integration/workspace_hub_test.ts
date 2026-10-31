@@ -672,6 +672,26 @@ Deno.test("workspaceHub: every hub route needs the page's token, and nothing sta
   });
 });
 
+Deno.test("workspaceHub: forwards the agent sessions page's data.query to the child", async () => {
+  await withHub(async ({ base }) => {
+    const ws = await openSocket(`ws://${base}/w/alpha/`);
+    const seen = frames(ws);
+    ws.send(JSON.stringify({
+      type: "data.query",
+      id: "sessions",
+      payload: { predicate: 'tags.type == "agent-session"', limit: 1 },
+    }));
+    await waitFor(() => seen.length === 1, "the query's echo");
+    assertEquals(seen[0], {
+      type: "echo",
+      id: "sessions",
+      of: "data.query",
+      path: "/",
+    });
+    await closeSocket(ws);
+  });
+});
+
 Deno.test("workspaceHub: writes and reads the dashboard never makes are refused and never reach the child", async () => {
   await withHub(async ({ base }) => {
     const ws = await openSocket(`ws://${base}/w/alpha/`);

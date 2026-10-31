@@ -68,6 +68,7 @@ const VIEW_SEGMENTS: Readonly<Record<Exclude<View, "overview">, string>> = {
   webhooks: "webhooks",
   approvals: "approvals",
   activity: "activity",
+  "agent-sessions": "agent-sessions",
   data: "data",
   vaults: "vaults",
   extensions: "extensions",

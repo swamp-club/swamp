@@ -28,7 +28,11 @@ const OLD_LOGOUT_ARROW = "M6 2H3v12h3M10 5l3 3-3 3M13 8H6";
 const POWER = "M4.5 4.5a5 5 0 1 0 7 0M8 2v6";
 
 function render(
-  options: { local?: boolean; logoutStep?: LogoutStep } = {},
+  options: {
+    local?: boolean;
+    logoutStep?: LogoutStep;
+    agentSessionsVisible?: boolean;
+  } = {},
 ): string {
   return renderToStaticMarkup(
     <Sidebar
@@ -36,6 +40,7 @@ function render(
       onNavigate={() => {}}
       health={null}
       approvalCount={0}
+      agentSessionsVisible={options.agentSessionsVisible}
       local={options.local}
       onLogout={() => {}}
       collapsed
@@ -81,4 +86,14 @@ Deno.test("Sidebar: the local dashboard has no Logout", () => {
   const html = render({ local: true, logoutStep: "confirming" });
   assert(!html.includes('aria-label="Logout"'));
   assert(!html.includes("sidebar-logout-confirm"));
+});
+
+Deno.test("Sidebar: Agent sessions is hidden, not Off, until the viewer can read a session", () => {
+  const hidden = render({ local: true });
+  assert(!hidden.includes("Agent sessions"), "no item, faded or otherwise");
+  const shown = render({ local: true, agentSessionsVisible: true });
+  assertStringIncludes(shown, "Agent sessions");
+  // Shown items are never marked Off.
+  const at = shown.indexOf("Agent sessions");
+  assert(!shown.slice(at, at + 200).includes("Needs swamp serve"));
 });

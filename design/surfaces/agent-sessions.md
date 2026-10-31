@@ -181,13 +181,14 @@ Re-importing writes a new version of the same item.
 The extension's output spec sets `type: agent-session`, which replaces the
 writer's own `type: resource`. Output-spec tags are the same for every item,
 so the per-session tags are passed on each write instead: `swampUserId`, and
-the four list tags from `agentSessionTags(record)`:
+the five list tags from `agentSessionTags(record)`:
 
 | Tag               | Value                                                           | Used for                                  |
 | ----------------- | --------------------------------------------------------------- | ----------------------------------------- |
 | `startedAt`       | the record's `startedAt` as `toISOString()` writes it           | newest-first sort (swamp-club#4177)       |
 | `parentSessionId` | the parent's id; absent on a top-level session                  | listing top-level sessions, and children  |
 | `headless`        | `"true"` when `invocation` is `headless`, else `"false"`        | the headless filter, in the query         |
+| `repo`            | the record's `repo` as is, on subagent records too              | the repo filter, in the query (#4211)     |
 | `summary`         | compact JSON matching `AgentSessionSummaryV1Schema`             | the list row                              |
 
 `startedAt` is rewritten so every tag has milliseconds and sorts in time
@@ -223,8 +224,9 @@ no new filter:
 - every session: `AGENT_SESSION_QUERY_PREDICATE`.
 
 A list query passes `AGENT_SESSION_LIST_SELECT`, which reads only the data
-name and tags. With a predicate over tags, the query then never loads a record
-body. The list pages newest first with
+name, the owning behavior's name and tags; `data.get` needs the behavior name
+to open a listed session. With a predicate over tags, the query then never
+loads a record body. The list pages newest first with
 `sort: { field: "tags.startedAt", direction: "desc" }` and a `limit`, and asks
 for each later page with the `nextCursor` the previous one returned
 ([data-query.md](../enablers/data-query.md#sorting-and-paging---sort---cursor)).
@@ -267,11 +269,48 @@ not name. The summary schema has its own version; a summary tag that does not
 match the current one reads as `undefined`, and the page opens the record
 instead.
 
-**Reading it in the page.** The dashboard has no `zod` dependency, and it
-copies domain functions it needs, pinning the copy with a test
-(`packages/dashboard/src/views/report_name.ts`). The page (swamp-club#4155)
-either adds `zod` and imports this module, which has no Deno or Node APIs, or
-copies the reader with a test that pins the copy.
+**Reading it in the page.** The dashboard imports this module and `zod`
+rather than copying the reader: the module has no Deno or Node APIs, and a
+copy would drift on the rules the schema refines. It does so through one
+adapter, `packages/dashboard/src/lib/agent_sessions/record.ts`, and
+`integration/dashboard_core_import_rules_test.ts` pins that this is the only
+core module the bundled dashboard imports, and that the module imports
+nothing but `zod`.
+
+## The page
+
+The dashboard's Agent sessions page (swamp-club#4155) sits under Operations
+with a Preview chip. Its requests are in
+`packages/dashboard/src/client/agent_sessions.ts`, and
+`integration/agent_sessions_page_test.ts` sends them through serve's handlers.
+
+- **Visibility.** The sidebar item shows only when one `data.query` with
+  `AGENT_SESSION_TOP_LEVEL_PREDICATE` and a limit of 1 finds a session the
+  viewer can read. That departs from the faded "Off" items on purpose: with
+  no session data there is nothing to turn on. The check runs when the
+  dashboard loads and when it reconnects, so sessions imported while it is
+  open show after a reload. Hiding is not access control: the route answers
+  a direct URL, and every request it sends is read-gated.
+- **The list.** Top-level sessions come from tags alone. The page reads the
+  newest 1,000 with `sort: tags.startedAt desc` (swamp-club#4177) and, when
+  that window filled its limit, offers to read the next 1,000 older with the
+  `nextCursor` it returned. Column sorts, the headless filter, the totals and
+  the 50-row pages cover the sessions loaded, and the page says so while
+  older ones remain. Sorting by a column in SQL is not possible: the figures
+  live inside the `summary` tag's JSON, and `data.query` sorts by a whole tag
+  as a string. A re-read of the newest window (a reconnect, a retry) drops
+  the older windows.
+- **A session.** Opening one reads its record with `data.get`. Its subagents
+  are listed from tags (`agentSessionChildrenPredicate`, limit 500), and a
+  subagent's record is read when its call is opened or its findings are
+  loaded. A subagent opens under the call that started it, at full detail.
+  Findings are only read, never computed: the opened session's and its
+  loaded subagents' are shown together, most severe first.
+- **Skips.** A record that does not read shows its note, never its content.
+  A summary tag that does not read leaves the row's numbers blank; the
+  session still opens.
+- **Large turns.** A turn with more than 100 calls draws only the rows in
+  view.
 
 ## Access
 

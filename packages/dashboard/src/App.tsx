@@ -79,6 +79,8 @@ import {
 import type { CopyFn } from "./views/AuditStates.tsx";
 import { copyText } from "./components/clipboard.ts";
 import { buildPath, isStartPath } from "./routes.ts";
+import { AgentSessions } from "./views/AgentSessions.tsx";
+import { useAgentSessionsVisible } from "./client/useAgentSessions.ts";
 import "./styles/shell.css";
 
 // Views whose content is runs over time, which the dashboard-wide time
@@ -186,6 +188,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const auditStream = useAuditStream();
 
   const approvals = useApprovals();
+  const agentSessionsVisible = useAgentSessionsVisible();
   // Only gates that can still be decided: expired ones are not pending.
   const approvalCount = pendingApprovals(approvals.data).length;
 
@@ -253,6 +256,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         onNavigate={navigateAndClose}
         health={health}
         approvalCount={approvalCount}
+        agentSessionsVisible={agentSessionsVisible}
         auditEnabled={auditEnabled(auditStream.status)}
         local={local}
         onLogout={onLogout}
@@ -379,6 +383,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                 />
               )}
               {view === "activity" && <Activity auditStream={auditStream} />}
+              {view === "agent-sessions" && <AgentSessions />}
               {view === "data" && <Data />}
               {view === "vaults" && <Vaults />}
               {view === "extensions" && <Extensions />}
