@@ -84,6 +84,7 @@ Deno.test({
           }, [content]),
         );
         assertEquals(landed.status, 200, JSON.stringify(landed.json));
+        await server.v3.catchUp();
         effects.poke();
         await waitFor(() => calls.catalog >= 1, "the catalog rebuilt");
         await effects.settled();
@@ -104,6 +105,7 @@ Deno.test({
             txnId: crypto.randomUUID(),
           },
         ));
+        await server.v3.catchUp();
         effects.poke();
         await waitFor(() => calls.policy === 1, "the policy reloaded");
       } finally {

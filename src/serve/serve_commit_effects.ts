@@ -35,7 +35,7 @@
  * A follower's copy moves before its read model catches up, and the policy
  * and catalog read the read model. So a follower applies effects only when
  * told its copy is caught up ({@link ServeCommitEffects.poke}), and only of
- * the commits that had landed by then: a reload any sooner reads the files
+ * the commits its read model has applied: a reload any sooner reads the files
  * as they were, and no later commit would correct it.
  *
  * @module
@@ -77,25 +77,28 @@ const EVERY_EFFECT: ReadonlySet<CommitEffect> = new Set([
 export class ServeCommitEffects {
   readonly #deps: ServeCommitEffectsDeps;
   #cursor: number;
-  /** The head when a follower's copy was last caught up. */
-  #caughtUp: number;
   #running: Promise<void> | undefined;
   #again = false;
   #replaced = false;
+  /** A follower's copy was replaced; its read model has not caught up yet. */
+  #replacedUnread = false;
   #off: (() => void) | undefined;
 
   constructor(deps: ServeCommitEffectsDeps) {
     this.#deps = deps;
     this.#cursor = deps.source.datastore.commitStore.highWaterMark().cursor;
-    this.#caughtUp = this.#cursor;
   }
 
   start(): void {
     this.#off ??= this.#deps.source.onMoved((replaced) => {
       // A replaced copy may have rewritten rows already read: their
       // effects are not seen one by one, so everything is refreshed.
+      if (this.#deps.isFollower()) {
+        if (replaced) this.#replacedUnread = true;
+        return;
+      }
       if (replaced) this.#replaced = true;
-      if (!this.#deps.isFollower()) this.#schedule();
+      this.#schedule();
     });
   }
 
@@ -114,14 +117,17 @@ export class ServeCommitEffects {
    * leader's commits move no head in this process.
    */
   poke(): void {
-    this.#caughtUp =
-      this.#deps.source.datastore.commitStore.highWaterMark().cursor;
+    if (this.#replacedUnread) {
+      this.#replacedUnread = false;
+      this.#replaced = true;
+    }
     if (this.#off !== undefined) this.#schedule();
   }
 
   /** Settles once no pass is running. */
-  settled(): Promise<void> {
-    return this.#running ?? Promise.resolve();
+  async settled(): Promise<void> {
+    // A pass ending starts the one a poke queued meanwhile.
+    while (this.#running !== undefined) await this.#running;
   }
 
   #schedule(): void {
@@ -149,7 +155,7 @@ export class ServeCommitEffects {
     }
     for (;;) {
       const head = this.#deps.isFollower()
-        ? this.#caughtUp
+        ? this.#deps.source.datastore.readModel.cursor()
         : store.highWaterMark().cursor;
       if (head < this.#cursor) {
         // The copy was replaced behind what was read: refresh everything.
