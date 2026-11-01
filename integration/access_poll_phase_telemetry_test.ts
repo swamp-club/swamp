@@ -212,6 +212,23 @@ function diagnosticSpans(t: PollTrace): OtlpSpan[] {
   return t.spans.filter((s) => s.name.startsWith("swamp.diagnostic."));
 }
 
+/**
+ * Whether `t` applied a reload whose snapshot build reports `value` for
+ * `attribute`. A peer's save is several file writes, so a poll can apply what
+ * only part of it left on disk: a test about the finished write selects the
+ * poll that saw it, not the first one that applied anything.
+ */
+function appliedWithBuild(
+  t: PollTrace,
+  attribute: string,
+  value: number,
+): boolean {
+  return str(t.cycle, d("result")) === "applied" &&
+    underCycle(t, "snapshot_build").some((build) =>
+      int(build, d(attribute)) === value
+    );
+}
+
 function findPoll(
   spans: OtlpSpan[],
   predicate: (t: PollTrace) => boolean,
@@ -422,7 +439,7 @@ Deno.test("access poll phases: a local change source exports unchanged and chang
         await waitFor(
           () =>
             pollTraces(received()).some((t) =>
-              str(t.cycle, d("result")) === "applied"
+              appliedWithBuild(t, "grants_active", 2)
             ),
           "a poll that applies the peer's grant",
         );
@@ -454,7 +471,7 @@ Deno.test("access poll phases: a local change source exports unchanged and chang
 
     const applied = findPoll(
       spans,
-      (t) => str(t.cycle, d("result")) === "applied",
+      (t) => appliedWithBuild(t, "grants_active", 2),
       "an applied poll",
     );
     assertArea(applied, "local_change_source");
@@ -485,6 +502,68 @@ Deno.test("access poll phases: a local change source exports unchanged and chang
   });
 });
 
+Deno.test("access poll phases: a grant polled before its content lands is left out, and the poll after the content lands applies it", async () => {
+  await withPair(async (pair) => {
+    const ids = [crypto.randomUUID(), crypto.randomUUID()];
+    await saveGrant(pair.writer, ids[0]);
+    const spans = await withExportedSpans(async (received) => {
+      const poller = await localPoller(pair);
+      await pair.loader.load();
+      // Before the poller starts, so its first detection finds the save
+      // already stopped between the metadata and the content.
+      await saveGrant(pair.writer, ids[1]);
+      const contentPath = pair.writer.repoContext.unifiedDataRepo
+        .getContentPath(GRANT_MODEL_TYPE, ids[1], "grant-main", 1);
+      const content = await Deno.readFile(contentPath);
+      await Deno.remove(contentPath);
+      poller.start();
+      try {
+        await waitFor(
+          () =>
+            pollTraces(received()).some((t) =>
+              appliedWithBuild(t, "grants_active", 1)
+            ),
+          "a poll that applies the grant without its content",
+        );
+        await Deno.writeFile(contentPath, content);
+        await waitFor(
+          () =>
+            pollTraces(received()).some((t) =>
+              appliedWithBuild(t, "grants_active", 2)
+            ),
+          "a poll that applies the grant with its content",
+        );
+      } finally {
+        await poller.stop();
+      }
+    });
+
+    const [partial] = underCycle(
+      findPoll(
+        spans,
+        (t) => appliedWithBuild(t, "grants_active", 1),
+        "the partial poll",
+      ),
+      "snapshot_build",
+    );
+    assertEquals(int(partial, d("records_listed")), 2);
+    assertEquals(int(partial, d("records_read")), 2);
+    // Mid-write, not damaged: nothing to retry until the content is a change.
+    assertEquals(int(partial, d("unreadable")), 0);
+    const [whole] = underCycle(
+      findPoll(
+        spans,
+        (t) => appliedWithBuild(t, "grants_active", 2),
+        "the whole poll",
+      ),
+      "snapshot_build",
+    );
+    assertEquals(int(whole, d("records_listed")), 2);
+    assertEquals(int(whole, d("records_read")), 2);
+    assertEquals(int(whole, d("unreadable")), 0);
+  });
+});
+
 Deno.test("access poll phases: a corrupt record is counted as unreadable, and the reload still applies", async () => {
   await withPair(async (pair) => {
     const id = crypto.randomUUID();
@@ -502,7 +581,7 @@ Deno.test("access poll phases: a corrupt record is counted as unreadable, and th
         await waitFor(
           () =>
             pollTraces(received()).some((t) =>
-              str(t.cycle, d("result")) === "applied"
+              appliedWithBuild(t, "unreadable", 1)
             ),
           "a poll that reloads the corrupt record",
         );
@@ -512,7 +591,7 @@ Deno.test("access poll phases: a corrupt record is counted as unreadable, and th
     });
     const applied = findPoll(
       spans,
-      (t) => str(t.cycle, d("result")) === "applied",
+      (t) => appliedWithBuild(t, "unreadable", 1),
       "an applied poll",
     );
     const [build] = underCycle(applied, "snapshot_build");
