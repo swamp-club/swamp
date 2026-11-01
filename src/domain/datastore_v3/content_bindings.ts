@@ -231,8 +231,6 @@ export interface RunRecordContext {
    * own guard or dependencies, or its job's dependencies.
    */
   readonly maySkip?: (jobName: string, step: StepRunData) => boolean;
-  /** Whether a stored dependency of the step did not succeed in the record. */
-  readonly dependencyUnmet?: (jobName: string, step: StepRunData) => boolean;
   /** The gates and signal waits of the stored workflow. */
   readonly storedWaits?: readonly StoredWait[];
   /** The outcome serve holds for a signal wait, by wait id. */
@@ -494,23 +492,25 @@ export function judgeRunRecord(context: RunRecordContext): RunRecordJudgement {
 }
 
 /** Why the record's job or run status does not follow its steps, or undefined. */
-function statusRefusal(after: WorkflowRunData): string | undefined {
-  // A run reopens what an abort settled before it goes on, so a step that
-  // stands settled by one holds its job back as a failure does.
+export function statusRefusal(
+  after: Pick<WorkflowRunData, "jobs" | "status">,
+): string | undefined {
+  // A real job succeeds only once every step has finished, none failed without
+  // an allowance, and an abort settled none of them: a run reopens those first.
   const holdsBack = (step: StepRunData) =>
-    step.status === "waiting_approval" || WAITING_SIGNAL.has(step.status) ||
-    (step.status === "failed" && step.allowedFailure !== true) ||
+    (step.status !== "succeeded" && step.status !== "skipped" &&
+      !(step.status === "failed" && step.allowedFailure === true)) ||
     step.settledByAbort === true;
   for (const job of after.jobs) {
     if (job.status === "succeeded" && job.steps.some(holdsBack)) {
-      return "it marks a job succeeded over a step that waits or stands denied";
+      return "it marks a job succeeded over a step that has not finished or failed";
     }
   }
   if (
     after.status === "succeeded" &&
     after.jobs.some((job) => job.steps.some(holdsBack))
   ) {
-    return "it marks the run succeeded over a step that waits or stands denied";
+    return "it marks the run succeeded over a step that has not finished or failed";
   }
   return undefined;
 }
@@ -525,6 +525,11 @@ function judgeStep(
   runStatus: WorkflowRunData["status"],
   priorRunStatus: WorkflowRunData["status"] | undefined,
 ): string | undefined {
+  // A stored signal step never waits on an approval: an approver's decision
+  // would stand in for the signal.
+  if (kind === "signal" && step.status === "waiting_approval") {
+    return "it makes a signal step wait on an approval";
+  }
   // What a step expands from is frozen: it decides which stored step this is.
   if (
     prior !== undefined && prior.forEachTemplate !== step.forEachTemplate
@@ -564,12 +569,9 @@ function judgeStep(
     priorRunStatus,
   );
   if (decision !== undefined) return decision;
-  // Allowing a failure is the stored step's to say: a record setting it would
-  // carry its job past the failure.
-  if (
-    step.status === "failed" && step.allowedFailure === true &&
-    prior?.allowedFailure !== true
-  ) {
+  // Allowing a failure is the stored step's to say, whatever the status: set
+  // on a step before it fails, it would carry its job past the failure.
+  if (step.allowedFailure === true && prior?.allowedFailure !== true) {
     const defined = storedStepOf(context.definitionSteps(jobName), step);
     if (defined?.allowFailure !== true) {
       return "it allows a failure the stored step does not";
@@ -697,14 +699,12 @@ function gateRefusal(
   if (step.status === "waiting_approval") return undefined;
   if (step.status === "skipped") {
     // An abort settles what it never started; otherwise the stored workflow
-    // must give the gate something that can skip it. A record's guard result
-    // cannot be checked, so a guarded gate stays the run's own to report. A
-    // gate a retry re-opened skips only when a dependency failed again.
+    // must give the gate something that can skip it. A record's guard or
+    // dependency result cannot be checked, on a first walk or after a retry,
+    // so such a gate stays the run's own to report.
     const stopped = step.settledByAbort === true &&
       (runStatus === "cancelled" || runStatus === "failed");
-    const reachable = prior?.resetByResume === true
-      ? context.dependencyUnmet?.(jobName, step) === true
-      : context.maySkip?.(jobName, step) === true;
+    const reachable = context.maySkip?.(jobName, step) === true;
     return !waited && !decided && step.approvalDecision === undefined &&
         (prior === undefined || prior.status === "pending") &&
         (stopped || reachable)
@@ -755,9 +755,17 @@ function signalRefusal(
 ): string | undefined {
   const waited = prior !== undefined && WAITING_SIGNAL.has(prior.status);
   if (WAITING_SIGNAL.has(step.status)) {
-    return waited &&
-        (!same(prior.output, step.output) || !same(prior.wait, step.wait))
-      ? "it changes a waiting signal step's wait or output"
+    if (waited) {
+      return !same(prior.output, step.output) || !same(prior.wait, step.wait)
+        ? "it changes a waiting signal step's wait or output"
+        : undefined;
+    }
+    // A fresh wait has no outcome yet: one that does was another step's, or an
+    // attempt a retry closed, and opening it here would replay that signal.
+    const opened = parseStoredWait(step.wait);
+    return opened?.kind === "valid" &&
+        context.heldOutcome?.(opened.wait.id) !== undefined
+      ? "it opens a wait serve already holds an outcome for"
       : undefined;
   }
   if (settledByCancel) return undefined;

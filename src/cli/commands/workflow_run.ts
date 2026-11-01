@@ -215,7 +215,7 @@ export const workflowRunCommand = new Command()
   )
   .option(
     "--last-evaluated",
-    "Replay the previously evaluated workflow with the inputs it was evaluated with; an --input must match them. Behavior definitions are evaluated fresh. In a checkout written through serve, an evaluation written by another member is set aside and evaluated again",
+    "Replay the previously evaluated workflow with the inputs it was evaluated with; an --input must match them. Behavior definitions are evaluated fresh. In a serve-mode checkout, an evaluation serve or you did not write is set aside and evaluated again, without its stored inputs",
     { default: false },
   )
   .option("--input <value:string>", "Input values (key=value or JSON)", {

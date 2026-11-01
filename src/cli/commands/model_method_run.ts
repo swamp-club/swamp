@@ -280,7 +280,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
     )
     .option(
       "--last-evaluated",
-      "Skip CEL evaluation, use previously evaluated definition. In a checkout written through serve, an evaluation written by another member is set aside and evaluated again",
+      "Skip CEL evaluation, use previously evaluated definition. In a serve-mode checkout, an evaluation serve or you did not write is set aside and evaluated again, without its stored inputs",
       { default: false },
     )
     .option("--input <value:string>", "Input values (key=value or JSON)", {

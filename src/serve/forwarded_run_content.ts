@@ -39,6 +39,7 @@ import {
   omittedWait,
   runIdentityRefusal,
   type RunRecordJudgement,
+  statusRefusal,
   type StepKind,
   storedStepOf,
   type StoredWait,
@@ -175,17 +176,6 @@ export async function checkRunRecord(
         defined?.guard !== undefined ||
         (defined?.dependsOn.length ?? 0) > 0;
     },
-    dependencyUnmet: (jobName, step) => {
-      const job = workflow?.jobs.find((j) => j.name === jobName);
-      const defined = storedStepOf(job?.steps, step);
-      const steps = after.data.jobs.find((j) => j.jobName === jobName)?.steps;
-      return (defined?.dependsOn ?? []).some((dependency) =>
-        steps?.some((s) =>
-          s.stepName === dependency.step && s.status !== "succeeded" &&
-          s.status !== "pending" && s.status !== "running"
-        ) === true
-      );
-    },
     storedWaits: workflow === null ? [] : storedWaitsOf(workflow),
     heldChild: (jobName, step) =>
       held.children.get(heldKey(jobName, step.stepName)),
@@ -276,8 +266,12 @@ async function heldByServe(
           children.set(heldKey(job.jobName, step.stepName), child);
         }
       }
-      const stored = parseStoredWait(prior?.wait ?? step.wait);
-      if (stored?.kind === "valid" && signalWaits?.supported === true) {
+      // The wait it held, and one it opens: a fresh wait holds no outcome.
+      for (const raw of [prior?.wait, step.wait]) {
+        const stored = parseStoredWait(raw);
+        if (stored?.kind !== "valid" || signalWaits?.supported !== true) {
+          continue;
+        }
         const outcome = await signalWaits.store.findOutcome(stored.wait.id);
         if (
           outcome.kind === "found" && outcome.record.runId === run.runId &&
@@ -337,7 +331,8 @@ async function heldChildOf(
   );
   if (
     child.data.status === "succeeded" && (childWorkflow === null ||
-      omittedWait(child.data, storedWaitsOf(childWorkflow)) !== undefined)
+      omittedWait(child.data, storedWaitsOf(childWorkflow)) !== undefined ||
+      statusRefusal(child.data) !== undefined)
   ) {
     return undefined;
   }

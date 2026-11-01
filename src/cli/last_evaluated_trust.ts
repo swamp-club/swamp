@@ -27,7 +27,6 @@
  * @module
  */
 
-import { UserError } from "../domain/errors.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
   type EvaluationTrust,
@@ -62,17 +61,16 @@ export async function lastEvaluatedStands(
     ));
     return true;
   } catch (error) {
-    const logger = getSwampLogger(["cli", "last-evaluated"]);
-    if (error instanceof UserError && error.code === "evaluation_not_trusted") {
-      logger.warn(
-        "Evaluating again instead of replaying the last evaluation: serve did not write it, and this checkout could not match its writer to your saved login (a token from the environment names no one). Stored inputs are not replayed; pass them again.",
-      );
-    } else {
-      logger.warn(
-        "Evaluating again: could not check who wrote the last evaluation: {reason}",
-        { reason: error instanceof Error ? error.message : String(error) },
-      );
-    }
+    const reason = error instanceof Error ? error.message : String(error);
+    // The warning does not reach --json output, so a script sees the event.
+    console.error(JSON.stringify({
+      event: "last_evaluated_set_aside",
+      reason,
+    }));
+    getSwampLogger(["cli", "last-evaluated"]).warn(
+      "Evaluating again instead of replaying the last evaluation; stored inputs are not replayed, so pass them with --input: {reason}",
+      { reason },
+    );
     return false;
   }
 }

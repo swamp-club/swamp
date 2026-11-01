@@ -378,9 +378,10 @@ function legitimateMoves(
 
 /** The id of a step's wait, stable for a step of the workflow. */
 function waitIdOf(spec: { readonly name: string; readonly job: string }) {
-  const n = (spec.name.length * 104_729 + spec.job.length * 31 +
-    [...spec.name].reduce((sum, c) => sum + c.charCodeAt(0), 0)) % 0xfff;
-  return `aaaaaaaa-9999-4aaa-8bbb-${n.toString(16).padStart(12, "0")}`;
+  const hex = [...`${spec.job}/${spec.name}`]
+    .map((c) => c.charCodeAt(0).toString(16).padStart(2, "0"))
+    .join("").slice(-12).padStart(12, "0");
+  return `aaaaaaaa-9999-4aaa-8bbb-${hex}`;
 }
 
 function waitOf(spec: StepSpec) {
@@ -1010,7 +1011,6 @@ function play(
       guarded.add(key(spec.job, spec.template ?? spec.name));
     }
   }
-  for (const spec of specs) held.set(waitIdOf(spec), outcomeOf(spec));
   let record = initial(specs);
   const created = judge(kinds, undefined, record);
   assertEquals(created.refusal, undefined, "a run's first record");
@@ -1022,6 +1022,17 @@ function play(
       const moves = legitimateMoves(specs, record);
       if (moves.length === 0) continue;
       const move = moves[next.legit % moves.length];
+      // Serve's signal handler stores the outcome before the run applies it.
+      if (move.label === "run applies a stored signal") {
+        for (const spec of specs) {
+          if (
+            stepsOf(record).get(key(spec.job, spec.name))?.status ===
+              "waiting_signal"
+          ) {
+            held.set(waitIdOf(spec), outcomeOf(spec));
+          }
+        }
+      }
       // A handler's decision is serve's own write: it is not forwarded.
       if (move.needs.length > 0) {
         if (!tampered) bump(coverage.legit, move.label);

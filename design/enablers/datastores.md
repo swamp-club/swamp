@@ -6695,17 +6695,17 @@ to the same write. The checks the handlers share are one implementation
      or signal wait is skipped only when the stored workflow gives it something
      to skip it (its guard or dependencies, or its job's), or when an abort
      settled it unstarted. A gate a retry re-opened keeps its mark while
-     pending, cannot go from running back to pending, and skips only when a
-     stored dependency failed in the record. Left pending when its job ends, it
-     may fail. A signal outcome applies only to the wait the prior record shows
-     open on that step. What a record's step expands from is frozen and never
+     pending and cannot go from running back to pending. Left pending when its
+     job ends, it may fail. A signal outcome applies only to the wait the prior
+     record shows open on that step, and a record cannot open a wait serve holds
+     an outcome for. What a record's step expands from is frozen and never
      overrides a stored step of its name. A failure's `allowedFailure` is the stored step's
-     to set. **What this cannot judge:** a record's guard result. On a gate
-     with a guard or dependencies, a member can report it skipped; a run-only
-     caller driving their own run can always do that. An unguarded gate cannot
-     be skipped.
-  5. No job or run is `succeeded` over a step that waits, failed without an
-     allowance, or stands settled by an abort.
+     to set, at any status. **What this cannot judge:** a record's guard or
+     dependency result. On a gate with a guard or dependencies, a member can
+     report it skipped, on a first walk or after a retry, including past a
+     denial a retry cleared. An unguarded gate cannot be skipped.
+  5. A job or run is `succeeded` only once every step has finished, none failed
+     without an allowance, and an abort settled none.
      Nor can one succeed by leaving out a gate or signal wait the stored
      workflow holds, unless it expands by forEach; a child counts as succeeded
      only under the same test against its own workflow. This reads the workflow
@@ -6728,7 +6728,10 @@ under the lock serve re-decides access, a run record's additions among it, and
 checks that no record the content was judged against moved. A signal outcome
 is not a record, so its presence is rechecked under the lock on its own.
 
-**Known limit.** A retry whose preparation fails restores the run from a
+**Known limits.** A signal wait's deadline is judged on serve's clock, so a
+member whose clock runs ahead has its timeout refused until serve's passes it. A
+run re-entering a registered wait that already holds an accepted outcome is
+refused the same way as a replay. A retry whose preparation fails restores the run from a
 snapshot that still holds the cleared decision. That record is refused, since
 serve no longer holds the decision, and the run stays `running` until it is
 recovered or cancelled.

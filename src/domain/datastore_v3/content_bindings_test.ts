@@ -902,8 +902,9 @@ Deno.test("judgeRunRecord: only a retry of an ended run clears a decision, and t
     undefined,
   );
   assert(
-    judge(reopened, run([step("gate", { status: "skipped" })])).refusal !==
-      undefined,
+    judge(reopened, run([step("gate", { status: "skipped" })]), undefined, {
+      maySkip: () => false,
+    }).refusal !== undefined,
   );
   assert(
     judge(reopened, run([step("gate", { status: "pending" })])).refusal !==
@@ -1037,23 +1038,65 @@ Deno.test("judgeRunRecord: a signal step reaches succeeded only by its stored ou
   );
 });
 
-Deno.test("judgeRunRecord: a re-opened gate fails or skips only as a real failed retry does", () => {
+Deno.test("judgeRunRecord: a re-opened gate with a guard or dependency reports its skip; without one it must wait", () => {
   const marked = run([step("gate", { resetByResume: true })]);
-  const skipped = run([
-    step("gate", { status: "skipped", skipReason: { kind: "dependency" } }),
-  ]);
+  const skipped = run([step("gate", { status: "skipped" })]);
   assert(
-    judge(marked, skipped, undefined, { dependencyUnmet: () => false })
-      .refusal !== undefined,
+    judge(marked, skipped, undefined, { maySkip: () => false }).refusal !==
+      undefined,
   );
   assertEquals(
-    judge(marked, skipped, undefined, { dependencyUnmet: () => true }).refusal,
+    judge(marked, skipped, undefined, { maySkip: () => true }).refusal,
     undefined,
   );
   assertEquals(
     judge(marked, run([step("gate", { status: "failed" })])).refusal,
     undefined,
   );
+});
+
+Deno.test("judgeRunRecord: an allowance is the stored step's to set at any status, so setting it before a failure gains nothing", () => {
+  const waiting = { status: "waiting_approval" as const, startedAt: STARTED };
+  assert(
+    judge(
+      run([step("gate", waiting)]),
+      run([step("gate", { ...waiting, allowedFailure: true })]),
+    ).refusal !== undefined,
+  );
+  assert(
+    judge(
+      run([step("deploy", { status: "running" })]),
+      run([step("deploy", { status: "running", allowedFailure: true })]),
+    ).refusal !== undefined,
+  );
+});
+
+Deno.test("judgeRunRecord: a job or run succeeds only once every step has finished", () => {
+  for (const status of ["pending", "running", "unknown"] as const) {
+    const left = run([step("gate", { status })]);
+    left.jobs[0].status = "succeeded";
+    assert(judge(undefined, left).refusal !== undefined, status);
+    assert(
+      judge(undefined, run([step("gate", { status })], { status: "succeeded" }))
+        .refusal !== undefined,
+      status,
+    );
+  }
+});
+
+Deno.test("judgeRunRecord: a record cannot open a wait serve already holds an outcome for", () => {
+  const held = {
+    heldOutcome: () =>
+      ({ kind: "accepted", waitId: WAIT_ID }) as unknown as WaitOutcome,
+  };
+  const opening = run([
+    step("wait", { status: "waiting_signal", wait: openWait }),
+  ]);
+  const before = run([step("wait", { status: "running" })]);
+  assert(judge(before, opening, undefined, held).refusal !== undefined);
+  assertEquals(judge(before, opening).refusal, undefined);
+  // A wait already open stays open once its signal arrives.
+  assertEquals(judge(opening, opening, undefined, held).refusal, undefined);
 });
 
 Deno.test("judgeRunRecord: what a step expands from is frozen, and never overrides its stored name", () => {
@@ -1098,7 +1141,10 @@ Deno.test("judgeRunRecord: a job or run cannot succeed by leaving a stored gate 
   assert(
     judge(undefined, job, undefined, { storedWaits }).refusal !== undefined,
   );
-  assertEquals(omittedWait(run([step("gate")]), storedWaits), undefined);
+  assertEquals(
+    omittedWait(run([step("gate", { status: "succeeded" })]), storedWaits),
+    undefined,
+  );
 });
 
 Deno.test("judgeRunRecord: a held outcome applies only to the wait the prior record shows open on that step", () => {
