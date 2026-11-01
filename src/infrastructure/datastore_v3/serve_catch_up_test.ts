@@ -260,10 +260,12 @@ Deno.test("ServeCatchUp.catchUp: a commit serve filters leaves a hole and later 
 
     assertEquals(await copySeqs(store), [1, 3]);
     assertEquals((await store.head("", MODEL)).seq, 3);
-    // The gap before seq 3 was read from the partition, up to seq 2 only.
+    // The gap before seq 3 was read from the partition, up to seq 2 only,
+    // naming the seq the copy holds (swamp-club#4254).
     assertEquals(serve.partitionReads, [{
       after: 1,
       limit: SERVE_PARTITION_PAGE,
+      held: 1,
     }]);
     assertEquals(state.serveHead("", MODEL.toString()), 3);
   });
@@ -451,7 +453,8 @@ Deno.test("ServeCatchUp.catchUp: the same serve passes the anchor check with one
     serve.land(await other(1, OTHER));
     assertEquals(await catchUp.catchUp(signal()), { applied: 1 });
 
-    assertEquals(serve.partitionReads, [{ after: 2, limit: 1 }]);
+    // The read names the anchor the copy holds (swamp-club#4254).
+    assertEquals(serve.partitionReads, [{ after: 2, limit: 1, held: 3 }]);
     assertEquals(await copySeqs(store, OTHER), [1]);
     assertEquals(state.feedAnchor(), {
       namespace: "",
@@ -705,7 +708,7 @@ Deno.test("ServeCatchUp.catchUpPartition: a page retried at half the limit and f
       { after: 0, limit: SERVE_PARTITION_PAGE },
       { after: 0, limit: half },
       { after: half, limit: half },
-      { after: 2 * half, limit: half },
+      { after: 2 * half, limit: half, held: 2 * half },
     ]);
   });
 });

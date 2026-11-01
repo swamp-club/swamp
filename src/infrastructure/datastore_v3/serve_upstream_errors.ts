@@ -48,7 +48,9 @@ import {
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import {
   parseServeLeader,
+  SERVE_FOLLOWER_BEHIND_CODE,
   SERVE_NOT_LEADER_CODE,
+  ServeFollowerBehindError,
   ServeNotLeaderError,
 } from "../../domain/datastore_v3/serve_leader.ts";
 
@@ -537,6 +539,11 @@ export function serveErrorFromReply(
       )
       : undefined;
     return new ServeNotLeaderError(leader, false, fields.inFlight === true);
+  }
+  // A follower behind the caller's copy refused a read while it catches up
+  // (swamp-club#4254): retryable, never divergence, and nothing landed.
+  if (status === 503 && code === SERVE_FOLLOWER_BEHIND_CODE) {
+    return new ServeFollowerBehindError();
   }
   if (status === 503 && seq !== undefined) {
     return new ServeCommitMayLandError(seq, code, message);

@@ -75,6 +75,7 @@ import {
   DatastoreLockLeases,
 } from "../src/serve/datastore_locks.ts";
 import type { FollowerGate } from "../src/serve/follower_requests.ts";
+import { awaitFirstFollowerCatchUp } from "../src/serve/follower_ready.ts";
 import {
   type FollowerPolicyWiring,
   wireFollowerPolicy,
@@ -153,6 +154,17 @@ export type NodeRequest =
   | { readonly kind: "poke" }
   /** The follower's view of its own feed. */
   | { readonly kind: "feed" }
+  /**
+   * The head the leader names to the follower's feed (swamp-club#4254): the
+   * follower is caught up once its copy holds it, as the feed barrier
+   * decides.
+   */
+  | { readonly kind: "leaderHead"; readonly cursor: number }
+  /**
+   * One readiness check of a follower at boot (swamp-club#4254): whether
+   * its first catch-up is done, so serve would report `/ready`.
+   */
+  | { readonly kind: "ready" }
   | { readonly kind: "pids" }
   | { readonly kind: "close" };
 
@@ -198,6 +210,8 @@ let upkeep: V3ReplicationUpkeep | undefined;
 let locks: DatastoreLockLeases | undefined;
 let http: Deno.HttpServer | undefined;
 let failReloads = false;
+/** The head the leader names to this follower's feed; unset, none yet. */
+let leaderHead: number | undefined;
 const launched = new Set<number>();
 
 /**
@@ -306,6 +320,13 @@ async function open(): Promise<Opened> {
       isStale: () => false,
     };
     node.followerGate = wiring.gate(leadership);
+    // The feed barrier's answer (swamp-club#4254): caught up once the copy
+    // holds the head the leader named; never while the feed has named none.
+    const copyHead = () =>
+      v3DatastoreFor(opened.repoDir, location!).commitStore
+        .highWaterMark().cursor;
+    node.followerCatchUp = () =>
+      Promise.resolve(leaderHead !== undefined && copyHead() >= leaderHead);
   }
   const v3 = v3DatastoreFor(opened.repoDir, location);
   const datastoreConfig = opened.datastoreConfig;
@@ -523,6 +544,16 @@ async function handle(request: NodeRequest): Promise<unknown> {
           isStale: () => false,
         }).isStale() === false,
       } satisfies FeedState;
+    case "leaderHead":
+      leaderHead = request.cursor;
+      return undefined;
+    case "ready":
+      return await awaitFirstFollowerCatchUp({
+        caughtUp: () => ctx!.followerCatchUp?.() ?? Promise.resolve(true),
+        ended: () => false,
+        // One check: the test asks again after the feed moves.
+        boundMs: 0,
+      });
     case "pids":
       return [...launched];
     case "close":

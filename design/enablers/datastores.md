@@ -7464,6 +7464,17 @@ that happens.
     first request and compares that commit's `txnId`. This catches a log
     restored behind the copy in one partition, where the feed anchor's
     partition is still intact.
+- **A follower behind the copy.** Every partition read names the seq the
+  copy holds in that partition (`held`). A team follower whose own copy
+  holds less, as a node restarted after a takeover does until its leader
+  feed catches it up, waits for its feed (`FollowerFeed.caughtUp`, bounded
+  by the feed barrier). If it is still behind and does not hold the head
+  its leader names, it refuses with a `503` `serve_follower_behind` and
+  `Retry-After: 1` (`ServeFollowerBehindError`, exit 75: nothing changed,
+  retry). It never answers with a head that reads as a rewind. A follower
+  caught up to its leader answers as the leader would, so a log genuinely
+  behind the copy is still refused below. A read that names no `held`, from
+  a CLI before it, is answered as before (swamp-club#4254).
 - **Refused.** Another log id, a head below the commit's seq, or another
   `txnId` at that seq fails the command with `serve_upstream_diverged`.
   - It is a user error, not exit 75.
@@ -7959,7 +7970,16 @@ nothing was taken, so a retry is safe), in one place per surface:
 - The datastore API: every write after authentication, as a 503 with
   `Retry-After` and the leader. A chunk check (`has`) is a read. The CLI's
   serve upstream maps it to `ServeNotLeaderError` and does not retry or
-  redirect.
+  redirect. A partition read from a caller whose copy holds more of the
+  partition than this follower's is refused as behind
+  (`serve_follower_behind`, see "Team mode: the CLI's serve upstream"), after
+  authentication and the read check (swamp-club#4254).
+- Readiness: a node that starts as a follower with a leader feed reports
+  `/ready` only once its copy holds the head the leader names
+  (`awaitFirstFollowerCatchUp`, `src/serve/follower_ready.ts`), for at most
+  30 seconds, and stops waiting if it takes the lead or shuts down. A node
+  restored from the bucket after a takeover can trail the members' copies,
+  and the team address would otherwise route them to it (swamp-club#4254).
 - Webhooks: a verified delivery gets a 503 with `Retry-After`, naming no
   leader. Cron fires are left to the leader (the fire dedup answers
   "claimed by another instance"), as they are by a leader whose lease was

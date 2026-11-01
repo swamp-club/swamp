@@ -32,7 +32,12 @@
  */
 
 import "../src/domain/models/models.ts";
-import { assert, assertEquals, assertNotEquals } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+} from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -51,7 +56,6 @@ import {
   ServeUpstreamState,
 } from "../src/infrastructure/datastore_v3/serve_upstream_state.ts";
 import { SERVE_DATASTORE_ACCESS_HEADER } from "../src/infrastructure/datastore_v3/serve_datastore_client.ts";
-import { SERVE_NOT_LEADER_CODE } from "../src/domain/datastore_v3/serve_leader.ts";
 import {
   killSidecarAtTeardown,
   SIDECAR_TESTS_IGNORED,
@@ -59,10 +63,21 @@ import {
 import type { Frame } from "./serve_request_harness.ts";
 import {
   type Client,
+  dataOf,
+  json,
+  latestOf,
   readCommand,
   serveEnv,
+  startProxy,
   withScratch,
+  writeCommand,
 } from "./serve_upstream_fixtures.ts";
+import {
+  SERVE_FOLLOWER_BEHIND_CODE,
+  SERVE_NOT_LEADER_CODE,
+  ServeFollowerBehindError,
+} from "../src/domain/datastore_v3/serve_leader.ts";
+import { exitCodeForError } from "../src/presentation/output/error_output.ts";
 import type {
   FeedState,
   NodeRequest,
@@ -556,6 +571,87 @@ Deno.test({
           1,
         );
       });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve team on a replicating v3 datastore: a follower restored behind a member's copy refuses its read as behind, not diverged, holds readiness until it catches up, and then answers (swamp-club#4254)",
+  ignore,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    await withTeam(async (team) => {
+      const started = await startTeam(team);
+      const { leader, follower, leaderOrigin, followerOrigin } = started;
+      await grantAndFollow(started, ["user:boss"]);
+      const type = team.modelType;
+      // The team address: the test moves it between the two nodes, as a
+      // load balancer puts a restarted node back in rotation.
+      let target = leaderOrigin;
+      const address = startProxy(() => target);
+      try {
+        await withScratch(async (scratch) => {
+          const member = await scratch.client("member");
+          const env = serveEnv(address, "boss-token");
+          const latest = () =>
+            readCommand(
+              scratch,
+              member,
+              env,
+              (repos) => latestOf(repos, type, started.modelId, "vpc"),
+            );
+          await latest();
+          // The member writes through the leader: its copy now holds a
+          // commit the follower's copy does not.
+          await writeCommand(
+            scratch,
+            member,
+            env,
+            (repos) =>
+              repos.unifiedDataRepo.save(
+                type,
+                started.modelId,
+                dataOf("vpc"),
+                json("from the member"),
+              ),
+          );
+          // A read through the leader moves the copy's feed anchor to it.
+          await latest();
+          const leaderHead = await leader.send({ kind: "head" }) as number;
+          assert(
+            (await follower.send({ kind: "head" }) as number) < leaderHead,
+            "the follower trails the member",
+          );
+          await follower.send({ kind: "leaderHead", cursor: leaderHead });
+          assertEquals(await follower.send({ kind: "ready" }), "timed-out");
+
+          // The address reaches the follower before its feed caught it up.
+          target = followerOrigin;
+          const refused = await assertRejects(
+            latest,
+            ServeFollowerBehindError,
+          );
+          assertEquals(refused.code, SERVE_FOLLOWER_BEHIND_CODE);
+          assertEquals(exitCodeForError(refused), 75);
+
+          // Its feed applies what the leader committed: ready, and the
+          // member's next command reads the commit with no manual step.
+          const from = await follower.send({ kind: "head" }) as number;
+          await follower.send({
+            kind: "apply",
+            changes: await leader.send({ kind: "changesSince", cursor: from }),
+          } as NodeRequest);
+          assertEquals(await follower.send({ kind: "ready" }), "caught-up");
+          assertEquals(
+            (await latest())?.content,
+            '"from the member"',
+          );
+        });
+      } finally {
+        await address.close();
+      }
     });
   },
 });

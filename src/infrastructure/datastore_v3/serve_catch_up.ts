@@ -494,11 +494,14 @@ export class ServeCatchUp {
         anchor.seq - 1,
         1,
         (at) =>
+          // The copy holds the anchor commit: a follower behind it says so
+          // (swamp-club#4254).
           this.#client.partitionCommits(
             PartitionKey.parse(anchor.partition),
             anchor.seq - 1,
             signal,
             at,
+            anchor.seq,
           ),
       )).page;
     } catch (error) {
@@ -696,11 +699,15 @@ export class ServeCatchUp {
     for (;;) {
       signal.throwIfAborted();
       const at = cursor;
+      // The seq the copy holds here, so a follower behind it refuses as
+      // behind instead of answering with a lower head (swamp-club#4254).
+      const held = (await this.#commitStore.head(namespace, partition)).seq;
       const read = await pageAtMost(
         `partition ${partition}`,
         at,
         limit,
-        (size) => this.#client.partitionCommits(partition, at, signal, size),
+        (size) =>
+          this.#client.partitionCommits(partition, at, signal, size, held),
       );
       limit = read.limit;
       const page = read.page;

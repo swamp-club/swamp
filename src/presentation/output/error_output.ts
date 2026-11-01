@@ -38,7 +38,10 @@ import {
 } from "../../domain/datastore_v3/config_edit_conflict.ts";
 import { takeAuthGateWarning } from "../renderers/auth_gate_warning.ts";
 import { V3_REPLICATION_UNCONFIRMED_CODE } from "../../domain/datastore_v3/litestream_replication.ts";
-import { SERVE_NOT_LEADER_CODE } from "../../domain/datastore_v3/serve_leader.ts";
+import {
+  SERVE_FOLLOWER_BEHIND_CODE,
+  SERVE_NOT_LEADER_CODE,
+} from "../../domain/datastore_v3/serve_leader.ts";
 import {
   V3_SERVE_UNREACHABLE_CODE,
   V3_STORAGE_UNREACHABLE_CODE,
@@ -193,6 +196,9 @@ export function buildErrorJson(
  * - `75` for `serve_not_leader` (swamp-club#4096): the serve node does not
  *   lead the datastore in team mode, and refused the write before taking
  *   it, so a retry, at the leader or once one is elected, is safe.
+ * - `75` for `serve_follower_behind` (swamp-club#4254): a serve follower
+ *   whose copy is behind the caller's refused a read while it catches up,
+ *   and nothing was changed.
  * - `75` for `datastore_v3_offline_lease_required` and
  *   `datastore_v3_offline_config_edit` (swamp-club#4195): a serve-mode
  *   checkout working offline refused the work before it changed anything.
@@ -228,6 +234,9 @@ export function exitCodeForError(error: unknown): number {
   if (code === V3_SERVE_UNREACHABLE_CODE) return 75;
   // A serve node that does not lead refused the write (swamp-club#4096).
   if (code === SERVE_NOT_LEADER_CODE) return 75;
+  // A follower whose copy is behind the caller's refused a read: it is
+  // catching up, and nothing changed (swamp-club#4254).
+  if (code === SERVE_FOLLOWER_BEHIND_CODE) return 75;
   // Refused offline before anything changed (swamp-club#4195): run again
   // once serve is reachable, or with the behavior's lease taken online.
   if (code === OFFLINE_LEASE_REQUIRED_CODE) return 75;

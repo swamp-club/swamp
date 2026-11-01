@@ -84,6 +84,7 @@ export class FollowerFeed implements FollowerCopyFeed {
   #chain: Promise<void> = Promise.resolve();
   #heads = new Map<string, (cursor: number) => void>();
   #appliedWaiters = new Set<() => void>();
+  #caughtUp: Promise<boolean> | undefined;
   #generation = 0;
 
   constructor(options: FollowerFeedOptions) {
@@ -133,10 +134,13 @@ export class FollowerFeed implements FollowerCopyFeed {
    * Waits, for at most {@link FOLLOWER_FEED_BARRIER_MS}, until the copy
    * holds what the leader had published when asked. Returns at once while
    * the feed is down: the reply is not held for a copy that cannot catch up.
+   * Resolves true only when the copy holds that head (swamp-club#4254):
+   * false when the feed is down, the leader did not name its head, or the
+   * wait ran out.
    */
-  async barrier(): Promise<void> {
+  async barrier(): Promise<boolean> {
     const socket = this.#socket;
-    if (!this.live || socket === undefined) return;
+    if (!this.live || socket === undefined) return false;
     const deadline = this.#now() + FOLLOWER_FEED_BARRIER_MS;
     const id = `feed-head-${crypto.randomUUID()}`;
     const head = await new Promise<number | undefined>((resolve) => {
@@ -156,10 +160,10 @@ export class FollowerFeed implements FollowerCopyFeed {
         resolve(undefined);
       }
     });
-    if (head === undefined) return;
+    if (head === undefined) return false;
     while (this.#applied < head && this.live) {
       const left = deadline - this.#now();
-      if (left <= 0) return;
+      if (left <= 0) return false;
       await new Promise<void>((resolve) => {
         const done = () => {
           clearTimeout(timer);
@@ -170,6 +174,23 @@ export class FollowerFeed implements FollowerCopyFeed {
         this.#appliedWaiters.add(done);
       });
     }
+    return this.#applied >= head && this.live;
+  }
+
+  /**
+   * {@link barrier}, shared by every caller while one is in flight: a read
+   * that finds the copy behind its caller waits on it (swamp-club#4254), so
+   * a burst of such reads asks the leader for its head once. A forwarded
+   * write's reply waits on {@link barrier} itself, which asks for the head
+   * as it is after the write.
+   */
+  caughtUp(): Promise<boolean> {
+    if (this.#caughtUp !== undefined) return this.#caughtUp;
+    const run = this.barrier().finally(() => {
+      if (this.#caughtUp === run) this.#caughtUp = undefined;
+    });
+    this.#caughtUp = run;
+    return run;
   }
 
   async #open(generation: number): Promise<void> {

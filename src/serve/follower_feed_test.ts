@@ -161,3 +161,91 @@ Deno.test("FollowerFeed: its subscribe names lease ops, so the leader sends them
   assertEquals(subscribe.payload, { cursor: 0, features: ["lease-ops"] });
   await t.feed.stop();
 });
+
+/** The ids of the `commits.head` frames `socket` sent. */
+function headAsks(socket: FakeSocket): string[] {
+  return socket.sent.map((data) => JSON.parse(data))
+    .filter((sent) => sent.type === "commits.head")
+    .map((sent) => sent.id as string);
+}
+
+Deno.test("FollowerFeed.barrier: false while the feed is down, as a node just restarted finds it (swamp-club#4254)", async () => {
+  const t = setup();
+  assertEquals(await t.feed.barrier(), false);
+  t.feed.follow(leader("a", 1));
+  await waitFor(() => t.sockets.length === 1, "the socket");
+  // Opening, never opened: no frame yet, so not live.
+  assertEquals(await t.feed.barrier(), false);
+  assertEquals(headAsks(t.sockets[0]), []);
+  await t.feed.stop();
+});
+
+Deno.test("FollowerFeed.barrier: true once the copy applied the head the leader named (swamp-club#4254)", async () => {
+  const t = setup();
+  t.feed.follow(leader("a", 1));
+  await waitFor(() => t.sockets.length === 1, "the socket");
+  const socket = t.sockets[0];
+  socket.open();
+  socket.deliver(frame([1]));
+  await waitFor(() => t.fresh() === 1, "the first frame");
+  const caughtUp = t.feed.barrier();
+  await waitFor(() => headAsks(socket).length === 1, "the head asked");
+  socket.deliver({
+    type: "commits.head",
+    id: headAsks(socket)[0],
+    payload: { cursor: 3 },
+  });
+  socket.deliver(frame([2, 3]));
+  assertEquals(await caughtUp, true);
+  await t.feed.stop();
+});
+
+Deno.test("FollowerFeed.barrier: false when the feed ends before the copy reaches the leader's head (swamp-club#4254)", async () => {
+  const t = setup();
+  t.feed.follow(leader("a", 1));
+  await waitFor(() => t.sockets.length === 1, "the socket");
+  const socket = t.sockets[0];
+  socket.open();
+  socket.deliver(frame([1]));
+  await waitFor(() => t.fresh() === 1, "the first frame");
+  const caughtUp = t.feed.barrier();
+  await waitFor(() => headAsks(socket).length === 1, "the head asked");
+  socket.deliver({
+    type: "commits.head",
+    id: headAsks(socket)[0],
+    payload: { cursor: 5 },
+  });
+  socket.deliver({ type: "error", id: "follower-feed", error: { code: "x" } });
+  assertEquals(await caughtUp, false);
+  await t.feed.stop();
+});
+
+Deno.test("FollowerFeed.caughtUp: callers while one is in flight share it, asking the leader once (swamp-club#4254)", async () => {
+  const t = setup();
+  t.feed.follow(leader("a", 1));
+  await waitFor(() => t.sockets.length === 1, "the socket");
+  const socket = t.sockets[0];
+  socket.open();
+  socket.deliver(frame([1]));
+  await waitFor(() => t.fresh() === 1, "the first frame");
+  const first = t.feed.caughtUp();
+  const second = t.feed.caughtUp();
+  await waitFor(() => headAsks(socket).length === 1, "the head asked");
+  socket.deliver({
+    type: "commits.head",
+    id: headAsks(socket)[0],
+    payload: { cursor: 1 },
+  });
+  assertEquals(await Promise.all([first, second]), [true, true]);
+  assertEquals(headAsks(socket).length, 1);
+  // Settled: the next call asks again.
+  const third = t.feed.caughtUp();
+  await waitFor(() => headAsks(socket).length === 2, "the head asked again");
+  socket.deliver({
+    type: "commits.head",
+    id: headAsks(socket)[1],
+    payload: { cursor: 1 },
+  });
+  assertEquals(await third, true);
+  await t.feed.stop();
+});

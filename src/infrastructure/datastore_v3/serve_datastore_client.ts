@@ -508,12 +508,19 @@ export class ServeDatastoreClient {
     };
   }
 
-  /** A partition's commits after seq `after`, at most `limit` of them. */
+  /**
+   * A partition's commits after seq `after`, at most `limit` of them. With
+   * `held`, the seq the copy holds in the partition: a follower behind it
+   * refuses as behind instead of answering with a head that reads as a
+   * rewind (swamp-club#4254). A serve that does not read it answers as
+   * before.
+   */
   async partitionCommits(
     partition: PartitionKey,
     after: number,
     signal: AbortSignal,
     limit?: number,
+    held?: number,
   ): Promise<PartitionCommitsPage> {
     const body = await this.#json(
       {
@@ -522,6 +529,7 @@ export class ServeDatastoreClient {
         query: {
           after: String(after),
           ...(limit === undefined ? {} : { limit: String(limit) }),
+          ...(held === undefined || held <= 0 ? {} : { held: String(held) }),
         },
       },
       signal,

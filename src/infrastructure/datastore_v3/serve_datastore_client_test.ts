@@ -18,6 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  SERVE_FOLLOWER_BEHIND_CODE,
+  ServeFollowerBehindError,
+} from "../../domain/datastore_v3/serve_leader.ts";
+import {
   assert,
   assertEquals,
   assertInstanceOf,
@@ -350,6 +354,33 @@ Deno.test("ServeDatastoreClient.partitionCommits and changes: pass the cursor an
     ],
     ["4", false],
   );
+});
+
+Deno.test("ServeDatastoreClient.partitionCommits: names the seq the copy holds only when given one (swamp-club#4254)", async () => {
+  const { client, requests } = clientWith(() =>
+    Response.json({ head: 3, commits: [] })
+  );
+  await client.partitionCommits(modelPartition(), 2, signal(), 1, 3);
+  await client.partitionCommits(modelPartition(), 0, signal(), 10, 0);
+  await client.partitionCommits(modelPartition(), 0, signal());
+  assertEquals(
+    requests.map((req) => new URL(req.url).searchParams.get("held")),
+    ["3", null, null],
+  );
+});
+
+Deno.test("ServeDatastoreClient: a follower behind the copy is a retryable refusal, not divergence (swamp-club#4254)", async () => {
+  const { client } = clientWith(() =>
+    Response.json(
+      { code: SERVE_FOLLOWER_BEHIND_CODE, message: "behind" },
+      { status: 503, headers: { "Retry-After": "1" } },
+    )
+  );
+  const error = await assertRejects(
+    () => client.partitionCommits(modelPartition(), 2, signal(), 1, 3),
+    ServeFollowerBehindError,
+  );
+  assertEquals(error.code, SERVE_FOLLOWER_BEHIND_CODE);
 });
 
 Deno.test("ServeDatastoreClient: a reply missing its fields is refused, not trusted", async () => {

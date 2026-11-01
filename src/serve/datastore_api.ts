@@ -30,7 +30,7 @@
  * | `PUT chunks/{sha256}` | one chunk, to resume a large upload |
  * | `GET chunks/{sha256}` | a chunk's bytes, with `Range` |
  * | `POST partitions/{p}/commits` | one commit and its missing chunks, framed: `{seq}` or a conflict |
- * | `GET partitions/{p}/commits?after=` | a partition's commits after a seq |
+ * | `GET partitions/{p}/commits?after=&held=` | a partition's commits after a seq; a follower behind `held`, the seq the caller's copy holds, refuses as behind |
  * | `GET changes?cursor=` | every commit since a cursor the caller may read |
  * | `GET base?after=` | the compacted base, a page at a time, filtered to what the caller may read |
  * | `POST locks` | take serve's model or workflow-run lock for the caller: a lease |
@@ -192,7 +192,7 @@ import {
 } from "./datastore_locks.ts";
 import { LEASE_RECORD_NOT_REMOVED_CODE } from "../domain/datastore_v3/persisted_lease.ts";
 import { ServeNotLeaderError } from "../domain/datastore_v3/serve_leader.ts";
-import { notLeaderResponse } from "./leader_link.ts";
+import { followerBehindResponse, notLeaderResponse } from "./leader_link.ts";
 
 const logger = getSwampLogger(["serve", "datastore-api"]);
 
@@ -957,12 +957,23 @@ class DatastoreApi {
         "after and limit must be integers",
       );
     }
+    // The seq the caller's copy holds in the partition (swamp-club#4254).
+    const heldParam = params.get("held");
+    const held = heldParam === null ? undefined : nonNegative(heldParam);
+    if (heldParam !== null && held === undefined) {
+      return failure(400, "invalid_request", "held must be an integer");
+    }
     if (
       !(await this.#mayRead(
         await partitionReadAccessOf(partition, this.#resolver),
       ))
     ) {
       return failure(404, "not_found", "No such partition");
+    }
+    // Only once the caller may read the partition, so the refusal tells
+    // nothing of one it may not.
+    if (held !== undefined && await this.#behindCaller(partition, held)) {
+      return followerBehindResponse();
     }
     const page = await this.#v3.commitStore.readPartition(
       this.#namespace,
@@ -984,6 +995,28 @@ class DatastoreApi {
       }
     }
     return Response.json({ head: head.seq, commits });
+  }
+
+  /**
+   * Whether this node is a follower whose copy holds less of `partition`
+   * than the caller's, which holds seq `held` (swamp-club#4254), as a node
+   * restarted after a takeover is until its leader feed catches it up. Its
+   * head would read to the caller as a rewind, so it waits for its feed
+   * first. A follower that then holds its leader's head answers as the
+   * leader would, so a log genuinely behind the caller is still refused by
+   * the caller as diverged. A leader always answers.
+   */
+  async #behindCaller(
+    partition: PartitionKey,
+    held: number,
+  ): Promise<boolean> {
+    if (this.#deps.ctx.followerGate?.role !== "follower") return false;
+    const head = async () =>
+      (await this.#v3.commitStore.head(this.#namespace, partition)).seq;
+    if (held <= await head()) return false;
+    const caughtUp = await this.#deps.ctx.followerCatchUp?.() ?? false;
+    if (held <= await head()) return false;
+    return !caughtUp;
   }
 
   /** `GET changes?cursor={c}&limit=`. */

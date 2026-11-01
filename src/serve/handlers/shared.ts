@@ -383,6 +383,14 @@ export interface ConnectionContext {
    */
   feedBarrier?: () => Promise<void>;
   /**
+   * Waits, for a bounded time, for this follower's copy to hold the head
+   * its leader names, and says whether it does: a read from a caller whose
+   * copy is past this one's waits on it before it is refused as behind
+   * (swamp-club#4254). Concurrent callers share one wait. Absent outside
+   * team mode, or without a leader feed.
+   */
+  followerCatchUp?: () => Promise<boolean>;
+  /**
    * Serve's v3 commit log, as the `commits.subscribe` feed reads it
    * (swamp-club#4120). Absent when the datastore is not v3.
    */

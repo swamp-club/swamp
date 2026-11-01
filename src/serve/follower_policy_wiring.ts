@@ -60,7 +60,7 @@ export interface FollowerPolicyWiring {
    * `feedBarrier`, then the effects of what it brought in, each bounded: a
    * caller reads its own forwarded write from this node next.
    */
-  barrier(feedBarrier: () => Promise<void>): () => Promise<void>;
+  barrier(feedBarrier: () => Promise<unknown>): () => Promise<void>;
 }
 
 /** See the module documentation. */

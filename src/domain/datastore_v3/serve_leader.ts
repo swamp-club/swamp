@@ -34,6 +34,12 @@ import { UserError } from "../errors.ts";
 /** Error code for a write that reached a serve node that does not lead. */
 export const SERVE_NOT_LEADER_CODE = "serve_not_leader";
 
+/**
+ * Error code for a read a serve follower refused because its copy is behind
+ * the caller's (swamp-club#4254).
+ */
+export const SERVE_FOLLOWER_BEHIND_CODE = "serve_follower_behind";
+
 /** The control-plane key the leader's record lives at. */
 export const SERVE_LEADER_KEY = "leader/current";
 
@@ -193,5 +199,25 @@ export class ServeNotLeaderError extends UserError {
       SERVE_NOT_LEADER_CODE,
     );
     this.name = "ServeNotLeaderError";
+  }
+}
+
+/**
+ * A read a serve follower refused because the caller's copy holds commits
+ * its own copy has not taken from the leader yet (swamp-club#4254): it is
+ * catching up, as after a restart, so a retry shortly is answered. It is
+ * never a sign the copy diverged, and nothing was changed.
+ */
+export class ServeFollowerBehindError extends UserError {
+  declare readonly code: typeof SERVE_FOLLOWER_BEHIND_CODE;
+
+  constructor() {
+    super(
+      "This swamp serve node's copy of the datastore is behind this " +
+        "checkout's copy: it is still catching up with the leader, so it " +
+        "did not answer. Try again shortly. Nothing was changed.",
+      SERVE_FOLLOWER_BEHIND_CODE,
+    );
+    this.name = "ServeFollowerBehindError";
   }
 }
