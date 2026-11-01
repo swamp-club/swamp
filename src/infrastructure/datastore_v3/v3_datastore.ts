@@ -815,6 +815,14 @@ interface CheckoutUnits {
   droppedDirs: Map<string, Set<string>>;
   /** The recovery running now, which new roots wait for. */
   recovering?: Promise<unknown>;
+  /**
+   * The txnIds of the commits this process's units sent to serve
+   * (swamp-club#4249), from a serve-mode checkout: while a unit is open, a
+   * catch-up leaves their files as this process wrote them. Each is
+   * forgotten once the read model has applied its commit, so only commits
+   * not applied yet are kept, however long the command runs.
+   */
+  readonly sent: Set<string>;
 }
 
 const checkoutUnits = new Map<string, CheckoutUnits>();
@@ -882,7 +890,12 @@ export class DroppedWorkRecoveryRunningError extends UserError {
 function checkoutUnitsFor(stateDir: string): CheckoutUnits {
   let units = checkoutUnits.get(stateDir);
   if (units === undefined) {
-    units = { open: 0, droppedGeneration: 0, droppedDirs: new Map() };
+    units = {
+      open: 0,
+      droppedGeneration: 0,
+      droppedDirs: new Map(),
+      sent: new Set(),
+    };
     checkoutUnits.set(stateDir, units);
   }
   return units;
@@ -993,6 +1006,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   const chunkStore = new ChunkStore(storage);
   const stateDir = readModelStateDir(repoDir);
   ensureDirSync(stateDir);
+  const units = checkoutUnitsFor(stateDir);
   const catalogStore = new CatalogStore(v3CatalogPath(repoDir));
   const readModel = SqliteReadModel.open({
     commitStore,
@@ -1017,6 +1031,13 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     // What a user's edit of a managed-config record started from
     // (swamp-club#4097).
     writerInstance: writer.instance,
+    // A commit this process sent, met while one of its units is open
+    // (swamp-club#4249). Dropped work is recovered only with no unit open,
+    // so its replay still puts back every file.
+    holdsOwnWork: (commit) => units.open > 0 && units.sent.has(commit.txnId),
+    ownWorkApplied: (commit) => {
+      units.sent.delete(commit.txnId);
+    },
   });
   // One sink for every engine on this handle: units serialize appends to a
   // partition per sink, so contexts that share the handle queue behind each
@@ -1230,7 +1251,17 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         ? { assertWriterCurrent: options.assertWriterCurrent }
         : {}),
     });
-  const sink = faultsForTesting?.wrapSink?.(baseSink) ?? baseSink;
+  const faultedSink = faultsForTesting?.wrapSink?.(baseSink) ?? baseSink;
+  // Noted before it is sent: serve's feed can bring the commit to a
+  // catch-up before its reply does (swamp-club#4249). One that never lands
+  // never comes back in the feed.
+  const sink: OutboxCommitSink = serveSink === undefined ? faultedSink : {
+    ...faultedSink,
+    append: (commit) => {
+      units.sent.add(commit.txnId);
+      return faultedSink.append(commit);
+    },
+  };
   /**
    * Brings the follower copy up to serve's log before the read model
    * catches up from it. A read that cannot reach serve goes on with what
@@ -1316,7 +1347,6 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       throw error;
     }
   };
-  const units = checkoutUnitsFor(stateDir);
   const tracker: UnitTracker = {
     opened: () => {
       units.open++;
