@@ -376,9 +376,15 @@ export interface UnitTracker {
    * `openedAt` is its root's open time, epoch milliseconds: nothing it
    * wrote is older. `versionDirs` are the keys of the data version
    * directories it created (swamp-club#3736): whatever is left in them is
-   * its work, however old the files' mtimes.
+   * its work, however old the files' mtimes. `sentTxnIds` are the txnIds of
+   * the commits it handed to its sink, landed or not (swamp-club#4257): the
+   * checkout's files may hold its later, dropped writes over them.
    */
-  dropped(openedAt: number, versionDirs: readonly string[]): void;
+  dropped(
+    openedAt: number,
+    versionDirs: readonly string[],
+    sentTxnIds: readonly string[],
+  ): void;
 }
 
 /** A path-only change staged into a commit-log unit, which takes typed ones. */
@@ -530,10 +536,19 @@ export function createCommitLogUnitOfWork(
    * children that committed into it (swamp-club#3736).
    */
   let versionDirs: string[] = [];
-  const dropWork = (): void => {
+  /**
+   * Reports the unit's work dropped. A refusal that drops only some
+   * partitions names them: the commits the unit sent to the others still
+   * hold work it goes on to commit (swamp-club#4257).
+   */
+  const dropWork = (partitions?: readonly PartitionKey[]): void => {
     if (!touched) return;
+    const named = partitions?.map((partition) => partition.toString());
+    const sentTxnIds = [...outbox.sent]
+      .filter(([, partition]) => named?.includes(partition) ?? true)
+      .map(([txnId]) => txnId);
     try {
-      options.tracker?.dropped(openedAt, versionDirs);
+      options.tracker?.dropped(openedAt, versionDirs, sentTxnIds);
     } catch (error) {
       logger
         .warn`Recording the work a v3 unit of work dropped failed: ${error}`;
@@ -590,6 +605,7 @@ export function createCommitLogUnitOfWork(
   const outbox: UnitOutbox = {
     unitId: crypto.randomUUID(),
     prepared: new Map(),
+    sent: new Map(),
   };
 
   /**
@@ -755,7 +771,7 @@ export function createCommitLogUnitOfWork(
           };
           refusedNow.push(refusal);
           if (runRank(group) === 0) refusals = [...refusals, refusal];
-          dropWork();
+          dropWork([group.partition]);
           continue;
         } finally {
           inFlight = undefined;
@@ -1458,6 +1474,7 @@ async function appendGroup(
             }
           }
         }
+        unitOutbox.sent.set(group.txnId, group.partition.toString());
         try {
           await options.sink.append(commit);
           return;
@@ -1672,6 +1689,8 @@ export async function appendForwardedCommit(
   const unitOutbox: UnitOutbox = {
     unitId: crypto.randomUUID(),
     prepared: new Map(),
+    // Never read: a forwarded commit has no tracker to report to.
+    sent: new Map(),
   };
   try {
     await appendGroup(
@@ -1699,6 +1718,12 @@ interface UnitOutbox {
   readonly unitId: string;
   /** Entries prepared and not settled, by the group's txnId. */
   readonly prepared: Map<string, OutboxKey>;
+  /**
+   * The partition of each commit handed to the sink, by txnId
+   * (swamp-club#4257). Noted before the append, since one that fails may
+   * still have landed; a dropped unit reports them.
+   */
+  readonly sent: Map<string, string>;
 }
 
 function outboxKeyOfGroup(

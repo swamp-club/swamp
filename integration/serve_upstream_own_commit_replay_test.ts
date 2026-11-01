@@ -34,7 +34,7 @@
  */
 
 import "../src/domain/models/models.ts";
-import { assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
@@ -43,18 +43,24 @@ import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import { serveUpstreamLocalRoot } from "../src/infrastructure/datastore_v3/serve_upstream_binding.ts";
-import { catchUpV3HandlesAt } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
+import {
+  catchUpV3HandlesAt,
+  v3DatastoreFor,
+} from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import { setV3DatastoreFaultsForTesting } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 import { CommitRejectedError } from "../src/domain/datastore_v3/partition.ts";
 import { checkpointFrom } from "../src/infrastructure/datastore_v3/commit_log_unit_of_work.ts";
 import { currentUnitOfWork } from "../src/infrastructure/persistence/unit_of_work_scope.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
+import type { RepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import {
+  endCommand,
   MEMBER,
   readCommand,
   serveEnv,
   withScratch,
   writeCommand,
+  writeInOpenCommand,
 } from "./serve_upstream_fixtures.ts";
 import type { GrantSpec } from "./serve_upstream_server_worker.ts";
 
@@ -285,6 +291,172 @@ Deno.test({
         setV3DatastoreFaultsForTesting(undefined);
       }
       assertEquals(duringSend, "suspended");
+    });
+  },
+});
+
+/**
+ * Runs `fn` with serve refusing the second commit of `run`'s partition: a
+ * root that checkpointed the run then has its later save dropped.
+ */
+async function withRunCommitRefused(
+  run: WorkflowRun,
+  fn: () => Promise<void>,
+): Promise<number> {
+  let runCommits = 0;
+  setV3DatastoreFaultsForTesting({
+    wrapSink: (sink) => ({
+      ...sink,
+      append: (commit) => {
+        if (commit.partition.toString().includes(run.id)) {
+          runCommits++;
+          if (runCommits === 2) {
+            return Promise.reject(
+              new CommitRejectedError("stale-fence", "refused by the test"),
+            );
+          }
+        }
+        return sink.append(commit);
+      },
+    }),
+  });
+  try {
+    await fn();
+  } finally {
+    setV3DatastoreFaultsForTesting(undefined);
+  }
+  return runCommits;
+}
+
+/** A root's work on `run`: its checkpoint lands, then it saves suspended. */
+function checkpointThenSuspend(
+  workflow: Workflow,
+  run: WorkflowRun,
+): (repos: RepositoryContext) => Promise<void> {
+  return async (repos) => {
+    run.start();
+    await repos.workflowRunRepo.save(workflow.id, run);
+    const unit = currentUnitOfWork();
+    if (unit === undefined) throw new Error("no unit is open");
+    assertEquals(await checkpointFrom(unit), true);
+    run.suspend();
+    await repos.workflowRunRepo.save(workflow.id, run);
+  };
+}
+
+Deno.test({
+  name:
+    "serve upstream: a root that waits on the recovery of a dropped save does not make the recovery keep it (swamp-club#4257)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: GRANTS });
+      const client = await scratch.client("a");
+      const env = serveEnv(serve, "alice-token");
+      const root = serveUpstreamLocalRoot(client.repoDir, serve.origin, "");
+      const workflow = gateWorkflow();
+      await writeCommand(scratch, client, env, async (repos) => {
+        await repos.workflowRepo.save(workflow);
+      });
+
+      const run = WorkflowRun.create(workflow);
+      // The command's root drops its save after the checkpoint landed; its
+      // teardown has not recovered the drop yet.
+      const runCommits = await withRunCommitRefused(run, async () => {
+        await assertRejects(() =>
+          writeInOpenCommand(
+            scratch,
+            client,
+            env,
+            checkpointThenSuspend(workflow, run),
+          )
+        );
+      });
+      assertEquals(runCommits, 2);
+      try {
+        const handle = v3DatastoreFor(client.repoDir, { path: root });
+        assert(handle.droppedWork() !== undefined, "the command's handle");
+        assertEquals(
+          await fileStatus(client.repoDir, workflow, run),
+          "suspended",
+        );
+        const engine = handle.engineFor(() => Promise.resolve(), () => {
+          throw new Error("no run repository needed");
+        });
+        // A root opened while the recovery replays waits for it, and counts
+        // as open from the call.
+        const recovering = handle.recoverDroppedWork();
+        const waiting = engine.runRoot({}, () => Promise.resolve());
+        assertEquals(handle.droppedWork()?.openUnits, 1);
+        assertEquals(await recovering, "recovered");
+        await waiting;
+        assertEquals(
+          await fileStatus(client.repoDir, workflow, run),
+          "running",
+        );
+      } finally {
+        await endCommand();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve upstream: a catch-up while another root is open puts a dropped save back to the checkpoint it sent (swamp-club#4257)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: GRANTS });
+      const client = await scratch.client("a");
+      const env = serveEnv(serve, "alice-token");
+      const root = serveUpstreamLocalRoot(client.repoDir, serve.origin, "");
+      const workflow = gateWorkflow();
+      await writeCommand(scratch, client, env, async (repos) => {
+        await repos.workflowRepo.save(workflow);
+      });
+
+      const run = WorkflowRun.create(workflow);
+      // Root B opens in the same command and stays open while the
+      // command's root, A, drops its save.
+      const release = Promise.withResolvers<void>();
+      let other: Promise<void> | undefined;
+      let duringB: string | undefined;
+      const runCommits = await withRunCommitRefused(run, async () => {
+        try {
+          await assertRejects(() =>
+            writeInOpenCommand(scratch, client, env, async (repos) => {
+              const handle = v3DatastoreFor(client.repoDir, { path: root });
+              const engine = handle.engineFor(() => Promise.resolve(), () => {
+                throw new Error("no run repository needed");
+              });
+              other = engine.runRoot({}, () => release.promise);
+              await checkpointThenSuspend(workflow, run)(repos);
+            })
+          );
+          const handle = v3DatastoreFor(client.repoDir, { path: root });
+          assertEquals(handle.droppedWork()?.openUnits, 1);
+          assertEquals(
+            await fileStatus(client.repoDir, workflow, run),
+            "suspended",
+          );
+          // A catch-up during B meets A's checkpoint: A's save never
+          // committed, so the file is the checkpoint's again.
+          await catchUpV3HandlesAt(root);
+          duringB = await fileStatus(client.repoDir, workflow, run);
+        } finally {
+          release.resolve();
+          try {
+            await other;
+          } finally {
+            await endCommand();
+          }
+        }
+      });
+      assertEquals(runCommits, 2);
+      assertEquals(duringB, "running");
     });
   },
 });

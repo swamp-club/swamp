@@ -8343,8 +8343,13 @@ command in the checkout waits for the checkout's writer lease, and a reader
 whose index is complete does not replay. Before, a frame bringing a workflow run's
 first checkpoint could put the record back to `running` after the run saved
 it `suspended`: the root committed `running` while the command printed
-`suspended`, and serve refused to approve the run. Dropped work is recovered
-only while no unit is open, so its replay still puts back every file.
+`suspended`, and serve refused to approve the run. Two rules keep the skip from
+keeping work that never committed (swamp-club#4257). A unit that drops its work
+reports the txnIds of the commits it sent, and the handle forgets them: its
+files may hold later writes that never committed over those commits, so a
+catch-up while another unit is open puts them back. And a recovery's replay
+never asks: it puts back every file, also when a root that waits on it already
+counts as open.
 
 **Testing.** `integration/serve_v3_team_forwarding_test.ts` (a commit
 through a follower lands as the caller; the leader decides; an unreachable
@@ -8355,7 +8360,8 @@ peers, a follower applying the feed),
 `integration/serve_upstream_own_commit_replay_test.ts` (a catch-up while a
 run's root is open leaves the run's later save for the root to commit, also
 when it meets the checkpoint before serve's reply; a dropped save is still
-put back to the checkpoint), and
+put back to the checkpoint, by a recovery a root waits on and by a catch-up
+while another root is open), and
 unit tests beside each module.
 
 ### Team mode: claiming a datastore (datastore rework Phase 5)
