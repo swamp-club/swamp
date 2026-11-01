@@ -2145,6 +2145,9 @@ class DatastoreApi {
       );
       if (!recheck.ok) return recheck;
       if (!(await content.unchanged())) return "content-changed" as const;
+      // A kept lease on the partition not adopted yet covers it, as a live
+      // one does (swamp-club#4258).
+      if (this.#adoptionPendingOn(partition)) return "lease-lost" as const;
       const lease = this.#leaseOpFor(partition, undefined);
       if (lease === "lost") return "lease-lost" as const;
       try {
@@ -2245,10 +2248,11 @@ class DatastoreApi {
         1,
       );
     } catch (error) {
-      // Compacted since: its author is no longer read. A deposit's txnId
-      // never names a commit that landed before it, so the one that
-      // landed since is the accept's own.
-      if (error instanceof CommitsCompactedError) return true;
+      // Compacted since: its author can no longer be read, and another
+      // writer may have taken the txnId after the deposit. Refused rather
+      // than marked accepted over a change that may never have landed; the
+      // record stays held for an admin to discard.
+      if (error instanceof CommitsCompactedError) return false;
       throw error;
     }
     const [landed] = page;

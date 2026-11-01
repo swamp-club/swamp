@@ -32,6 +32,7 @@ import type {
 } from "../src/domain/datastore_v3/persisted_lease.ts";
 import {
   DatastoreLockLeases,
+  lockKeyOf,
   type LockTarget,
   type TryLock,
 } from "../src/serve/datastore_locks.ts";
@@ -100,12 +101,11 @@ function leasesOver(
     new DatastoreLockLeases({
       createLock: async (target) => {
         const lock = await createLock(target);
-        const key = target.kind === "model"
-          ? `data/${target.modelType}/${target.modelId}/.lock`
-          : `workflow-run-claims/${target.runId}/.lock`;
         return {
           tryAcquire: () =>
-            blocked.has(key) ? Promise.resolve(false) : lock.tryAcquire(),
+            blocked.has(lockKeyOf(target))
+              ? Promise.resolve(false)
+              : lock.tryAcquire(),
           release: () => lock.release(),
         };
       },

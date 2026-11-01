@@ -7345,16 +7345,20 @@ which behaves as above.
   - Until a kept lease is adopted, every write to its key answers `503
     serve_not_leader`: a commit to the partition it covers, a lease
     request or forced release on it, a quarantine accept of a change to
-    it, and the renewal or release of a lease not live yet. No caller takes
+    it, and the renewal or release of that kept lease. No caller takes
     an adopted key first; the holder's renewal then finds its lease, and
     `fencedLeaseOn` refuses another caller's unleased commit as before the
     takeover. Writes to every other key go on (swamp-club#4258), so a kept
     lease whose lock a run of the leader before still holds stalls only
     its own key while adoption retries. While the kept leases cannot be
-    listed, any key may hold one, and every write waits. The lease listing
+    listed, any key may hold one, and every write waits. A retry of the
+    adoption never holds back a key this leader already holds under its
+    record's own lease id, such as a lease granted while adopting. The
+    lease listing
     (`GET locks`) waits for the whole adoption, since until then it would
     leave out the leases not adopted yet. A commit is judged again under
-    the forwarded-commit lock, where its lease is decided.
+    the forwarded-commit lock, where its lease is decided, and so is an
+    accepted quarantined change.
 - **Forced release** (swamp-club#4195). `swamp datastore lock release
   --force --behavior <type/id>` on a serve-mode checkout asks serve to end
   the explicit lease on that behavior, whoever holds it (`DELETE locks`
@@ -7852,7 +7856,11 @@ retryable `503`, the change stays held, and a leader that loses the lead
 meanwhile leaves it for the next one to land. An accept of a change
 already landed (that replication, or an accept that stopped before
 marking its record) confirms replication and marks the record at the
-seq it landed at, never landing it again (swamp-club#4258). A non-admin
+seq it landed at, never landing it again (swamp-club#4258). It does so
+only when the commit at that seq is the author's: one another writer
+landed under the txnId, or one compacted since so its author cannot be
+read, is refused (`quarantine_refused`) and stays held for an admin to
+discard. A non-admin
 accept is refused and audited, as a
 non-admin discard or forced release is. The commit's principal stays the
 original author; the accepting admin is

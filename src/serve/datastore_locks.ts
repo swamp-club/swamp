@@ -395,6 +395,8 @@ export class DatastoreLockLeases {
    * them ({@link whenAdopted}).
    */
   #pendingAdoption: ReadonlySet<string> | "all" = new Set();
+  /** The ids of the kept leases whose keys {@link #pendingAdoption} lists. */
+  #pendingLeaseIds: ReadonlySet<string> = new Set();
   readonly #adoptRetryMs: number;
   /**
    * An adoption that failed being tried again, with lease requests still
@@ -458,12 +460,14 @@ export class DatastoreLockLeases {
 
   /**
    * Whether a renewal or release of `leaseId` must wait for kept leases to
-   * be adopted (swamp-club#4258): while adopting, a lease that is not live
-   * here may be a kept one not adopted yet, so it is not answered as lost.
+   * be adopted (swamp-club#4258): it is a kept lease not adopted yet, or
+   * the kept leases could not be read, so it may be one. Any other lease
+   * not live here is answered as lost.
    */
   leaseAdoptionPending(leaseId: string): boolean {
     if (!this.#adopting) return false;
-    return this.#pendingAdoption === "all" || !this.#leases.has(leaseId);
+    return this.#pendingAdoption === "all" ||
+      (this.#pendingLeaseIds.has(leaseId) && !this.#leases.has(leaseId));
   }
 
   /**
@@ -806,9 +810,17 @@ export class DatastoreLockLeases {
         signal: this.#lifetime.signal,
       });
       const skewMs = persistence.skewMs ?? WRITER_LEASE_CLOCK_SKEW_MS;
-      // Known now: only these keys may hold a kept lease.
-      const pending = new Set(kept.map((record) => record.lockKey));
+      // Known now: only these keys may hold a kept lease. One this leader
+      // already holds under the record's own id (adopted by an earlier
+      // try, or granted while adopting) is not pending: a retry never holds
+      // back its writes (swamp-club#4258).
+      const waiting = kept.filter((record) =>
+        this.#byKey.get(record.lockKey) !== record.leaseId
+      );
+      const pending = new Set(waiting.map((record) => record.lockKey));
+      const pendingIds = new Set(waiting.map((record) => record.leaseId));
       this.#pendingAdoption = pending;
+      this.#pendingLeaseIds = pendingIds;
       let finished = true;
       for (const record of kept) {
         if (this.#disposed) return false;
@@ -820,6 +832,7 @@ export class DatastoreLockLeases {
           finished = false;
         } else {
           pending.delete(record.lockKey);
+          pendingIds.delete(record.leaseId);
         }
       }
       return finished;
