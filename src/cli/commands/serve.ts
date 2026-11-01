@@ -1242,9 +1242,12 @@ export function validateDashboardSessionOrigin(
     };
   }
   const protocol = forwardedProtocol ?? (tlsEnabled ? "https" : "http");
+  // HTTP/2 carries this authority in :authority, which Deno exposes through
+  // Request.url instead of a Host header.
+  const requestAuthority = req.headers.get("host") ?? new URL(req.url).host;
   const host = trustProxy
-    ? (forwardedHeaderValue(req, "x-forwarded-host") ?? req.headers.get("host"))
-    : req.headers.get("host");
+    ? (forwardedHeaderValue(req, "x-forwarded-host") ?? requestAuthority)
+    : requestAuthority;
   if (host === null || host.length === 0) {
     return {
       allowed: false,
@@ -2076,7 +2079,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--groups-field <field:string>",
-    "Userinfo field name for group/collective memberships (default: collectives)",
+    "Userinfo field the collectives are read from (default: collectives)",
   )
   .option(
     "--restricted-model-types <types:string>",
@@ -2893,7 +2896,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--groups-field <field:string>",
-    "Userinfo field name for group/collective memberships (default: collectives)",
+    "Userinfo field the collectives are read from (default: collectives)",
   )
   .option(
     "--restricted-model-types <types:string>",

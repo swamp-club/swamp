@@ -485,6 +485,76 @@ Deno.test("validateDashboardSessionOrigin: accepts direct request authority when
   });
 });
 
+Deno.test("validateDashboardSessionOrigin: reads the authority from the request URL when HTTP/2 sends no Host header", () => {
+  const request = new Request("https://localhost:9443/auth/dashboard/session", {
+    headers: { origin: "https://localhost:9443" },
+  });
+
+  assertEquals(validateDashboardSessionOrigin(request, true, false), {
+    allowed: true,
+    origin: "https://localhost:9443",
+    secure: true,
+  });
+});
+
+Deno.test("validateDashboardSessionOrigin: refuses a foreign origin when HTTP/2 sends no Host header", () => {
+  const request = new Request("https://localhost:9443/auth/dashboard/session", {
+    headers: { origin: "https://attacker.example.test" },
+  });
+
+  const result = validateDashboardSessionOrigin(request, true, false);
+
+  assertEquals(result.allowed, false);
+  assertEquals(
+    result.reason,
+    "origin does not match request authority: https://attacker.example.test",
+  );
+});
+
+Deno.test("validateDashboardSessionOrigin: honors a configured public host when HTTP/2 sends no Host header", () => {
+  const request = new Request("https://127.0.0.1:9443/auth/dashboard/session", {
+    headers: { origin: "https://swamp.example.test" },
+  });
+
+  assertEquals(
+    validateDashboardSessionOrigin(request, true, false, [
+      "swamp.example.test",
+    ]),
+    {
+      allowed: true,
+      origin: "https://swamp.example.test",
+      secure: true,
+    },
+  );
+});
+
+Deno.test("validateDashboardSessionOrigin: prefers the forwarded host over the request URL when HTTP/2 sends no Host header", () => {
+  const request = new Request("https://127.0.0.1:9443/auth/dashboard/session", {
+    headers: {
+      origin: "https://swamp.example.test",
+      "x-forwarded-host": "swamp.example.test",
+      "x-forwarded-proto": "https",
+    },
+  });
+
+  assertEquals(validateDashboardSessionOrigin(request, true, true), {
+    allowed: true,
+    origin: "https://swamp.example.test",
+    secure: true,
+  });
+});
+
+Deno.test("validateDashboardSessionOrigin: refuses an empty Host header rather than falling back to the request URL", () => {
+  const request = new Request("https://localhost:9443/auth/dashboard/session", {
+    headers: { host: "", origin: "https://localhost:9443" },
+  });
+
+  const result = validateDashboardSessionOrigin(request, true, false);
+
+  assertEquals(result.allowed, false);
+  assertEquals(result.reason, "missing host");
+});
+
 Deno.test("validateDashboardSessionOrigin: honors a configured public host without proxy headers", () => {
   const request = new Request("http://127.0.0.1:9090/auth/dashboard/session", {
     headers: {
