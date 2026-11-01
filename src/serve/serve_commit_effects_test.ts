@@ -322,3 +322,103 @@ Deno.test("ServeCommitEffects: a follower taking the lead applies what its takeo
     await effects.stop();
   }
 });
+
+/** A follower whose reload fails while `fail()` says so. */
+function failingSetup(
+  fail: () => boolean,
+  follower: () => boolean = () => true,
+) {
+  const store = fakeSource();
+  let reloads = 0;
+  const effects = new ServeCommitEffects({
+    source: store.source,
+    catalogInvalidate: () => {},
+    reloadPolicy: () => {
+      reloads++;
+      return fail()
+        ? Promise.reject(new Error("unreadable"))
+        : Promise.resolve();
+    },
+    checkConfig: () => {},
+    isFollower: follower,
+  });
+  effects.start();
+  return { store, effects, reloads: () => reloads };
+}
+
+Deno.test("ServeCommitEffects: a follower's applied cursor moves only once its read model applied a commit and its effects ran (swamp-club#4207)", async () => {
+  const { store, effects } = setup();
+  const moves: number[] = [];
+  const off = effects.onApplied(() => moves.push(effects.appliedCursor()));
+  try {
+    store.landUnapplied(GRANT);
+    effects.poke();
+    await effects.settled();
+    assertEquals(effects.appliedCursor(), 0);
+    store.applied();
+    effects.poke();
+    await effects.settled();
+    assertEquals(effects.appliedCursor(), 1);
+    assertEquals(moves, [1]);
+  } finally {
+    off();
+    await effects.stop();
+  }
+});
+
+Deno.test("ServeCommitEffects: a reload that fails leaves a follower's policy unknown and its cursor in place, and the next poke retries it (swamp-club#4207)", async () => {
+  let fail = true;
+  const { store, effects, reloads } = failingSetup(() => fail);
+  try {
+    store.land(GRANT);
+    effects.poke();
+    await effects.settled();
+    assertEquals(reloads(), 1);
+    assertEquals(effects.policyKnown(), false);
+    assertEquals(effects.appliedCursor(), 0);
+    fail = false;
+    effects.poke();
+    await effects.settled();
+    assertEquals(reloads(), 2);
+    assertEquals(effects.policyKnown(), true);
+    assertEquals(effects.appliedCursor(), 1);
+  } finally {
+    await effects.stop();
+  }
+});
+
+Deno.test("ServeCommitEffects: a node that takes the lead while its policy is unknown reloads it (swamp-club#4207)", async () => {
+  let fail = true;
+  let follower = true;
+  const { store, effects, reloads } = failingSetup(() => fail, () => follower);
+  try {
+    store.land(GRANT);
+    effects.poke();
+    await effects.settled();
+    assertEquals(effects.policyKnown(), false);
+    fail = false;
+    follower = false;
+    store.land(partitionOf({ kind: "lockfile" }));
+    await waitFor(() => effects.policyKnown(), "the policy reloaded");
+    assertEquals(reloads(), 2);
+  } finally {
+    await effects.stop();
+  }
+});
+
+Deno.test("ServeCommitEffects: a copy replaced below what was applied moves the applied cursor down to its head (swamp-club#4207)", async () => {
+  const { store, effects } = setup();
+  try {
+    store.land(partitionOf({ kind: "run", workflowId: ID, runId: ID }));
+    store.land(partitionOf({ kind: "run", workflowId: ID, runId: ID }));
+    effects.poke();
+    await waitFor(() => effects.appliedCursor() === 2, "applied to 2");
+    await effects.settled();
+    store.replace(1);
+    effects.poke();
+    await effects.settled();
+    assertEquals(effects.appliedCursor(), 1);
+  } finally {
+    await effects.stop();
+  }
+});

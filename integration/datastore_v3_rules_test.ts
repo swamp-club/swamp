@@ -343,6 +343,9 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/serve/serve_commit_effects.ts -> src/domain/datastore_v3/commit_effects.ts",
   "src/serve/serve_commit_effects.ts -> src/domain/datastore_v3/commit_store.ts",
   "src/serve/serve_commit_effects.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  // swamp-club#4207: a follower's commit feed ends at the commits whose
+  // effects it applied.
+  "src/serve/follower_policy_wiring.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/serve_feed.ts",
   // swamp-club#4120: a long-running command on a serve-mode checkout
   // watches serve's commit feed while it runs.
@@ -502,7 +505,7 @@ const CHECKPOINT = /wal_(?:auto)?checkpoint/i;
 /** v3 files that mention a checkpoint pragma, as `file:line`. */
 const PINNED_V3_CHECKPOINTS: readonly string[] = [
   // Auto-checkpoint off on a copy Litestream replicates (swamp-club#3935).
-  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2665",
+  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2682",
 ];
 
 Deno.test("datastore v3: no v3 code forces or tunes a WAL checkpoint", async () => {
