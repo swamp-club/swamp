@@ -75,7 +75,7 @@ without it the default file is optional.
 | `--admins`, `--allowed-collectives`, `--allowed-users` / `auth.*` | — | unset | See [Identity and access](#identity-and-access) |
 | `--oauth-provider` / `auth.oauth-provider` | — | `https://swamp-club.com` | Must be HTTPS unless localhost (`src/domain/access/serve_auth_config.ts`) |
 | `--oauth-client-id`, `--oauth-client-name` / `auth.oauth-client-{id,name}` | `SWAMP_OAUTH_CLIENT_NAME` (name only) | unset, `swamp-serve-{repo}-{host}` | Client id auto-registered on first start if omitted |
-| `--groups-field` / `auth.groups-field` | — | `collectives` | Userinfo field holding group/collective memberships |
+| `--groups-field` / `auth.groups-field` | — | `collectives` | Userinfo field the collectives are read from |
 | `--restricted-model-types`, `--restricted-commands` / `auth.restricted-*` | — | unset | Comma lists needing admin authority; need mode `token` or `oauth`. A restricted behavior type needs admin to create, run, edit or delete a behavior of it, delete or rename its data, or add or change a workflow step running it. A behavior type matches in any spelling: a leading `@` is ignored on the entry, the request and the stored type. Command names match exactly. serve warns at startup about an entry that can match nothing; an entry naming no type (`@`, `::`) stops it starting |
 | `--approve-requires-explicit-grant` / `auth.approve-requires-explicit-grant` | `SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in |
 | `--signal-requires-explicit-grant` / `auth.signal-requires-explicit-grant` | `SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in |
