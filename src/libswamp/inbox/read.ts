@@ -301,7 +301,7 @@ async function markAndRefresh(
  * Reads the message the notice announced, or else the newest unread message:
  * fetches it and marks it read. Reading the announced message first lets the
  * notice stop at once, even when newer messages that never raise it, such as
- * mentions, are waiting. The message is marked before it is shown, so a run
+ * onboarding messages, are waiting. The message is marked before it is shown, so a run
  * killed in between leaves it read but unseen; `swamp inbox --all` lists it,
  * and `swamp inbox read <id>` shows it.
  */

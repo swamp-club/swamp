@@ -73,15 +73,6 @@
   "webKindsPage": {
     "messages": [
       {
-        "id": "01JBX5Q8ZK0000000000000300",
-        "kind": "mention",
-        "title": "keeb mentioned you on #4078",
-        "body": "<b>@stack72</b> can you check http://example.com/build-log before we ship?",
-        "createdAt": "2026-10-28T10:00:00.000Z",
-        "link": "https://swamp-club.com/lab/4078",
-        "readAt": null
-      },
-      {
         "id": "01JBX5Q8ZK00000000000002ZZ",
         "kind": "issue_shipped",
         "title": "Your issue #4079 shipped",

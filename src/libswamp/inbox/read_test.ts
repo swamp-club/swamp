@@ -475,10 +475,10 @@ Deno.test("inboxReadNext: an abort is cancelled", async () => {
   assertEquals(last.error.code, "cancelled");
 });
 
-Deno.test("inboxReadNext: reads the announced message ahead of a newer mention, and the notice stops", async () => {
-  const mention = messageOf("mention");
+Deno.test("inboxReadNext: reads the announced message ahead of a newer message that does not raise the notice, and the notice stops", async () => {
+  const quiet = messageOf("nurture_stalled");
   const announced = messageOf("issue_update");
-  assert(mention.id > announced.id);
+  assert(quiet.id > announced.id);
   // The notice is up for the issue_update.
   let state = recordNoticeShown(
     {
@@ -496,9 +496,9 @@ Deno.test("inboxReadNext: reads the announced message ahead of a newer mention, 
   );
   assert(noticeToShow(state, NOW) !== null);
   const { deps, rec } = makeDeps({
-    page: { messages: [mention, announced], nextCursor: null, dropped: 0 },
-    // A mention never counts: after the read nothing that raises the
-    // notice is unread.
+    page: { messages: [quiet, announced], nextCursor: null, dropped: 0 },
+    // An onboarding message never counts: after the read nothing that
+    // raises the notice is unread.
     summaries: [announcing(announced.id), quietSummary],
     loadInboxState: () => Promise.resolve(state),
     saveInboxState: (_key, next) => {
@@ -517,7 +517,7 @@ Deno.test("inboxReadNext: reads the announced message ahead of a newer mention, 
   assertEquals(last.view.message?.id, announced.id);
   assertEquals(rec.got, [announced.id]);
   assertEquals(rec.marked, [[announced.id]]);
-  // The mention is still waiting.
+  // The onboarding message is still waiting.
   assertEquals(last.view.moreUnread, true);
   assertEquals(noticeToShow(state, NOW), null);
 });
@@ -618,12 +618,12 @@ Deno.test("inboxReadNext: a summary call that throws falls back to the newest un
 });
 
 Deno.test("inboxReadNext: moreUnread counts unread messages other than the announced one", async () => {
-  const mention = messageOf("mention");
+  const quiet = messageOf("nurture_stalled");
   const announced = messageOf("issue_update");
   const cases: [InboxMessagePage, boolean][] = [
     [{ messages: [announced], nextCursor: null, dropped: 0 }, false],
-    [{ messages: [mention, announced], nextCursor: null, dropped: 0 }, true],
-    [{ messages: [mention], nextCursor: null, dropped: 0 }, true],
+    [{ messages: [quiet, announced], nextCursor: null, dropped: 0 }, true],
+    [{ messages: [quiet], nextCursor: null, dropped: 0 }, true],
     [{ messages: [announced], nextCursor: announced.id, dropped: 0 }, true],
     [{ messages: [announced], nextCursor: null, dropped: 1 }, true],
   ];
