@@ -7468,14 +7468,18 @@ that happens.
   copy holds in that partition (`held`). A team follower whose own copy
   holds less, as a node restarted after a takeover does until its leader
   feed catches it up, waits for its feed (`FollowerFeed.caughtUp`, bounded
-  by the feed barrier). If it is still behind and does not hold the head
-  its leader names, it refuses with a `503` `serve_follower_behind` and
-  `Retry-After: 1` (`ServeFollowerBehindError`, exit 75: nothing changed,
-  retry). It never answers with a head that reads as a rewind. A follower
-  caught up to its leader answers as the leader would, so a log genuinely
-  behind the copy is still refused below. A follower with no leader feed,
-  and a read that names no `held` (from a CLI before it), are answered as
-  before (swamp-club#4254).
+  by the feed barrier). The wait asks the leader for its head after the read
+  arrived, never sharing an ask made before it: that head may predate a
+  commit the copy holds. Reads that arrive while one ask is in flight share
+  the next. If the follower is still behind and its feed is live or was
+  within the last 30 seconds, it refuses with a `503` `serve_follower_behind`
+  and `Retry-After: 1` (`ServeFollowerBehindError`, exit 75: nothing
+  changed, retry). It never answers with a head that reads as a rewind. A
+  follower that holds the head its leader named answers as the leader would,
+  so a log genuinely behind the copy is still refused below. A follower with
+  no leader feed, or one whose feed has not been live for 30 seconds, cannot
+  tell catching up from such a log, so it answers as before, as it does a
+  read that names no `held` (from a CLI before it) (swamp-club#4254).
 - **Refused.** Another log id, a head below the commit's seq, or another
   `txnId` at that seq fails the command with `serve_upstream_diverged`.
   - It is a user error, not exit 75.

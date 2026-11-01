@@ -9036,7 +9036,8 @@ export const serveCommand = new Command()
       followerFeedAtBoot !== undefined && serveLeadership?.role === "follower"
     ) {
       const outcome = await awaitFirstFollowerCatchUp({
-        caughtUp: () => followerFeedAtBoot.caughtUp(),
+        caughtUp: async () =>
+          await followerFeedAtBoot.caughtUp() === "caught-up",
         ended: () => shuttingDown || serveLeadership?.role !== "follower",
       });
       if (outcome === "timed-out") {

@@ -1002,12 +1002,12 @@ class DatastoreApi {
    * than the caller's, which holds seq `held` (swamp-club#4254), as a node
    * restarted after a takeover is until its leader feed catches it up. Its
    * head would read to the caller as a rewind, so it waits for its feed
-   * first. A follower that then holds its leader's head answers as the
-   * leader would, so a log genuinely behind the caller is still refused by
-   * the caller as diverged. A leader always answers, and so does a
-   * follower with no leader feed: it cannot tell catching up from a log
-   * behind the caller, and a refusal it could never lift would hide a real
-   * rewind from the caller for good.
+   * first. A follower that then holds a head its leader named after the
+   * caller asked answers as the leader would, so a log genuinely behind the
+   * caller is still refused by the caller as diverged. A leader always
+   * answers, and so does a follower with no leader feed or one stuck for
+   * long: it cannot tell catching up from a log behind the caller, and a
+   * refusal it could never lift would hide a real rewind for good.
    */
   async #behindCaller(
     partition: PartitionKey,
@@ -1019,9 +1019,9 @@ class DatastoreApi {
     const head = async () =>
       (await this.#v3.commitStore.head(this.#namespace, partition)).seq;
     if (held <= await head()) return false;
-    const caughtUp = await catchUp();
+    const standing = await catchUp();
     if (held <= await head()) return false;
-    return !caughtUp;
+    return standing === "catching-up";
   }
 
   /** `GET changes?cursor={c}&limit=`. */

@@ -234,7 +234,7 @@ Deno.test({
       let waits = 0;
       server.ctx.followerCatchUp = () => {
         waits++;
-        return Promise.resolve(false);
+        return Promise.resolve("catching-up" as const);
       };
       // The member's head-commit check: it holds seq 2, this copy seq 1.
       const refused = await readHeld(server, "after=1&limit=1&held=2");
@@ -260,6 +260,12 @@ Deno.test({
       const noFeed = await readHeld(server, "after=1&limit=1&held=2");
       assertEquals(noFeed.status, 200);
       assertEquals(noFeed.json.head, 1);
+      // So does one whose feed has been down past the bound: a refusal it
+      // could not lift would hide a real rewind as well.
+      server.ctx.followerCatchUp = () => Promise.resolve("stuck" as const);
+      const stuck = await readHeld(server, "after=1&limit=1&held=2");
+      assertEquals(stuck.status, 200);
+      assertEquals(stuck.json.head, 1);
     });
   },
 });
@@ -277,7 +283,7 @@ Deno.test({
         server.ctx.followerGate = undefined;
         await landCommits(server, 1, 2);
         server.ctx.followerGate = follower();
-        return true;
+        return "caught-up" as const;
       };
       server.ctx.followerGate = follower();
       const caughtUp = await readHeld(server, "after=1&limit=1&held=2");
@@ -286,7 +292,7 @@ Deno.test({
       // Caught up to a leader that is itself behind the caller (a restore
       // within the same log): answered, so the caller still refuses it as
       // diverged, as it would the leader.
-      server.ctx.followerCatchUp = () => Promise.resolve(true);
+      server.ctx.followerCatchUp = () => Promise.resolve("caught-up" as const);
       const leaderBehind = await readHeld(server, "after=4&limit=1&held=5");
       assertEquals(leaderBehind.status, 200);
       assertEquals(leaderBehind.json.head, 2);
@@ -329,7 +335,8 @@ Deno.test({
     });
     await withServer([workflowsOnly], async (server) => {
       server.ctx.followerGate = follower();
-      server.ctx.followerCatchUp = () => Promise.resolve(false);
+      server.ctx.followerCatchUp = () =>
+        Promise.resolve("catching-up" as const);
       const hidden = await readHeld(server, "after=0&held=9");
       assertEquals(hidden.status, 404);
       assertEquals(hidden.json.code, "not_found");

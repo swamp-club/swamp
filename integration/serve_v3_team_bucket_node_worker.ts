@@ -326,7 +326,11 @@ async function open(): Promise<Opened> {
       v3DatastoreFor(opened.repoDir, location!).commitStore
         .highWaterMark().cursor;
     node.followerCatchUp = () =>
-      Promise.resolve(leaderHead !== undefined && copyHead() >= leaderHead);
+      Promise.resolve(
+        leaderHead !== undefined && copyHead() >= leaderHead
+          ? "caught-up"
+          : "catching-up",
+      );
   }
   const v3 = v3DatastoreFor(opened.repoDir, location);
   const datastoreConfig = opened.datastoreConfig;
@@ -549,7 +553,8 @@ async function handle(request: NodeRequest): Promise<unknown> {
       return undefined;
     case "ready":
       return await awaitFirstFollowerCatchUp({
-        caughtUp: () => ctx!.followerCatchUp?.() ?? Promise.resolve(true),
+        caughtUp: async () =>
+          (await ctx!.followerCatchUp?.() ?? "caught-up") === "caught-up",
         ended: () => false,
         // One check: the test asks again after the feed moves.
         boundMs: 0,

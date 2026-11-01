@@ -50,6 +50,22 @@ export const FOLLOWER_FEED_SILENCE_MS = 15_000;
 /** How long a forwarded write's reply waits for the copy to catch up. */
 export const FOLLOWER_FEED_BARRIER_MS = 5_000;
 
+/**
+ * How long a feed may go without being live, since it last was or since
+ * it began to follow its leader, before a read it is behind on is answered
+ * as before rather than refused (swamp-club#4254): the readiness bound.
+ */
+export const FOLLOWER_FEED_STUCK_MS = 30_000;
+
+/**
+ * Where a follower's copy stands against its leader (swamp-club#4254):
+ * `caught-up`, it holds a head the leader named after the caller asked;
+ * `catching-up`, its feed is live or recently was; `stuck`, its feed has not
+ * been live for {@link FOLLOWER_FEED_STUCK_MS}, so it cannot tell catching
+ * up from a log behind the caller.
+ */
+export type FollowerCatchUp = "caught-up" | "catching-up" | "stuck";
+
 /** One commit the leader sent. */
 export interface FeedChange {
   readonly cursor: number;
@@ -85,6 +101,8 @@ export class FollowerFeed implements FollowerCopyFeed {
   #heads = new Map<string, (cursor: number) => void>();
   #appliedWaiters = new Set<() => void>();
   #caughtUp: Promise<boolean> | undefined;
+  #queuedCaughtUp: Promise<boolean> | undefined;
+  #followedAt: number | undefined;
   #generation = 0;
 
   constructor(options: FollowerFeedOptions) {
@@ -114,6 +132,7 @@ export class FollowerFeed implements FollowerCopyFeed {
     this.#leader = leader;
     this.#failed = false;
     this.#lastFrameAt = undefined;
+    this.#followedAt = this.#now();
     const generation = ++this.#generation;
     if (leader?.address === undefined) return;
     void this.#open(generation).catch((error) => {
@@ -160,7 +179,8 @@ export class FollowerFeed implements FollowerCopyFeed {
         resolve(undefined);
       }
     });
-    if (head === undefined) return false;
+    // Undefined: the leader named none in time; negative: the feed closed.
+    if (head === undefined || head < 0) return false;
     while (this.#applied < head && this.live) {
       const left = deadline - this.#now();
       if (left <= 0) return false;
@@ -178,19 +198,48 @@ export class FollowerFeed implements FollowerCopyFeed {
   }
 
   /**
-   * {@link barrier}, shared by every caller while one is in flight: a read
-   * that finds the copy behind its caller waits on it (swamp-club#4254), so
-   * a burst of such reads asks the leader for its head once. A forwarded
-   * write's reply waits on {@link barrier} itself, which asks for the head
-   * as it is after the write.
+   * Where the copy stands against the leader, for a read that found it
+   * behind its caller (swamp-club#4254). Callers share barriers, so a burst
+   * of such reads asks the leader for its head at most twice at a time, but
+   * a caller never shares one that asked before it arrived: that head may
+   * predate a commit the caller holds. A caller arriving while one is in
+   * flight shares the next, which asks once that one settles. A forwarded
+   * write's reply waits on {@link barrier} itself.
    */
-  caughtUp(): Promise<boolean> {
-    if (this.#caughtUp !== undefined) return this.#caughtUp;
+  caughtUp(): Promise<FollowerCatchUp> {
+    let run: Promise<boolean>;
+    if (this.#caughtUp === undefined) {
+      run = this.#startCaughtUp();
+    } else {
+      this.#queuedCaughtUp ??= this.#caughtUp.then(() => {
+        this.#queuedCaughtUp = undefined;
+        return this.#startCaughtUp();
+      });
+      run = this.#queuedCaughtUp;
+    }
+    return run.then((caughtUp) =>
+      caughtUp ? "caught-up" : this.#stuck() ? "stuck" : "catching-up"
+    );
+  }
+
+  #startCaughtUp(): Promise<boolean> {
     const run = this.barrier().finally(() => {
       if (this.#caughtUp === run) this.#caughtUp = undefined;
     });
     this.#caughtUp = run;
     return run;
+  }
+
+  /**
+   * Whether the feed has not been live for {@link FOLLOWER_FEED_STUCK_MS}:
+   * since its last frame, or since it began following when it has had
+   * none. A feed that follows no leader is stuck.
+   */
+  #stuck(): boolean {
+    if (this.live) return false;
+    if (this.#followedAt === undefined) return true;
+    const since = Math.max(this.#followedAt, this.#lastFrameAt ?? 0);
+    return this.#now() - since > FOLLOWER_FEED_STUCK_MS;
   }
 
   async #open(generation: number): Promise<void> {
