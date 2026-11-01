@@ -198,6 +198,10 @@ function candidateKeys(
 }
 
 Deno.test("baseRecordReadAccessOf: a compacted record always needs what the feed needs of the put that wrote it", async () => {
+  // Every intent kind that puts a record.
+  const putting = INTENT_KINDS.filter((kind) =>
+    !kind.endsWith(".delete") && kind !== "definition.rename-from"
+  );
   let checked = 0;
   const kinds = new Set<string>();
   await fc.assert(
@@ -241,12 +245,32 @@ Deno.test("baseRecordReadAccessOf: a compacted record always needs what the feed
         }
       },
     ),
-    { numRuns: 300 },
+    {
+      numRuns: 300,
+      // One run per kind, so the coverage check below never rests on the
+      // random runs drawing every kind.
+      examples: putting.map((
+        kind,
+      ): [
+        Intent["kind"],
+        string,
+        string,
+        string,
+        number,
+        boolean,
+        Record<string, string> | undefined,
+      ] => [
+        kind,
+        TYPES[0],
+        "11111111-1111-4111-8111-111111111111",
+        NAMES[0],
+        1,
+        true,
+        undefined,
+      ]),
+    },
   );
   // Every intent kind that puts a record was exercised with a key it owns.
-  const putting = INTENT_KINDS.filter((kind) =>
-    !kind.endsWith(".delete") && kind !== "definition.rename-from"
-  );
   assert(checked > 0);
   assertEquals(
     putting.filter((kind) => !kinds.has(kind)),

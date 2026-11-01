@@ -363,23 +363,39 @@ Deno.test({
         `#!/bin/sh\necho $$ > "${pidFile}"\nexec sleep 3600\n`,
       );
       await Deno.chmod(stall, 0o755);
-      await assertRejects(() =>
-        verifyReplica({
-          paths,
-          lineageFence: 2,
-          replicaType: "file",
-          binary: stall,
-          now: () => Date.now(),
-          signal: new AbortController().signal,
-          deadlineMs: 300,
-        })
+      // The deadline's own error, so a stub that never ran cannot pass as one
+      // the deadline killed.
+      const rejection = await assertRejects(
+        () =>
+          verifyReplica({
+            paths,
+            lineageFence: 2,
+            replicaType: "file",
+            binary: stall,
+            now: () => Date.now(),
+            signal: new AbortController().signal,
+            deadlineMs: 300,
+          }),
+        DOMException,
       );
-      // Only the deadline ends it: the stalled restore was killed.
-      const pid = Number((await Deno.readTextFile(pidFile)).trim());
-      await waitFor(
-        async () => !await processAlive(pid),
-        "the stalled restore to be killed",
-      );
+      assertEquals(rejection.name, "TimeoutError");
+      // Only the deadline ends it: the stalled restore was killed. A deadline
+      // that fires first kills the stub before it records its pid, and the
+      // check has waited for its exit, so there is no process left to find.
+      // Never read an empty file as pid 0: kill -0 0 is our own process group.
+      const recorded = await Deno.readTextFile(pidFile)
+        .then((text) => text.trim())
+        .catch((error) => {
+          if (error instanceof Deno.errors.NotFound) return "";
+          throw error;
+        });
+      if (recorded !== "") {
+        const pid = Number(recorded);
+        await waitFor(
+          async () => !await processAlive(pid),
+          "the stalled restore to be killed",
+        );
+      }
       assertEquals(await readReplicaVerification(paths), undefined);
     } finally {
       await Deno.remove(dir, { recursive: true });
