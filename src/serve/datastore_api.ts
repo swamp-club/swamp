@@ -109,6 +109,7 @@ import { stringify as stringifyYaml } from "@std/yaml";
 import {
   flushOfflineEntries,
   type OfflineFlushPort,
+  type OfflineFlushReport,
 } from "../infrastructure/datastore_v3/offline_flush.ts";
 import {
   ServeCommitRefusedError,
@@ -288,11 +289,13 @@ export async function handleDatastoreRequest(
   // only a caller reaches the leader through it or learns which node leads.
   const notLeader = followerDatastoreRefusal(req, route, sourceIp, deps.ctx);
   if (notLeader !== undefined) return await notLeader;
-  // A leader adopting the explicit leases its predecessor kept takes no
-  // lease request and no commit until it has (swamp-club#4195): either
-  // could otherwise act on a key an adopted lease holds.
-  if (deps.locks.adopting && waitsForAdoption(req, route)) {
-    return notLeaderResponse(new ServeNotLeaderError(undefined), false);
+  // A leader adopting the explicit leases its predecessor kept lists none
+  // until it has (swamp-club#4195): the listing would leave out the leases
+  // not adopted yet. Each write waits only on its own key (swamp-club#4258).
+  if (
+    deps.locks.adopting && route.kind === "locks" && req.method === "GET"
+  ) {
+    return adoptionPendingResponse();
   }
   // Taken before the reply is answered: a reload while it is answered then
   // shows as a change on the next reply, which rebuilds the copy, never as
@@ -312,11 +315,13 @@ export async function handleDatastoreRequest(
   return withHeaders(response, headers);
 }
 
-/** Whether `req` must wait for a new leader to adopt its kept leases. */
-function waitsForAdoption(req: Request, route: DatastoreRoute): boolean {
-  return route.kind === "locks" || route.kind === "lease" ||
-    route.kind === "quarantine-accept" ||
-    (route.kind === "commits" && req.method === "POST");
+/**
+ * The reply to a write that must wait for a new leader to adopt the kept
+ * lease on its key (swamp-club#4195, swamp-club#4258): the retryable
+ * serve_not_leader, naming no leader and no lease.
+ */
+function adoptionPendingResponse(): Response {
+  return notLeaderResponse(new ServeNotLeaderError(undefined), false);
 }
 
 /**
@@ -773,6 +778,14 @@ class DatastoreApi {
       await reader.cancel();
       return refusalResponse(authorization);
     }
+    // A kept lease on this partition not adopted yet would let the commit
+    // land past its holder (swamp-club#4258): refused before the upload,
+    // and judged again under the lock below. Checked once the caller may
+    // write here, so it never says to anyone else whether a lease does.
+    if (this.#adoptionPendingOn(partition)) {
+      await reader.cancel();
+      return adoptionPendingResponse();
+    }
     const referenced = referencedChunks(ops);
     // Every chunk named and not carried is checked under the forwarded
     // lock, which every caller's commits share: bound that work, before
@@ -878,7 +891,11 @@ class DatastoreApi {
         return { notProvided: hash };
       }
       // Judged under the forwarded lock, as leases change hands between
-      // commits: the live fenced lease covering the partition decides.
+      // commits: the live fenced lease covering the partition decides, once
+      // any kept lease on it is adopted.
+      if (this.#adoptionPendingOn(partition)) {
+        return { adoptionPending: true as const };
+      }
       const lease = this.#leaseOpFor(partition, envelope.lease);
       if (lease === "lost") return { leaseLost: true as const };
       const result = await commitForwarded(
@@ -888,6 +905,7 @@ class DatastoreApi {
       );
       return { result };
     });
+    if ("adoptionPending" in landed) return adoptionPendingResponse();
     if ("contentChanged" in landed) {
       return failure(
         409,
@@ -1279,6 +1297,10 @@ class DatastoreApi {
     }
     const refused = await this.#authorizeLock(target);
     if (refused !== undefined) return refused;
+    // A kept lease on this key not adopted yet holds it (swamp-club#4258).
+    if (this.#deps.locks.adoptionPendingFor(target)) {
+      return adoptionPendingResponse();
+    }
     const outcome = await this.#deps.locks.acquire({
       principal: this.#caller.principal,
       target,
@@ -1368,7 +1390,12 @@ class DatastoreApi {
       : {};
     const principal = this.#caller.principal;
     const held = this.#deps.locks.lease(principal, leaseId);
-    if (held === undefined) return leaseNotFound();
+    if (held === undefined) {
+      // A kept lease not adopted yet is not lost (swamp-club#4258).
+      return this.#deps.locks.leaseAdoptionPending(leaseId)
+        ? adoptionPendingResponse()
+        : leaseNotFound();
+    }
     // `holdMs` makes a fenced lease explicit, or changes its hold: a
     // checkout takes a short lease, records it, then extends it, so a reply
     // lost on the way strands it only briefly (swamp-club#4121).
@@ -1446,6 +1473,10 @@ class DatastoreApi {
         "Force-releasing another caller's lease needs admin",
       );
     }
+    // Its kept lease, not adopted yet, would come back (swamp-club#4258).
+    if (this.#deps.locks.adoptionPendingFor(target)) {
+      return adoptionPendingResponse();
+    }
     let ended;
     try {
       ended = await this.#deps.locks.forceRelease(target);
@@ -1496,41 +1527,38 @@ class DatastoreApi {
         "This server does not keep quarantined changes",
       );
     }
+    // Bounded as uploads are (swamp-club#4258): a deposit buffers its whole
+    // body, so a caller holds at most the chunk slots' worth at once.
+    return await this.#withChunkSlot(() => this.#depositQuarantine(req, store));
+  }
+
+  async #depositQuarantine(
+    req: Request,
+    store: QuarantineStore,
+  ): Promise<Response> {
     const body = await readBodyWithLimit(req, MAX_QUARANTINE_REQUEST_BYTES);
     if (body === null) return quarantineTooLarge();
     let commit: Commit;
     let base: { readonly seq: number; readonly txnId?: string };
-    let chunks: QuarantineChunk[];
+    let rawChunks: unknown;
     try {
       const fields = JSON.parse(new TextDecoder().decode(body)) as Record<
         string,
         unknown
       >;
-      commit = await Commit.fromJSON(fields.commit);
+      // Canonical before anything reads it: every landed commit carries a
+      // lowercase txnId, so a re-cased copy is the same change
+      // (swamp-club#4258).
+      commit = await withCanonicalTxnId(await Commit.fromJSON(fields.commit));
       base = quarantineBaseOf(fields.base);
-      chunks = await quarantineChunksOf(fields.chunks);
+      rawChunks = fields.chunks;
     } catch {
       return failure(400, "invalid_request", "Malformed quarantine deposit");
     }
-    const txnId = commit.txnId.toLowerCase();
+    const txnId = commit.txnId;
     const size = body.byteLength;
-    if (
-      !isQuarantineTxnId(txnId) || commit.namespace !== this.#namespace ||
-      chunks.reduce((sum, chunk) => sum + chunk.bytes.byteLength, 0) >
-        MAX_QUARANTINE_DEPOSIT_BYTES
-    ) {
+    if (!isQuarantineTxnId(txnId) || commit.namespace !== this.#namespace) {
       return failure(400, "invalid_request", "Malformed quarantine deposit");
-    }
-    // Only the chunks the commit names are kept, and every one it names
-    // must come with it: serve stores none of an author it no longer trusts.
-    if (
-      !quarantineCarriesExactly(chunks, new Set(referencedChunks(commit.ops)))
-    ) {
-      return failure(
-        400,
-        "invalid_request",
-        "A deposit carries exactly the chunks its commit names",
-      );
     }
     await this.#catchUp();
     // A txnId that already landed names a change serve holds: kept again
@@ -1540,7 +1568,7 @@ class DatastoreApi {
       await this.#v3.commitStore.landedSeq(
         this.#v3.namespace,
         commit.partition,
-        commit.txnId,
+        txnId,
       ) !== undefined
     ) {
       return failure(
@@ -1575,6 +1603,30 @@ class DatastoreApi {
         403,
         "quarantine_not_readable",
         "Serve keeps a refused change only for a caller who may read its partition",
+      );
+    }
+    // Decoded only once the change is one serve keeps (swamp-club#4258).
+    let chunks: QuarantineChunk[];
+    try {
+      chunks = await quarantineChunksOf(rawChunks);
+    } catch {
+      return failure(400, "invalid_request", "Malformed quarantine deposit");
+    }
+    if (
+      chunks.reduce((sum, chunk) => sum + chunk.bytes.byteLength, 0) >
+        MAX_QUARANTINE_DEPOSIT_BYTES
+    ) {
+      return failure(400, "invalid_request", "Malformed quarantine deposit");
+    }
+    // Only the chunks the commit names are kept, and every one it names
+    // must come with it: serve stores none of an author it no longer trusts.
+    if (
+      !quarantineCarriesExactly(chunks, new Set(referencedChunks(commit.ops)))
+    ) {
+      return failure(
+        400,
+        "invalid_request",
+        "A deposit carries exactly the chunks its commit names",
       );
     }
     const principal = this.#caller.principal;
@@ -1693,13 +1745,18 @@ class DatastoreApi {
     if (content === undefined) {
       return failure(404, "not_found", "No such quarantined change");
     }
-    const commit = await Commit.fromJSON(content.commit);
+    // A record kept before deposits were canonicalised may hold its commit
+    // under a re-cased txnId: it lands under the canonical one, which every
+    // landed commit carries (swamp-club#4258).
+    const commit = await withCanonicalTxnId(
+      await Commit.fromJSON(content.commit),
+    );
     // The record and its content are judged by the same canonical txnId and
     // partition the change lands under, and the content must still carry
     // every chunk its commit names: the admin's access never vouches for a
     // chunk the author did not provide.
     if (
-      commit.txnId.toLowerCase() !== txnId ||
+      commit.txnId !== txnId ||
       commit.partition.toString() !== record.partition ||
       commit.namespace !== this.#namespace ||
       !quarantineCarriesExactly(
@@ -1713,59 +1770,112 @@ class DatastoreApi {
         "The quarantined change does not match its record",
       );
     }
-    await this.#store(content.chunks, req.signal);
-    const deposited = new Set(content.chunks.map((chunk) => chunk.sha256));
-    const outcome: AcceptOutcome = { landed: false };
-    const report = await flushOfflineEntries(
-      this.#acceptPort(record, deposited, outcome, req.signal),
-      [{
-        commit,
-        unitId: txnId,
-        base: { seq: content.base.seq, txnId: content.base.txnId },
-        sequence: 0,
-        createdAt: Date.parse(record.depositedAt) || this.#now(),
-        state: "offline",
-      }],
-      {
-        writer: { host: "serve", pid: Deno.pid, instance: this.#requestId },
-        fence: this.#v3.writerFence() ?? 0,
-        signal: req.signal,
-      },
-    );
-    if (outcome.contentRefused !== undefined) {
-      // The author's own access refuses what the change carries or names:
-      // an admin's accept overrides the write grant it lacked, never what
-      // the author may read. Kept held, so an admin can discard it.
-      this.#auditAccept(
-        record,
-        "failure",
-        `content refused under ${record.principal}'s access: ${outcome.contentRefused}`,
-      );
-      return failure(
-        403,
-        "quarantine_content_refused",
-        `The quarantined change cannot land: its author ${record.principal} may not use what it carries or names (${outcome.contentRefused}). Discard it with \`swamp datastore quarantine discard ${txnId}\`.`,
-      );
+    // A kept lease on the partition not adopted yet would let the change
+    // land past its holder (swamp-club#4258).
+    if (this.#adoptionPendingOn(commit.partition)) {
+      return adoptionPendingResponse();
     }
-    if (!outcome.landed) {
-      this.#auditAccept(record, "failure", outcome.reason ?? outcome.state);
-      return report.waiting > 0
-        ? failure(
-          409,
-          "quarantine_waiting",
-          "A lease covers that behavior now: accept it again once the lease ends",
-        )
-        : failure(
-          409,
-          "quarantine_refused",
-          `The quarantined change cannot land: ${outcome.reason ?? "refused"}`,
-        );
-    }
-    const seq = await this.#v3.commitStore.landedSeq(
+    await this.#catchUp();
+    // Landed by an accept whose replication was not confirmed, or that
+    // stopped before it marked the record: confirmed and marked now, never
+    // landed again (swamp-club#4258).
+    let seq = await this.#v3.commitStore.landedSeq(
       this.#v3.namespace,
       commit.partition,
-      commit.txnId,
+      txnId,
     );
+    let report: Pick<OfflineFlushReport, "renumbered" | "latest"> = {
+      renumbered: [],
+      latest: [],
+    };
+    if (
+      seq !== undefined &&
+      !(await this.#landedAs(commit.partition, seq, record.principal))
+    ) {
+      // Another writer's commit took the txnId: this change never landed,
+      // and the record is not marked as if it had.
+      this.#auditAccept(record, "failure", "txnId landed by another author");
+      return failure(
+        409,
+        "quarantine_refused",
+        "The quarantined change cannot land: another change landed under its txnId",
+      );
+    }
+    if (seq === undefined) {
+      await this.#store(content.chunks, req.signal);
+      const deposited = new Set(content.chunks.map((chunk) => chunk.sha256));
+      const outcome: AcceptOutcome = { landed: false };
+      const flushed = await flushOfflineEntries(
+        this.#acceptPort(record, deposited, outcome, req.signal),
+        [{
+          commit,
+          unitId: txnId,
+          base: { seq: content.base.seq, txnId: content.base.txnId },
+          sequence: 0,
+          createdAt: Date.parse(record.depositedAt) || this.#now(),
+          state: "offline",
+        }],
+        {
+          writer: { host: "serve", pid: Deno.pid, instance: this.#requestId },
+          fence: this.#v3.writerFence() ?? 0,
+          signal: req.signal,
+        },
+      );
+      if (outcome.contentRefused !== undefined) {
+        // The author's own access refuses what the change carries or
+        // names: an admin's accept overrides the write grant it lacked,
+        // never what the author may read. Kept held, so an admin can
+        // discard it.
+        this.#auditAccept(
+          record,
+          "failure",
+          `content refused under ${record.principal}'s access: ${outcome.contentRefused}`,
+        );
+        return failure(
+          403,
+          "quarantine_content_refused",
+          `The quarantined change cannot land: its author ${record.principal} may not use what it carries or names (${outcome.contentRefused}). Discard it with \`swamp datastore quarantine discard ${txnId}\`.`,
+        );
+      }
+      if (!outcome.landed) {
+        this.#auditAccept(record, "failure", outcome.reason ?? outcome.state);
+        return flushed.waiting > 0
+          ? failure(
+            409,
+            "quarantine_waiting",
+            "A lease covers that behavior now: accept it again once the lease ends",
+          )
+          : failure(
+            409,
+            "quarantine_refused",
+            `The quarantined change cannot land: ${
+              outcome.reason ?? "refused"
+            }`,
+          );
+      }
+      report = flushed;
+      seq = await this.#v3.commitStore.landedSeq(
+        this.#v3.namespace,
+        commit.partition,
+        txnId,
+      );
+    }
+    const warning = await this.#afterCommit(commit.partition);
+    // The kept content goes only once the change it lands is replicated: a
+    // leader that loses the lead before then would otherwise leave neither
+    // (swamp-club#4258). Kept held, so the accept can be sent again.
+    if (this.#deps.ctx.confirmReplicated !== undefined) {
+      try {
+        await this.#deps.ctx.confirmReplicated();
+      } catch (error) {
+        const { code, message } = replicationErrorForClient(
+          error,
+          "internal_error",
+        );
+        this.#auditAccept(record, "failure", "replication not confirmed");
+        return Response.json({ code, message }, { status: 503 });
+      }
+    }
     const accepted = {
       ...record,
       state: "accepted" as const,
@@ -1775,7 +1885,6 @@ class DatastoreApi {
     };
     await store.markAccepted(accepted);
     this.#auditAccept(record, "success");
-    const warning = await this.#afterCommit(commit.partition);
     return Response.json({
       accepted: true,
       ...accepted,
@@ -2036,6 +2145,9 @@ class DatastoreApi {
       );
       if (!recheck.ok) return recheck;
       if (!(await content.unchanged())) return "content-changed" as const;
+      // A kept lease on the partition not adopted yet covers it, as a live
+      // one does (swamp-club#4258).
+      if (this.#adoptionPendingOn(partition)) return "lease-lost" as const;
       const lease = this.#leaseOpFor(partition, undefined);
       if (lease === "lost") return "lease-lost" as const;
       try {
@@ -2112,9 +2224,50 @@ class DatastoreApi {
 
   /** `DELETE locks/{leaseId}`: releases the caller's lease. */
   async releaseLock(leaseId: string): Promise<Response> {
-    return await this.#deps.locks.release(this.#caller.principal, leaseId)
-      ? Response.json({ released: true })
+    if (await this.#deps.locks.release(this.#caller.principal, leaseId)) {
+      return Response.json({ released: true });
+    }
+    // A kept lease not adopted yet is not lost (swamp-club#4258).
+    return this.#deps.locks.leaseAdoptionPending(leaseId)
+      ? adoptionPendingResponse()
       : leaseNotFound();
+  }
+
+  /** Whether the commit at `seq` in `partition` landed as `principal`. */
+  async #landedAs(
+    partition: PartitionKey,
+    seq: number,
+    principal: string,
+  ): Promise<boolean> {
+    let page;
+    try {
+      page = await this.#v3.commitStore.readPartition(
+        this.#v3.namespace,
+        partition,
+        seq,
+        1,
+      );
+    } catch (error) {
+      // Compacted since: its author can no longer be read, and another
+      // writer may have taken the txnId after the deposit. Refused rather
+      // than marked accepted over a change that may never have landed; the
+      // record stays held for an admin to discard.
+      if (error instanceof CommitsCompactedError) return false;
+      throw error;
+    }
+    const [landed] = page;
+    return landed?.commit.seq === seq &&
+      landed.commit.principal === principal;
+  }
+
+  /**
+   * Whether a write to `partition` must wait for the kept lease that may
+   * cover it to be adopted (swamp-club#4258).
+   */
+  #adoptionPendingOn(partition: PartitionKey): boolean {
+    return this.#deps.locks.adoptionPendingFor(
+      lockTargetOfPartition(partition),
+    );
   }
 
   /**
@@ -2715,6 +2868,17 @@ interface AcceptOutcome {
   reason?: string;
   /** Set when the author's own access refused the change's content. */
   contentRefused?: string;
+}
+
+/**
+ * `commit` under its lowercase txnId (swamp-club#4258): the form every
+ * landed commit carries, as the commit route refuses any other.
+ */
+async function withCanonicalTxnId(commit: Commit): Promise<Commit> {
+  const txnId = commit.txnId.toLowerCase();
+  return txnId === commit.txnId
+    ? commit
+    : await Commit.fromJSON({ ...commit.toJSON(), txnId });
 }
 
 /** A caller's memberships as a record keeps them: bounded. */

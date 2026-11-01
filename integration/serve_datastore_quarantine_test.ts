@@ -24,6 +24,15 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
+import type {
+  PersistedLease,
+  PersistedLeaseStore,
+} from "../src/domain/datastore_v3/persisted_lease.ts";
+import {
+  DatastoreLockLeases,
+  lockKeyOf,
+} from "../src/serve/datastore_locks.ts";
 import { grant } from "./serve_request_harness.ts";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { Commit } from "../src/domain/datastore_v3/commit.ts";
@@ -35,7 +44,10 @@ import {
 } from "../src/domain/datastore_v3/quarantine.ts";
 import type { AuditEvent } from "../src/domain/serve_audit/audit_event.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
-import { MAX_QUARANTINE_REQUEST_BYTES } from "../src/serve/datastore_api.ts";
+import {
+  MAX_CONCURRENT_CHUNK_REQUESTS,
+  MAX_QUARANTINE_REQUEST_BYTES,
+} from "../src/serve/datastore_api.ts";
 import {
   createDatastoreStatusDeps,
   datastoreStatus,
@@ -48,6 +60,7 @@ import {
   blobSaveOps,
   call,
   commitBody,
+  modelKey,
   partitionPath,
   post,
   save,
@@ -788,16 +801,37 @@ Deno.test({
           (_, index) => bobsChange(server, index + 1),
         ),
       );
-      const statuses = await Promise.all(
-        changes.map(async (change) =>
-          (await deposit(server, "bob-token", depositBody(change))).status
-        ),
-      );
+      // Sent as many at a time as serve takes one caller's uploads
+      // (swamp-club#4258), so every one reaches the cap check.
+      const codes: string[] = [];
+      for (
+        let at = 0;
+        at < changes.length;
+        at += MAX_CONCURRENT_CHUNK_REQUESTS
+      ) {
+        codes.push(
+          ...await Promise.all(
+            changes.slice(at, at + MAX_CONCURRENT_CHUNK_REQUESTS).map(
+              async (change) => {
+                const { status, json } = await deposit(
+                  server,
+                  "bob-token",
+                  depositBody(change),
+                );
+                return status === 201 ? "kept" : String(json.code);
+              },
+            ),
+          ),
+        );
+      }
       assertEquals(
-        statuses.filter((status) => status === 201).length,
+        codes.filter((code) => code === "kept").length,
         MAX_QUARANTINED_PER_PRINCIPAL,
       );
-      assertEquals(statuses.filter((status) => status === 429).length, 6);
+      assertEquals(
+        codes.filter((code) => code === "quarantine_full").length,
+        6,
+      );
     });
   },
 });
@@ -983,6 +1017,318 @@ Deno.test({
         undefined,
       );
       assertEquals(await server.quarantine.heldKeys(), []);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore quarantine: an accept whose replication is not confirmed keeps the change held with its content, and a retry marks it accepted without landing it again",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer([...writer(), ...bobReads()], async (server) => {
+      const change = await bobsChange(server, 1);
+      assertEquals(
+        (await deposit(server, "bob-token", depositBody(change))).status,
+        201,
+      );
+      const txnId = change.commit.txnId;
+      const path = `quarantine/${txnId}/accept`;
+      let replicates = false;
+      server.ctx.confirmReplicated = () =>
+        replicates
+          ? Promise.resolve()
+          : Promise.reject(new Error("replica unreachable"));
+
+      const unconfirmed = await call(server, "POST", path, "alice-token");
+      assertEquals(unconfirmed.status, 503, JSON.stringify(unconfirmed.json));
+      // Held, with its content: a leader that loses the lead now leaves the
+      // change for the next one to land.
+      assertEquals((await server.quarantine.find(txnId))?.state, "held");
+      assert(await server.quarantine.content(txnId) !== undefined);
+      const partition = change.commit.partition;
+      const seq = await server.v3.commitStore.landedSeq(
+        server.v3.namespace,
+        partition,
+        txnId,
+      );
+      assertEquals(seq, 1);
+
+      replicates = true;
+      const accepted = await call(server, "POST", path, "alice-token");
+      assertEquals(accepted.status, 200, JSON.stringify(accepted.json));
+      assertEquals(accepted.json.seq, seq);
+      assertEquals((await server.quarantine.find(txnId))?.state, "accepted");
+      assertEquals(await server.quarantine.content(txnId), undefined);
+      assertEquals(
+        (await server.v3.commitStore.head(server.v3.namespace, partition)).seq,
+        1,
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore quarantine: an accept that landed the change but stopped before marking it is marked accepted by the next accept, never landed twice",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer([...writer(), ...bobReads()], async (server) => {
+      const change = await bobsChange(server, 1);
+      assertEquals(
+        (await deposit(server, "bob-token", depositBody(change))).status,
+        201,
+      );
+      const txnId = change.commit.txnId;
+      const path = `quarantine/${txnId}/accept`;
+      const markAccepted = server.quarantine.markAccepted.bind(
+        server.quarantine,
+      );
+      let stops = true;
+      server.quarantine.markAccepted = (record) => {
+        if (stops) {
+          stops = false;
+          return Promise.reject(new Error("serve stopped"));
+        }
+        return markAccepted(record);
+      };
+
+      const stopped = await call(server, "POST", path, "alice-token");
+      assertEquals(stopped.status, 500, JSON.stringify(stopped.json));
+      assertEquals((await server.quarantine.find(txnId))?.state, "held");
+
+      const accepted = await call(server, "POST", path, "alice-token");
+      assertEquals(accepted.status, 200, JSON.stringify(accepted.json));
+      assertEquals(accepted.json.seq, 1);
+      assertEquals((await server.quarantine.find(txnId))?.state, "accepted");
+      assertEquals(
+        (await server.v3.commitStore.head(
+          server.v3.namespace,
+          change.commit.partition,
+        )).seq,
+        1,
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore quarantine: a caller's deposits share its upload slots, so one past them is refused before its body is read",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer([...writer(), ...bobReads()], async (server) => {
+      // Deposits whose bodies have not arrived yet hold every slot, each
+      // started once the one before holds its own.
+      const bodies: ReadableStreamDefaultController<Uint8Array>[] = [];
+      const pending: Promise<Response>[] = [];
+      for (let slot = 0; slot < MAX_CONCURRENT_CHUNK_REQUESTS; slot++) {
+        pending.push(server.handle(
+          new Request(`${server.url}/quarantine`, {
+            method: "POST",
+            headers: {
+              authorization: "Bearer bob-token",
+              "content-type": "application/json",
+            },
+            // Pulled only once serve reads the body, inside its slot.
+            body: new ReadableStream<Uint8Array>(
+              {
+                pull: (controller) => {
+                  if (!bodies.includes(controller)) bodies.push(controller);
+                  return new Promise(() => {});
+                },
+              },
+              { highWaterMark: 0 },
+            ),
+            duplex: "half",
+          } as RequestInit),
+        ));
+        await waitFor(
+          () => bodies.length === slot + 1,
+          "the slow deposit holds a slot",
+        );
+      }
+      const change = await bobsChange(server, 1);
+      const refused = await deposit(server, "bob-token", depositBody(change));
+      assertEquals(refused.status, 429, JSON.stringify(refused.json));
+
+      for (const body of bodies) {
+        body.enqueue(new TextEncoder().encode("{}"));
+        body.close();
+      }
+      for (const response of await Promise.all(pending)) {
+        assertEquals(response.status, 400);
+        await response.body?.cancel();
+      }
+      assertEquals(
+        (await deposit(server, "bob-token", depositBody(change))).status,
+        201,
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore quarantine: a deposit serve would not keep is refused before its chunks are decoded",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer([...writer(), ...bobReads()], async (server) => {
+      // Alice may make the change, so it is not one serve keeps; its chunk
+      // data is not even base64.
+      const change = await bobsChange(server, 1);
+      const refused = await deposit(server, "alice-token", {
+        commit: change.commit.toJSON(),
+        base: { seq: 0 },
+        chunks: [{ sha256: change.chunk.sha256, data: "%%% not base64 %%%" }],
+      });
+      assertEquals(refused.status, 409, JSON.stringify(refused.json));
+      assertEquals(refused.json.code, "not_quarantinable");
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore quarantine: a re-cased copy of a landed txnId is answered as landed, never kept",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer([...writer(), ...bobReads()], async (server) => {
+      const txnId = crypto.randomUUID();
+      const landed = await post(
+        partitionPath(server),
+        "alice-token",
+        await saveBody(server, 1, 0, { txnId }),
+      );
+      assertEquals(landed.status, 200, JSON.stringify(landed.json));
+
+      const change = await bobsChange(server, 1);
+      const recased = await Commit.fromJSON({
+        ...change.commit.toJSON(),
+        txnId: txnId.toUpperCase(),
+      });
+      const refused = await deposit(server, "bob-token", {
+        ...depositBody(change) as Record<string, unknown>,
+        commit: recased.toJSON(),
+      });
+      assertEquals(refused.status, 409, JSON.stringify(refused.json));
+      assertEquals(refused.json.code, "quarantine_landed");
+      assertEquals(await server.quarantine.find(txnId), undefined);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore quarantine: an accept waits while the kept lease on its behavior is not adopted yet, and the change stays held",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const records = new Map<string, PersistedLease>();
+    const blocked = new Set<string>();
+    const store: PersistedLeaseStore = {
+      save: (_fence, lease) => {
+        records.set(lease.lockKey, lease);
+        return Promise.resolve();
+      },
+      remove: (_fence, lockKey) => {
+        records.delete(lockKey);
+        return Promise.resolve();
+      },
+      adopt: () => Promise.resolve([...records.values()]),
+    };
+    await withServer(
+      [...writer(), ...bobReads()],
+      async (server) => {
+        const change = await bobsChange(server, 1);
+        assertEquals(
+          (await deposit(server, "bob-token", depositBody(change))).status,
+          201,
+        );
+        const key = modelKey(server);
+        records.set(key, {
+          leaseId: crypto.randomUUID(),
+          lockKey: key,
+          principal: "user:caller",
+          fence: 1,
+          holdMs: 3_600_000,
+          remainingMs: 3_600_000,
+          recordedAt: new Date().toISOString(),
+          leaderFence: 1,
+        });
+        blocked.add(key);
+        await server.locks.adopt();
+        assert(server.locks.adopting);
+
+        const txnId = change.commit.txnId;
+        const waiting = await call(
+          server,
+          "POST",
+          `quarantine/${txnId}/accept`,
+          "alice-token",
+        );
+        assertEquals(waiting.status, 503, JSON.stringify(waiting.json));
+        assertEquals(waiting.json.code, "serve_not_leader");
+        assertEquals((await server.quarantine.find(txnId))?.state, "held");
+      },
+      undefined,
+      {
+        locks: (createLock) =>
+          new DatastoreLockLeases({
+            createLock: async (target) => {
+              const lock = await createLock(target);
+              return {
+                tryAcquire: () =>
+                  blocked.has(lockKeyOf(target))
+                    ? Promise.resolve(false)
+                    : lock.tryAcquire(),
+                release: () => lock.release(),
+              };
+            },
+            persistence: { store, leaderFence: () => 2 },
+            maxWaitMs: 20,
+            retryIntervalMs: 5,
+            adoptRetryMs: 60_000,
+          }),
+      },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "datastore quarantine: an accept refuses a change whose txnId another author's commit took, and keeps it held",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer([...writer(), ...bobReads()], async (server) => {
+      const change = await bobsChange(server, 1);
+      assertEquals(
+        (await deposit(server, "bob-token", depositBody(change))).status,
+        201,
+      );
+      const txnId = change.commit.txnId;
+      const taken = await post(
+        partitionPath(server),
+        "alice-token",
+        await saveBody(server, 1, 0, { txnId }),
+      );
+      assertEquals(taken.status, 200, JSON.stringify(taken.json));
+
+      const refused = await call(
+        server,
+        "POST",
+        `quarantine/${txnId}/accept`,
+        "alice-token",
+      );
+      assertEquals(refused.status, 409, JSON.stringify(refused.json));
+      assertEquals(refused.json.code, "quarantine_refused");
+      assertEquals((await server.quarantine.find(txnId))?.state, "held");
     });
   },
 });

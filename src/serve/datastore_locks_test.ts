@@ -35,6 +35,7 @@ import { partitionOf } from "../domain/datastore_v3/partition_key.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import { leaseLockKeyOfPartition } from "../infrastructure/datastore_v3/serve_lease_registry.ts";
 import { ControlPlaneLeaseStore } from "../infrastructure/datastore_v3/control_plane_lease_store.ts";
+import type { PersistedLease } from "../domain/datastore_v3/persisted_lease.ts";
 
 const ID = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a01";
 const RUN = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a02";
@@ -1253,5 +1254,166 @@ Deno.test("DatastoreLockLeases.whenAdopted: while the kept leases cannot even be
     );
   } finally {
     await subject.dispose();
+  }
+});
+
+Deno.test("DatastoreLockLeases.adoptionPendingFor: only a key whose kept lease is not adopted yet waits, and every key while the kept leases are unknown", async () => {
+  const shared = memoryControlPlane();
+  const first = node(shared, () => 1);
+  // The leader before's run still holds the behavior's lock here.
+  const second = node(shared, () => 2, { maxWaitMs: 10, adoptRetryMs: 5 });
+  const other: LockTarget = {
+    kind: "model",
+    modelType: "aws/ec2",
+    modelId: RUN,
+  };
+  try {
+    // Before adoption starts, the kept leases are unknown.
+    assertEquals(second.subject.adoptionPendingFor(other), true);
+    assertEquals(second.subject.adoptionPendingFor(undefined), true);
+    assertEquals(second.subject.leaseAdoptionPending("any"), true);
+
+    await first.subject.adopt();
+    const taken = await first.subject.acquire(explicit("user:alice"));
+    assert(taken.kind === "acquired");
+    second.locks.serveTakes(lockKeyOf(model));
+    await second.subject.adopt();
+    assert(second.subject.adopting);
+
+    assertEquals(second.subject.adoptionPendingFor(model), true);
+    assertEquals(second.subject.adoptionPendingFor(other), false);
+    assertEquals(second.subject.adoptionPendingFor(undefined), false);
+    assertEquals(
+      second.subject.leaseAdoptionPending(taken.lease.leaseId),
+      true,
+    );
+    // A lease taken meanwhile is live, so it does not wait.
+    const meanwhile = await second.subject.acquire({
+      ...explicit("user:bob"),
+      target: other,
+    });
+    assert(meanwhile.kind === "acquired");
+    assertEquals(
+      second.subject.leaseAdoptionPending(meanwhile.lease.leaseId),
+      false,
+    );
+
+    second.locks.held.delete(lockKeyOf(model));
+    await waitFor(() => !second.subject.adopting, "the kept lease adopted");
+    assertEquals(second.subject.adoptionPendingFor(model), false);
+    assertEquals(
+      second.subject.leaseAdoptionPending(taken.lease.leaseId),
+      false,
+    );
+    assertEquals(
+      second.subject.fencedLeaseOn(other)?.leaseId,
+      meanwhile.lease.leaseId,
+    );
+  } finally {
+    await first.subject.dispose();
+    await second.subject.dispose();
+  }
+});
+
+Deno.test("lockTargetOfPartition: a partition's lock key is canonical, so it matches the key a kept lease is adopted under", () => {
+  for (
+    const partition of [
+      partitionOf({
+        kind: "model",
+        type: ModelType.create("AWS::EC2"),
+        id: ID.toUpperCase(),
+      }),
+      partitionOf({ kind: "run", workflowId: ID, runId: RUN.toUpperCase() }),
+    ]
+  ) {
+    const key = lockKeyOf(lockTargetOfPartition(partition)!);
+    const parsed = parseLockKey(key);
+    assert(parsed !== undefined, key);
+    assertEquals(lockKeyOf(parsed), key);
+  }
+});
+
+Deno.test("DatastoreLockLeases.adopt: a retry never holds back writes to a lease granted while adopting", async () => {
+  const locks = fakeLocks();
+  const other: LockTarget = {
+    kind: "model",
+    modelType: "aws/ec2",
+    modelId: RUN,
+  };
+  // The kept lease comes first, so a retry reaches the lease granted
+  // meanwhile only after waiting on its lock.
+  const records: PersistedLease[] = [{
+    leaseId: crypto.randomUUID(),
+    lockKey: lockKeyOf(model),
+    principal: "user:alice",
+    fence: 1,
+    holdMs: 3_600_000,
+    remainingMs: 3_600_000,
+    recordedAt: new Date().toISOString(),
+    leaderFence: 1,
+  }];
+  let adopts = 0;
+  let triedSinceRetry = 0;
+  const subject = leases(locks, {
+    createLock: async (target) => {
+      const lock = await locks.createLock(target);
+      return {
+        tryAcquire: () => {
+          if (adopts >= 2 && lockKeyOf(target) === lockKeyOf(model)) {
+            triedSinceRetry++;
+          }
+          return lock.tryAcquire();
+        },
+        release: () => lock.release(),
+      };
+    },
+    persistence: {
+      store: {
+        save: (_fence, lease) => {
+          const at = records.findIndex((r) => r.lockKey === lease.lockKey);
+          if (at === -1) records.push(lease);
+          else records[at] = lease;
+          return Promise.resolve();
+        },
+        remove: (_fence, lockKey) => {
+          const at = records.findIndex((r) => r.lockKey === lockKey);
+          if (at !== -1) records.splice(at, 1);
+          return Promise.resolve();
+        },
+        adopt: () => {
+          adopts++;
+          return Promise.resolve(records.filter((r) => r.pending !== true));
+        },
+      },
+      leaderFence: () => 2,
+    },
+    // Long enough that the assertions below run while a retry still waits
+    // on the kept lease, before it reaches the one granted meanwhile.
+    maxWaitMs: 300,
+    adoptRetryMs: 5,
+  });
+  // The leader before's run holds the kept lease's lock.
+  locks.serveTakes(lockKeyOf(model));
+  const first = subject.adopt();
+  try {
+    await waitFor(() => subject.adoptionPendingFor(other) === false, "known");
+    const meanwhile = await subject.acquire({
+      ...explicit("user:bob"),
+      target: other,
+    });
+    assert(meanwhile.kind === "acquired");
+    await waitFor(
+      () => adopts >= 2 && triedSinceRetry > 0,
+      "a retry waits on the kept lease's lock",
+    );
+    assertEquals(subject.adoptionPendingFor(other), false);
+    assertEquals(subject.leaseAdoptionPending(meanwhile.lease.leaseId), false);
+    assertEquals(subject.adoptionPendingFor(model), true);
+    assertEquals(subject.leaseAdoptionPending(records[0].leaseId), true);
+    // An id no kept lease has is answered as lost, not as pending.
+    assertEquals(subject.leaseAdoptionPending(crypto.randomUUID()), false);
+  } finally {
+    await subject.dispose();
+    await first;
   }
 });

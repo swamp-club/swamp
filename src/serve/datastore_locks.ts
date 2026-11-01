@@ -395,6 +395,8 @@ export class DatastoreLockLeases {
    * them ({@link whenAdopted}).
    */
   #pendingAdoption: ReadonlySet<string> | "all" = new Set();
+  /** The ids of the kept leases whose keys {@link #pendingAdoption} lists. */
+  #pendingLeaseIds: ReadonlySet<string> = new Set();
   readonly #adoptRetryMs: number;
   /**
    * An adoption that failed being tried again, with lease requests still
@@ -426,8 +428,9 @@ export class DatastoreLockLeases {
   }
 
   /**
-   * Whether kept leases are still being adopted. The API answers lease
-   * requests and commits with serve_not_leader until they are.
+   * Whether kept leases are still being adopted. The API answers the lease
+   * listing with serve_not_leader until they are, and each write to a key
+   * still pending ({@link adoptionPendingFor}, {@link leaseAdoptionPending}).
    */
   get adopting(): boolean {
     return this.#adopting;
@@ -441,6 +444,30 @@ export class DatastoreLockLeases {
     if (!this.#adopting) return false;
     const pending = this.#pendingAdoption;
     return pending === "all" || pending.has(lockKey);
+  }
+
+  /**
+   * Whether a write to `target` must wait for kept leases to be adopted
+   * (swamp-club#4258): its key's kept lease is not adopted yet, or the kept
+   * leases could not be read, so any key may hold one. A target no lease
+   * covers (undefined) waits only in that second case.
+   */
+  adoptionPendingFor(target: LockTarget | undefined): boolean {
+    if (!this.#adopting) return false;
+    if (this.#pendingAdoption === "all") return true;
+    return target !== undefined && this.#pendingAdoption.has(lockKeyOf(target));
+  }
+
+  /**
+   * Whether a renewal or release of `leaseId` must wait for kept leases to
+   * be adopted (swamp-club#4258): it is a kept lease not adopted yet, or
+   * the kept leases could not be read, so it may be one. Any other lease
+   * not live here is answered as lost.
+   */
+  leaseAdoptionPending(leaseId: string): boolean {
+    if (!this.#adopting) return false;
+    return this.#pendingAdoption === "all" ||
+      (this.#pendingLeaseIds.has(leaseId) && !this.#leases.has(leaseId));
   }
 
   /**
@@ -783,9 +810,17 @@ export class DatastoreLockLeases {
         signal: this.#lifetime.signal,
       });
       const skewMs = persistence.skewMs ?? WRITER_LEASE_CLOCK_SKEW_MS;
-      // Known now: only these keys may hold a kept lease.
-      const pending = new Set(kept.map((record) => record.lockKey));
+      // Known now: only these keys may hold a kept lease. One this leader
+      // already holds under the record's own id (adopted by an earlier
+      // try, or granted while adopting) is not pending: a retry never holds
+      // back its writes (swamp-club#4258).
+      const waiting = kept.filter((record) =>
+        this.#byKey.get(record.lockKey) !== record.leaseId
+      );
+      const pending = new Set(waiting.map((record) => record.lockKey));
+      const pendingIds = new Set(waiting.map((record) => record.leaseId));
       this.#pendingAdoption = pending;
+      this.#pendingLeaseIds = pendingIds;
       let finished = true;
       for (const record of kept) {
         if (this.#disposed) return false;
@@ -797,6 +832,7 @@ export class DatastoreLockLeases {
           finished = false;
         } else {
           pending.delete(record.lockKey);
+          pendingIds.delete(record.leaseId);
         }
       }
       return finished;
