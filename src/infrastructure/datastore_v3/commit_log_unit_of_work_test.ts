@@ -1616,6 +1616,7 @@ function recordingTracker() {
     open: 0,
     dropped: [] as number[],
     versionDirs: [] as string[][],
+    sentTxnIds: [] as string[][],
   };
   return {
     seen,
@@ -1626,9 +1627,14 @@ function recordingTracker() {
       ended: () => {
         seen.open--;
       },
-      dropped: (openedAt: number, versionDirs: readonly string[]) => {
+      dropped: (
+        openedAt: number,
+        versionDirs: readonly string[],
+        sentTxnIds: readonly string[],
+      ) => {
         seen.dropped.push(openedAt);
         seen.versionDirs.push([...versionDirs]);
+        seen.sentTxnIds.push([...sentTxnIds]);
       },
     },
   };
@@ -1655,6 +1661,33 @@ for (const reason of ["version-live", "version-reused"] as const) {
     assertEquals(seen.open, 0);
   });
 }
+
+Deno.test("createCommitLogUnitOfWork: a dropped root reports the txnIds it sent, its landed checkpoint and its refused commit included, once each (swamp-club#4257)", async () => {
+  const sink = new MemorySink();
+  const { seen, tracker } = recordingTracker();
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory(), { tracker }),
+  );
+  await uow.stageOp({ partition: MODEL, op: await savePut("a", 1) });
+  await uow.checkpoint();
+  assertEquals(sink.landed.length, 1);
+  const refused: string[] = [];
+  sink.beforeAppend = (commit) => {
+    refused.push(commit.txnId);
+    throw new CommitRejectedError("stale-fence", "refused");
+  };
+  await uow.stageOp({ partition: MODEL, op: await savePut("b", 1) });
+  await assertRejects(() => uow.commit(), PartitionsRefusedError);
+  assert(seen.sentTxnIds.length > 0);
+  for (const sent of seen.sentTxnIds) {
+    assertEquals(new Set(sent).size, sent.length);
+    assertEquals(
+      new Set(sent),
+      new Set([sink.landed[0].txnId, ...refused]),
+    );
+  }
+});
 
 Deno.test("createCommitLogUnitOfWork: a root refused after a child's commit rolled up into it reports dropped work (swamp-club#3553)", async () => {
   const sink = new MemorySink();

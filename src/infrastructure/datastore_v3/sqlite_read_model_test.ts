@@ -380,6 +380,38 @@ Deno.test("SqliteReadModel.recover: a committed file whose name the filesystem l
   });
 });
 
+Deno.test("SqliteReadModel.recover: puts back a file whose commit the checkout calls its own work, which a catch-up leaves alone (swamp-club#4257)", async () => {
+  await withEnv(async (env) => {
+    await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+    const asked: number[] = [];
+    const readModel = env.open({
+      holdsOwnWork: (commit) => {
+        asked.push(commit.seq);
+        return true;
+      },
+    });
+    try {
+      // A unit's save that never committed, over the commit it sent.
+      const path = env.contentPath("", "a", 1);
+      await writeLocal(path, "dropped");
+      await readModel.catchUp(signal());
+      assertEquals(asked, [1]);
+      assertEquals(await readOrAbsent(path), "dropped");
+
+      // A recovery puts back every file, whatever the checkout holds open.
+      await readModel.recover("", {
+        since: 0,
+        admits: datastoreKeyFilter(undefined, undefined),
+        signal: signal(),
+      });
+      assertEquals(await readOrAbsent(path), "a@1");
+      assertEquals(asked, [1]);
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
 Deno.test("SqliteReadModel.recover: an unowned file listed decomposed is kept when its composed key is filtered out, and removed when not (swamp-club#3736)", async () => {
   await withEnv(async (env) => {
     const kept = env.contentPath("", "café", 1);

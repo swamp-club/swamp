@@ -392,13 +392,15 @@ export interface SqliteReadModelOptions {
    * change replaces. A catch-up of a serve-mode checkout can run while a
    * unit is open: replaying the unit's own checkpoint over a later write
    * would hand the unit's commit the older version. Asked once per
-   * commit.
+   * commit, and never in {@link SqliteReadModel.recover}, whose replay puts
+   * back every file (swamp-club#4257).
    */
   readonly holdsOwnWork?: (commit: Commit) => boolean;
   /**
    * Told once a commit's changes are applied, or found already applied:
-   * the read model never replays it again but in a recovery, which runs
-   * with no unit open. A caller of {@link holdsOwnWork} forgets it then.
+   * the read model never replays it again but in a recovery, which never
+   * asks {@link holdsOwnWork}. A caller of {@link holdsOwnWork} forgets it
+   * then.
    */
   readonly ownWorkApplied?: (commit: Commit) => void;
 }
@@ -443,6 +445,12 @@ export class SqliteReadModel implements ReadModel {
   readonly #holdsOwnWork: ((commit: Commit) => boolean) | undefined;
   /** {@link SqliteReadModelOptions.ownWorkApplied}. */
   readonly #ownWorkApplied: ((commit: Commit) => void) | undefined;
+  /**
+   * Set while {@link recover} replays (swamp-club#4257): it puts back every
+   * file, so no commit is taken for work the checkout's files hold. A root
+   * that waits on the recovery counts as open meanwhile.
+   */
+  #recovering = false;
   /** {@link SqliteReadModelOptions.recordsChanged}. */
   readonly #recordsChanged:
     | ((namespace: string, keys: readonly string[]) => Promise<void>)
@@ -693,7 +701,12 @@ export class SqliteReadModel implements ReadModel {
           this.#reset(generation);
           this.#catalog.markPopulated(generation);
           await this.#retryAtRiskCopies(options.signal);
-          await this.#catchUpFeed(options.signal);
+          this.#recovering = true;
+          try {
+            await this.#catchUpFeed(options.signal);
+          } finally {
+            this.#recovering = false;
+          }
           return await this.#sweepUnowned(namespace, options);
         }),
       options.signal,
@@ -1697,7 +1710,8 @@ export class SqliteReadModel implements ReadModel {
       const isConfig = commit.partition.kind === "config";
       const recordsBases = isConfig && this.#writerInstance !== undefined &&
         commit.writer.instance !== this.#writerInstance;
-      const ownWork = this.#holdsOwnWork?.(commit) === true;
+      const ownWork = !this.#recovering &&
+        this.#holdsOwnWork?.(commit) === true;
       for (const keyChange of finalKeyStates(commit)) {
         signal.throwIfAborted();
         const key = keyChange.key.toString();

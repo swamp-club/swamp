@@ -376,9 +376,15 @@ export interface UnitTracker {
    * `openedAt` is its root's open time, epoch milliseconds: nothing it
    * wrote is older. `versionDirs` are the keys of the data version
    * directories it created (swamp-club#3736): whatever is left in them is
-   * its work, however old the files' mtimes.
+   * its work, however old the files' mtimes. `sentTxnIds` are the txnIds of
+   * the commits it handed to its sink, landed or not (swamp-club#4257): the
+   * checkout's files may hold its later, dropped writes over them.
    */
-  dropped(openedAt: number, versionDirs: readonly string[]): void;
+  dropped(
+    openedAt: number,
+    versionDirs: readonly string[],
+    sentTxnIds: readonly string[],
+  ): void;
 }
 
 /** A path-only change staged into a commit-log unit, which takes typed ones. */
@@ -533,7 +539,7 @@ export function createCommitLogUnitOfWork(
   const dropWork = (): void => {
     if (!touched) return;
     try {
-      options.tracker?.dropped(openedAt, versionDirs);
+      options.tracker?.dropped(openedAt, versionDirs, [...outbox.sent]);
     } catch (error) {
       logger
         .warn`Recording the work a v3 unit of work dropped failed: ${error}`;
@@ -590,6 +596,7 @@ export function createCommitLogUnitOfWork(
   const outbox: UnitOutbox = {
     unitId: crypto.randomUUID(),
     prepared: new Map(),
+    sent: new Set(),
   };
 
   /**
@@ -1458,6 +1465,7 @@ async function appendGroup(
             }
           }
         }
+        unitOutbox.sent.add(group.txnId);
         try {
           await options.sink.append(commit);
           return;
@@ -1672,6 +1680,7 @@ export async function appendForwardedCommit(
   const unitOutbox: UnitOutbox = {
     unitId: crypto.randomUUID(),
     prepared: new Map(),
+    sent: new Set(),
   };
   try {
     await appendGroup(
@@ -1699,6 +1708,12 @@ interface UnitOutbox {
   readonly unitId: string;
   /** Entries prepared and not settled, by the group's txnId. */
   readonly prepared: Map<string, OutboxKey>;
+  /**
+   * The txnIds of the commits handed to the sink, noted before each append
+   * (swamp-club#4257): one that fails may still have landed. A dropped unit
+   * reports them.
+   */
+  readonly sent: Set<string>;
 }
 
 function outboxKeyOfGroup(

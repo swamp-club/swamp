@@ -1032,8 +1032,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     // (swamp-club#4097).
     writerInstance: writer.instance,
     // A commit this process sent, met while one of its units is open
-    // (swamp-club#4249). Dropped work is recovered only with no unit open,
-    // so its replay still puts back every file.
+    // (swamp-club#4249). A unit that drops its work forgets the commits it
+    // sent (swamp-club#4257), and a recovery's replay never asks.
     holdsOwnWork: (commit) => units.open > 0 && units.sent.has(commit.txnId),
     ownWorkApplied: (commit) => {
       units.sent.delete(commit.txnId);
@@ -1354,7 +1354,10 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     ended: () => {
       units.open--;
     },
-    dropped: (openedAt, versionDirs) => {
+    dropped: (openedAt, versionDirs, sentTxnIds) => {
+      // Its files may hold later writes that never committed over the
+      // commits it sent: a catch-up puts those commits back (swamp-club#4257).
+      for (const txnId of sentTxnIds) units.sent.delete(txnId);
       units.droppedSince = Math.min(units.droppedSince ?? openedAt, openedAt);
       units.droppedGeneration++;
       if (versionDirs.length === 0) return;
