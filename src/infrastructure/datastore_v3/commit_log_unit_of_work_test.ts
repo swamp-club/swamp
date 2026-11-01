@@ -1689,6 +1689,41 @@ Deno.test("createCommitLogUnitOfWork: a dropped root reports the txnIds it sent,
   }
 });
 
+Deno.test("createCommitLogUnitOfWork: a refusal that drops one partition reports only that partition's sent txnIds (swamp-club#4257)", async () => {
+  const sink = new MemorySink();
+  const { seen, tracker } = recordingTracker();
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory(), { tracker }),
+  );
+  await uow.stageOp({ partition: MODEL, op: await savePut("a", 1) });
+  await uow.stageOp({ partition: AUTO, op: await autoPut() });
+  await uow.checkpoint();
+  const [modelCheckpoint] = sink.commitsOf(MODEL);
+  const [autoCheckpoint] = sink.commitsOf(AUTO);
+  const refused: string[] = [];
+  sink.beforeAppend = (commit) => {
+    if (!commit.partition.equals(MODEL)) return;
+    refused.push(commit.txnId);
+    throw new CommitRejectedError("stale-fence", "refused");
+  };
+  await uow.stageOp({ partition: MODEL, op: await savePut("b", 1) });
+  await uow.stageOp({ partition: AUTO, op: await autoPut() });
+  await assertRejects(() => uow.checkpoint(), PartitionsRefusedError);
+  // The auto-definition partition still committed: its checkpoints hold
+  // work the unit goes on with.
+  assertEquals(sink.commitsOf(AUTO).length, 2);
+  assertEquals(seen.sentTxnIds.length, 1);
+  assertEquals(
+    new Set(seen.sentTxnIds[0]),
+    new Set([modelCheckpoint.txnId, ...refused]),
+  );
+  assert(!seen.sentTxnIds[0].includes(autoCheckpoint.txnId));
+  // Dropping the whole unit reports every commit it sent.
+  await uow.abandon();
+  assert(seen.sentTxnIds.at(-1)!.includes(autoCheckpoint.txnId));
+});
+
 Deno.test("createCommitLogUnitOfWork: a root refused after a child's commit rolled up into it reports dropped work (swamp-club#3553)", async () => {
   const sink = new MemorySink();
   const hook = contextHook();

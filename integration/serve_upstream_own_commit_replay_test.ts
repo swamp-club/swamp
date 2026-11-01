@@ -448,8 +448,11 @@ Deno.test({
           duringB = await fileStatus(client.repoDir, workflow, run);
         } finally {
           release.resolve();
-          await other;
-          await endCommand();
+          try {
+            await other;
+          } finally {
+            await endCommand();
+          }
         }
       });
       assertEquals(runCommits, 2);
