@@ -6926,9 +6926,16 @@ checkout's local root. The format guard
 records the config as v3 (`recordServeUpstreamFormat`); serve's `409
 datastore_not_v3` stands in for the marker check. The checkout gets a local
 root, `.swamp/_datastore_v3_copies/serve-<hash of address and namespace>`,
-which the v3 helpers open as they open a filesystem datastore. Its locks are
-file locks under the root, whatever the datastore's type
-(`setV3BucketLockRoot`). It holds:
+which the v3 helpers open as they open a filesystem datastore. The first
+command to use the checkout creates the root; when two create it at once,
+the one whose format marker loses the race uses the marker the other wrote
+and finishes the setup (`adoptConcurrentMarker`, swamp-club#4253). It decides
+from the look it took before creating the root: when that look found no
+marker, a v3 marker found since is the other command's, however far that
+command has got. `swamp datastore setup` still refuses a marker that appeared
+meanwhile. When the marker the command finds is not yet whole, it refuses
+with `datastore_v3_copy_setup_raced` (exit 75). Its locks are file locks under
+the root, whatever the datastore's type (`setV3BucketLockRoot`). It holds:
 
 - `commits.db`, a **follower copy** of serve's commit log;
 - `serve_upstream.db`, serve-mode state: the changes-feed cursor and the head

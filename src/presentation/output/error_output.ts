@@ -42,6 +42,7 @@ import {
   SERVE_FOLLOWER_BEHIND_CODE,
   SERVE_NOT_LEADER_CODE,
 } from "../../domain/datastore_v3/serve_leader.ts";
+import { V3_COPY_SETUP_RACED_CODE } from "../../domain/datastore_v3/copy_setup_raced_error.ts";
 import {
   V3_SERVE_UNREACHABLE_CODE,
   V3_STORAGE_UNREACHABLE_CODE,
@@ -205,6 +206,9 @@ export function buildErrorJson(
  * - `75` for `lease_record_not_removed` (swamp-club#4195): a forced release
  *   ended the lease, but serve could not remove its kept record, so a
  *   takeover may bring it back; forcing the release again removes it.
+ * - `75` for `datastore_v3_copy_setup_raced` (swamp-club#4253): another
+ *   command in the checkout is setting up its local copy of serve's
+ *   datastore, and nothing changed.
  * - `1` for all other errors, including a missing or revoked credential.
  */
 export function exitCodeForError(error: unknown): number {
@@ -243,6 +247,8 @@ export function exitCodeForError(error: unknown): number {
   if (code === OFFLINE_CONFIG_EDIT_CODE) return 75;
   // A forced release whose kept record stayed: retrying finishes it.
   if (code === LEASE_RECORD_NOT_REMOVED_CODE) return 75;
+  // Another command is setting up the checkout's copy (swamp-club#4253).
+  if (code === V3_COPY_SETUP_RACED_CODE) return 75;
   return 1;
 }
 

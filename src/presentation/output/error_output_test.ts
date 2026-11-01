@@ -35,6 +35,7 @@ import {
   renderError,
   tlsErrorHint,
 } from "./error_output.ts";
+import { V3CopySetupRacedError } from "../../domain/datastore_v3/copy_setup_raced_error.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   markModelWording,
@@ -710,6 +711,10 @@ Deno.test("exitCodeForError: returns 75 for a forced release whose kept lease re
     exitCodeForError(new UserError("kept record", "lease_record_not_removed")),
     75,
   );
+});
+
+Deno.test("exitCodeForError: returns 75 for a copy another command is still setting up (swamp-club#4253)", () => {
+  assertEquals(exitCodeForError(new V3CopySetupRacedError("/repo/copy")), 75);
 });
 
 Deno.test("exitCodeForError: returns 75 for LockTimeoutError", () => {
