@@ -145,20 +145,11 @@ Deno.test("renderUntrustedMarkdownToTerminal: a link that is not https prints it
   }
 });
 
-Deno.test("renderUntrustedMarkdownToTerminal: a mention excerpt removes the link from its bare http URL and keeps its tag as text", async () => {
-  const fixture = JSON.parse(
-    await Deno.readTextFile(
-      new URL(
-        "../infrastructure/http/inbox_responses.fixture.json",
-        import.meta.url,
-      ),
-    ),
-  );
-  const mention = fixture.webKindsPage.messages.find((
-    m: { kind: string },
-  ) => m.kind === "mention");
+Deno.test("renderUntrustedMarkdownToTerminal: a message body removes the link from its bare http URL and keeps its tag as text", () => {
   const result = stripAnsiCode(
-    renderUntrustedMarkdownToTerminal(mention.body),
+    renderUntrustedMarkdownToTerminal(
+      "<b>@stack72</b> can you check http://example.com/build-log before we ship?",
+    ),
   );
   // Printed as text, never as a link.
   assertStringIncludes(

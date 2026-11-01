@@ -34,7 +34,7 @@ InboxSummary {
 
 Message {
   id: string                  // ULID: sortable, so "newer than" is a string compare
-  kind: string                // any kind the web inbox carries ("mention", "issue_shipped", …); a string so new kinds still parse
+  kind: string                // a kind Swamp Club serves to the CLI ("announcement", "issue_shipped", …); a string so new kinds still parse
   title: string               // one line, plain text, at most 120 characters
   body: string                // markdown, at most 8 KiB
   createdAt: string           // ISO 8601
@@ -44,13 +44,18 @@ Message {
 }
 ```
 
-`/messages` carries every message the user's web inbox does. `/summary` counts
-only the kinds that should interrupt a command: announcements, direct messages,
-points, system messages and issue status (`issue_shipped`, `issue_closed`,
-`issue_update`). A mention, or any other kind that does not raise the notice,
-leaves the ETag alone as well as `unread` and `newestId`, so it is listed
-without raising the notice and never spends the client's `304`. Swamp Club
-decides which kinds count; the client needs no list of its own.
+`/messages` carries only messages Swamp Club writes: announcements, direct,
+system and points messages, issue status (`issue_update`, `issue_shipped`,
+`issue_closed`) and the named onboarding kinds (`nurture_no_activation`,
+`nurture_stalled`). Mentions and comments, whose bodies quote other users, stay
+on the web inbox and email, so no other user's text reaches the terminal or an
+agent. `/summary` counts only the kinds that should interrupt a command:
+announcements, direct messages, points, system messages and issue status
+(`issue_shipped`, `issue_closed`, `issue_update`). An onboarding message, or any
+other kind that does not raise the notice, leaves the ETag alone as well as
+`unread` and `newestId`, so it is listed without raising the notice and never
+spends the client's `304`. Swamp Club decides which kinds count; the client
+needs no list of its own.
 
 Status codes that apply to every endpoint:
 
@@ -325,8 +330,8 @@ a caller still knows them when a later batch fails.
   `--json` has the same shape as below. Without an id, it prints the message
   the notice announced, or else the newest unread message (kind and date,
   title, the body as plain markdown, `Link:` and `Next:`), and marks it read.
-  `/messages` lists kinds that never raise the notice, such as mentions, so its
-  newest unread entry need not be the one the notice is about; reading that one
+  `/messages` lists kinds that never raise the notice, such as onboarding
+  messages, so its newest unread entry need not be the one the notice is about; reading that one
   would leave the notice up. It first asks `/api/inbox/summary`, without an
   `ETag` and bounded as the refresh after marking is, and applies the answer to
   the key's cache. When the answer names a `newestId` and that message, fetched
@@ -334,7 +339,7 @@ a caller still knows them when a later batch fails.
   is gone, already read or refused by the client, falls back to the newest
   unread message in the list. Repeated runs so read the notice's messages
   first, newest first, and the notice stops after the first; then the rest,
-  mentions included. While more are unread it ends with
+  onboarding messages included. While more are unread it ends with
   `To read the next:  swamp inbox read`. With nothing unread it prints
   `No unread messages.` and exits 0. Unread messages are listed two at a time;
   while every entry on a page broke the contract and another page follows,

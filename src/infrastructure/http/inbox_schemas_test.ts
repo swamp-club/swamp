@@ -81,12 +81,22 @@ Deno.test("inbox fixture: the web kinds page keeps every entry and its kind as s
   );
   assertEquals(
     new Set(page.messages.map((m) => m.kind)),
-    new Set(["mention", "issue_shipped", "nurture_stalled"]),
+    new Set(["issue_shipped", "nurture_stalled"]),
   );
   const shipped = page.messages.find((m) => m.kind === "issue_shipped");
   assertEquals(shipped?.link, "https://swamp-club.com/lab/4079");
   const nurture = page.messages.find((m) => m.kind === "nurture_stalled");
   assertEquals(nurture?.action, undefined);
+});
+
+Deno.test("parseInboxMessagePage: keeps a kind the server no longer sends", () => {
+  const page = parseInboxMessagePage({
+    messages: [{ ...message(), kind: "mention" }],
+    nextCursor: null,
+  });
+  assert(page);
+  assertEquals(page.dropped, 0);
+  assertEquals(page.messages.map((m) => m.kind), ["mention"]);
 });
 
 Deno.test("parseInboxMessage: keeps an unknown kind", () => {
