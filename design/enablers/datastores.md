@@ -6684,14 +6684,25 @@ to the same write. The checks the handlers share are one implementation
      passed deadline fails it; a signal wait succeeds as applying its stored
      outcome gives (the same `applyWaitOutcome` a run uses) and fails on its
      record's deadline or a stored timeout or cancel; a nested wait succeeds
-     only when its stored child did. A step that waited on a signal stays
-     under these rules whatever the stored workflow now calls it. A decided
-     gate's status changes only by a retry. A gate a retry re-opened keeps its
-     mark while pending and is never skipped: it waits for a fresh decision.
-     A guard or dependency that would skip such a gate is refused, which fails
-     the save rather than passing a denial. A denial's `allowedFailure` is
-     the stored step's to set.
-  5. No job or run is `succeeded` over a step that waits or stands denied.
+     only when its stored child did. A signal step reaches `succeeded` only
+     by applying its stored outcome, and a workflow step only when its stored
+     child succeeded, wherever it came from: a split across several commits
+     gains nothing. The child must link back and, when the stored step names
+     its target literally, be of that workflow. A child's decision only ever
+     fails its parent. A step that waited on a signal stays under these rules
+     whatever the stored workflow now calls it. A decided gate's status changes
+     only by a retry, which takes up a run that failed or was cancelled. A gate
+     or signal wait is skipped only when the stored workflow gives it something
+     to skip it (its guard or dependencies, or its job's), or when an abort
+     settled it unstarted. A gate a retry re-opened keeps its mark while
+     pending, cannot go from running back to pending, and is not skipped past
+     the decision it dropped. A failure's `allowedFailure` is the stored step's
+     to set. **What this cannot judge:** a record's guard result. On a gate
+     with a guard or dependencies, a member can report it skipped; a run-only
+     caller driving their own run can always do that. An unguarded gate cannot
+     be skipped.
+  5. No job or run is `succeeded` over a step that waits, failed without an
+     allowance, or stands settled by an abort.
   6. A duplicate (job, step) key is refused.
   7. Inputs, deferred and inherited expressions it adds are authorised as run
      inputs, vault references as vault reads, and step outputs must name what
@@ -6730,7 +6741,9 @@ whose writer is unknown (rows from before schema 8, a compacted base), is
 refused with a request to evaluate on serve. The bytes parsed are the ones
 whose writer was checked. A serve-mode checkout applies the same rule to its own
 `--last-evaluated` (`lastEvaluatedStands`): it uses only an evaluation serve or
-its own member wrote, and otherwise evaluates again. A run log is read and appended to only under the
+its own member wrote, and otherwise evaluates again; it refuses if any key the
+repository could read holds another writer's record. The check and the read are
+separate reads, so a record replaced between them is not caught. A run log is read and appended to only under the
 repo's own run-log directories, whatever path a record holds.
 
 **Proof of possession.** A commit may name a chunk only when one of these

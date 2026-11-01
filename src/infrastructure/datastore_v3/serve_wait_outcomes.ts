@@ -31,6 +31,7 @@
  * @module
  */
 
+import { getSwampLogger } from "../logging/logger.ts";
 import {
   type StoredWaitRecord,
   type WaitOutcome,
@@ -55,7 +56,16 @@ export function withServeOutcomes(
         waitId,
         AbortSignal.timeout(OUTCOME_READ_TIMEOUT_MS),
       );
-    } catch {
+    } catch (error) {
+      // Offline is normal here; a refused token also lands here, and without
+      // this the run would wait out its deadline with nothing to explain it.
+      getSwampLogger(["workflow", "signal-wait"]).warn(
+        "Could not read wait {waitId}'s outcome from serve: {reason}",
+        {
+          waitId,
+          reason: error instanceof Error ? error.message : String(error),
+        },
+      );
       return undefined;
     }
     const parsed = WaitOutcomeSchema.safeParse(raw);

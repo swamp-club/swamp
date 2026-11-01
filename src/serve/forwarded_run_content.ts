@@ -147,7 +147,13 @@ export async function checkRunRecord(
     ctx.repoContext.workflowRepo,
     intent.run.workflowId,
   );
-  const held = await heldByServe(context, intent.run, before?.data, after.data);
+  const held = await heldByServe(
+    context,
+    intent.run,
+    workflow,
+    before?.data,
+    after.data,
+  );
   const judgement = judgeRunRecord({
     workflowId: intent.run.workflowId,
     runId: intent.run.runId,
@@ -159,6 +165,15 @@ export async function checkRunRecord(
     workflowVaults: workflow?.vaults,
     isServeInstance: (id) =>
       ctx.instanceId !== undefined && id === ctx.instanceId,
+    maySkip: (jobName, step) => {
+      const job = workflow?.jobs.find((j) => j.name === jobName);
+      const defined = job?.steps.find((s) =>
+        s.name === (step.forEachTemplate ?? step.stepName)
+      );
+      return (job?.dependsOn.length ?? 0) > 0 ||
+        defined?.guard !== undefined ||
+        (defined?.dependsOn.length ?? 0) > 0;
+    },
     heldChild: (jobName, step) =>
       held.children.get(heldKey(jobName, step.stepName)),
     heldOutcome: (waitId) => held.outcomes.get(waitId.toLowerCase()),
@@ -216,6 +231,7 @@ function heldKey(jobName: string, stepName: string): string {
 async function heldByServe(
   context: ContentCheckContext,
   run: { readonly workflowId: string; readonly runId: string },
+  workflow: Workflow | null,
   before: WorkflowRunData | undefined,
   after: WorkflowRunData,
 ): Promise<HeldByServe> {
@@ -227,8 +243,20 @@ async function heldByServe(
     for (const step of job.steps) {
       const prior = priors?.find((s) => s.stepName === step.stepName);
       if (prior?.status === step.status) continue;
-      if (step.nestedRun !== undefined) {
-        const child = await heldChildOf(context, run, job.jobName, step);
+      const defined = workflow?.jobs.find((j) => j.name === job.jobName)?.steps
+        .find((s) => s.name === (step.forEachTemplate ?? step.stepName));
+      if (
+        step.nestedRun !== undefined ||
+        defined?.task.data.type === "workflow"
+      ) {
+        const task = defined?.task.data;
+        const child = await heldChildOf(
+          context,
+          run,
+          job.jobName,
+          step,
+          task?.type === "workflow" ? task.workflowIdOrName : undefined,
+        );
         if (child !== undefined) {
           children.set(heldKey(job.jobName, step.stepName), child);
         }
@@ -258,8 +286,14 @@ async function heldChildOf(
   run: { readonly workflowId: string; readonly runId: string },
   jobName: string,
   step: StepRunData,
+  /** The workflow the stored step calls, undefined when it names none. */
+  calls: string | undefined,
 ): Promise<HeldChildRun | undefined> {
-  const link = step.nestedRun as { workflowId?: unknown; runId?: unknown };
+  // A child that finished without suspending is named by the step's output.
+  const link = (step.nestedRun ?? step.output ?? {}) as {
+    workflowId?: unknown;
+    runId?: unknown;
+  };
   if (typeof link.workflowId !== "string" || typeof link.runId !== "string") {
     return undefined;
   }
@@ -288,6 +322,16 @@ async function heldChildOf(
     parent.ref.jobName !== jobName ||
     parent.ref.stepName !== (step.forEachTemplate ?? step.stepName) &&
       parent.ref.stepName !== step.stepName
+  ) {
+    return undefined;
+  }
+  // The child must be of the workflow the stored step calls: another
+  // workflow's run proves nothing about this one's gates. A computed target
+  // is settled only when the run evaluates it.
+  if (
+    calls !== undefined && !calls.includes("${{") &&
+    calls.toLowerCase() !== child.data.workflowId.toLowerCase() &&
+    calls !== child.data.workflowName
   ) {
     return undefined;
   }
@@ -403,6 +447,8 @@ function stepKindOf(
       return "approval";
     case "wait_for_signal":
       return "signal";
+    case "workflow":
+      return "nested";
     default:
       return "other";
   }

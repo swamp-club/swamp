@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { findWorkflowByIdOrName } from "../../domain/workflows/workflow_lookup.ts";
 import { lastEvaluatedStands } from "../last_evaluated_trust.ts";
 import { Command } from "@cliffy/command";
 import {
@@ -386,7 +387,14 @@ export const workflowRunCommand = new Command()
       await lastEvaluatedStands(
         unlocked.repoDir,
         unlocked.repoContext,
-        (trust) => trust.workflow(workflowIdOrName),
+        async (trust) => {
+          // A run names its workflow by id or name; the trust reads by name.
+          const found = await findWorkflowByIdOrName(
+            unlocked.repoContext.workflowRepo,
+            workflowIdOrName,
+          );
+          if (found !== null) await trust.workflow(found.name);
+        },
       );
 
     const stdinContent = options.stdin ? await readStdin() : null;

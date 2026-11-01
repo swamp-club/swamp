@@ -124,6 +124,9 @@ export function v3EvaluationTrust(
         (ownPrincipal === undefined || record.writer !== ownPrincipal)
       ) {
         untrusted ??= record.writer === null ? "unknown" : "forwarded";
+        // A checkout reads the evaluation through its repository, not these
+        // bytes, so a key it passes over could be the one read.
+        if (ownPrincipal !== undefined) break;
         continue;
       }
       if ((record.blob?.size ?? 0) > MAX_EVALUATION_BYTES) {

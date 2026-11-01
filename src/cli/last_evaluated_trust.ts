@@ -60,7 +60,10 @@ export async function lastEvaluatedStands(
     return true;
   } catch (error) {
     getSwampLogger(["cli", "last-evaluated"]).warn(
-      "Evaluating again: the last evaluation is not one this checkout can vouch for ({reason})",
+      "Evaluating again: another member wrote the last evaluation, or it could not be checked. Run the evaluate command to save your own.",
+    );
+    getSwampLogger(["cli", "last-evaluated"]).debug(
+      "Last evaluation set aside: {reason}",
       { reason: error instanceof Error ? error.message : String(error) },
     );
     return false;

@@ -1012,7 +1012,7 @@ export const workflowCancelCommand = withRemoteOptions(
     )
     .option(
       "--run <run_id:string>",
-      "Target a specific run ID (required with --server)",
+      "Target a specific run ID (required with --server). In a checkout written through serve, a run this checkout did not start is cancelled on serve",
     )
     .option("--all", "Cancel all running workflow runs")
     .option("--reason <reason:string>", "Reason for cancellation"),
@@ -1039,7 +1039,7 @@ export const workflowCancelCommand = withRemoteOptions(
       }
       if (options.all) {
         throw new UserError(
-          "--all is not supported with --server",
+          "--all cannot be combined with a run sent to a server",
         );
       }
       const token = await resolveServerTokenFromOptions(

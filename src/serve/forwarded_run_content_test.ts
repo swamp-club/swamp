@@ -343,7 +343,7 @@ Deno.test("checkRunSnapshot: a snapshot declares the workflow its run's intent n
       await snapshot("66666666-7777-4888-8999-aaaaaaaaaaaa"),
     ) !== undefined,
   );
-  // Frozen once written (audit hole 1): the same bytes, as a replay holds,
+  // Frozen once written: the same bytes, as a replay holds,
   // land; any others do not.
   const held = await snapshot(WORKFLOW);
   const stored = {

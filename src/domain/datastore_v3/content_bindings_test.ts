@@ -210,6 +210,7 @@ function judge(
     after,
     stepKind: (_job, s) => kinds[s.stepName] ?? "other",
     definitionSteps: () => undefined,
+    maySkip: () => true,
     isServeInstance: (id) => id === "serve-1",
     now: NOW,
     ...extra,
@@ -518,7 +519,7 @@ Deno.test("judgeRunRecord: a gate the stored workflow no longer names cannot be 
       { gate: "unknown" },
     ).refusal !== undefined,
   );
-  // Second commit: still a gate by its prompt, so completing it needs approve.
+  // Second commit: still a gate by its prompt, so completing it is refused.
   assert(
     judge(
       reopened,
@@ -665,7 +666,7 @@ Deno.test("judgeRunRecord: a denial fails its gate; skipping or completing a den
       `${from} -> ${to}`,
     );
   }
-  // What a run does with a denial needs only run.
+  // What a run does with a denial is reported.
   assertEquals(
     judge(denied("waiting_approval"), denied("failed")).refusal,
     undefined,
@@ -710,7 +711,6 @@ Deno.test("judgeRunRecord: a decided gate retyped in the stored workflow, or lin
   const linked = judge(denied("failed"), denied("failed", { nestedRun }), {
     gate: "other",
   });
-  assertEquals(linked.refusal, undefined);
   assertEquals(linked.refusal, undefined);
   assertEquals(
     judge(
@@ -857,7 +857,7 @@ Deno.test("judgeRunRecord: a duplicate step key is refused, so it cannot shadow 
   );
 });
 
-Deno.test("judgeRunRecord: a decided gate's status never changes outside a retry (audit hole 2)", () => {
+Deno.test("judgeRunRecord: a decided gate's status never changes outside a retry ", () => {
   const decided = (status: StepRunData["status"]) =>
     run([
       step("gate", {
@@ -870,15 +870,17 @@ Deno.test("judgeRunRecord: a decided gate's status never changes outside a retry
   assert(judge(decided("failed"), decided("running")).refusal !== undefined);
 });
 
-Deno.test("judgeRunRecord: only a retry clears a decision, and the re-opened gate must wait again", () => {
+Deno.test("judgeRunRecord: only a retry of an ended run clears a decision, and the re-opened gate must wait again", () => {
   const denied = run([
     step("gate", {
       status: "failed",
       startedAt: STARTED,
       approvalDecision: DENIED,
     }),
+  ], { status: "failed" });
+  const reopened = run([
+    step("gate", { status: "pending", resetByResume: true }),
   ]);
-  // Clearing it anywhere but back to pending, or unmarked, is refused.
   assert(
     judge(denied, run([step("gate", { status: "failed" })])).refusal !==
       undefined,
@@ -887,10 +889,11 @@ Deno.test("judgeRunRecord: only a retry clears a decision, and the re-opened gat
     judge(denied, run([step("gate", { status: "pending" })])).refusal !==
       undefined,
   );
-  const reopened = run([
-    step("gate", { status: "pending", resetByResume: true }),
-  ]);
   assertEquals(judge(denied, reopened).refusal, undefined);
+  // A run still going has nothing to retry.
+  assert(
+    judge({ ...denied, status: "running" }, reopened).refusal !== undefined,
+  );
   // It may wait again, but neither skip the denial nor lose its mark.
   assertEquals(
     judge(reopened, run([step("gate", { status: "running" })])).refusal,
@@ -904,11 +907,131 @@ Deno.test("judgeRunRecord: only a retry clears a decision, and the re-opened gat
     judge(reopened, run([step("gate", { status: "pending" })])).refusal !==
       undefined,
   );
+  // Nor shed it by going back through running.
+  assert(
+    judge(
+      run([step("gate", { status: "running" })]),
+      run([step("gate", { status: "pending" })]),
+    ).refusal !== undefined,
+  );
   assert(
     judge(
       run([step("gate", { status: "running" })]),
       run([step("gate", { status: "succeeded" })]),
     ).refusal !== undefined,
+  );
+});
+
+Deno.test("judgeRunRecord: a gate or signal wait is skipped only when its stored workflow gives it something to skip it", () => {
+  const noGuard = { maySkip: () => false };
+  for (const name of ["gate", "wait"]) {
+    assert(
+      judge(
+        run([step(name)]),
+        run([step(name, { status: "skipped" })]),
+        undefined,
+        noGuard,
+      ).refusal !== undefined,
+      name,
+    );
+    assertEquals(
+      judge(run([step(name)]), run([step(name, { status: "skipped" })]))
+        .refusal,
+      undefined,
+      name,
+    );
+  }
+  // A cancel settles a gate it never started.
+  assertEquals(
+    judge(
+      run([step("gate")]),
+      run([step("gate", { status: "skipped", settledByAbort: true })], {
+        status: "cancelled",
+      }),
+      undefined,
+      noGuard,
+    ).refusal,
+    undefined,
+  );
+});
+
+Deno.test("judgeRunRecord: a job or run cannot succeed over what an abort settled", () => {
+  const settled = step("gate", { status: "skipped", settledByAbort: true });
+  assert(
+    judge(run([settled]), run([settled], { status: "succeeded" })).refusal !==
+      undefined,
+  );
+});
+
+Deno.test("judgeRunRecord: a nested step succeeds only as its child did, whichever way it left its wait or whatever it holds", () => {
+  const nestedRun = { workflowId: OTHER, workflowName: "child", runId: ID };
+  const waiting = run([
+    step("call", { status: "waiting_approval", nestedRun }),
+  ]);
+  const suspended = {
+    heldChild: () => ({ status: "suspended" as const, decisions: [DECIDED] }),
+  };
+  const kinds = { call: "nested" as StepKind };
+  // Out of the wait in a first commit.
+  for (const status of ["running", "pending", "unknown"] as const) {
+    assert(
+      judge(
+        waiting,
+        run([step("call", { status, nestedRun })]),
+        kinds,
+        suspended,
+      ).refusal !== undefined,
+      status,
+    );
+  }
+  // From anywhere else, and with no link at all.
+  assert(
+    judge(
+      run([step("call", { status: "running", nestedRun })]),
+      run([step("call", { status: "succeeded", nestedRun })]),
+      kinds,
+      suspended,
+    ).refusal !== undefined,
+  );
+  assert(
+    judge(
+      run([step("call", { status: "running" })]),
+      run([step("call", { status: "succeeded" })]),
+      kinds,
+    ).refusal !== undefined,
+  );
+  // Copying an approval from a child with another gate waiting.
+  assert(
+    judge(
+      waiting,
+      run([
+        step("call", {
+          status: "succeeded",
+          nestedRun,
+          approvalDecision: DECIDED,
+        }),
+      ]),
+      kinds,
+      suspended,
+    ).refusal !== undefined,
+  );
+});
+
+Deno.test("judgeRunRecord: a signal step reaches succeeded only by its stored outcome, whichever way it got there", () => {
+  for (
+    const before of [
+      step("wait", { status: "running" }),
+      step("wait", { status: "pending", resetByResume: true }),
+    ]
+  ) {
+    assert(
+      judge(run([before]), run([step("wait", { status: "succeeded" })]))
+        .refusal !== undefined,
+    );
+  }
+  assert(
+    judge(undefined, run([step("wait", { status: "succeeded" })])).refusal !==
+      undefined,
   );
 });
 

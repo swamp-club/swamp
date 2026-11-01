@@ -93,6 +93,8 @@ type StoredKinds = Map<string, StepKind>;
 
 function storedKindOf(kind: Kind): StepKind {
   switch (kind) {
+    case "nested":
+      return "nested";
     case "gate":
     case "guarded":
       return "approval";
@@ -678,6 +680,8 @@ function forge(
 
 /** What serve's signal handler stored, by wait id: every wait of the model. */
 const held = new Map<string, WaitOutcome>();
+/** The stored steps with a guard, which alone may skip. */
+const guarded = new Set<string>();
 
 function judge(
   kinds: StoredKinds,
@@ -695,7 +699,13 @@ function judge(
     isServeInstance: (id) => id === "serve-1",
     // Every child in the model finished and links back; its decisions are
     // none, so no nested step can carry one here.
-    heldChild: () => ({ status: "succeeded", decisions: [] }),
+    heldChild: (_job, step) =>
+      (step.nestedRun as { workflowId?: string } | undefined)?.workflowId ===
+          CHILD_WORKFLOW
+        ? { status: "succeeded", decisions: [] }
+        : undefined,
+    maySkip: (job, step) =>
+      guarded.has(key(job, step.forEachTemplate ?? step.stepName)),
     // Serve holds the outcome a real signal left, whichever step's wait it is.
     heldOutcome: (waitId) => held.get(waitId),
     now: NOW,
@@ -775,6 +785,7 @@ class Oracle {
     before: WorkflowRunData,
     after: WorkflowRunData,
     judged: RunRecordJudgement,
+    kindsNow: StoredKinds,
   ): string | undefined {
     for (
       const field of [
@@ -802,8 +813,8 @@ class Oracle {
     if (next.size !== count) return "a step key is duplicated";
     const standsInTheWay = (s: StepRunData) =>
       s.status === "waiting_approval" || s.status === "waiting_signal" ||
-      (s.status === "failed" && s.approvalDecision?.approved === false &&
-        s.allowedFailure !== true);
+      (s.status === "failed" && s.allowedFailure !== true) ||
+      s.settledByAbort === true;
     if (
       after.jobs.some((j) =>
         j.status === "succeeded" && j.steps.some(standsInTheWay)
@@ -814,6 +825,28 @@ class Oracle {
       return "a job or run succeeded over a step that waits or stands denied";
     }
     const cancelled = after.status === "cancelled" || after.status === "failed";
+    // A signal or nested step succeeds only by what serve holds, however it
+    // left its wait.
+    for (const [k, is] of next) {
+      const [job, name] = k.split("/");
+      const stored = kindsNow.get(key(job, is.forEachTemplate ?? name));
+      const was = prior.get(k);
+      if (is.status !== "succeeded" || was?.status === "succeeded") continue;
+      if (
+        stored === "nested" &&
+        (is.nestedRun as { workflowId?: string } | undefined)?.workflowId !==
+          CHILD_WORKFLOW
+      ) {
+        return `nested step ${k} succeeded without its child`;
+      }
+      if (
+        stored === "signal" &&
+        (is.output as { payload?: { ok?: boolean } } | undefined)?.payload
+            ?.ok !== true
+      ) {
+        return `signal step ${k} succeeded without its stored outcome`;
+      }
+    }
     for (const [k, was] of prior) {
       const is = next.get(k);
       if (
@@ -886,11 +919,16 @@ class Oracle {
     // A re-opened gate must wait again: it never skips past the denial.
     for (const k of this.reopened) {
       const is = next.get(k);
-      if (is?.status === "skipped" || is?.status === "succeeded") {
-        return `re-opened gate ${k} settled to ${is.status} without waiting`;
-      }
-      if (is?.status === "waiting_approval" || is?.status === "running") {
+      if (is?.status === "waiting_approval") {
         this.reopened.delete(k);
+        continue;
+      }
+      const [job, name] = k.split("/");
+      const mayGuard = guarded.has(key(job, is?.forEachTemplate ?? name));
+      if (
+        is?.status === "succeeded" || (is?.status === "skipped" && !mayGuard)
+      ) {
+        return `re-opened gate ${k} settled to ${is.status} without waiting`;
       }
     }
     for (const k of this.waits) {
@@ -966,6 +1004,12 @@ function play(
     specs.map((s) => [key(s.job, s.template ?? s.name), storedKindOf(s.kind)]),
   );
   held.clear();
+  guarded.clear();
+  for (const spec of specs) {
+    if (spec.kind === "guarded") {
+      guarded.add(key(spec.job, spec.template ?? spec.name));
+    }
+  }
   for (const spec of specs) held.set(waitIdOf(spec), outcomeOf(spec));
   let record = initial(specs);
   const created = judge(kinds, undefined, record);
@@ -1008,7 +1052,12 @@ function play(
       continue;
     }
     coverage.landed++;
-    const broken = oracle.violation(record, forged.record, judged);
+    const broken = oracle.violation(
+      record,
+      forged.record,
+      judged,
+      forged.kinds,
+    );
     if (broken !== undefined) return `${next.forge.kind}: ${broken}`;
     oracle.observe(record, forged.record, forged.kinds);
     record = forged.record;
