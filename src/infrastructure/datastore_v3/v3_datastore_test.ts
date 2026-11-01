@@ -54,6 +54,7 @@ import {
   unreachableAsCatchUpError,
   V3_CHECKOUT_FILTER_CHANGED_CODE,
   v3CheckoutFilterRefusal,
+  v3MarkerState,
 } from "./v3_datastore.ts";
 import {
   ReadModelApplyError,
@@ -71,6 +72,10 @@ import {
 import { ensureSupportedDatastoreFormat } from "../persistence/datastore_format_guard.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeDatastoreFormatMarker } from "../persistence/datastore_format_marker_writer.ts";
+import {
+  V3_COPY_SETUP_RACED_CODE,
+  V3CopySetupRacedError,
+} from "../../domain/datastore_v3/copy_setup_raced_error.ts";
 import {
   blobPut,
   deleteVersion,
@@ -1705,4 +1710,139 @@ Deno.test("offlineSubjectOf: names a definition by its kind and name, never by i
     offlineSubjectOf(partitionOf({ kind: "lockfile" })),
     "the extension lockfile",
   );
+});
+
+Deno.test("initializeV3Datastore: two creators of a copy that adopts the winner's marker both finish setting it up (swamp-club#4253)", async () => {
+  await withTempDir(async (root) => {
+    // Several fresh copies, so the marker race is met on every run.
+    for (let i = 0; i < 20; i++) {
+      const dir = join(root, `copy-${i}`, "serve-x");
+      // As the serve binding creates it: look, then create from that look.
+      const create = async () => {
+        const markerSeen = await v3MarkerState(dir);
+        if (markerSeen === "v3") return;
+        await initializeV3Datastore(dir, "test", {
+          adoptConcurrentMarker: { markerSeen },
+        });
+      };
+      const results = await Promise.allSettled([create(), create()]);
+      assertEquals(
+        results.map((result) => result.status),
+        ["fulfilled", "fulfilled"],
+        `copy ${i}`,
+      );
+      assertEquals(await v3MarkerState(dir), "v3");
+      assert((await Deno.lstat(join(dir, COMMITS_DB_FILE))).isFile);
+      assert((await Deno.lstat(join(dir, "_blobs"))).isDirectory);
+      assert(await isFreshV3Skeleton(dir));
+    }
+  });
+});
+
+Deno.test("initializeV3Datastore: a copy uses a v3 marker that appeared while it wrote its own; setup still refuses it, and an unreadable one is a retryable refusal (swamp-club#4253)", async () => {
+  await withTempDir(async (root) => {
+    // The winner links its marker between this creator's check and link.
+    const raced = (marker: string) => async (_from: string, to: string) => {
+      await Deno.writeTextFile(to, marker);
+      throw new Deno.errors.AlreadyExists("lost the race");
+    };
+    const winner = '{"format":3,"minReaderFormat":3,"writtenBy":"winner"}';
+
+    const adopted = join(root, "adopted");
+    await initializeV3Datastore(adopted, "test", {
+      adoptConcurrentMarker: { markerSeen: "absent" },
+      link: raced(winner),
+    });
+    assertEquals(
+      JSON.parse(await Deno.readTextFile(join(adopted, MARKER))).writtenBy,
+      "winner",
+    );
+    assert((await Deno.lstat(join(adopted, COMMITS_DB_FILE))).isFile);
+    assert((await Deno.lstat(join(adopted, "_blobs"))).isDirectory);
+
+    // `swamp datastore setup` passes no option: it refuses, as before.
+    const setup = join(root, "setup");
+    await assertRejects(
+      () => initializeV3Datastore(setup, "test", { link: raced(winner) }),
+      UserError,
+      "already exists",
+    );
+
+    // Part-written, as an exclusive create shows it: a retry finds it whole.
+    for (const partial of ["", '{"format":']) {
+      const dir = join(root, `partial-${partial.length}`);
+      const error = await assertRejects(
+        () =>
+          initializeV3Datastore(dir, "test", {
+            adoptConcurrentMarker: { markerSeen: "absent" },
+            link: raced(partial),
+          }),
+        V3CopySetupRacedError,
+      );
+      assertEquals(error.code, V3_COPY_SETUP_RACED_CODE);
+    }
+
+    // A marker the caller saw before deciding to create the copy is no
+    // creator's race: it is refused as before, without the retryable code.
+    const foreign = join(root, "foreign");
+    await Deno.mkdir(foreign);
+    await Deno.writeTextFile(join(foreign, MARKER), '{"format":2}');
+    await Deno.writeTextFile(join(foreign, "unrelated.txt"), "x");
+    const markerSeen = await v3MarkerState(foreign);
+    assertEquals(markerSeen, "other");
+    const refused = await assertRejects(
+      () =>
+        initializeV3Datastore(foreign, "test", {
+          adoptConcurrentMarker: { markerSeen: "other" },
+        }),
+      UserError,
+      "already exists",
+    );
+    assertEquals(refused.code, undefined);
+  });
+});
+
+Deno.test("initializeV3Datastore: a copy that saw no marker adopts the winner's, however far the winner has got: marked, its temp file not yet removed, or fully bound (swamp-club#4253)", async () => {
+  await withTempDir(async (root) => {
+    const winner = { format: 3, minReaderFormat: 3, writtenBy: "winner" };
+    const stages: Record<string, (dir: string) => Promise<void>> = {
+      marked: async () => {},
+      "temp file left": async (dir) => {
+        await Deno.writeTextFile(join(dir, `.${crypto.randomUUID()}.tmp`), "");
+      },
+      // Set up and bound: commits.db, _blobs and serve-mode state.
+      bound: async (dir) => {
+        await initializeV3Datastore(dir, "winner");
+        await Deno.writeTextFile(join(dir, "serve_upstream.db"), "");
+      },
+    };
+    for (const [name, stage] of Object.entries(stages)) {
+      const dir = join(root, name.replaceAll(" ", "-"));
+      // The winner gets this far after the copy looked and saw no marker.
+      await Deno.mkdir(dir);
+      await writeDatastoreFormatMarker(dir, winner);
+      await stage(dir);
+      await initializeV3Datastore(dir, "test", {
+        adoptConcurrentMarker: { markerSeen: "absent" },
+      });
+      assertEquals(
+        JSON.parse(await Deno.readTextFile(join(dir, MARKER))).writtenBy,
+        "winner",
+        name,
+      );
+      assert((await Deno.lstat(join(dir, COMMITS_DB_FILE))).isFile, name);
+      assert((await Deno.lstat(join(dir, "_blobs"))).isDirectory, name);
+    }
+
+    // `swamp datastore setup` passes no option: the same states refuse.
+    const setup = join(root, "setup");
+    await Deno.mkdir(setup);
+    await writeDatastoreFormatMarker(setup, winner);
+    await stages["temp file left"](setup);
+    await assertRejects(
+      () => initializeV3Datastore(setup, "test"),
+      UserError,
+      "already exists",
+    );
+  });
 });

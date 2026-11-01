@@ -32,7 +32,10 @@ import { exists } from "@std/fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "@std/path";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
-import { resolveDatastoreForRepo } from "../src/cli/repo_context.ts";
+import {
+  resolveDatastoreForRepo,
+  v3LocationOf,
+} from "../src/cli/repo_context.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import type { ModelType } from "../src/domain/models/model_type.ts";
 import { serveUpstreamLocalRoot } from "../src/infrastructure/datastore_v3/serve_upstream_binding.ts";
@@ -48,6 +51,11 @@ import {
   ServeUpstreamState,
 } from "../src/infrastructure/datastore_v3/serve_upstream_state.ts";
 import { v3ReplicatesAt } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
+import {
+  COMMITS_DB_FILE,
+  v3MarkerState,
+} from "../src/infrastructure/datastore_v3/v3_datastore.ts";
+import { writeDatastoreFormatMarker } from "../src/infrastructure/persistence/datastore_format_marker_writer.ts";
 import type { RepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import { datastoreRecords } from "./usecase_v3_fixtures.ts";
@@ -56,6 +64,7 @@ import type { GrantSpec } from "./serve_upstream_server_worker.ts";
 import {
   type Client,
   dataOf,
+  endCommand,
   json,
   latestOf,
   MEMBER,
@@ -1160,6 +1169,157 @@ Deno.test({
         await proxy.close();
       }
       assertEquals(bucket.touched(), []);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve upstream: two commands that first use a checkout at once both bind its copy, and the copy holds one marker and one commits.db (swamp-club#4253)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ managedConfig: true });
+      const bucket = scratch.bucket();
+      const env = serveEnv(serve, "alice-token");
+      const type = serve.modelType;
+      const web = serve.models.web;
+      // Several fresh checkouts, so the marker race is met on every run.
+      for (let i = 0; i < 5; i++) {
+        const client = await scratch.client(`c${i}`, {
+          bucket,
+          managedConfig: true,
+        });
+        const root = await withClientEnv(
+          scratch,
+          env,
+          ["data", "get"],
+          async () => {
+            try {
+              const resolution = await resolveDatastoreForRepo(client.repoDir);
+              const bound = await Promise.allSettled([
+                v3LocationOf(resolution),
+                v3LocationOf(resolution),
+              ]);
+              assertEquals(
+                bound.map((result) =>
+                  result.status === "fulfilled"
+                    ? "fulfilled"
+                    : String(result.reason)
+                ),
+                ["fulfilled", "fulfilled"],
+                `checkout ${i}`,
+              );
+              return serveUpstreamLocalRoot(
+                client.repoDir,
+                serve.origin,
+                resolution.datastoreConfig.namespace ?? "",
+              );
+            } finally {
+              await endCommand();
+            }
+          },
+        );
+        assertEquals(await v3MarkerState(root), "v3");
+        const names: string[] = [];
+        for await (const entry of Deno.readDir(root)) names.push(entry.name);
+        assertEquals(
+          names.filter((name) => name.endsWith(".tmp")),
+          [],
+          "no marker temp file is left behind",
+        );
+        assert((await Deno.lstat(join(root, COMMITS_DB_FILE))).isFile);
+
+        // The copy works for the commands that follow.
+        await writeCommand(
+          scratch,
+          client,
+          env,
+          (repos) =>
+            repos.unifiedDataRepo.save(type, web, dataOf(`vpc${i}`), json(i)),
+        );
+        assertEquals(
+          await readCommand(
+            scratch,
+            client,
+            env,
+            (repos) => latestOf(repos, type, web, `vpc${i}`),
+          ),
+          { version: 1, content: String(i) },
+        );
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve upstream: a command that finds the copy marked but not yet set up, as another command creating it leaves it, reads and writes it (swamp-club#4253)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ managedConfig: true });
+      const bucket = scratch.bucket();
+      const client = await scratch.client("a", { bucket, managedConfig: true });
+      const env = serveEnv(serve, "alice-token");
+      const type = serve.modelType;
+      const web = serve.models.web;
+      const namespace = await withClientEnv(
+        scratch,
+        env,
+        ["data", "get"],
+        async () =>
+          (await resolveDatastoreForRepo(client.repoDir)).datastoreConfig
+            .namespace ?? "",
+      );
+      // The other command has written the marker and nothing else yet.
+      const root = serveUpstreamLocalRoot(
+        client.repoDir,
+        serve.origin,
+        namespace,
+      );
+      await Deno.mkdir(root, { recursive: true });
+      await writeDatastoreFormatMarker(root, {
+        format: 3,
+        minReaderFormat: 3,
+        writtenBy: "other",
+      });
+
+      assertEquals(
+        await readCommand(
+          scratch,
+          client,
+          env,
+          (repos) => latestOf(repos, type, web, "vpc"),
+        ),
+        null,
+      );
+      await writeCommand(
+        scratch,
+        client,
+        env,
+        (repos) =>
+          repos.unifiedDataRepo.save(type, web, dataOf("vpc"), json("a")),
+      );
+      assertEquals(
+        await readCommand(
+          scratch,
+          client,
+          env,
+          (repos) => latestOf(repos, type, web, "vpc"),
+        ),
+        { version: 1, content: '"a"' },
+      );
+      assertEquals(
+        JSON.parse(
+          await Deno.readTextFile(join(root, "datastore-format.json")),
+        ).writtenBy,
+        "other",
+        "the other command's marker is kept",
+      );
+      assert((await Deno.lstat(join(root, COMMITS_DB_FILE))).isFile);
     });
   },
 });

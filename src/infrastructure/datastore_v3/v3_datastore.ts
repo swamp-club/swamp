@@ -91,6 +91,7 @@ import {
 import type { CommitWriter } from "../../domain/datastore_v3/commit.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
+import { V3CopySetupRacedError } from "../../domain/datastore_v3/copy_setup_raced_error.ts";
 import { CatalogStore } from "../persistence/catalog_store.ts";
 import { writeDatastoreFormatMarker } from "../persistence/datastore_format_marker_writer.ts";
 import { FileSystemStorage } from "../persistence/fs_datastore_storage.ts";
@@ -1914,6 +1915,20 @@ export async function initializeV3Datastore(
     readonly syncDirectory?: (dir: string) => Promise<void>;
     /** How a blank marker is moved aside to remove it (tests). */
     readonly rename?: (from: string, to: string) => Promise<void>;
+    /**
+     * Use the v3 marker another creator wrote first instead of refusing it
+     * (swamp-club#4253): for a copy swamp creates by itself, which two
+     * commands may create at once. Never for `swamp datastore setup`. It is
+     * the marker state the caller saw when it decided to create the copy:
+     * when that was `absent`, a v3 marker found from then on is another
+     * creator's, however far that creator has got; a marker the caller saw
+     * is refused as before.
+     */
+    readonly adoptConcurrentMarker?: {
+      readonly markerSeen: "absent" | "blank" | "other";
+    };
+    /** The hard-link call of the marker write (tests). */
+    readonly link?: (from: string, to: string) => Promise<void>;
   } = {},
 ): Promise<void> {
   const syncDir = options.syncDirectory ?? syncDirectory;
@@ -1922,6 +1937,8 @@ export async function initializeV3Datastore(
   for (const dir of created) await syncDir(dirname(dir));
   const resuming = await isFreshV3Skeleton(datastorePath);
   const marker = resuming ? await v3MarkerState(datastorePath) : "absent";
+  const adoptable = resuming ||
+    options.adoptConcurrentMarker?.markerSeen === "absent";
   if (marker === "v3") {
     // A marker an older swamp linked without syncing the directory.
     await syncDir(datastorePath);
@@ -1936,14 +1953,21 @@ export async function initializeV3Datastore(
         format: V3_DATASTORE_FORMAT,
         minReaderFormat: V3_DATASTORE_FORMAT,
         writtenBy,
-      }, { syncDirectory: syncDir });
+      }, {
+        syncDirectory: syncDir,
+        ...(options.link !== undefined ? { link: options.link } : {}),
+      });
     } catch (error) {
-      // Only a resume lost a race: a fresh setup still refuses a marker
-      // that appeared meanwhile.
-      if (
-        !resuming || !(error instanceof UserError) ||
-        await v3MarkerState(datastorePath) !== "v3"
-      ) {
+      // Only a resume, or a copy that adopts the winner's marker, lost a
+      // race: a fresh setup still refuses a marker that appeared meanwhile.
+      if (!adoptable || !(error instanceof UserError)) throw error;
+      if (await v3MarkerState(datastorePath) !== "v3") {
+        // Not yet whole, as an exclusive create shows it: a retry finds it.
+        if (options.adoptConcurrentMarker !== undefined) {
+          throw markErrorPaths(new V3CopySetupRacedError(datastorePath), [
+            datastorePath,
+          ]);
+        }
         throw error;
       }
       // Durable before commits.db, whether or not the winner has synced.

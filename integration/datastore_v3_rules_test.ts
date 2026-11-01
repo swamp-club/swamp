@@ -455,6 +455,9 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // stable, retryable code serve answers with and the CLI maps to exit 75.
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/persisted_lease.ts",
   "src/serve/datastore_api.ts -> src/domain/datastore_v3/persisted_lease.ts",
+  // swamp-club#4253: another command setting up a serve-mode checkout's copy
+  // is a stable, retryable code the CLI maps to exit 75.
+  "src/presentation/output/error_output.ts -> src/domain/datastore_v3/copy_setup_raced_error.ts",
 ];
 
 Deno.test("datastore v3: no production code outside v3 imports it", async () => {

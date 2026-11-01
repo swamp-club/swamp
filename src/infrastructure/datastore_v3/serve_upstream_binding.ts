@@ -139,8 +139,14 @@ export async function bindV3ServeUpstream(
       }),
   });
   // Registered first: the copy it creates is then never a replicated one.
-  if (await v3MarkerState(root) !== "v3") {
-    await initializeV3Datastore(root, writtenBy);
+  const markerSeen = await v3MarkerState(root);
+  if (markerSeen !== "v3") {
+    // Two commands may create the copy at once (swamp-club#4253): the one
+    // that loses the marker race uses the marker the other wrote, decided
+    // from this look, however far the other has got since.
+    await initializeV3Datastore(root, writtenBy, {
+      adoptConcurrentMarker: { markerSeen },
+    });
   }
   // Its locks are file locks under the local root, filesystem or bucket
   // datastore alike: the checkout never touches the datastore's storage,
