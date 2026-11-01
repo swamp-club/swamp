@@ -7473,8 +7473,9 @@ that happens.
   `Retry-After: 1` (`ServeFollowerBehindError`, exit 75: nothing changed,
   retry). It never answers with a head that reads as a rewind. A follower
   caught up to its leader answers as the leader would, so a log genuinely
-  behind the copy is still refused below. A read that names no `held`, from
-  a CLI before it, is answered as before (swamp-club#4254).
+  behind the copy is still refused below. A follower with no leader feed,
+  and a read that names no `held` (from a CLI before it), are answered as
+  before (swamp-club#4254).
 - **Refused.** Another log id, a head below the commit's seq, or another
   `txnId` at that seq fails the command with `serve_upstream_diverged`.
   - It is a user error, not exit 75.
@@ -7976,8 +7977,9 @@ nothing was taken, so a retry is safe), in one place per surface:
   authentication and the read check (swamp-club#4254).
 - Readiness: a node that starts as a follower with a leader feed reports
   `/ready` only once its copy holds the head the leader names
-  (`awaitFirstFollowerCatchUp`, `src/serve/follower_ready.ts`), for at most
-  30 seconds, and stops waiting if it takes the lead or shuts down. A node
+  (`awaitFirstFollowerCatchUp`, `src/serve/follower_ready.ts`). It stops
+  trying after 30 seconds, so with a last feed check in flight the wait can
+  reach about 35, and it stops at once if it takes the lead or shuts down. A node
   restored from the bucket after a takeover can trail the members' copies,
   and the team address would otherwise route them to it (swamp-club#4254).
 - Webhooks: a verified delivery gets a 503 with `Retry-After`, naming no

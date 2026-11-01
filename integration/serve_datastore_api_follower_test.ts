@@ -253,6 +253,13 @@ Deno.test({
       assertEquals(old.status, 200);
       assertEquals(old.json.head, 1);
       assertEquals(waits, 1);
+      // A follower with no leader feed can never say it caught up, so it
+      // answers as before, and the caller judges the head: a refusal it
+      // could not lift would hide a real rewind for good.
+      server.ctx.followerCatchUp = undefined;
+      const noFeed = await readHeld(server, "after=1&limit=1&held=2");
+      assertEquals(noFeed.status, 200);
+      assertEquals(noFeed.json.head, 1);
     });
   },
 });

@@ -1004,17 +1004,22 @@ class DatastoreApi {
    * head would read to the caller as a rewind, so it waits for its feed
    * first. A follower that then holds its leader's head answers as the
    * leader would, so a log genuinely behind the caller is still refused by
-   * the caller as diverged. A leader always answers.
+   * the caller as diverged. A leader always answers, and so does a
+   * follower with no leader feed: it cannot tell catching up from a log
+   * behind the caller, and a refusal it could never lift would hide a real
+   * rewind from the caller for good.
    */
   async #behindCaller(
     partition: PartitionKey,
     held: number,
   ): Promise<boolean> {
     if (this.#deps.ctx.followerGate?.role !== "follower") return false;
+    const catchUp = this.#deps.ctx.followerCatchUp;
+    if (catchUp === undefined) return false;
     const head = async () =>
       (await this.#v3.commitStore.head(this.#namespace, partition)).seq;
     if (held <= await head()) return false;
-    const caughtUp = await this.#deps.ctx.followerCatchUp?.() ?? false;
+    const caughtUp = await catchUp();
     if (held <= await head()) return false;
     return !caughtUp;
   }
