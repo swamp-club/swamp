@@ -116,6 +116,68 @@ Deno.test("issueCreate: passes title, body, and type to submitToLab", async () =
   assertEquals(captured?.body, "My body");
 });
 
+Deno.test("issueCreate: passes a platform source to submitToLab and reports it", async () => {
+  let capturedSource: string | undefined;
+  const deps = makeDeps({
+    submitToLab: (input) => {
+      capturedSource = input.source;
+      return Promise.resolve({
+        number: 42,
+        url: "https://swamp-club.com/lab/42",
+      });
+    },
+  });
+
+  const events = await collect<IssueCreateEvent>(
+    issueCreate(createLibSwampContext(), deps, {
+      title: "My title",
+      body: "My body",
+      type: "security",
+      source: "platform",
+    }),
+  );
+
+  assertEquals(capturedSource, "platform");
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(
+    completed?.kind === "completed" && completed.data.method === "lab"
+      ? completed.data.source
+      : undefined,
+    "platform",
+  );
+});
+
+Deno.test("issueCreate: leaves source out of the result unless it is platform", async () => {
+  for (const source of [undefined, "swamp"] as const) {
+    let hadSource = false;
+    const deps = makeDeps({
+      submitToLab: (input) => {
+        hadSource = "source" in input;
+        return Promise.resolve({
+          number: 42,
+          url: "https://swamp-club.com/lab/42",
+        });
+      },
+    });
+
+    const events = await collect<IssueCreateEvent>(
+      issueCreate(createLibSwampContext(), deps, {
+        title: "My title",
+        body: "My body",
+        type: "bug",
+        source,
+      }),
+    );
+
+    assertEquals(hadSource, source !== undefined);
+    const completed = events.find((e) => e.kind === "completed");
+    assertEquals(
+      completed?.kind === "completed" && "source" in completed.data,
+      false,
+    );
+  }
+});
+
 Deno.test("issueCreate: includes url in result", async () => {
   const deps = makeDeps({
     submitToLab: () =>

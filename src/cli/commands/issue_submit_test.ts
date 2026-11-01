@@ -30,13 +30,16 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { GhCliRunner } from "../../infrastructure/process/gh_cli.ts";
 import type { CommandContext } from "../context.ts";
 import { withMockedFetch } from "@swamp-club/swamp-testing";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import type { RedactionConfirmDeps } from "./issue_redaction_confirm.ts";
 import {
   buildMailtoUrl,
   dispatchExtensionRepositoryReport,
   prefillTitle,
   requireNonBlank,
+  resolveDestination,
   resolveExtensionOrRefuse,
+  resolveIssueSource,
   resolveReportText,
   submitIssue,
 } from "./issue_submit.ts";
@@ -329,6 +332,129 @@ function answering(answer: string): RedactionConfirmDeps {
 }
 
 const redactable = { title: "Ping fails", body: "host 10.20.30.40 is down" };
+
+Deno.test("resolveIssueSource: no --source leaves the default in place", () => {
+  assertEquals(resolveIssueSource({}), undefined);
+  assertEquals(resolveIssueSource({ email: true }), undefined);
+  assertEquals(resolveIssueSource({ extension: "@adam/cfgmgmt" }), undefined);
+});
+
+Deno.test("resolveIssueSource: returns an accepted source", () => {
+  assertEquals(resolveIssueSource({ source: "platform" }), "platform");
+  assertEquals(resolveIssueSource({ source: "swamp" }), "swamp");
+});
+
+Deno.test("resolveIssueSource: refuses --source with --extension or --email", () => {
+  for (const source of ["swamp", "platform"]) {
+    const withExtension = assertThrows(
+      () => resolveIssueSource({ source, extension: "@adam/cfgmgmt" }),
+      UserError,
+    );
+    assertStringIncludes(withExtension.message, "--extension");
+    const withEmail = assertThrows(
+      () => resolveIssueSource({ source, email: true }),
+      UserError,
+    );
+    assertStringIncludes(withEmail.message, "--email");
+  }
+});
+
+Deno.test("resolveIssueSource: refuses a source the CLI cannot file with", () => {
+  assertThrows(
+    () => resolveIssueSource({ source: "swamp-club" }),
+    UserError,
+    "--source must be one of",
+  );
+});
+
+Deno.test("resolveDestination: a lab-only report is refused without prompting when not logged in", async () => {
+  const configDir = await Deno.makeTempDir({ prefix: "swamp_issue_source_" });
+  try {
+    const error = await withMockedEnv(
+      {
+        SWAMP_CONFIG_DIR: configDir,
+        XDG_CONFIG_HOME: configDir,
+        SWAMP_API_KEY: undefined,
+        SWAMP_API_KEY_FILE: undefined,
+      },
+      () =>
+        assertRejects(
+          () => resolveDestination(logCtx, false, false, true),
+          UserError,
+        ),
+    );
+    assertStringIncludes(error.message, "swamp auth login");
+    assertEquals(error.message.includes("--email"), false);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(configDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(configDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("submitIssue: sends the chosen source to the Lab", async () => {
+  const { calls } = await withMockedFetch(
+    () =>
+      Promise.resolve(
+        Response.json({ issue: { number: 7, id: "id" } }, { status: 201 }),
+      ),
+    () =>
+      submitIssue(
+        testCtx,
+        {
+          method: "lab",
+          credentials: {
+            serverUrl: "https://swamp-club.invalid",
+            apiKey: "swamp_test",
+            apiKeyId: "test",
+            username: "tester",
+          },
+        },
+        {
+          type: "bug",
+          title: "Lab filter is broken",
+          body: "Details",
+          source: "platform",
+        },
+      ),
+  );
+  assertEquals(calls.length, 1);
+  assertEquals(JSON.parse(calls[0].body ?? "{}").source, "platform");
+});
+
+Deno.test("submitIssue: a timed-out report with a chosen source does not suggest --email", async () => {
+  await withMockedFetch(
+    () => Promise.reject(new DOMException("timed out", "TimeoutError")),
+    async () => {
+      const error = await assertRejects(
+        () =>
+          submitIssue(
+            testCtx,
+            {
+              method: "lab",
+              credentials: {
+                serverUrl: "https://swamp-club.invalid",
+                apiKey: "swamp_test",
+                apiKeyId: "test",
+                username: "tester",
+              },
+            },
+            {
+              type: "bug",
+              title: "Lab filter is broken",
+              body: "Details",
+              source: "platform",
+            },
+          ),
+        UserError,
+      );
+      assertStringIncludes(error.message, "has not been lost");
+      assertEquals(error.message.includes("--email"), false);
+    },
+  );
+});
 
 Deno.test("submitIssue: cancelling at the redaction prompt sends nothing", async () => {
   const { calls } = await withMockedFetch(

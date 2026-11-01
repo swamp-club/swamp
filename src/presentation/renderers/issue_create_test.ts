@@ -54,6 +54,45 @@ async function* toStream(
   for (const event of events) yield event;
 }
 
+Deno.test("issue_create renderer (json): a platform filing carries its source", async () => {
+  const renderer = createIssueCreateRenderer("json");
+  const output = await captureConsoleLog(() =>
+    consumeStream(
+      toStream([{
+        kind: "completed",
+        data: {
+          method: "lab",
+          number: 42,
+          type: "bug",
+          title: "Lab filter is broken",
+          url: "https://swamp-club.com/lab/42",
+          source: "platform",
+        },
+      }]),
+      renderer.handlers(),
+    )
+  );
+  assertEquals(JSON.parse(output).source, "platform");
+});
+
+Deno.test("issue_create renderer (log): a platform filing runs without error", async () => {
+  const renderer = createIssueCreateRenderer("log");
+  await consumeStream(
+    toStream([{
+      kind: "completed",
+      data: {
+        method: "lab",
+        number: 42,
+        type: "bug",
+        title: "Lab filter is broken",
+        url: "https://swamp-club.com/lab/42",
+        source: "platform",
+      },
+    }]),
+    renderer.handlers(),
+  );
+});
+
 Deno.test("issue_create renderer (log): extension-lab variant runs without error", async () => {
   const renderer = createIssueCreateRenderer("log");
   await consumeStream(

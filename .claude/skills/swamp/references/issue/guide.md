@@ -39,6 +39,14 @@ With `--extension <name>`, reports are routed to the extension's publisher
 instead — either as a tagged swamp.club Lab issue (for `@swamp/*` extensions) or
 to the publisher's declared repository (for third-party extensions).
 
+For a report about the swamp-club platform rather than the CLI, add
+`--source platform`. Any logged-in user can use it; it cannot be combined with
+`--extension` or `--email`. A source is what an issue is raised against: `swamp`
+(the CLI, the default) and `platform` are sources. It is separate from the issue
+type, and the admin-only `platform` type (shown as Internal in the Lab) still
+cannot be filed from the CLI. Visibility follows the type, so a platform
+security report stays restricted to admins and the author.
+
 To follow up on an existing Lab issue (e.g. add a related finding, link a
 sibling issue, or update reproduction steps discovered later), use
 `swamp issue ripple <number>` — this posts a comment ("ripple") on the issue.
@@ -78,6 +86,7 @@ swamp issue edit 42 --title "Updated title"
 swamp issue edit 42 --title "Updated title" --body "Updated body" --json
 swamp issue edit 42 --type security
 swamp issue bug --title "CLI crashes on empty input" --body "When running..." --json
+swamp issue bug --source platform --title "Lab filter is broken" --body "When filtering..." --json
 swamp issue feature --title "Add dark mode" --body "I'd like..." --json
 swamp issue security --title "..." --body "..." --json
 swamp issue bug --email --title "Crash report" --body "Details..."

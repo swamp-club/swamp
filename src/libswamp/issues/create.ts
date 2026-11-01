@@ -23,6 +23,7 @@ import {
   assembleExtensionReportBody,
   type ReporterContext,
 } from "../../domain/extensions/reporter_context.ts";
+import type { IssueFilingSource } from "../../domain/issues/issue_source.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
@@ -35,6 +36,8 @@ export type IssueCreateData =
     type: "bug" | "feature" | "security";
     title: string;
     url: string;
+    /** Present only when the report was filed against the platform source. */
+    source?: "platform";
   }
   | {
     method: "email";
@@ -66,6 +69,8 @@ export interface IssueCreateInput {
   title: string;
   body: string;
   type: "bug" | "feature" | "security";
+  /** The Lab source to file against. Unset files with the default source. */
+  source?: IssueFilingSource;
   /** Set for extension-scoped submissions; @swamp collectives route to Lab. */
   extensionName?: string;
   /** Installed version of `extensionName`, surfaced in the body. */
@@ -82,6 +87,7 @@ export interface IssueCreateDeps {
     type: "bug" | "feature" | "security";
     title: string;
     body: string;
+    source?: IssueFilingSource;
   }) => Promise<{ number: number; url: string }>;
 }
 
@@ -105,6 +111,7 @@ export async function* issueCreate(
         type: input.type,
         title: input.title,
         body,
+        ...(input.source ? { source: input.source } : {}),
       });
 
       if (input.extensionName) {
@@ -130,6 +137,9 @@ export async function* issueCreate(
           type: input.type,
           title: input.title,
           url: labResult.url,
+          ...(input.source === "platform"
+            ? { source: "platform" as const }
+            : {}),
         },
       };
     })(),

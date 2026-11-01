@@ -24,6 +24,10 @@ import {
 } from "./client_identity.ts";
 import type { Fetcher } from "./recording_fetcher.ts";
 import {
+  DEFAULT_ISSUE_FILING_SOURCE,
+  type IssueFilingSource,
+} from "../../domain/issues/issue_source.ts";
+import {
   fetchWithRateLimitRetry,
   hasCredential,
   parseRetryAfter,
@@ -516,8 +520,9 @@ export class SwampClubClient {
 
   /**
    * Submit a bug report or feature request to the Lab.
-   * Authenticates using the x-api-key header. Tags every submission with
-   * `source: "swamp"` so the Lab UI can attribute it to the CLI.
+   * Authenticates using the x-api-key header. Tags a submission with
+   * `source: "swamp"` so the Lab UI can attribute it to the CLI, unless the
+   * caller chose another source.
    */
   async submitIssue(
     apiKey: string,
@@ -525,6 +530,7 @@ export class SwampClubClient {
       type: "bug" | "feature" | "security";
       title: string;
       body: string;
+      source?: IssueFilingSource;
     },
     signal?: AbortSignal,
   ): Promise<{ number: number; id: string }> {
@@ -542,7 +548,7 @@ export class SwampClubClient {
               "x-api-key": apiKey,
             },
             body: JSON.stringify({
-              source: "swamp",
+              source: input.source ?? DEFAULT_ISSUE_FILING_SOURCE,
               type: input.type,
               title: input.title,
               body: input.body,
