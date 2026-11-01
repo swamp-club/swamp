@@ -33,6 +33,8 @@ to assert on results programmatically.
 }
 ```
 
+With `--source platform`, the same shape also has `"source": "platform"`.
+
 **Email fallback** (`--email` or not logged in and user chose email):
 
 ```json

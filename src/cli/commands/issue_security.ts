@@ -33,6 +33,7 @@ import {
   prefillTitle,
   resolveDestination,
   resolveExtensionOrRefuse,
+  resolveIssueSource,
   resolveReportText,
   submitIssue,
   type UsableExtensionTarget,
@@ -122,6 +123,10 @@ export const issueSecurityCommand = new Command()
     "Report a security vulnerability against an extension",
     "swamp issue security --extension @adam/cfgmgmt",
   )
+  .example(
+    "Report a security vulnerability in the swamp-club platform",
+    "swamp issue security --source platform",
+  )
   .option(
     "-t, --title <title:string>",
     "Vulnerability title (with --body, skips the editor)",
@@ -139,6 +144,10 @@ export const issueSecurityCommand = new Command()
     "Route the security report against a specific extension (e.g. @adam/cfgmgmt)",
   )
   .option(
+    "--source <source:string>",
+    "Issue source to file against: swamp (default) or platform. Requires login; not with --extension or --email",
+  )
+  .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR) — only used with --extension",
   )
@@ -153,6 +162,7 @@ export const issueSecurityCommand = new Command()
     if (options.email && options.extension) {
       throw new UserError("--email and --extension cannot be used together.");
     }
+    const issueSource = resolveIssueSource(options);
 
     let extensionTarget: UsableExtensionTarget | undefined;
     if (options.extension) {
@@ -167,6 +177,7 @@ export const issueSecurityCommand = new Command()
         ctx,
         options.email,
         extensionTarget !== undefined,
+        issueSource !== undefined,
       )
       : undefined;
     if (destination?.method === "abort") {
@@ -243,6 +254,7 @@ export const issueSecurityCommand = new Command()
       type: "security",
       title,
       body,
+      source: issueSource,
       noRedact: options.redact === false,
       swampLabTarget: extensionTarget?.kind === "swamp-lab"
         ? extensionTarget

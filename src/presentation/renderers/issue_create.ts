@@ -44,6 +44,9 @@ class LogIssueCreateRenderer implements Renderer<IssueCreateEvent> {
             { type: data.type, number: data.number, title: data.title },
           );
           logger.info("View at: {url}", { url: data.url });
+          if (data.source === "platform") {
+            logger.info("Filed against the swamp-club platform.");
+          }
           if (data.type === "security") {
             logger.info(
               "This security report is visible only to you and the admin team at swamp-club.com.",

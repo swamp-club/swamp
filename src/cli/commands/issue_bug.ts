@@ -33,6 +33,7 @@ import {
   prefillTitle,
   resolveDestination,
   resolveExtensionOrRefuse,
+  resolveIssueSource,
   resolveReportText,
   submitIssue,
   type UsableExtensionTarget,
@@ -122,6 +123,10 @@ export const issueBugCommand = new Command()
     "Report a bug against a specific extension",
     "swamp issue bug --extension @adam/cfgmgmt",
   )
+  .example(
+    "Report a bug against the swamp-club platform",
+    "swamp issue bug --source platform",
+  )
   .option(
     "-t, --title <title:string>",
     "Bug title (with --body, skips the editor)",
@@ -134,6 +139,10 @@ export const issueBugCommand = new Command()
   .option(
     "-x, --extension <name:string>",
     "Route the bug against a specific extension (e.g. @adam/cfgmgmt)",
+  )
+  .option(
+    "--source <source:string>",
+    "Issue source to file against: swamp (default) or platform. Requires login; not with --extension or --email",
   )
   .option(
     "--repo-dir <dir:string>",
@@ -150,6 +159,7 @@ export const issueBugCommand = new Command()
     if (options.email && options.extension) {
       throw new UserError("--email and --extension cannot be used together.");
     }
+    const issueSource = resolveIssueSource(options);
 
     // Extension-aware pre-flight: resolve the target BEFORE auth so refusals
     // and third-party repository handoffs don't spuriously fail on Lab auth
@@ -169,6 +179,7 @@ export const issueBugCommand = new Command()
         ctx,
         options.email,
         extensionTarget !== undefined,
+        issueSource !== undefined,
       )
       : undefined;
     if (destination?.method === "abort") {
@@ -248,6 +259,7 @@ export const issueBugCommand = new Command()
       type: "bug",
       title,
       body,
+      source: issueSource,
       noRedact: options.redact === false,
       swampLabTarget: extensionTarget?.kind === "swamp-lab"
         ? extensionTarget

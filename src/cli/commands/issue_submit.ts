@@ -52,6 +52,10 @@ import { UserError } from "../../domain/errors.ts";
 import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
 import { redactIssueTitleAndBody } from "../../domain/issues/content_redactor.ts";
 import {
+  type IssueFilingSource,
+  parseIssueFilingSource,
+} from "../../domain/issues/issue_source.ts";
+import {
   chooseSubmittedContent,
   type RedactionConfirmDeps,
 } from "./issue_redaction_confirm.ts";
@@ -146,6 +150,26 @@ export function prefillTitle(template: string, title?: string): string {
   );
 }
 
+/**
+ * The Lab source chosen with `--source`, or undefined when it was not given.
+ * Refuses a source alongside `--extension`, which routes a report elsewhere,
+ * and `--email`, which has nowhere to carry it.
+ */
+export function resolveIssueSource(
+  options: { source?: string; extension?: string; email?: boolean },
+): IssueFilingSource | undefined {
+  if (options.source === undefined) {
+    return undefined;
+  }
+  if (options.extension !== undefined) {
+    throw new UserError("--source and --extension cannot be used together.");
+  }
+  if (options.email) {
+    throw new UserError("--source and --email cannot be used together.");
+  }
+  return parseIssueFilingSource(options.source);
+}
+
 /** Extension target after refusals have been thrown — never "refused". */
 export type UsableExtensionTarget = Exclude<
   ExtensionTarget,
@@ -163,17 +187,25 @@ export type SubmitDestination =
 /**
  * Resolve where to send the issue BEFORE collecting content.
  * Call this before opening the editor so the user isn't surprised.
+ *
+ * `labOnly` is for a report that email cannot carry, such as one with a chosen
+ * source: it is refused rather than offered the email fallback.
  */
 export async function resolveDestination(
   ctx: CommandContext,
   emailFlag?: boolean,
   forExtension = false,
+  labOnly = false,
 ): Promise<SubmitDestination> {
   if (emailFlag) return { method: "email" };
 
   const authRepo = new AuthRepository();
   const credentials = await authRepo.load();
   if (credentials) return { method: "lab", credentials };
+
+  if (labOnly) {
+    throw notLoggedInError(true);
+  }
 
   // Not logged in — prompt (interactive only)
   if (ctx.outputMode === "json") {
@@ -190,6 +222,8 @@ export interface SubmitIssueInput {
   type: "bug" | "feature" | "security";
   title: string;
   body: string;
+  /** The Lab source chosen with `--source`. Unset files with the default. */
+  source?: IssueFilingSource;
   /**
    * Skip automatic redaction (--no-redact). For reporters who have
    * deliberately sanitized their content and need it submitted as written.
@@ -207,11 +241,11 @@ export interface SubmitIssueInput {
 /**
  * The error for a report that needs Lab auth the user doesn't have.
  * `--email` is only suggested when it can be used — it is rejected
- * alongside `--extension`.
+ * alongside `--extension` and `--source`.
  */
-function notLoggedInError(forExtension: boolean): UserError {
+function notLoggedInError(emailRefused: boolean): UserError {
   return new UserError(
-    forExtension
+    emailRefused
       ? "Not logged in. Run `swamp auth login` first."
       : "Not logged in. Run `swamp auth login` first, or use --email.",
   );
@@ -476,6 +510,7 @@ export async function submitIssue(
       type: input.type,
       title: input.title,
       body: input.body,
+      source: input.source,
     };
 
   try {
@@ -486,7 +521,9 @@ export async function submitIssue(
   } catch (error) {
     if (error instanceof UserError && error.code === "timeout") {
       throw new UserError(
-        `${error.message} Your report has not been lost — retry, or use --email to send it via email instead.`,
+        input.source
+          ? `${error.message} Your report has not been lost — retry.`
+          : `${error.message} Your report has not been lost — retry, or use --email to send it via email instead.`,
         "timeout",
       );
     }

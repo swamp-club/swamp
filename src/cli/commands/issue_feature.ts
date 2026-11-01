@@ -33,6 +33,7 @@ import {
   prefillTitle,
   resolveDestination,
   resolveExtensionOrRefuse,
+  resolveIssueSource,
   resolveReportText,
   submitIssue,
   type UsableExtensionTarget,
@@ -119,6 +120,10 @@ export const issueFeatureCommand = new Command()
     "Request a feature on a specific extension",
     "swamp issue feature --extension @adam/cfgmgmt",
   )
+  .example(
+    "Request a feature on the swamp-club platform",
+    "swamp issue feature --source platform",
+  )
   .option(
     "-t, --title <title:string>",
     "Feature title (with --body, skips the editor)",
@@ -131,6 +136,10 @@ export const issueFeatureCommand = new Command()
   .option(
     "-x, --extension <name:string>",
     "Route the feature against a specific extension (e.g. @adam/cfgmgmt)",
+  )
+  .option(
+    "--source <source:string>",
+    "Issue source to file against: swamp (default) or platform. Requires login; not with --extension or --email",
   )
   .option(
     "--repo-dir <dir:string>",
@@ -147,6 +156,7 @@ export const issueFeatureCommand = new Command()
     if (options.email && options.extension) {
       throw new UserError("--email and --extension cannot be used together.");
     }
+    const issueSource = resolveIssueSource(options);
 
     let extensionTarget: UsableExtensionTarget | undefined;
     if (options.extension) {
@@ -161,6 +171,7 @@ export const issueFeatureCommand = new Command()
         ctx,
         options.email,
         extensionTarget !== undefined,
+        issueSource !== undefined,
       )
       : undefined;
     if (destination?.method === "abort") {
@@ -237,6 +248,7 @@ export const issueFeatureCommand = new Command()
       type: "feature",
       title,
       body,
+      source: issueSource,
       noRedact: options.redact === false,
       swampLabTarget: extensionTarget?.kind === "swamp-lab"
         ? extensionTarget

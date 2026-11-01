@@ -34,6 +34,8 @@ With `--close`: adds `"statusChanged": "closed"`. With `--reopen`: adds
 2. **Not logged in** → prompts: log in now, or send via email
 3. **`--email` flag** → opens email client with pre-filled subject/body to
    `support@swamp-club.com`
+4. **`--source platform`** → files against the platform source. Requires being
+   logged in: there is no email fallback, because email cannot carry a source
 
 **Output shape** (Lab submission with `--json`):
 

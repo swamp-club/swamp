@@ -280,6 +280,30 @@ Deno.test("SwampClubClient - submitIssue posts source=swamp with input fields", 
   }
 });
 
+Deno.test("SwampClubClient - submitIssue posts a chosen source", async () => {
+  let capturedBody: Record<string, unknown> = {};
+  const mock = startMockServer(async (req) => {
+    capturedBody = await req.json();
+    return Response.json(
+      { issue: { number: 42, id: "issue-id-1" } },
+      { status: 201 },
+    );
+  });
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    await client.submitIssue("my-api-key", {
+      type: "bug",
+      title: "Lab filter is broken",
+      body: "Repro steps...",
+      source: "platform",
+    });
+    assertEquals(capturedBody.source, "platform");
+    assertEquals(capturedBody.type, "bug");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
 Deno.test("SwampClubClient - submitIssue throws UserError on failure", async () => {
   const mock = startMockServer((_req) =>
     new Response("Bad request", { status: 400 })
