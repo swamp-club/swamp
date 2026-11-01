@@ -7342,13 +7342,19 @@ which behaves as above.
     leader before, not past its TTL) keeps its record: adoption is tried
     again with backoff until the lock frees or the lease expires, never
     costing its holder the lease.
-  - Until adoption ends, lease requests and commits answer `503
-    serve_not_leader`, so no caller takes an adopted key first. The
-    holder's renewal then finds its lease, and `fencedLeaseOn` refuses
-    another caller's unleased commit as before the takeover. Gating every
-    commit, not only those an unadopted lease covers, is deliberate: a
-    control plane that cannot list is the storage chunks live on, so
-    commits would fail anyway, and correctness comes before availability.
+  - Until a kept lease is adopted, every write to its key answers `503
+    serve_not_leader`: a commit to the partition it covers, a lease
+    request or forced release on it, a quarantine accept of a change to
+    it, and the renewal or release of a lease not live yet. No caller takes
+    an adopted key first; the holder's renewal then finds its lease, and
+    `fencedLeaseOn` refuses another caller's unleased commit as before the
+    takeover. Writes to every other key go on (swamp-club#4258), so a kept
+    lease whose lock a run of the leader before still holds stalls only
+    its own key while adoption retries. While the kept leases cannot be
+    listed, any key may hold one, and every write waits. The lease listing
+    (`GET locks`) waits for the whole adoption, since until then it would
+    leave out the leases not adopted yet. A commit is judged again under
+    the forwarded-commit lock, where its lease is decided.
 - **Forced release** (swamp-club#4195). `swamp datastore lock release
   --force --behavior <type/id>` on a serve-mode checkout asks serve to end
   the explicit lease on that behavior, whoever holds it (`DELETE locks`
@@ -7801,7 +7807,13 @@ lands an entry twice.
 **Quarantine.** A quarantined entry is deposited with serve, with its
 chunks: a revoked principal cannot `PUT chunks`, so serve keeps both in the
 control plane under `quarantine/<txnId>`, with the depositing principal and
-the reason. Serve stamps the caller as the principal and runs
+the reason. A deposit takes one of its caller's upload slots
+(`MAX_CONCURRENT_CHUNK_REQUESTS`, shared with commits and chunk uploads;
+`429` past them) before its body is read, and its txnId is lowercased
+before anything reads it, the form every landed commit carries, so a
+re-cased copy of a landed change is answered `quarantine_landed`. Its
+chunks are decoded only once the checks below keep it
+(swamp-club#4258). Serve stamps the caller as the principal and runs
 `authorizeCommit` again, taking the deposit only when that refuses it as
 `forbidden`, so the route is not a drop box for anything else; it refuses a
 txnId that already landed (`quarantine_landed`, 409), whose acceptance would
@@ -7834,7 +7846,14 @@ admin to discard. A chunk the deposit did not carry is the rebase restating
 the current latest: the author must be able to read it, as a forwarded
 commit's possession is proven, or the accept answers `chunk_not_provided`
 and lands the change without the restatement, its version then latest, as
-a member's own flush does. A non-admin accept is refused and audited, as a
+a member's own flush does. The held content goes only once the change
+it landed is confirmed replicated: otherwise the accept answers a
+retryable `503`, the change stays held, and a leader that loses the lead
+meanwhile leaves it for the next one to land. An accept of a change
+already landed (that replication, or an accept that stopped before
+marking its record) confirms replication and marks the record at the
+seq it landed at, never landing it again (swamp-club#4258). A non-admin
+accept is refused and audited, as a
 non-admin discard or forced release is. The commit's principal stays the
 original author; the accepting admin is
 recorded in the quarantine record (kept, marked accepted) and the serve

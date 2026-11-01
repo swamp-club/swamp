@@ -426,8 +426,9 @@ export class DatastoreLockLeases {
   }
 
   /**
-   * Whether kept leases are still being adopted. The API answers lease
-   * requests and commits with serve_not_leader until they are.
+   * Whether kept leases are still being adopted. The API answers the lease
+   * listing with serve_not_leader until they are, and each write to a key
+   * still pending ({@link adoptionPendingFor}, {@link leaseAdoptionPending}).
    */
   get adopting(): boolean {
     return this.#adopting;
@@ -441,6 +442,28 @@ export class DatastoreLockLeases {
     if (!this.#adopting) return false;
     const pending = this.#pendingAdoption;
     return pending === "all" || pending.has(lockKey);
+  }
+
+  /**
+   * Whether a write to `target` must wait for kept leases to be adopted
+   * (swamp-club#4258): its key's kept lease is not adopted yet, or the kept
+   * leases could not be read, so any key may hold one. A target no lease
+   * covers (undefined) waits only in that second case.
+   */
+  adoptionPendingFor(target: LockTarget | undefined): boolean {
+    if (!this.#adopting) return false;
+    if (this.#pendingAdoption === "all") return true;
+    return target !== undefined && this.#pendingAdoption.has(lockKeyOf(target));
+  }
+
+  /**
+   * Whether a renewal or release of `leaseId` must wait for kept leases to
+   * be adopted (swamp-club#4258): while adopting, a lease that is not live
+   * here may be a kept one not adopted yet, so it is not answered as lost.
+   */
+  leaseAdoptionPending(leaseId: string): boolean {
+    if (!this.#adopting) return false;
+    return this.#pendingAdoption === "all" || !this.#leases.has(leaseId);
   }
 
   /**

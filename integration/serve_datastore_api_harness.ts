@@ -36,6 +36,8 @@ import { matchDatastoreRoute } from "../src/serve/datastore_routes.ts";
 import {
   asTryLock,
   DatastoreLockLeases,
+  type LockTarget,
+  type TryLock,
 } from "../src/serve/datastore_locks.ts";
 import {
   createModelLock,
@@ -97,6 +99,13 @@ export async function withServer(
      * token names them; read live, so a test may change them mid-way.
      */
     tokenGroups?: Record<string, string[]>;
+    /**
+     * Builds the leases serve holds for callers over serve's own locks, in
+     * place of the plain ones (swamp-club#4258).
+     */
+    locks?: (
+      createLock: (target: LockTarget) => Promise<TryLock>,
+    ) => DatastoreLockLeases;
   } = {},
 ): Promise<void> {
   resetRateLimitState();
@@ -115,18 +124,18 @@ export async function withServer(
     assert(location !== undefined, "the fixture repository is v3");
     const v3 = v3DatastoreFor(repo.repoDir, location);
     const base = createServeCtx(repo, grants);
-    const locks = new DatastoreLockLeases({
-      createLock: async (target) =>
-        asTryLock(
-          target.kind === "model"
-            ? await createModelLock(
-              base.datastoreConfig,
-              target.modelType,
-              target.modelId,
-            )
-            : await createWorkflowRunLock(base.datastoreConfig, target.runId),
-        ),
-    });
+    const createLock = async (target: LockTarget): Promise<TryLock> =>
+      asTryLock(
+        target.kind === "model"
+          ? await createModelLock(
+            base.datastoreConfig,
+            target.modelType,
+            target.modelId,
+          )
+          : await createWorkflowRunLock(base.datastoreConfig, target.runId),
+      );
+    const locks = options.locks?.(createLock) ??
+      new DatastoreLockLeases({ createLock });
     // Kept in the repository's own control plane, as a solo serve keeps it.
     const quarantine = new ControlPlaneQuarantineStore(
       new FileSystemControlPlaneStore(swampPath(repo.repoDir)),

@@ -1255,3 +1255,79 @@ Deno.test("DatastoreLockLeases.whenAdopted: while the kept leases cannot even be
     await subject.dispose();
   }
 });
+
+Deno.test("DatastoreLockLeases.adoptionPendingFor: only a key whose kept lease is not adopted yet waits, and every key while the kept leases are unknown", async () => {
+  const shared = memoryControlPlane();
+  const first = node(shared, () => 1);
+  // The leader before's run still holds the behavior's lock here.
+  const second = node(shared, () => 2, { maxWaitMs: 10, adoptRetryMs: 5 });
+  const other: LockTarget = {
+    kind: "model",
+    modelType: "aws/ec2",
+    modelId: RUN,
+  };
+  try {
+    // Before adoption starts, the kept leases are unknown.
+    assertEquals(second.subject.adoptionPendingFor(other), true);
+    assertEquals(second.subject.adoptionPendingFor(undefined), true);
+    assertEquals(second.subject.leaseAdoptionPending("any"), true);
+
+    await first.subject.adopt();
+    const taken = await first.subject.acquire(explicit("user:alice"));
+    assert(taken.kind === "acquired");
+    second.locks.serveTakes(lockKeyOf(model));
+    await second.subject.adopt();
+    assert(second.subject.adopting);
+
+    assertEquals(second.subject.adoptionPendingFor(model), true);
+    assertEquals(second.subject.adoptionPendingFor(other), false);
+    assertEquals(second.subject.adoptionPendingFor(undefined), false);
+    assertEquals(
+      second.subject.leaseAdoptionPending(taken.lease.leaseId),
+      true,
+    );
+    // A lease taken meanwhile is live, so it does not wait.
+    const meanwhile = await second.subject.acquire({
+      ...explicit("user:bob"),
+      target: other,
+    });
+    assert(meanwhile.kind === "acquired");
+    assertEquals(
+      second.subject.leaseAdoptionPending(meanwhile.lease.leaseId),
+      false,
+    );
+
+    second.locks.held.delete(lockKeyOf(model));
+    await waitFor(() => !second.subject.adopting, "the kept lease adopted");
+    assertEquals(second.subject.adoptionPendingFor(model), false);
+    assertEquals(
+      second.subject.leaseAdoptionPending(taken.lease.leaseId),
+      false,
+    );
+    assertEquals(
+      second.subject.fencedLeaseOn(other)?.leaseId,
+      meanwhile.lease.leaseId,
+    );
+  } finally {
+    await first.subject.dispose();
+    await second.subject.dispose();
+  }
+});
+
+Deno.test("lockTargetOfPartition: a partition's lock key is canonical, so it matches the key a kept lease is adopted under", () => {
+  for (
+    const partition of [
+      partitionOf({
+        kind: "model",
+        type: ModelType.create("AWS::EC2"),
+        id: ID.toUpperCase(),
+      }),
+      partitionOf({ kind: "run", workflowId: ID, runId: RUN.toUpperCase() }),
+    ]
+  ) {
+    const key = lockKeyOf(lockTargetOfPartition(partition)!);
+    const parsed = parseLockKey(key);
+    assert(parsed !== undefined, key);
+    assertEquals(lockKeyOf(parsed), key);
+  }
+});
