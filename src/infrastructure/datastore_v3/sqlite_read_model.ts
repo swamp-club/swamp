@@ -383,6 +383,24 @@ export interface SqliteReadModelOptions {
    * commit's bytes, such as the writer's own, records nothing.
    */
   readonly writerInstance?: string;
+  /**
+   * Whether the checkout's files already hold `commit`'s changes or newer
+   * versions of them (swamp-club#4249): a commit this process sent while
+   * one of its units is still open, which may have written its keys again
+   * since. Its puts and removals are then applied to the state and the
+   * catalog but not to the files, as a net replay skips a write a later
+   * change replaces. A catch-up of a serve-mode checkout can run while a
+   * unit is open: replaying the unit's own checkpoint over a later write
+   * would hand the unit's commit the older version. Asked once per
+   * commit.
+   */
+  readonly holdsOwnWork?: (commit: Commit) => boolean;
+  /**
+   * Told once a commit's changes are applied, or found already applied:
+   * the read model never replays it again but in a recovery, which runs
+   * with no unit open. A caller of {@link holdsOwnWork} forgets it then.
+   */
+  readonly ownWorkApplied?: (commit: Commit) => void;
 }
 
 /** Where a guarded change comes from, for {@link CheckoutCopyAtRiskError}. */
@@ -421,6 +439,10 @@ export class SqliteReadModel implements ReadModel {
   readonly #follower: boolean;
   /** {@link SqliteReadModelOptions.writerInstance}. */
   readonly #writerInstance: string | undefined;
+  /** {@link SqliteReadModelOptions.holdsOwnWork}. */
+  readonly #holdsOwnWork: ((commit: Commit) => boolean) | undefined;
+  /** {@link SqliteReadModelOptions.ownWorkApplied}. */
+  readonly #ownWorkApplied: ((commit: Commit) => void) | undefined;
   /** {@link SqliteReadModelOptions.recordsChanged}. */
   readonly #recordsChanged:
     | ((namespace: string, keys: readonly string[]) => Promise<void>)
@@ -520,6 +542,8 @@ export class SqliteReadModel implements ReadModel {
     this.#follower = options.follower === true;
     this.#recordsChanged = options.recordsChanged;
     this.#writerInstance = options.writerInstance;
+    this.#holdsOwnWork = options.holdsOwnWork;
+    this.#ownWorkApplied = options.ownWorkApplied;
     this.#forcedFolding = options.spellingFolding;
   }
 
@@ -1545,18 +1569,27 @@ export class SqliteReadModel implements ReadModel {
     this.#pageInFlight = settled.promise;
     const changes = new Map<string, Set<string>>();
     this.#pageChanges = changes;
+    // The commits this page applied or found applied, told to
+    // `ownWorkApplied` once the page's state has committed.
+    const met: Commit[] = [];
+    const tellOwnWorkApplied = () => {
+      if (this.#ownWorkApplied === undefined) return;
+      for (const commit of met) this.#ownWorkApplied(commit);
+    };
     try {
       let applied = 0;
       try {
         for (const change of page) {
           signal.throwIfAborted();
           if (await this.#apply(change, advance, signal, batch)) applied++;
+          met.push(change.commit);
         }
       } catch (error) {
         try {
           await batch.barrier();
           this.#catalog.commitBatch();
           this.#state.commitBatch();
+          tellOwnWorkApplied();
           // The commits before the failure are kept, with their files.
           this.#pageChanges = undefined;
           await this.#tellRecordsChanged(changes);
@@ -1571,6 +1604,7 @@ export class SqliteReadModel implements ReadModel {
       // the catalog ahead, and the page is applied again.
       this.#timeSync("catalog", () => this.#catalog.commitBatch());
       this.#state.commitBatch();
+      tellOwnWorkApplied();
       if (this.#stats !== undefined) {
         this.#stats.pages++;
         this.#stats.commits += applied;
@@ -1663,6 +1697,7 @@ export class SqliteReadModel implements ReadModel {
       const isConfig = commit.partition.kind === "config";
       const recordsBases = isConfig && this.#writerInstance !== undefined &&
         commit.writer.instance !== this.#writerInstance;
+      const ownWork = this.#holdsOwnWork?.(commit) === true;
       for (const keyChange of finalKeyStates(commit)) {
         signal.throwIfAborted();
         const key = keyChange.key.toString();
@@ -1688,6 +1723,7 @@ export class SqliteReadModel implements ReadModel {
             touched,
             touchedFolded,
             unreadable,
+            ownWork,
           );
         } finally {
           this.#rewritten = undefined;
@@ -1775,6 +1811,7 @@ export class SqliteReadModel implements ReadModel {
     touched: Set<string>,
     touchedFolded: FoldedKeys,
     unreadable: Map<string, StoredUnreadableRecord>,
+    ownWork: boolean,
   ): Promise<FileOwnership | undefined> {
     const key = change.key.toString();
     const from = `commit ${commit.seq} of ${commit.partition.toString()}`;
@@ -1820,6 +1857,14 @@ export class SqliteReadModel implements ReadModel {
       return change.put === null && decision.kind === "remove"
         ? decision.next
         : undefined;
+    }
+    // The file holds this commit's change or a newer one this process's
+    // open unit made, which its own commit reads (swamp-club#4249).
+    if (ownWork) {
+      this.#paths.takeAbsent(path);
+      this.#paths.takeExisting(path);
+      this.#stats?.bump("own_work_kept");
+      return decision.next;
     }
     if (decision.kind === "remove" || change.put === null) {
       // Nothing of the key is on disk in a net replay (swamp-club#3803).

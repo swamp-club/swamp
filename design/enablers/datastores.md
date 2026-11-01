@@ -8267,12 +8267,36 @@ brings commits, the checkout's own catch-up reads them through the changes
 feed, with its filtering, base loads and gaps. Short commands need nothing
 new; serve never watches.
 
+Such a catch-up can run while one of the command's units is open, and the
+feed brings back the commits the command itself sent, a mid-run checkpoint
+among them (swamp-club#4249). The checkout's files already hold those
+changes, or newer versions the open unit wrote since, which its own commit
+reads from the files. So the handle notes the txnId of every commit it sends
+to serve, before sending it, and while a unit of the checkout is open the
+read model applies such a commit to its state and catalog but leaves its
+files alone (`holdsOwnWork`). Noting it before the send covers a frame that
+brings the commit back before serve's reply does. A txnId is forgotten once
+the read model has committed the page that applied its commit
+(`ownWorkApplied`), so the set holds only commits not applied yet, however
+long the command runs. The note is in this process only: a second write
+command in the checkout waits for the checkout's writer lease, and a reader
+whose index is complete does not replay. Before, a frame bringing a workflow run's
+first checkpoint could put the record back to `running` after the run saved
+it `suspended`: the root committed `running` while the command printed
+`suspended`, and serve refused to approve the run. Dropped work is recovered
+only while no unit is open, so its replay still puts back every file.
+
 **Testing.** `integration/serve_v3_team_forwarding_test.ts` (a commit
 through a follower lands as the caller; the leader decides; an unreachable
 and a lost leader), `integration/serve_v3_team_ws_forwarding_test.ts`
 (streams, cancels, an in-flight drop, a revoked session, a worker relay),
 `integration/serve_v3_commit_feed_test.ts` (filtering, resume, compaction,
-peers, a follower applying the feed), and unit tests beside each module.
+peers, a follower applying the feed),
+`integration/serve_upstream_own_commit_replay_test.ts` (a catch-up while a
+run's root is open leaves the run's later save for the root to commit, also
+when it meets the checkpoint before serve's reply; a dropped save is still
+put back to the checkpoint), and
+unit tests beside each module.
 
 ### Team mode: claiming a datastore (datastore rework Phase 5)
 
