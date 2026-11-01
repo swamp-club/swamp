@@ -614,6 +614,7 @@ import {
 import { followerHttpForward } from "../../serve/follower_requests.ts";
 import { LeaderLink } from "../../serve/leader_link.ts";
 import { FollowerFeed } from "../../serve/follower_feed.ts";
+import { awaitFirstFollowerCatchUp } from "../../serve/follower_ready.ts";
 import type { ServeCommitEffects } from "../../serve/serve_commit_effects.ts";
 import { wireFollowerPolicy } from "../../serve/follower_policy_wiring.ts";
 import {
@@ -3381,6 +3382,9 @@ export const serveCommand = new Command()
     // Serve's role in team mode on a v3 datastore, set once the control
     // plane it shares is known (swamp-club#4096).
     let serveLeadership: ServeLeadership | undefined;
+    // A follower's leader feed: its first catch-up holds /ready
+    // (swamp-club#4254).
+    let serveFollowerFeed: FollowerFeed | undefined;
     // The leader's timers a follower starts once it first leads
     // (swamp-club#4096). A leader that loses the lead shuts down, which
     // stops them.
@@ -8479,6 +8483,10 @@ export const serveCommand = new Command()
         connectionCtx.feedBarrier = followerPolicy.barrier(() =>
           followerFeed.barrier()
         );
+        // A read from a caller whose copy is past this one's waits on it
+        // before it is refused as behind (swamp-club#4254).
+        connectionCtx.followerCatchUp = () => followerFeed.caughtUp();
+        serveFollowerFeed = followerFeed;
       }
       const leadership = new ServeLeadership({
         instanceId,
@@ -9020,6 +9028,24 @@ export const serveCommand = new Command()
       startWhenLeading(() => continuationSweepService!.start());
     }
 
+    // A node that starts as a follower goes into rotation only once its copy
+    // holds its leader's head, bounded (swamp-club#4254): restored from the
+    // bucket after a takeover, it can trail the members' copies.
+    const followerFeedAtBoot = serveFollowerFeed;
+    if (
+      followerFeedAtBoot !== undefined && serveLeadership?.role === "follower"
+    ) {
+      const outcome = await awaitFirstFollowerCatchUp({
+        caughtUp: async () =>
+          await followerFeedAtBoot.caughtUp() === "caught-up",
+        ended: () => shuttingDown || serveLeadership?.role !== "follower",
+      });
+      if (outcome === "timed-out") {
+        logger.warn(
+          "This serve node's copy did not catch up with the leader within the readiness wait; it reports ready anyway, and refuses reads it is behind on until it has",
+        );
+      }
+    }
     isReady = true;
     logger.info("Startup complete — /ready is now serving 200");
 

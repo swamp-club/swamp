@@ -36,6 +36,7 @@
 
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
+  ServeFollowerBehindError,
   type ServeLeader,
   ServeNotLeaderError,
 } from "../domain/datastore_v3/serve_leader.ts";
@@ -94,6 +95,20 @@ export function notLeaderResponse(
       ...(refusal.inFlight ? { inFlight: true } : {}),
     },
     { status: 503, headers: { "Retry-After": "5" } },
+  );
+}
+
+/**
+ * The reply to a read a follower refused because the caller's copy is past
+ * its own (swamp-club#4254): a retryable 503 that names nothing of the
+ * leader. The follower is catching up, which is usually quick, so the
+ * caller is told to retry after a second.
+ */
+export function followerBehindResponse(): Response {
+  const refusal = new ServeFollowerBehindError();
+  return Response.json(
+    { code: refusal.code, message: refusal.message },
+    { status: 503, headers: { "Retry-After": "1" } },
   );
 }
 

@@ -24,7 +24,9 @@ import {
   normalizeAdvertiseAddress,
   parseServeLeader,
   serializeServeLeader,
+  SERVE_FOLLOWER_BEHIND_CODE,
   SERVE_NOT_LEADER_CODE,
+  ServeFollowerBehindError,
   type ServeLeader,
   ServeNotLeaderError,
 } from "./serve_leader.ts";
@@ -58,6 +60,14 @@ Deno.test("parseServeLeader: refuses what is not a leader record", () => {
   ) {
     assertEquals(parseServeLeader(bad), undefined);
   }
+});
+
+Deno.test("ServeFollowerBehindError: says to retry, never to move the copy aside", () => {
+  const error = new ServeFollowerBehindError();
+  assertEquals(error.code, SERVE_FOLLOWER_BEHIND_CODE);
+  assertStringIncludes(error.message, "Try again shortly");
+  assertStringIncludes(error.message, "Nothing was changed");
+  assertEquals(error.message.includes("aside"), false);
 });
 
 Deno.test("ServeNotLeaderError: names the leader and is retryable by code", () => {

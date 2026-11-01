@@ -50,6 +50,22 @@ export const FOLLOWER_FEED_SILENCE_MS = 15_000;
 /** How long a forwarded write's reply waits for the copy to catch up. */
 export const FOLLOWER_FEED_BARRIER_MS = 5_000;
 
+/**
+ * How long a feed may go without being live, since it last was or since
+ * it began to follow its leader, before a read it is behind on is answered
+ * as before rather than refused (swamp-club#4254): the readiness bound.
+ */
+export const FOLLOWER_FEED_STUCK_MS = 30_000;
+
+/**
+ * Where a follower's copy stands against its leader (swamp-club#4254):
+ * `caught-up`, it holds a head the leader named after the caller asked;
+ * `catching-up`, its feed is live or recently was; `stuck`, its feed has not
+ * been live for {@link FOLLOWER_FEED_STUCK_MS}, so it cannot tell catching
+ * up from a log behind the caller.
+ */
+export type FollowerCatchUp = "caught-up" | "catching-up" | "stuck";
+
 /** One commit the leader sent. */
 export interface FeedChange {
   readonly cursor: number;
@@ -84,6 +100,9 @@ export class FollowerFeed implements FollowerCopyFeed {
   #chain: Promise<void> = Promise.resolve();
   #heads = new Map<string, (cursor: number) => void>();
   #appliedWaiters = new Set<() => void>();
+  #caughtUp: Promise<boolean> | undefined;
+  #queuedCaughtUp: Promise<boolean> | undefined;
+  #followedAt: number | undefined;
   #generation = 0;
 
   constructor(options: FollowerFeedOptions) {
@@ -113,6 +132,7 @@ export class FollowerFeed implements FollowerCopyFeed {
     this.#leader = leader;
     this.#failed = false;
     this.#lastFrameAt = undefined;
+    this.#followedAt = this.#now();
     const generation = ++this.#generation;
     if (leader?.address === undefined) return;
     void this.#open(generation).catch((error) => {
@@ -133,10 +153,13 @@ export class FollowerFeed implements FollowerCopyFeed {
    * Waits, for at most {@link FOLLOWER_FEED_BARRIER_MS}, until the copy
    * holds what the leader had published when asked. Returns at once while
    * the feed is down: the reply is not held for a copy that cannot catch up.
+   * Resolves true only when the copy holds that head (swamp-club#4254):
+   * false when the feed is down, the leader did not name its head, or the
+   * wait ran out.
    */
-  async barrier(): Promise<void> {
+  async barrier(): Promise<boolean> {
     const socket = this.#socket;
-    if (!this.live || socket === undefined) return;
+    if (!this.live || socket === undefined) return false;
     const deadline = this.#now() + FOLLOWER_FEED_BARRIER_MS;
     const id = `feed-head-${crypto.randomUUID()}`;
     const head = await new Promise<number | undefined>((resolve) => {
@@ -156,10 +179,11 @@ export class FollowerFeed implements FollowerCopyFeed {
         resolve(undefined);
       }
     });
-    if (head === undefined) return;
+    // Undefined: the leader named none in time; negative: the feed closed.
+    if (head === undefined || head < 0) return false;
     while (this.#applied < head && this.live) {
       const left = deadline - this.#now();
-      if (left <= 0) return;
+      if (left <= 0) return false;
       await new Promise<void>((resolve) => {
         const done = () => {
           clearTimeout(timer);
@@ -170,6 +194,52 @@ export class FollowerFeed implements FollowerCopyFeed {
         this.#appliedWaiters.add(done);
       });
     }
+    return this.#applied >= head && this.live;
+  }
+
+  /**
+   * Where the copy stands against the leader, for a read that found it
+   * behind its caller (swamp-club#4254). Callers share barriers, so a burst
+   * of such reads asks the leader for its head at most twice at a time, but
+   * a caller never shares one that asked before it arrived: that head may
+   * predate a commit the caller holds. A caller arriving while one is in
+   * flight shares the next, which asks once that one settles. A forwarded
+   * write's reply waits on {@link barrier} itself.
+   */
+  caughtUp(): Promise<FollowerCatchUp> {
+    let run: Promise<boolean>;
+    if (this.#caughtUp === undefined) {
+      run = this.#startCaughtUp();
+    } else {
+      this.#queuedCaughtUp ??= this.#caughtUp.then(() => {
+        this.#queuedCaughtUp = undefined;
+        return this.#startCaughtUp();
+      });
+      run = this.#queuedCaughtUp;
+    }
+    return run.then((caughtUp) =>
+      caughtUp ? "caught-up" : this.#stuck() ? "stuck" : "catching-up"
+    );
+  }
+
+  #startCaughtUp(): Promise<boolean> {
+    const run = this.barrier().finally(() => {
+      if (this.#caughtUp === run) this.#caughtUp = undefined;
+    });
+    this.#caughtUp = run;
+    return run;
+  }
+
+  /**
+   * Whether the feed has not been live for {@link FOLLOWER_FEED_STUCK_MS}:
+   * since its last frame, or since it began following when it has had
+   * none. A feed that follows no leader is stuck.
+   */
+  #stuck(): boolean {
+    if (this.live) return false;
+    if (this.#followedAt === undefined) return true;
+    const since = Math.max(this.#followedAt, this.#lastFrameAt ?? 0);
+    return this.#now() - since > FOLLOWER_FEED_STUCK_MS;
   }
 
   async #open(generation: number): Promise<void> {

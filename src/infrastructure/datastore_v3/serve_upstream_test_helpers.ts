@@ -123,7 +123,11 @@ export class FakeServe implements Client {
   readonly posted: PostedCommit[] = [];
   readonly uploads: { sha256: string; partition: string | undefined }[] = [];
   readonly hasAsked: string[][] = [];
-  readonly partitionReads: { after: number; limit: number | undefined }[] = [];
+  readonly partitionReads: {
+    after: number;
+    limit: number | undefined;
+    held?: number | undefined;
+  }[] = [];
   readonly changesReads: { cursor: number; limit: number | undefined }[] = [];
   /**
    * Answers a page read as too large for the client to read while it
@@ -283,9 +287,14 @@ export class FakeServe implements Client {
     after: number,
     signal: AbortSignal,
     limit?: number,
+    held?: number,
   ): Promise<PartitionCommitsPage> {
     this.requests.partitionCommits++;
-    this.partitionReads.push({ after, limit });
+    this.partitionReads.push({
+      after,
+      limit,
+      ...(held !== undefined && held > 0 ? { held } : {}),
+    });
     signal.throwIfAborted();
     if (this.tooLarge?.("partition", limit) === true) {
       return Promise.reject(

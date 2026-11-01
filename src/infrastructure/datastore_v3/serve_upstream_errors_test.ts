@@ -35,7 +35,9 @@ import {
   WRITER_FENCED_CODE,
 } from "../../domain/datastore_v3/writer_lease.ts";
 import {
+  SERVE_FOLLOWER_BEHIND_CODE,
   SERVE_NOT_LEADER_CODE,
+  ServeFollowerBehindError,
   ServeNotLeaderError,
 } from "../../domain/datastore_v3/serve_leader.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -182,6 +184,21 @@ Deno.test("serveErrorFromReply: 503 serve_not_leader without a readable leader n
   }, SERVE_URL);
   assertInstanceOf(error, ServeNotLeaderError);
   assertEquals(error.leader, undefined);
+});
+
+Deno.test("serveErrorFromReply: 503 serve_follower_behind is retryable and never may land, whatever seq it names (swamp-club#4254)", () => {
+  const error = serveErrorFromReply(
+    503,
+    {
+      code: SERVE_FOLLOWER_BEHIND_CODE,
+      message: "behind",
+      seq: 4,
+    },
+    SERVE_URL,
+    1,
+  );
+  assertInstanceOf(error, ServeFollowerBehindError);
+  assertEquals(error.code, SERVE_FOLLOWER_BEHIND_CODE);
 });
 
 Deno.test("serveErrorFromReply: 503 with a seq may land, and keeps serve's code beside it", () => {

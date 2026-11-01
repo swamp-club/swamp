@@ -21,6 +21,7 @@
  * Shared utilities for serve WebSocket request handlers: the connection context, response senders, error sanitization, and the authorization gate every handler routes through.
  */
 
+import type { FollowerCatchUp } from "../follower_feed.ts";
 import type { GcMutex } from "../gc_mutex.ts";
 import type { EventLoopLagReader } from "../ws_request_span.ts";
 import type { DefinitionOwnerIndex } from "../../domain/definitions/repositories.ts";
@@ -382,6 +383,14 @@ export interface ConnectionContext {
    * caller reads its own write from this node next (swamp-club#4120).
    */
   feedBarrier?: () => Promise<void>;
+  /**
+   * Waits, for a bounded time, for this follower's copy to hold a head its
+   * leader names after the call, and says where the copy stands: a read
+   * from a caller whose copy is past this one's waits on it before it is
+   * refused as behind (swamp-club#4254). Absent outside team mode, or
+   * without a leader feed.
+   */
+  followerCatchUp?: () => Promise<FollowerCatchUp>;
   /**
    * Serve's v3 commit log, as the `commits.subscribe` feed reads it
    * (swamp-club#4120). Absent when the datastore is not v3.

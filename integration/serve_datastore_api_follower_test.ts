@@ -25,13 +25,16 @@
  */
 
 import { assertEquals } from "@std/assert";
+import { SERVE_FOLLOWER_BEHIND_CODE } from "../src/domain/datastore_v3/serve_leader.ts";
 import type { FollowerGate } from "../src/serve/follower_requests.ts";
+import { grant } from "./serve_request_harness.ts";
 import {
   blobSaveOps,
   commitBody,
   getJson,
   partitionPath,
   post,
+  type Server,
   sha256Hex,
   withServer,
   writer,
@@ -174,6 +177,169 @@ Deno.test({
       );
       assertEquals(rest.json.changes, []);
       assertEquals(rest.json.cursor, applied);
+    });
+  },
+});
+
+/** Lands commits `from + 1` to `to` on `web`, as the leader's feed would. */
+async function landCommits(
+  server: Server,
+  from: number,
+  to: number,
+): Promise<void> {
+  const empty = new Uint8Array(0);
+  const emptySha = await sha256Hex(empty);
+  for (let expectedSeq = from; expectedSeq < to; expectedSeq++) {
+    const landed = await post(
+      partitionPath(server),
+      "alice-token",
+      commitBody({
+        expectedSeq,
+        txnId: crypto.randomUUID(),
+        ops: await blobSaveOps(server, "vpc", expectedSeq + 1, empty),
+        chunks: [{ sha256: emptySha, size: 0 }],
+      }, [empty]),
+    );
+    assertEquals(landed.status, 200, JSON.stringify(landed.json));
+  }
+}
+
+/** A partition read as the member's copy sends it, with its reply headers. */
+async function readHeld(
+  server: Server,
+  query: string,
+  partition = partitionPath(server),
+): Promise<
+  { status: number; json: Record<string, unknown>; retryAfter: string | null }
+> {
+  const response = await fetch(`${partition}?${query}`, {
+    headers: { authorization: "Bearer alice-token" },
+  });
+  return {
+    status: response.status,
+    json: await response.json(),
+    retryAfter: response.headers.get("retry-after"),
+  };
+}
+
+Deno.test({
+  name:
+    "datastore API: a follower behind the caller's copy waits for its feed, then refuses with a retryable 503, never a head that reads as a rewind (swamp-club#4254)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      await landCommits(server, 0, 1);
+      server.ctx.followerGate = follower();
+      let waits = 0;
+      server.ctx.followerCatchUp = () => {
+        waits++;
+        return Promise.resolve("catching-up" as const);
+      };
+      // The member's head-commit check: it holds seq 2, this copy seq 1.
+      const refused = await readHeld(server, "after=1&limit=1&held=2");
+      assertEquals(refused.status, 503);
+      assertEquals(refused.json.code, SERVE_FOLLOWER_BEHIND_CODE);
+      assertEquals(refused.json.leader, undefined);
+      assertEquals(refused.retryAfter, "1");
+      assertEquals(waits, 1);
+      // No further than the copy: answered without waiting.
+      const level = await readHeld(server, "after=0&limit=1&held=1");
+      assertEquals(level.status, 200);
+      assertEquals(level.json.head, 1);
+      assertEquals(waits, 1);
+      // A caller that names no held seq is answered as before.
+      const old = await readHeld(server, "after=1");
+      assertEquals(old.status, 200);
+      assertEquals(old.json.head, 1);
+      assertEquals(waits, 1);
+      // A follower with no leader feed can never say it caught up, so it
+      // answers as before, and the caller judges the head: a refusal it
+      // could not lift would hide a real rewind for good.
+      server.ctx.followerCatchUp = undefined;
+      const noFeed = await readHeld(server, "after=1&limit=1&held=2");
+      assertEquals(noFeed.status, 200);
+      assertEquals(noFeed.json.head, 1);
+      // So does one whose feed has been down past the bound: a refusal it
+      // could not lift would hide a real rewind as well.
+      server.ctx.followerCatchUp = () => Promise.resolve("stuck" as const);
+      const stuck = await readHeld(server, "after=1&limit=1&held=2");
+      assertEquals(stuck.status, 200);
+      assertEquals(stuck.json.head, 1);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a follower that catches up while the caller waits answers it, and one caught up to a leader itself behind the caller answers as that leader would (swamp-club#4254)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      await landCommits(server, 0, 1);
+      // The feed brings in the commit the caller holds while it waits.
+      server.ctx.followerCatchUp = async () => {
+        server.ctx.followerGate = undefined;
+        await landCommits(server, 1, 2);
+        server.ctx.followerGate = follower();
+        return "caught-up" as const;
+      };
+      server.ctx.followerGate = follower();
+      const caughtUp = await readHeld(server, "after=1&limit=1&held=2");
+      assertEquals(caughtUp.status, 200);
+      assertEquals(caughtUp.json.head, 2);
+      // Caught up to a leader that is itself behind the caller (a restore
+      // within the same log): answered, so the caller still refuses it as
+      // diverged, as it would the leader.
+      server.ctx.followerCatchUp = () => Promise.resolve("caught-up" as const);
+      const leaderBehind = await readHeld(server, "after=4&limit=1&held=5");
+      assertEquals(leaderBehind.status, 200);
+      assertEquals(leaderBehind.json.head, 2);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a leader answers a caller past its head without waiting, and a held seq that is not an integer is refused (swamp-club#4254)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      await landCommits(server, 0, 1);
+      server.ctx.followerCatchUp = () =>
+        Promise.reject(new Error("a leader never waits on a feed"));
+      const leader = await readHeld(server, "after=3&limit=1&held=4");
+      assertEquals(leader.status, 200);
+      assertEquals(leader.json.head, 1);
+      server.ctx.followerGate = follower();
+      for (const bad of ["-1", "x", "1.5", "9".repeat(20), ""]) {
+        const refused = await readHeld(server, `after=0&held=${bad}`);
+        assertEquals(refused.status, 400, bad);
+        assertEquals(refused.json.code, "invalid_request");
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a follower refuses as behind only a caller who may read the partition (swamp-club#4254)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const workflowsOnly = grant({
+      actions: ["read"],
+      resource: { kind: "workflow", pattern: "*" },
+    });
+    await withServer([workflowsOnly], async (server) => {
+      server.ctx.followerGate = follower();
+      server.ctx.followerCatchUp = () =>
+        Promise.resolve("catching-up" as const);
+      const hidden = await readHeld(server, "after=0&held=9");
+      assertEquals(hidden.status, 404);
+      assertEquals(hidden.json.code, "not_found");
     });
   },
 });
