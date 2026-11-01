@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { lastEvaluatedStands } from "../last_evaluated_trust.ts";
 import { Command } from "@cliffy/command";
 import {
   createContext,
@@ -381,7 +382,12 @@ export const workflowRunCommand = new Command()
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: ctx.outputMode,
     });
-    const lastEvaluated = options.lastEvaluated as boolean;
+    const lastEvaluated = options.lastEvaluated === true &&
+      await lastEvaluatedStands(
+        unlocked.repoDir,
+        unlocked.repoContext,
+        (trust) => trust.workflow(workflowIdOrName),
+      );
 
     const stdinContent = options.stdin ? await readStdin() : null;
     let stdinItems: Record<string, unknown>[] | null = null;

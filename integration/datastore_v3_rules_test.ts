@@ -199,6 +199,12 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/control_plane_lease_store.ts",
   "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  // A serve-mode checkout's --last-evaluated trusts only serve's and its own
+  // member's evaluations, and its signal outcomes are serve's (swamp-club#4245).
+  "src/cli/last_evaluated_trust.ts -> src/infrastructure/datastore_v3/trusted_evaluations.ts",
+  "src/cli/last_evaluated_trust.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/serve_upstream_registry.ts",
+  "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/serve_wait_outcomes.ts",
   "src/serve/handlers/admin_handlers.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   // swamp-club#3279, the managed lockfile's v3 publish, CLI and serve: it
   // commits the lockfile at its transaction root's checkpoint.
@@ -1094,6 +1100,8 @@ const PINNED_V3_DATASTORE_FOR_CALLERS: readonly string[] = [
   // swamp-club#4120: a follower applies its leader's feed to the copy its
   // boot (followV3Datastore) or its last lineage restore made current.
   "src/infrastructure/datastore_v3/serve_feed.ts",
+  // Called with a repository context open, which made the copy current.
+  "src/cli/last_evaluated_trust.ts",
   "src/serve/handlers/admin_handlers.ts",
 ];
 

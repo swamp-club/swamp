@@ -23,18 +23,19 @@
  * It generates workflows of plain steps, approval gates (with and without a
  * guard, with and without a deadline), signal waits, nested workflow steps
  * and forEach expansions, and drives runs of them through the transitions a
- * real run records: a runner holding only `run`, an approver holding
- * `approve`, a signaller holding `signal`, and a cancel. Between them, an
- * attacker holding only `run` forges the next record from the current one,
- * and may also retype a step in the stored workflow (as a caller with write
- * on it can).
+ * real run records: a runner, a cancel, and serve's handlers, which alone
+ * make an approver's decision and store a signaller's outcome
+ * (swamp-club#4245). Between them, an attacker holding only `run` forges the
+ * next record from the current one, and may also retype a step in the stored
+ * workflow (as a caller with write on it can).
  *
  * Two properties, each against an oracle stated from the records alone:
- * - every transition the model makes is accepted with exactly the actions
- *   it needs;
- * - every forged record the judge would let a run-only caller land keeps
- *   the run's guarantees, across the whole history of what landed: a gate
- *   that waited settles without `approve` only by a cancel's settlement or
+ * - every transition a runner records is accepted, and a handler's is never
+ *   judged: it is serve's own write;
+ * - every forged record the judge would let land keeps the run's guarantees,
+ *   across the whole history of what landed: no step's key is duplicated; no
+ *   job or run succeeds over a step that waits or stands denied; a gate
+ *   that waited settles only by a cancel's settlement or
  *   its deadline (taken from what the record held when the wait began), or
  *   by completing a decision an approver recorded, and its prompt, timeout
  *   and start hold while it waits; a decided gate is never dropped and,
@@ -51,9 +52,10 @@
 
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
-import type {
-  StepRunData,
-  WorkflowRunData,
+import {
+  StepRun,
+  type StepRunData,
+  type WorkflowRunData,
 } from "../workflows/workflow_run.ts";
 import {
   canonicalRunLogFile,
@@ -62,6 +64,7 @@ import {
   type RunRecordJudgement,
   type StepKind,
 } from "./content_bindings.ts";
+import type { WaitOutcome } from "../workflows/signal_wait_records.ts";
 
 const WORKFLOW = "44444444-5555-4666-8777-888888888888";
 const RUN = "33333333-4444-4555-8666-777777777777";
@@ -281,7 +284,7 @@ function legitimateMoves(
             move("wait opens", spec, (s) => ({
               ...s,
               status: "waiting_signal",
-              wait: { key: `k-${spec.name}` },
+              wait: waitOf(spec),
             }));
             break;
           case "nested":
@@ -340,11 +343,11 @@ function legitimateMoves(
         }
         break;
       case "waiting_signal":
-        move("signal arrives", spec, (s) => ({
-          ...s,
-          status: "succeeded",
-          output: { type: "wait_for_signal", payload: { ok: true } },
-        }), ["signal"]);
+        move("run applies a stored signal", spec, (s) => {
+          const applied = StepRun.fromData(s);
+          applied.applyWaitOutcome(outcomeOf(spec));
+          return applied.toData();
+        });
         break;
     }
   }
@@ -369,6 +372,42 @@ function legitimateMoves(
     moves.push({ label: "run is cancelled", record: cancelled, needs: [] });
   }
   return moves;
+}
+
+/** The id of a step's wait, stable for a step of the workflow. */
+function waitIdOf(spec: { readonly name: string; readonly job: string }) {
+  const n = (spec.name.length * 104_729 + spec.job.length * 31 +
+    [...spec.name].reduce((sum, c) => sum + c.charCodeAt(0), 0)) % 0xfff;
+  return `aaaaaaaa-9999-4aaa-8bbb-${n.toString(16).padStart(12, "0")}`;
+}
+
+function waitOf(spec: StepSpec) {
+  return {
+    kind: "signal",
+    id: waitIdOf(spec),
+    schema: { type: "object", properties: {} },
+    deadline: "2030-01-01T00:00:00.000Z",
+  };
+}
+
+/** The outcome serve's signal handler stores for a step's wait. */
+function outcomeOf(spec: { readonly name: string; readonly job: string }) {
+  const waitId = waitIdOf(spec);
+  return {
+    kind: "accepted",
+    waitId,
+    workflowId: WORKFLOW,
+    runId: RUN,
+    deadline: "2030-01-01T00:00:00.000Z",
+    settledAt: T0,
+    receipt: {
+      id: "bbbbbbbb-9999-4aaa-8bbb-000000000000",
+      waitId,
+      receivedAt: T0,
+      submittedBy: "user:signaller",
+    },
+    payload: { ok: true },
+  } as unknown as WaitOutcome;
 }
 
 function childRunOf(spec: StepSpec): string {
@@ -396,6 +435,12 @@ const forgeryChoice = fc.record({
     "nested-output",
     "reopen",
     "retype-and-link",
+    "duplicate-step",
+    "job-succeeds",
+    "run-succeeds",
+    "clear-decision",
+    "retry",
+    "signal-forged-receipt",
   ),
   pick: fc.nat(),
   status: fc.constantFrom<StepRunData["status"]>(
@@ -568,6 +613,56 @@ function forge(
         })),
       };
     }
+    case "duplicate-step":
+      return {
+        kinds,
+        record: {
+          ...record,
+          jobs: record.jobs.map((j) =>
+            j.jobName !== job ? j : {
+              ...j,
+              steps: [...j.steps, { ...picked, status }],
+            }
+          ),
+        },
+      };
+    case "job-succeeds":
+      return {
+        kinds,
+        record: {
+          ...record,
+          jobs: record.jobs.map((j) =>
+            j.jobName !== job ? j : { ...j, status: "succeeded" }
+          ),
+        },
+      };
+    case "run-succeeds":
+      return { kinds, record: { ...record, status: "succeeded" } };
+    case "clear-decision":
+      return {
+        kinds,
+        record: withStep(record, job, name, (s) => {
+          const { approvalDecision: _dropped, ...cleared } = s;
+          return { ...cleared, status };
+        }),
+      };
+    case "retry":
+      return {
+        kinds,
+        record: withStep(record, job, name, (s) => {
+          const { approvalDecision: _dropped, ...cleared } = s;
+          return { ...cleared, status: "pending", resetByResume: true };
+        }),
+      };
+    case "signal-forged-receipt":
+      return {
+        kinds,
+        record: withStep(record, job, name, (s) => ({
+          ...s,
+          status: "succeeded",
+          output: { type: "wait_for_signal", payload: { ok: false } },
+        })),
+      };
     case "nested-output":
       return {
         kinds,
@@ -580,6 +675,9 @@ function forge(
   }
   throw new Error("unknown forgery");
 }
+
+/** What serve's signal handler stored, by wait id: every wait of the model. */
+const held = new Map<string, WaitOutcome>();
 
 function judge(
   kinds: StoredKinds,
@@ -595,6 +693,11 @@ function judge(
       kinds.get(key(job, step.forEachTemplate ?? step.stepName)) ?? "unknown",
     definitionSteps: () => undefined,
     isServeInstance: (id) => id === "serve-1",
+    // Every child in the model finished and links back; its decisions are
+    // none, so no nested step can carry one here.
+    heldChild: () => ({ status: "succeeded", decisions: [] }),
+    // Serve holds the outcome a real signal left, whichever step's wait it is.
+    heldOutcome: (waitId) => held.get(waitId),
     now: NOW,
   });
 }
@@ -611,6 +714,8 @@ interface WaitingGate {
 class Oracle {
   readonly gates = new Map<string, WaitingGate>();
   readonly waits = new Set<string>();
+  /** Gates a retry opened that have not waited again yet. */
+  readonly reopened = new Set<string>();
   /**
    * Gates by whether their decision approved, kept after the wait ends. Only an approver
    * records a decision, so it is noted from the decision itself, never from
@@ -693,20 +798,44 @@ class Oracle {
     }
     const prior = stepsOf(before);
     const next = stepsOf(after);
+    const count = after.jobs.reduce((sum, job) => sum + job.steps.length, 0);
+    if (next.size !== count) return "a step key is duplicated";
+    const standsInTheWay = (s: StepRunData) =>
+      s.status === "waiting_approval" || s.status === "waiting_signal" ||
+      (s.status === "failed" && s.approvalDecision?.approved === false &&
+        s.allowedFailure !== true);
+    if (
+      after.jobs.some((j) =>
+        j.status === "succeeded" && j.steps.some(standsInTheWay)
+      ) ||
+      (after.status === "succeeded" &&
+        after.jobs.some((j) => j.steps.some(standsInTheWay)))
+    ) {
+      return "a job or run succeeded over a step that waits or stands denied";
+    }
     const cancelled = after.status === "cancelled" || after.status === "failed";
     for (const [k, was] of prior) {
       const is = next.get(k);
       if (
-        is !== undefined &&
+        is !== undefined && is.approvalDecision !== undefined &&
         JSON.stringify(was.approvalDecision) !==
           JSON.stringify(is.approvalDecision)
       ) {
-        return `decision of ${k} changed`;
+        return `decision of ${k} made by a record`;
+      }
+      // Only a retry clears a decision, and it leaves the gate marked pending.
+      if (
+        is !== undefined && was.approvalDecision !== undefined &&
+        is.approvalDecision === undefined &&
+        (is.status !== "pending" || is.resetByResume !== true)
+      ) {
+        return `decision of ${k} cleared outside a retry`;
       }
     }
     for (const [k, gate] of this.gates) {
       const is = next.get(k);
       if (is === undefined) return `waiting gate ${k} dropped`;
+      if (is.status === "pending" && is.resetByResume === true) continue;
       if (is.status === "waiting_approval") {
         // What the approver is shown, and the deadline, hold while it waits.
         if (
@@ -738,6 +867,12 @@ class Oracle {
     for (const [k, approved] of this.decided) {
       const is = next.get(k);
       if (is === undefined) return `decided gate ${k} dropped`;
+      // A retry opened it: the decision no longer stands, and the gate waits.
+      if (is.status === "pending" && is.resetByResume === true) {
+        this.decided.delete(k);
+        this.reopened.add(k);
+        continue;
+      }
       if (
         !SETTLED.has(is.status) || is.status === prior.get(k)?.status ||
         is.status === "failed"
@@ -748,6 +883,16 @@ class Oracle {
         return `decided gate ${k} settled to ${is.status} against its decision`;
       }
     }
+    // A re-opened gate must wait again: it never skips past the denial.
+    for (const k of this.reopened) {
+      const is = next.get(k);
+      if (is?.status === "skipped" || is?.status === "succeeded") {
+        return `re-opened gate ${k} settled to ${is.status} without waiting`;
+      }
+      if (is?.status === "waiting_approval" || is?.status === "running") {
+        this.reopened.delete(k);
+      }
+    }
     for (const k of this.waits) {
       const was = prior.get(k)!;
       const is = next.get(k);
@@ -755,6 +900,20 @@ class Oracle {
       const byCancel = is.status === "failed" && is.settledByAbort === true &&
         cancelled;
       if (byCancel) continue;
+      if (is.status === "pending" && is.resetByResume === true) continue;
+      const expected = held.get(
+        (was.wait as { id?: string } | undefined)?.id ?? "",
+      );
+      if (is.status === "succeeded" && expected?.kind === "accepted") {
+        const applied = StepRun.fromData(was);
+        applied.applyWaitOutcome(expected);
+        if (
+          JSON.stringify(applied.toData().output) === JSON.stringify(is.output)
+        ) {
+          continue;
+        }
+        return `waiting signal ${k} settled against the stored outcome`;
+      }
       if (
         is.status !== "waiting_signal" ||
         JSON.stringify(is.output) !== JSON.stringify(was.output) ||
@@ -787,7 +946,6 @@ interface Coverage {
   legit: Record<string, number>;
   forged: Record<string, number>;
   refused: number;
-  needed: number;
   landed: number;
 }
 
@@ -797,7 +955,7 @@ function bump(counts: Record<string, number>, label: string): void {
 
 /**
  * Runs one scenario. Returns a violation message, or undefined. Throws on a
- * legitimate move the judge refuses or judges as needing other actions.
+ * runner's move the judge refuses.
  */
 function play(
   specs: readonly StepSpec[],
@@ -807,10 +965,11 @@ function play(
   let kinds: StoredKinds = new Map(
     specs.map((s) => [key(s.job, s.template ?? s.name), storedKindOf(s.kind)]),
   );
+  held.clear();
+  for (const spec of specs) held.set(waitIdOf(spec), outcomeOf(spec));
   let record = initial(specs);
   const created = judge(kinds, undefined, record);
   assertEquals(created.refusal, undefined, "a run's first record");
-  assertEquals([...created.actions], []);
   const oracle = new Oracle();
   oracle.observe(undefined, record, kinds);
   let tampered = false;
@@ -819,6 +978,13 @@ function play(
       const moves = legitimateMoves(specs, record);
       if (moves.length === 0) continue;
       const move = moves[next.legit % moves.length];
+      // A handler's decision is serve's own write: it is not forwarded.
+      if (move.needs.length > 0) {
+        if (!tampered) bump(coverage.legit, move.label);
+        oracle.observe(record, move.record, kinds);
+        record = move.record;
+        continue;
+      }
       const judged = judge(kinds, record, move.record);
       if (!tampered) {
         bump(coverage.legit, move.label);
@@ -826,11 +992,6 @@ function play(
           judged.refusal,
           undefined,
           `legitimate move refused: ${move.label}`,
-        );
-        assertEquals(
-          [...judged.actions].sort(),
-          [...move.needs].sort(),
-          `legitimate move judged wrong: ${move.label}`,
         );
       } else if (judged.refusal !== undefined) {
         continue;
@@ -846,11 +1007,6 @@ function play(
       coverage.refused++;
       continue;
     }
-    if (judged.actions.size > 0) {
-      // The attacker holds only run: the forgery does not land.
-      coverage.needed++;
-      continue;
-    }
     coverage.landed++;
     const broken = oracle.violation(record, forged.record, judged);
     if (broken !== undefined) return `${next.forge.kind}: ${broken}`;
@@ -863,10 +1019,10 @@ function play(
 }
 
 function newCoverage(): Coverage {
-  return { legit: {}, forged: {}, refused: 0, needed: 0, landed: 0 };
+  return { legit: {}, forged: {}, refused: 0, landed: 0 };
 }
 
-Deno.test("judgeRunRecord (model): every transition a real run records is accepted with exactly the actions it needs", () => {
+Deno.test("judgeRunRecord (model): every transition a real run records is accepted", () => {
   const coverage = newCoverage();
   fc.assert(
     fc.property(
@@ -889,7 +1045,7 @@ Deno.test("judgeRunRecord (model): every transition a real run records is accept
       "run completes a decided gate",
       "gate times out",
       "wait opens",
-      "signal arrives",
+      "run applies a stored signal",
       "nested call waits on its child",
       "child ends, nested call succeeds",
       "run is cancelled",
@@ -899,7 +1055,7 @@ Deno.test("judgeRunRecord (model): every transition a real run records is accept
   }
 });
 
-Deno.test("judgeRunRecord (model): no forged record a run-only caller can land breaks the run's guarantees", () => {
+Deno.test("judgeRunRecord (model): no forged record that can land breaks the run's guarantees", () => {
   const coverage = newCoverage();
   fc.assert(
     fc.property(
@@ -917,8 +1073,6 @@ Deno.test("judgeRunRecord (model): no forged record a run-only caller can land b
     JSON.stringify(coverage.forged),
     "refused:",
     coverage.refused,
-    "needed approve or signal:",
-    coverage.needed,
     "landed:",
     coverage.landed,
   );
@@ -937,9 +1091,15 @@ Deno.test("judgeRunRecord (model): no forged record a run-only caller can land b
       "nested-output",
       "reopen",
       "retype-and-link",
+      "duplicate-step",
+      "job-succeeds",
+      "run-succeeds",
+      "clear-decision",
+      "retry",
+      "signal-forged-receipt",
     ]
   ) {
     assert((coverage.forged[kind] ?? 0) > 0, `never tried: ${kind}`);
   }
-  assert(coverage.refused > 0 && coverage.needed > 0 && coverage.landed > 0);
+  assert(coverage.refused > 0 && coverage.landed > 0);
 });

@@ -493,7 +493,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "forwarded content: approving a gate needs approve, reaching it needs only run",
+    "forwarded content: a record reaching a gate lands, one making its decision is refused whatever the caller holds",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -507,15 +507,10 @@ Deno.test({
           steps: [{ stepName: "gate", startedAt: started, ...step }],
         }],
       });
-    // Run implies approve unless approve is denied, as here.
+    // Holding approve does not help: a decision is made by serve's handler.
     const runOnly = [
       grant({
-        actions: ["read", "run"],
-        resource: { kind: "workflow", pattern: "*" },
-      }),
-      grant({
-        effect: "deny",
-        actions: ["approve"],
+        actions: ["read", "run", "approve"],
         resource: { kind: "workflow", pattern: "*" },
       }),
     ];
@@ -769,7 +764,7 @@ Deno.test({
           byRun.set(save.id, [...(byRun.get(save.id) ?? []), save]);
         }
         assert(byRun.size >= 2, "both runs were saved");
-        let approvals = 0;
+        let decisions = 0;
         for (const sequence of byRun.values()) {
           for (const [index, after] of sequence.entries()) {
             const before = index === 0 ? undefined : sequence[index - 1];
@@ -795,15 +790,26 @@ Deno.test({
               isServeInstance: () => false,
               now: new Date(),
             });
-            // Nothing a real run writes is refused.
+            // The record the handler wrote holds a decision the one before
+            // does not: it is serve's own, and a forwarded copy is refused.
+            const decides = after.jobs.some((job, j) =>
+              job.steps.some((step, s) =>
+                step.approvalDecision !== undefined &&
+                before?.jobs[j]?.steps[s]?.approvalDecision === undefined
+              )
+            );
+            if (decides) {
+              decisions++;
+              assert(judged.refusal !== undefined, JSON.stringify(after));
+              continue;
+            }
+            // Nothing else a real run writes is refused.
             assertEquals(judged.refusal, undefined, JSON.stringify(after));
-            if (judged.actions.has("approve")) approvals++;
-            assertEquals(judged.actions.has("signal"), false);
           }
         }
-        // Only the two decisions need approve: starting, reaching the gate and
-        // what follows a decision need run.
-        assertEquals(approvals, 2);
+        // Only the two decisions are serve's: starting, reaching the gate and
+        // what follows a decision are the run's to report.
+        assertEquals(decisions, 2);
       },
       undefined,
       MANAGED,

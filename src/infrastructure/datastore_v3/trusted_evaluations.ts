@@ -86,6 +86,12 @@ export function v3EvaluationTrust(
     readonly definitionRepo: Pick<DefinitionRepository, "findByName">;
     readonly workflowRepo: Pick<WorkflowRepository, "findByName">;
   },
+  /**
+   * A principal whose forwarded evaluations count as this reader's own: a
+   * serve-mode checkout trusts serve's and its member's, never another
+   * member's (swamp-club#4245). Serve passes none.
+   */
+  ownPrincipal?: string,
 ): EvaluationTrust {
   /**
    * The trusted bytes at the first key holding serve's own record, or null
@@ -113,7 +119,10 @@ export function v3EvaluationTrust(
         key,
       );
       if (record === undefined) continue;
-      if (record.writer !== "") {
+      if (
+        record.writer !== "" &&
+        (ownPrincipal === undefined || record.writer !== ownPrincipal)
+      ) {
         untrusted ??= record.writer === null ? "unknown" : "forwarded";
         continue;
       }

@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { lastEvaluatedStands } from "../last_evaluated_trust.ts";
 import { Command } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
 import {
@@ -421,6 +422,16 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
         // A run against a serve-mode checkout sees what other callers
         // commit while it runs (swamp-club#4120).
         watchV3ServeFeeds();
+        const lastEvaluated = options.lastEvaluated === true &&
+          await lastEvaluatedStands(repoDir, repoContext, async (trust) => {
+            const found = await findDefinitionByIdOrName(
+              repoContext.definitionRepo,
+              modelIdOrName,
+            );
+            if (found !== null) {
+              await trust.definition(found.type, found.definition.name);
+            }
+          });
         const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
         try {
           runTracker.reapStaleRuns(DEFAULT_STALE_TTL_MS);
@@ -910,7 +921,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                         methodName,
                         inputs: inputSets[i],
                         literalInputs: options.literalInputs === true,
-                        lastEvaluated: options.lastEvaluated as boolean,
+                        lastEvaluated,
                         typeArg,
                         definitionName,
                         runtimeTags,

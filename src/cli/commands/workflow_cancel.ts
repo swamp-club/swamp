@@ -80,6 +80,7 @@ import {
   createTlsHttpClient,
   diagnoseTlsMessage,
   getEnvCaCerts,
+  implicitServeUrl,
   resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
@@ -244,6 +245,31 @@ export function serverCancelRejection(
     // Not JSON: fall through to the raw text.
   }
   return new UserError(`Server returned ${status}: ${text || statusText}`);
+}
+
+/**
+ * The serve to send a cancel to when `runId` is not this checkout's own, in a
+ * checkout written through serve (swamp-club#4245). A member's local run holds
+ * only a pid, which means nothing on another machine, so the checkout's own run
+ * tracker says which runs it drives; anything else is stopped by serve.
+ */
+export function foreignRunServer(
+  runId: string | undefined,
+  repoDir: string,
+  serve: string | undefined = implicitServeUrl(),
+): string | undefined {
+  if (runId === undefined || serve === undefined) return undefined;
+  let tracker: RunTrackerStore;
+  try {
+    tracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
+  } catch {
+    return undefined;
+  }
+  try {
+    return tracker.findById(runId) === null ? serve : undefined;
+  } finally {
+    tracker.close();
+  }
 }
 
 export function isServeOwnedRun(run: WorkflowRun): boolean {
@@ -1000,7 +1026,11 @@ export const workflowCancelCommand = withRemoteOptions(
       "cancel",
     ]);
 
-    const server = resolveServeUrl(options.server as string | undefined);
+    const server = resolveServeUrl(options.server as string | undefined) ??
+      foreignRunServer(
+        options.run as string | undefined,
+        resolveRepoDir(options.repoDir),
+      );
     if (server) {
       if (!options.run) {
         throw new UserError(

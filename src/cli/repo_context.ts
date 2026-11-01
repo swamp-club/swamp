@@ -25,6 +25,8 @@
  * - Throwing clear errors when not initialized
  */
 
+import { serveUpstreamAt } from "../infrastructure/datastore_v3/serve_upstream_registry.ts";
+import { withServeOutcomes } from "../infrastructure/datastore_v3/serve_wait_outcomes.ts";
 import type { ServeUpstreamTarget } from "../domain/datastore_v3/serve_upstream.ts";
 import { recordServeUpstreamFormat } from "../infrastructure/persistence/datastore_format_guard.ts";
 import {
@@ -2326,13 +2328,20 @@ export function resolveSignalWaitSupport(
     };
   }
   if (!isCustomDatastoreConfig(config)) {
+    const local = new ControlPlaneSignalWaitStore(
+      new FileSystemControlPlaneStore(
+        config.namespace ? join(config.path, config.namespace) : config.path,
+      ),
+    );
+    // Serve decides a signal in a checkout written through it: its outcome
+    // is the one a run here resumes from (swamp-club#4245).
+    const upstream = serveUpstreamAt(options?.v3?.path ?? config.path);
     return {
       supported: true,
       localRunAbsenceIsAuthoritative: options?.runsInDatastore === true,
-      store: new ControlPlaneSignalWaitStore(
-        new FileSystemControlPlaneStore(
-          config.namespace ? join(config.path, config.namespace) : config.path,
-        ),
+      store: upstream === undefined ? local : withServeOutcomes(
+        local,
+        (waitId, signal) => upstream.client().waitOutcome(waitId, signal),
       ),
     };
   }

@@ -877,6 +877,38 @@ export class ServeDatastoreClient {
   }
 
   /**
+   * The outcome serve holds for a signal wait, undefined when it holds none or
+   * is too old to answer (swamp-club#4245). The reply is parsed by the caller.
+   */
+  async waitOutcome(
+    waitId: string,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    return await this.#exchange(
+      {
+        method: "GET",
+        path: `signal-outcomes/${encodeURIComponent(waitId)}`,
+      },
+      signal,
+      async (response) => {
+        if (response.status === 404 || response.status === 405) {
+          await response.body?.cancel();
+          return undefined;
+        }
+        if (!response.ok) throw await this.#refusal(response, "wait outcome");
+        const reply = await readBoundedJson(
+          response,
+          "wait outcome",
+          SERVE_REPLY_MAX_BYTES,
+        );
+        return typeof reply === "object" && reply !== null
+          ? (reply as Record<string, unknown>).outcome
+          : undefined;
+      },
+    );
+  }
+
+  /**
    * Discards the change serve keeps under `txnId`, so it never lands
    * (swamp-club#4195): admin only. Resolves with serve's reply: the kept
    * record, now discarded.

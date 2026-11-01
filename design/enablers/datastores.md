@@ -6662,29 +6662,64 @@ to the same write. The checks the handlers share are one implementation
   changing only a stored one's global arguments, needs `run` and adoption's
   guards; any other content is an edit of the behavior. A copy carrying a
   named definition's id needs `run` on it.
-- **Run records** (`judgeRunRecord`): a run's first record carries no
-  triggering principal (only serve records one) and allowed vaults within
-  the workflow's list; who triggered it, its parent, vaults, initiator, plan
-  and inherited expressions never change; its log file is the run's own;
-  serve's runs keep their owner. Recording or changing an approval decision,
-  or completing a gate otherwise than by a cancel's settlement, its deadline
-  or its recorded decision, needs `approve`; a decision covers only its own
-  outcome (an approval succeeds the gate, a denial fails it), and a step that
-  holds one is a gate whatever the stored workflow says or it links to, is
-  never skipped as unreached, and is never dropped from the record. A wait's outcome needs `signal`; a waiting
-  gate's prompt, timeout and start are frozen. Inputs, deferred and inherited
-  expressions it adds are authorised as run inputs, vault references it adds
-  as vault reads, and step outputs it adds must name what the step runs and
-  data the caller may read.
+- **Run records** (`judgeRunRecord`, swamp-club#4245): a forwarded record
+  reports what a run did. It never decides anything. Only serve's handlers
+  decide (`workflow.approve`, `reject`, `signal`, `cancel`), so the path asks
+  for no `approve` or `signal`, and a record is checked against what serve
+  holds instead:
+  1. Frozen: identity, log file and serve owner; the triggering principal
+     (only serve records one), parent, allowed vaults (a first record's stay
+     within the workflow's list), initiator, plan and inherited expressions;
+     a waiting gate's prompt, timeout, start and child link; a waiting signal
+     step's wait, deadline included.
+  2. A run snapshot's bytes are frozen once written. The same bytes land, so a
+     retried or replayed commit is not refused.
+  3. A decision equals one serve holds: the step's own in the stored record,
+     or, on a nested step, one in the stored record of the child it links to,
+     when that child links back. Only a retry clears a decision: back to
+     `pending`, marked `resetByResume`.
+  4. A status moves toward stopping on the record alone: a settlement with
+     `settledByAbort` on a cancelled or failed run. It moves toward progress
+     only to what is held: an approval succeeds a gate, a denial fails it, a
+     passed deadline fails it; a signal wait succeeds as applying its stored
+     outcome gives (the same `applyWaitOutcome` a run uses) and fails on its
+     record's deadline or a stored timeout or cancel; a nested wait succeeds
+     only when its stored child did. A step that waited on a signal stays
+     under these rules whatever the stored workflow now calls it. A decided
+     gate's status changes only by a retry. A gate a retry re-opened keeps its
+     mark while pending and is never skipped: it waits for a fresh decision.
+     A guard or dependency that would skip such a gate is refused, which fails
+     the save rather than passing a denial. A denial's `allowedFailure` is
+     the stored step's to set.
+  5. No job or run is `succeeded` over a step that waits or stands denied.
+  6. A duplicate (job, step) key is refused.
+  7. Inputs, deferred and inherited expressions it adds are authorised as run
+     inputs, vault references as vault reads, and step outputs must name what
+     the step runs and data the caller may read: decided before the lock and
+     again under it, so a grant revoked in between refuses the commit.
+
 - **Data**: a sensitive field's vault reference is one the caller may read,
   or may write under the key the data writer derives for the behavior's own
   records. A removal's put only lowers a latest marker to a stored version; a
   rename writes exactly the shape the repository's rename writes.
 
-The content-derived decisions (`tag`, `approve`, `signal`, expression
-reads, vault reads) are made before the forwarded lock, as serve's handlers
-make theirs before they save; under the lock serve re-decides access and
-checks that no record the content was judged against moved.
+The content-derived decisions (`tag`, expression reads, vault reads) are made
+before the forwarded lock, as serve's handlers make theirs before they save;
+under the lock serve re-decides access, a run record's additions among it, and
+checks that no record the content was judged against moved. A signal outcome
+is not a record, so its presence is rechecked under the lock on its own.
+
+**Run control in a serve-mode checkout (swamp-club#4245).** `workflow approve`,
+`reject` and `signal` go to serve's handlers, as `--server` does
+(`SERVE_UPSTREAM_COMMANDS`), so they need serve to answer: an unreachable serve
+is an error, never a local write. `workflow cancel --run` stays local for a run
+in this checkout's run tracker and goes to serve for any other, since a member's
+pid means nothing on another machine. Serve's approve handler auto-resumes a run
+whose last gate it decided when the workflow's policy allows, so a member's
+suspended run can continue on serve under the approver's principal, as with
+`--server`. A signal's outcome lives in serve's control plane: a checkout's wait
+store takes it from `GET signal-outcomes/{waitId}` (read on the workflow) and keeps
+a copy, so its run can resume; a local timeout needs no outcome on serve.
 
 **Evaluations serve runs.** Serve runs `--last-evaluated` only with an
 evaluation it wrote itself (`EvaluationTrust`,
@@ -6693,7 +6728,9 @@ records each live record's writer (schema 8), the principal of the forwarded
 commit that put it or none, and an evaluation a forwarded commit wrote, or
 whose writer is unknown (rows from before schema 8, a compacted base), is
 refused with a request to evaluate on serve. The bytes parsed are the ones
-whose writer was checked. A run log is read and appended to only under the
+whose writer was checked. A serve-mode checkout applies the same rule to its own
+`--last-evaluated` (`lastEvaluatedStands`): it uses only an evaluation serve or
+its own member wrote, and otherwise evaluates again. A run log is read and appended to only under the
 repo's own run-log directories, whatever path a record holds.
 
 **Proof of possession.** A commit may name a chunk only when one of these

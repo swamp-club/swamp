@@ -32,7 +32,7 @@ const TYPE = ModelType.create("acme/web");
 /** A trust over one stored evaluation of `web`, written by `writer`. */
 function trustOver(
   writer: string | null,
-  options: { stored?: Definition; size?: number } = {},
+  options: { stored?: Definition; size?: number; own?: string } = {},
 ) {
   const definition = Definition.create({
     name: "web",
@@ -70,7 +70,7 @@ function trustOver(
   const trust = v3EvaluationTrust(v3, {
     definitionRepo: { findByName: () => Promise.resolve(definition) },
     workflowRepo: { findByName: () => Promise.resolve(null) },
-  });
+  }, options.own);
   return { trust, caughtUp, definition };
 }
 
@@ -112,5 +112,24 @@ Deno.test("v3EvaluationTrust: a file of the behavior's name holding another beha
   assertEquals(
     await trustOver("", { stored: other }).trust.definition(TYPE, "web"),
     null,
+  );
+});
+
+Deno.test("v3EvaluationTrust: a checkout trusts serve's and its own member's evaluation, never another member's (swamp-club#4245)", async () => {
+  const own = "user:ana";
+  const mine = trustOver(own, { own });
+  assertEquals(
+    (await mine.trust.definition(TYPE, "web"))?.definition.id,
+    mine.definition.id,
+  );
+  const serves = trustOver("", { own });
+  assertEquals(
+    (await serves.trust.definition(TYPE, "web"))?.definition.id,
+    serves.definition.id,
+  );
+  await assertRejects(
+    () => trustOver("user:bob", { own }).trust.definition(TYPE, "web"),
+    UserError,
+    "not made on this server",
   );
 });

@@ -129,6 +129,13 @@ export function serveUpstreamRunsLocally(
   return local && serveUpstreamAppliesTo(commandPath);
 }
 
+/**
+ * A forwarded run record applies a decision and never makes one
+ * (swamp-club#4245), so these reach serve's handlers, as `--server` does.
+ */
+const DECIDED_ON_SERVE =
+  "a decision on a run is serve's to make; the command goes to serve's handler";
+
 export const SERVE_UPSTREAM_COMMANDS: Readonly<
   Record<string, ServeUpstreamFamilyRule>
 > = {
@@ -261,7 +268,33 @@ export const SERVE_UPSTREAM_COMMANDS: Readonly<
   update: { applies: true, reason: NO_REPO },
   vault: { applies: true, reason: APPLIES },
   version: { applies: true, reason: NO_REPO },
-  workflow: { applies: true, reason: APPLIES },
+  workflow: {
+    applies: true,
+    reason: APPLIES,
+    subcommands: {
+      create: { applies: true, reason: APPLIES },
+      delete: { applies: true, reason: APPLIES },
+      edit: { applies: true, reason: APPLIES },
+      evaluate: { applies: true, reason: APPLIES },
+      get: { applies: true, reason: APPLIES },
+      history: { applies: true, reason: APPLIES },
+      validate: { applies: true, reason: APPLIES },
+      search: { applies: true, reason: APPLIES },
+      list: { applies: true, reason: APPLIES },
+      run: { applies: true, reason: APPLIES },
+      cancel: { applies: true, reason: APPLIES },
+      recover: { applies: true, reason: APPLIES },
+      resume: { applies: true, reason: APPLIES },
+      approvals: { applies: true, reason: APPLIES },
+      waits: { applies: true, reason: APPLIES },
+      schedule: { applies: true, reason: APPLIES },
+      schema: { applies: true, reason: APPLIES },
+      trigger: { applies: true, reason: APPLIES },
+      approve: { applies: false, reason: DECIDED_ON_SERVE },
+      reject: { applies: false, reason: DECIDED_ON_SERVE },
+      signal: { applies: false, reason: DECIDED_ON_SERVE },
+    },
+  },
   workspace: { applies: true, reason: NO_REPO },
 };
 

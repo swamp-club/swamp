@@ -1077,6 +1077,12 @@ holding its secret, and a group record lists its members (swamp-club#2756).
   forwarded write is decided as serve's handlers decide the same write, its
   content checked as theirs is (swamp-club#3922). See "Team mode: serve's
   datastore API" in `design/enablers/datastores.md`.
+- **Run control.** `approve`, `reject`, `signal` and `cancel` are decided only
+  by serve's handlers, which authorise the caller and record the decision. A
+  forwarded run record may apply a decision serve holds and never makes one, so
+  holding `approve` or `signal` lets no record carry a decision, and a record
+  applying one needs only `run` (swamp-club#4245). A serve-mode checkout sends
+  these commands to the handlers.
 - **Decided as admin.** The decision service decides every action on a
   control-plane record as `admin`, whatever the request asked for
   (`isControlPlaneRecordResource`). So `read`, `write` or `run` on `data:*` or
