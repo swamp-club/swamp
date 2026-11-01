@@ -26,7 +26,8 @@
  * settles is serve's when serve holds one. It is copied into the local store,
  * where it is written once, so the run keeps it offline. An unreachable serve
  * leaves the local store to answer: a local outcome is only ever a timeout or
- * a cancel, which serve judges from the run record.
+ * a cancel. No answer from serve is never final: nothing remembers it, so the
+ * next read asks again, and an outcome serve holds beats one kept here.
  *
  * @module
  */
@@ -72,7 +73,8 @@ export function withServeOutcomes(
     if (!parsed.success || parsed.data.waitId !== waitId.toLowerCase()) {
       return undefined;
     }
-    await local.settle(parsed.data);
+    // The copy is for offline: failing to keep it costs nothing now.
+    await local.settle(parsed.data).catch(() => {});
     return { kind: "found", record: parsed.data };
   };
   const overrides: Partial<SignalWaitStore> = {

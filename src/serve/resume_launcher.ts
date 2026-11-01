@@ -24,6 +24,7 @@
  * its client, and by auto-resume on approval, which has no client at all.
  */
 
+import { isServeDrivenRun } from "../domain/datastore_v3/content_bindings.ts";
 import { mapWorkflowExecutionEvent } from "../libswamp/workflows/run.ts";
 import { createStepLockHook, createWorkflowRunDeps } from "./deps.ts";
 import { withSharedSyncGate } from "./sync_gate.ts";
@@ -611,6 +612,38 @@ export interface ApprovalOutcome {
  * the run as it was; the logged message says what to do next, such as the
  * cancel command when the workflow changed shape since the run.
  */
+/**
+ * Whether serve may act on a run's reported state without a caller asking it to
+ * run it. A member-driven run's state is that member's report: resuming it here
+ * would run later steps with someone else's authority on inputs they reported,
+ * so its owner resumes it (swamp-club#4245). A run is the member's only where
+ * members can forward one; elsewhere every record is this host's own.
+ */
+export function serveMayActOnRun(
+  ctx: ConnectionContext,
+  run: Pick<WorkflowRun, "triggeringPrincipal" | "instanceId">,
+): boolean {
+  return ctx.repoContext.takesForwardedRunRecords !== true ||
+    isServeDrivenRun(run);
+}
+
+/** Whether an approved run is left for its owner to resume. */
+export async function ownerResumesRun(
+  ctx: ConnectionContext,
+  outcome: ApprovalOutcome,
+): Promise<boolean> {
+  if (ctx.repoContext.takesForwardedRunRecords !== true) return false;
+  const workflow = await ctx.repoContext.workflowRepo.findByName(
+    outcome.workflowName,
+  );
+  if (workflow === null) return false;
+  const run = await ctx.repoContext.workflowRunRepo.findById(
+    createWorkflowId(workflow.id),
+    createWorkflowRunId(outcome.runId),
+  );
+  return run !== null && !serveMayActOnRun(ctx, run);
+}
+
 export async function autoResumeAfterApproval(
   ctx: ConnectionContext,
   outcome: ApprovalOutcome,
@@ -626,6 +659,7 @@ export async function autoResumeAfterApproval(
   if (!workflow?.shouldAutoResume(ctx.serveOptions?.autoResume ?? false)) {
     return false;
   }
+  if (await ownerResumesRun(ctx, outcome)) return false;
 
   const subject =
     `workflow=${outcome.workflowName} run=${outcome.runId} approvedBy=${outcome.decidedBy}`;
@@ -712,6 +746,8 @@ export async function autoResumeParentAfterChild(
   );
   // Done is also reported for a run that suspended again at another gate.
   if (!finished || !isFinishedRun(finished)) return false;
+  // A member's report of its child ending moves no parent here.
+  if (!serveMayActOnRun(ctx, finished)) return false;
   const parentLink = finished.parentRun;
   if (parentLink?.kind !== "valid") return false;
   const parentRef = parentLink.ref;
@@ -742,6 +778,7 @@ export async function autoResumeParentAfterChild(
     createWorkflowRunId(parentRef.runId),
   );
   if (!parent || parent.status !== "suspended") return false;
+  if (!serveMayActOnRun(ctx, parent)) return false;
   // Saved suspended while other steps still ran: another process may still
   // drive it.
   if (parent.jobs.some((j) => j.steps.some((s) => s.status === "running"))) {
@@ -1004,6 +1041,9 @@ export async function continueSettledRun(
     createWorkflowRunId(target.runId),
   );
   if (!run || run.status !== "suspended") return false;
+  // Before the verdict, which would take a pending signal someone else sent
+  // and settle the run's waits on its report.
+  if (!serveMayActOnRun(ctx, run)) return false;
 
   // The policy first: it is read from this host, where the verdict below
   // reads one wait outcome per wait from the datastore, and most runs

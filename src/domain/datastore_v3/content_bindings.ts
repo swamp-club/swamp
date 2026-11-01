@@ -38,11 +38,6 @@
  */
 
 import { canonicalJson } from "../expressions/expression_references.ts";
-import {
-  evaluateApprovalTimeout,
-  gateTimeoutSeconds,
-} from "../workflows/approval_timeout.ts";
-import type { Step } from "../workflows/step.ts";
 import { parseStoredWait } from "../workflows/signal_wait.ts";
 import type { WaitOutcome } from "../workflows/signal_wait_records.ts";
 import {
@@ -166,9 +161,6 @@ export function isCanonicalRunLogFile(
     canonicalRunLogFile(workflowId, runId);
 }
 
-/** What a step of the stored workflow is. */
-export type StepKind = "approval" | "signal" | "nested" | "other" | "unknown";
-
 /** A step output reference a run record adds, for serve to authorise. */
 export interface AddedStepOutput {
   readonly jobName: string;
@@ -177,12 +169,20 @@ export interface AddedStepOutput {
   readonly dataArtifacts: readonly unknown[];
 }
 
-/** What serve holds of the child run a nested step links to. */
+/** The approval decisions a stored child run, linking back, holds. */
 export interface HeldChildRun {
-  /** The child's status in serve's stored record. */
-  readonly status: WorkflowRunData["status"];
-  /** The approval decisions the child's steps hold. */
   readonly decisions: readonly unknown[];
+}
+
+/**
+ * Whether serve drives a run: only serve records a triggering principal or
+ * names an instance as a run's owner, so either marks the run whichever team
+ * node holds it. Gates bind on such a run, and no member writes its record.
+ */
+export function isServeDrivenRun(
+  run: { readonly triggeringPrincipal?: unknown; readonly instanceId?: string },
+): boolean {
+  return run.triggeringPrincipal !== undefined || run.instanceId !== undefined;
 }
 
 /** What a forwarded run record needs serve to authorise beyond `run`. */
@@ -208,16 +208,8 @@ export interface RunRecordContext {
   /** The stored record the put replaces, absent for a run's first record. */
   readonly before?: WorkflowRunData;
   readonly after: WorkflowRunData;
-  /** What each step of the stored workflow is, by job and step name. */
-  readonly stepKind: (jobName: string, step: StepRunData) => StepKind;
-  /** The stored workflow's steps of a job, for a gate's timeout. */
-  readonly definitionSteps: (
-    jobName: string,
-  ) => ReadonlyArray<Step> | undefined;
   /** The workflow's `vaults:` list, undefined when it has none. */
   readonly workflowVaults?: readonly string[];
-  /** Whether an instance id names a serve instance. */
-  readonly isServeInstance: (instanceId: string) => boolean;
   /**
    * The stored record of the child a step links to, when that child links
    * back to this step; a link either record holds alone proves nothing.
@@ -226,76 +218,26 @@ export interface RunRecordContext {
     jobName: string,
     step: StepRunData,
   ) => HeldChildRun | undefined;
-  /**
-   * Whether the stored workflow gives a step something that can skip it: its
-   * own guard or dependencies, or its job's dependencies.
-   */
-  readonly maySkip?: (jobName: string, step: StepRunData) => boolean;
-  /** The gates and signal waits of the stored workflow. */
-  readonly storedWaits?: readonly StoredWait[];
   /** The outcome serve holds for a signal wait, by wait id. */
   readonly heldOutcome?: (waitId: string) => WaitOutcome | undefined;
-  readonly now: Date;
 }
 
-/**
- * The stored step a record's step is: the one of its name, else the forEach
- * template it names, only when that template really expands. A record's
- * `forEachTemplate` is its own say-so, so it never overrides a stored name.
- */
-export function storedStepOf(
-  steps: ReadonlyArray<Step> | undefined,
-  step: Pick<StepRunData, "stepName" | "forEachTemplate">,
-): Step | undefined {
-  const named = steps?.find((s) => s.name === step.stepName);
-  if (named !== undefined) return named;
-  const template = steps?.find((s) => s.name === step.forEachTemplate);
-  return template?.forEach !== undefined ? template : undefined;
-}
-
-/** A stored gate or signal wait, which a successful job must have settled. */
-export interface StoredWait {
-  readonly jobName: string;
-  readonly stepName: string;
-  /** It expands, so it may have no records of its own name. */
-  readonly expands: boolean;
-}
-
-/**
- * The stored wait a record claiming success leaves out, or undefined: a job or
- * run cannot succeed by not mentioning a gate.
- */
-export function omittedWait(
-  record: Pick<WorkflowRunData, "jobs">,
-  waits: readonly StoredWait[],
-): StoredWait | undefined {
-  return waits.find((wait) => {
-    if (wait.expands) return false;
-    return !record.jobs.some((job) =>
-      job.jobName === wait.jobName &&
-      job.steps.some((step) => step.stepName === wait.stepName)
-    );
-  });
-}
-
-const TERMINAL = new Set(["succeeded", "failed", "skipped"]);
 const WAITING_SIGNAL = new Set(["waiting", "waiting_signal"]);
 
 /**
  * Judges a forwarded run record against the record it replaces and what serve
- * holds (swamp-club#3922, swamp-club#4245). A record reports what a run did,
- * and only serve's handlers decide. So:
- * 1. who triggered the run, its parent, vaults, initiator, plan, log and a
- *    serve owner, and a waiting gate's prompt, timeout, start and child link,
- *    are frozen;
- * 2. (the run snapshot, see `checkRunSnapshot`, is frozen too;)
- * 3. a decision equals one serve holds, and is cleared only by re-opening;
- * 4. a status moves toward stopping on `run` alone, and toward progress only
- *    to the outcome a held decision, deadline, signal outcome or child gives;
- * 5. a job or run succeeds only when no step waits or stands denied;
- * 6. step keys are unique;
- * 7. inputs, deferred expressions, vault references and step outputs it adds
- *    are returned for serve to authorise against the caller, under the lock.
+ * holds (swamp-club#3922, swamp-club#4245). Serve does not try to stop a member
+ * forging the record of a run they drive; it stops that forgery reaching
+ * anything outside their own run. The statuses, outputs and timings they report
+ * are out of scope ("Run records: the threat model" in
+ * `design/enablers/access-control.md`). So:
+ * - a run serve drives takes no forwarded record at all;
+ * - a decision equals one serve holds, and a step holding one stays;
+ * - who triggered the run, its parent, vaults, initiator, plan, log and a serve
+ *   owner, and what a waiting gate shows its approver, are frozen;
+ * - step keys are unique, so a record has one reading;
+ * - what it adds that serve acts on is returned for serve to authorise against
+ *   the caller, under the lock.
  */
 export function judgeRunRecord(context: RunRecordContext): RunRecordJudgement {
   const { before, after } = context;
@@ -321,16 +263,16 @@ export function judgeRunRecord(context: RunRecordContext): RunRecordJudgement {
   ) {
     return refuse("its log file is not the run's own log");
   }
+  if (before !== undefined && isServeDrivenRun(before)) {
+    return refuse("serve drives this run, so it takes no forwarded record");
+  }
   if (
-    after.instanceId !== undefined &&
-    context.isServeInstance(after.instanceId) &&
-    after.instanceId !== before?.instanceId
+    after.instanceId !== undefined && after.instanceId !== before?.instanceId
   ) {
     return refuse("it names a serve instance as the run's owner");
   }
   if (
     after.ownerBeforeResume?.instanceId !== undefined &&
-    context.isServeInstance(after.ownerBeforeResume.instanceId) &&
     !same(after.ownerBeforeResume, before?.ownerBeforeResume)
   ) {
     return refuse("it names a serve instance as the run's owner");
@@ -366,15 +308,6 @@ export function judgeRunRecord(context: RunRecordContext): RunRecordJudgement {
         after.inheritedExpressions,
       ],
     ];
-    if (before.triggeringPrincipal !== undefined) {
-      // A run serve started is owned by a serve instance: cancel routing,
-      // supersede and the orphaned-run reaper act on its owner.
-      frozen.push(
-        ["process", before.pid, after.pid],
-        ["instance", before.instanceId, after.instanceId],
-        ["prior owner", before.ownerBeforeResume, after.ownerBeforeResume],
-      );
-    }
     for (const [field, was, is] of frozen) {
       if (!same(was, is)) return refuse(`it changes the run's ${field}`);
     }
@@ -394,22 +327,15 @@ export function judgeRunRecord(context: RunRecordContext): RunRecordJudgement {
       beforeSteps.set(stepKey(job.jobName, step.stepName), step);
     }
   }
-  // A waiting step stays in the record until it settles: dropping or
-  // renaming it would end the wait without judging how. A decided step
-  // stays too: re-added in a later record, it would read as never decided.
+  // A decided step stays: re-added in a later record, it would read as never
+  // decided.
   const afterSteps = new Set(
     after.jobs.flatMap((job) =>
       job.steps.map((step) => stepKey(job.jobName, step.stepName))
     ),
   );
   for (const [key, step] of beforeSteps) {
-    if (afterSteps.has(key)) continue;
-    if (
-      step.status === "waiting_approval" || WAITING_SIGNAL.has(step.status)
-    ) {
-      return refuse("it drops a step that is waiting");
-    }
-    if (step.approvalDecision !== undefined) {
+    if (!afterSteps.has(key) && step.approvalDecision !== undefined) {
       return refuse("it drops a step that holds an approval decision");
     }
   }
@@ -417,16 +343,7 @@ export function judgeRunRecord(context: RunRecordContext): RunRecordJudgement {
   for (const job of after.jobs) {
     for (const step of job.steps) {
       const prior = beforeSteps.get(stepKey(job.jobName, step.stepName));
-      const kind = context.stepKind(job.jobName, step);
-      const refusal = judgeStep(
-        context,
-        job.jobName,
-        prior,
-        step,
-        kind,
-        after.status,
-        before?.status,
-      );
+      const refusal = judgeStep(context, job.jobName, prior, step);
       if (refusal !== undefined) return refuse(refusal);
       if (
         !same(prior?.output, step.output) ||
@@ -443,27 +360,6 @@ export function judgeRunRecord(context: RunRecordContext): RunRecordJudgement {
           });
         }
       }
-    }
-  }
-  const status = statusRefusal(after);
-  if (status !== undefined) return refuse(status);
-  // Only on the move to success: a run on a workflow edited since it passed
-  // the wait has already been judged.
-  const omitted = before?.status === "succeeded" || after.status !== "succeeded"
-    ? undefined
-    : omittedWait(after, context.storedWaits ?? []);
-  if (omitted !== undefined) return refuse("it succeeds without a stored gate");
-  for (const job of after.jobs) {
-    if (
-      job.status === "succeeded" &&
-      before?.jobs.find((j) => j.jobName === job.jobName)?.status !==
-        "succeeded" &&
-      omittedWait(
-          { jobs: [job] },
-          (context.storedWaits ?? []).filter((w) => w.jobName === job.jobName),
-        ) !== undefined
-    ) {
-      return refuse("it succeeds a job without a stored gate");
     }
   }
   if (!same(before?.workflowDataArtifacts, after.workflowDataArtifacts)) {
@@ -491,358 +387,100 @@ export function judgeRunRecord(context: RunRecordContext): RunRecordJudgement {
   };
 }
 
-/** Why the record's job or run status does not follow its steps, or undefined. */
-export function statusRefusal(
-  after: Pick<WorkflowRunData, "jobs" | "status">,
-): string | undefined {
-  // A real job succeeds only once every step has finished, none failed without
-  // an allowance, and an abort settled none of them: a run reopens those first.
-  const holdsBack = (step: StepRunData) =>
-    (step.status !== "succeeded" && step.status !== "skipped" &&
-      !(step.status === "failed" && step.allowedFailure === true)) ||
-    step.settledByAbort === true;
-  for (const job of after.jobs) {
-    if (job.status === "succeeded" && job.steps.some(holdsBack)) {
-      return "it marks a job succeeded over a step that has not finished or failed";
-    }
-  }
-  if (
-    after.status === "succeeded" &&
-    after.jobs.some((job) => job.steps.some(holdsBack))
-  ) {
-    return "it marks the run succeeded over a step that has not finished or failed";
-  }
-  return undefined;
-}
-
 /** The refusal for one step's change, or undefined. */
 function judgeStep(
   context: RunRecordContext,
   jobName: string,
   prior: StepRunData | undefined,
   step: StepRunData,
-  kind: StepKind,
-  runStatus: WorkflowRunData["status"],
-  priorRunStatus: WorkflowRunData["status"] | undefined,
 ): string | undefined {
-  // A stored signal step never waits on an approval: an approver's decision
-  // would stand in for the signal.
-  if (kind === "signal" && step.status === "waiting_approval") {
-    return "it makes a signal step wait on an approval";
-  }
-  // What a step expands from is frozen: it decides which stored step this is.
-  if (
-    prior !== undefined && prior.forEachTemplate !== step.forEachTemplate
-  ) {
-    return "it changes which step a record expands from";
-  }
-  // An approval gate never waits on a child run: a link would let a later
-  // record settle it as a nested call's wait.
-  if (
-    kind === "approval" && step.status === "waiting_approval" &&
-    step.nestedRun !== undefined
-  ) {
-    return "it gives an approval gate a child run";
-  }
-  if (prior?.status === "waiting_approval") {
+  // An approver decides on what a gate shows, and serve acts on its child link.
+  if (prior?.status === "waiting_approval" && step.status !== "pending") {
     for (
       const [field, was, is] of [
         ["prompt", prior.approvalPrompt, step.approvalPrompt],
         ["timeout", prior.approvalTimeout, step.approvalTimeout],
         ["start", prior.startedAt, step.startedAt],
-        // A waiting gate gains no child run: that would make it read as a
-        // nested call's wait, which ends without a decision.
         ["nested run", prior.nestedRun, step.nestedRun],
       ] as const
     ) {
-      // Re-opening clears what the gate asked; it asks again when it waits.
-      if (!same(was, is) && step.status !== "pending") {
+      if (!same(was, is)) {
         return `it changes a waiting approval gate's ${field}`;
       }
     }
   }
-  const decision = decisionRefusal(
-    context,
-    jobName,
-    prior,
-    step,
-    priorRunStatus,
-  );
-  if (decision !== undefined) return decision;
-  // Allowing a failure is the stored step's to say, whatever the status: set
-  // on a step before it fails, it would carry its job past the failure.
-  if (step.allowedFailure === true && prior?.allowedFailure !== true) {
-    const defined = storedStepOf(context.definitionSteps(jobName), step);
-    if (defined?.allowFailure !== true) {
-      return "it allows a failure the stored step does not";
-    }
-  }
-  const settledByCancel = step.status === "failed" &&
-    step.settledByAbort === true &&
-    (runStatus === "cancelled" || runStatus === "failed");
-  // A step that waited on an approval is a gate whatever the stored workflow
-  // says it is now: an edit can retype the step while the run waits. One
-  // that holds a decision is a gate whatever it is or links to. One the
-  // stored workflow no longer names is a gate when it holds a gate's prompt.
-  const nestedWait = prior?.nestedRun !== undefined;
-  const gate = kind === "approval" ||
-    (!nestedWait && prior?.status === "waiting_approval") ||
-    prior?.approvalDecision !== undefined ||
-    step.approvalDecision !== undefined ||
-    (kind === "unknown" && !nestedWait &&
-      (prior?.approvalPrompt !== undefined ||
-        step.approvalPrompt !== undefined));
-  // A workflow step succeeds only as its stored child did, however it got
-  // here: leaving the wait first, or holding a decision, changes nothing.
-  if (
-    (kind === "nested" || nestedWait || step.nestedRun !== undefined) &&
-    step.status === "succeeded" && prior?.status !== "succeeded" &&
-    context.heldChild?.(jobName, step)?.status !== "succeeded"
-  ) {
-    return "it succeeds a nested step before its child did";
-  }
-  const signal = kind === "signal" ||
-    (prior !== undefined && WAITING_SIGNAL.has(prior.status));
-  // A step that waited on a signal ends by the signal rules whatever the
-  // stored workflow says it is now: retyped to a gate, it could otherwise
-  // leave the wait for a gate's.
-  if (prior !== undefined && WAITING_SIGNAL.has(prior.status)) {
-    return signalRefusal(context, jobName, prior, step, settledByCancel);
-  }
-  if (gate) {
-    return gateRefusal(
-      context,
-      jobName,
-      prior,
-      step,
-      settledByCancel,
-      runStatus,
-    );
-  }
-  if (signal) {
-    return signalRefusal(context, jobName, prior, step, settledByCancel);
-  }
-  // A nested wait leaves only for an outcome, or by a retry. A forEach that
-  // shrinks skips the iterations it no longer names.
-  if (nestedWait && prior?.status === "waiting_approval") {
-    if (step.status === "skipped" && step.forEachTemplate === undefined) {
-      return "it skips a nested step that is waiting on its child";
-    }
-    if (
-      (step.status === "pending" && step.resetByResume !== true) ||
-      step.status === "running" || step.status === "unknown"
-    ) {
-      return "it moves a nested step out of its wait without an outcome";
-    }
-  }
-  return undefined;
+  return decisionRefusal(context, jobName, prior, step) ??
+    signalDecisionRefusal(context, prior, step);
 }
 
-/** Check 3: a decision is one serve holds; only re-opening clears it. */
+/**
+ * A decision is one serve holds. A record may carry the step's own, or on a
+ * nested step one its linked child holds; only a retry clears one.
+ */
 function decisionRefusal(
   context: RunRecordContext,
   jobName: string,
   prior: StepRunData | undefined,
   step: StepRunData,
-  priorRunStatus: WorkflowRunData["status"] | undefined,
 ): string | undefined {
   if (same(prior?.approvalDecision, step.approvalDecision)) return undefined;
   if (step.approvalDecision === undefined) {
-    // A retry takes up a run that ended; one still going has nothing to retry.
-    return step.status === "pending" && step.resetByResume === true &&
-        (priorRunStatus === "failed" || priorRunStatus === "cancelled")
+    return step.status === "pending"
       ? undefined
       : "it clears an approval decision without re-opening the gate";
   }
   if (prior?.approvalDecision !== undefined) {
     return "it changes an approval decision";
   }
-  // A child's decision only ever fails its parent: an approval there says
-  // nothing of the child's other gates.
-  const held = step.status === "failed"
-    ? context.heldChild?.(jobName, step)?.decisions ?? []
-    : [];
+  const held = context.heldChild?.(jobName, step)?.decisions ?? [];
   return held.some((decision) => same(decision, step.approvalDecision))
     ? undefined
     : "it records an approval decision serve does not hold";
 }
 
-/** Check 4 for a gate: the outcome of a decision, a deadline or a stop. */
-function gateRefusal(
-  context: RunRecordContext,
-  jobName: string,
-  prior: StepRunData | undefined,
-  step: StepRunData,
-  settledByCancel: boolean,
-  runStatus: WorkflowRunData["status"],
-): string | undefined {
-  const waited = prior?.status === "waiting_approval";
-  const decided = prior?.approvalDecision !== undefined;
-  if (
-    prior?.status === "pending" && prior.resetByResume === true &&
-    step.status === "pending" && step.resetByResume !== true
-  ) {
-    return "it clears the mark of a re-opened gate";
-  }
-  if (step.status === "pending" && prior?.status === "running") {
-    return "it moves a running gate back to pending";
-  }
-  if (step.status === "pending") {
-    // Re-opening makes the gate wait for a fresh decision, and the mark keeps
-    // it from being skipped past the decision the record just dropped.
-    return prior !== undefined && prior.status !== "pending" &&
-        (waited || decided) && step.resetByResume !== true
-      ? "it re-opens a gate without a retry"
-      : undefined;
-  }
-  if (prior !== undefined && prior.status === step.status) return undefined;
-  if (step.status === "waiting_approval") return undefined;
-  if (step.status === "skipped") {
-    // An abort settles what it never started; otherwise the stored workflow
-    // must give the gate something that can skip it. A record's guard or
-    // dependency result cannot be checked, on a first walk or after a retry,
-    // so such a gate stays the run's own to report.
-    const stopped = step.settledByAbort === true &&
-      (runStatus === "cancelled" || runStatus === "failed");
-    const reachable = context.maySkip?.(jobName, step) === true;
-    return !waited && !decided && step.approvalDecision === undefined &&
-        (prior === undefined || prior.status === "pending") &&
-        (stopped || reachable)
-      ? undefined
-      : "it skips a gate that waited, was decided or was re-opened";
-  }
-  if (!TERMINAL.has(step.status)) {
-    // Unsettling a gate that waited or was decided re-opens it unjudged.
-    return waited || decided
-      ? "it moves a gate out of its wait or decision without an outcome"
-      : undefined;
-  }
-  if (settledByCancel) return undefined;
-  // A job that finishes with a re-opened step still pending fails it, which
-  // holds the job back as any failure does.
-  if (
-    step.status === "failed" && prior?.status === "pending" &&
-    prior.resetByResume === true
-  ) {
-    return undefined;
-  }
-  if (decided && TERMINAL.has(prior!.status)) {
-    return "it changes the status of a decided gate";
-  }
-  const decision = step.approvalDecision;
-  if (
-    decision !== undefined &&
-    step.status === (decision.approved ? "succeeded" : "failed")
-  ) {
-    return undefined;
-  }
-  if (
-    decision === undefined && step.status === "failed" && prior !== undefined &&
-    timeoutPassed(context, jobName, prior)
-  ) {
-    return undefined;
-  }
-  return "it completes a gate without a decision serve holds";
-}
-
-/** Check 4 for a signal wait: a stored outcome, a deadline or a stop. */
-function signalRefusal(
-  context: RunRecordContext,
-  jobName: string,
-  prior: StepRunData | undefined,
-  step: StepRunData,
-  settledByCancel: boolean,
-): string | undefined {
-  const waited = prior !== undefined && WAITING_SIGNAL.has(prior.status);
-  if (WAITING_SIGNAL.has(step.status)) {
-    if (waited) {
-      return !same(prior.output, step.output) || !same(prior.wait, step.wait)
-        ? "it changes a waiting signal step's wait or output"
-        : undefined;
-    }
-    // A fresh wait has no outcome yet: one that does was another step's, or an
-    // attempt a retry closed, and opening it here would replay that signal.
-    const opened = parseStoredWait(step.wait);
-    return opened?.kind === "valid" &&
-        context.heldOutcome?.(opened.wait.id) !== undefined
-      ? "it opens a wait serve already holds an outcome for"
-      : undefined;
-  }
-  if (settledByCancel) return undefined;
-  if (step.status === "succeeded") {
-    if (prior?.status === "succeeded" && same(prior.output, step.output)) {
-      return undefined;
-    }
-    return appliesHeldOutcome(context, prior, step)
-      ? undefined
-      : "it sets a signal's outcome serve does not hold";
-  }
-  if (step.status === "skipped") {
-    return !waited && context.maySkip?.(jobName, step) === true
-      ? undefined
-      : "it skips a signal wait the stored step gives nothing to skip";
-  }
-  if (!waited) return undefined;
-  if (step.status === "failed") {
-    const stored = parseStoredWait(prior.wait);
-    if (stored?.kind !== "valid") return undefined;
-    if (stored.wait.deadline.getTime() < context.now.getTime()) {
-      return undefined;
-    }
-    const outcome = context.heldOutcome?.(stored.wait.id);
-    return outcome !== undefined && outcome.kind !== "accepted"
-      ? undefined
-      : "it fails a signal wait before its deadline without a stored outcome";
-  }
-  return step.status === "pending" && step.resetByResume === true
-    ? undefined
-    : "it ends a signal wait without a stored outcome";
-}
-
 /**
- * Whether `step` is what applying the outcome serve holds for its wait gives,
- * worked out by the same code a run applies it with.
+ * A signal's outcome is one serve holds: a record setting a receipt or a
+ * signal's output must hold what applying that outcome gives, worked out by the
+ * same code a run applies it with. A step's status is the run's to report, so
+ * nothing here asks that a step reached `succeeded` through a signal.
  */
-function appliesHeldOutcome(
+function signalDecisionRefusal(
   context: RunRecordContext,
   prior: StepRunData | undefined,
   step: StepRunData,
-): boolean {
-  // The wait is the one the prior record shows open on this step: an outcome
-  // names no step, so a wait a record names could be another step's or an
-  // attempt a retry closed.
-  if (prior === undefined || !WAITING_SIGNAL.has(prior.status)) return false;
-  const raw = prior.wait as Record<string, unknown> | undefined;
+): string | undefined {
+  const receiptOf = (s: StepRunData | undefined) =>
+    (s?.wait as { receipt?: unknown } | undefined)?.receipt;
+  const signalOutput =
+    (step.output as { type?: unknown } | undefined)?.type === "wait_for_signal";
+  const sets =
+    !same(receiptOf(prior), receiptOf(step)) && receiptOf(step) !== undefined ||
+    (signalOutput && !same(prior?.output, step.output));
+  if (!sets) return undefined;
+  const raw =
+    (prior !== undefined && WAITING_SIGNAL.has(prior.status)
+      ? prior.wait
+      : step.wait) as Record<string, unknown> | undefined;
   const stored = parseStoredWait(raw);
-  if (stored?.kind !== "valid") return false;
-  const outcome = context.heldOutcome?.(stored.wait.id);
-  if (outcome?.kind !== "accepted") return false;
+  const outcome = stored?.kind === "valid"
+    ? context.heldOutcome?.(stored.wait.id)
+    : undefined;
+  if (outcome?.kind !== "accepted") {
+    return "it sets a signal's outcome serve does not hold";
+  }
   const { receipt: _receipt, ...open } = raw!;
   const applied = StepRun.fromData({
     stepName: step.stepName,
     status: "waiting_signal",
     wait: open,
   });
-  if (!applied.applyWaitOutcome(outcome)) return false;
+  if (!applied.applyWaitOutcome(outcome)) {
+    return "it sets a signal's outcome serve does not hold";
+  }
   const data = applied.toData();
-  return same(data.output, step.output) && same(data.wait, step.wait);
-}
-
-/** Whether a waiting gate's deadline has passed by `context.now`. */
-function timeoutPassed(
-  context: RunRecordContext,
-  jobName: string,
-  prior: StepRunData,
-): boolean {
-  const started = prior.startedAt === undefined
+  return same(data.output, step.output) && same(data.wait, step.wait)
     ? undefined
-    : new Date(prior.startedAt);
-  const timeout = evaluateApprovalTimeout(
-    started,
-    gateTimeoutSeconds(prior, context.definitionSteps(jobName)),
-    context.now,
-  );
-  return timeout?.expired === true;
+    : "it sets a signal's outcome serve does not hold";
 }
 
 function stepKey(jobName: string, stepName: string): string {

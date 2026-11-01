@@ -55,6 +55,9 @@ import {
 } from "../persistence/yaml_evaluated_workflow_repository.ts";
 import type { V3Datastore } from "./v3_datastore.ts";
 
+/** The code of a checkout's refusal of an evaluation another member wrote. */
+export const EVALUATION_OTHER_WRITER = "evaluation_other_writer";
+
 /** The largest evaluation serve reads to run. */
 const MAX_EVALUATION_BYTES = 16 * 1024 * 1024;
 
@@ -151,6 +154,12 @@ export function v3EvaluationTrust(
         );
       }
       return new TextDecoder().decode(found.bytes);
+    }
+    if (untrusted === "forwarded" && ownPrincipal !== undefined) {
+      throw new UserError(
+        `Another member wrote the last evaluation of ${what}.`,
+        EVALUATION_OTHER_WRITER,
+      );
     }
     if (untrusted === "forwarded") {
       throw new UserError(

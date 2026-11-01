@@ -114,3 +114,46 @@ Deno.test("withServeOutcomes: every other member reaches the store it wraps", as
   store.pendingTaken = listener as unknown as SignalWaitStore["pendingTaken"];
   assertEquals(held.pendingTaken, listener);
 });
+
+Deno.test("withServeOutcomes: serve having no outcome yet is never final, so the next read asks again (a lagging follower)", async () => {
+  const answers = [undefined, undefined, outcome("timed_out")];
+  const store = withServeOutcomes(
+    local(),
+    () => Promise.resolve(answers.shift()),
+  );
+  assertEquals(await store.findOutcome(WAIT), { kind: "absent" });
+  assertEquals(await store.findOutcome(WAIT), { kind: "absent" });
+  assertEquals(await store.findOutcome(WAIT), {
+    kind: "found",
+    record: outcome("timed_out"),
+  });
+});
+
+Deno.test("withServeOutcomes: an outcome serve holds beats one this checkout settled while it could not reach it", async () => {
+  let reachable = false;
+  const store = withServeOutcomes(
+    local(),
+    () =>
+      reachable
+        ? Promise.resolve(outcome("timed_out"))
+        : Promise.reject(new Error("503 serve_follower_behind")),
+  );
+  await store.settle(outcome("cancelled"));
+  reachable = true;
+  assertEquals(await store.findOutcome(WAIT), {
+    kind: "found",
+    record: outcome("timed_out"),
+  });
+});
+
+Deno.test("withServeOutcomes: failing to keep serve's outcome locally still answers with it", async () => {
+  const failing = {
+    findOutcome: () => Promise.resolve({ kind: "absent" }),
+    settle: () => Promise.reject(new Error("disk full")),
+  } as unknown as SignalWaitStore;
+  const store = withServeOutcomes(
+    failing,
+    () => Promise.resolve(outcome("timed_out")),
+  );
+  assertEquals((await store.findOutcome(WAIT)).kind, "found");
+});

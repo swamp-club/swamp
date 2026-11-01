@@ -349,7 +349,10 @@ function followerDatastoreRefusal(
   if (gate === undefined || gate.role === "leader") return undefined;
   // Leases live on the leader, so listing them is the leader's to answer
   // (swamp-club#4121).
-  const reads = (req.method === "GET" && route.kind !== "locks") ||
+  // A signal's outcome is too: a follower that has not seen it yet would answer
+  // that there is none (swamp-club#4245).
+  const reads = (req.method === "GET" && route.kind !== "locks" &&
+    route.kind !== "wait-outcome") ||
     route.kind === "has";
   if (reads && !gate.isStale()) return undefined;
   if (!reads && ctx.leaderLink !== undefined) {

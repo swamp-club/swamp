@@ -27,50 +27,98 @@
  * @module
  */
 
-import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import { UserError } from "../domain/errors.ts";
 import {
+  EVALUATION_OTHER_WRITER,
   type EvaluationTrust,
   v3EvaluationTrust,
 } from "../infrastructure/datastore_v3/trusted_evaluations.ts";
 import { v3DatastoreFor } from "../infrastructure/datastore_v3/v3_repo_context.ts";
+import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { FileServerCredentialRepository } from "../infrastructure/persistence/server_credential_repository.ts";
 import { resolveDatastoreForRepo, v3LocationOf } from "./repo_context.ts";
 
+type EvaluationRepos = Parameters<typeof v3EvaluationTrust>[1];
+
+/** What {@link lastEvaluatedStands} reaches out to; tests replace it. */
+export interface LastEvaluatedDeps {
+  /** The checkout's serve upstream address, undefined when it has none. */
+  upstream(repoDir: string): Promise<string | undefined>;
+  /** This member's principal at `serverUrl`, undefined or "" when unknown. */
+  principal(serverUrl: string): Promise<string | undefined>;
+  /** The trust of this checkout, for a member it knows or "" for none. */
+  trust(
+    repoDir: string,
+    repos: EvaluationRepos,
+    ownPrincipal: string,
+  ): Promise<EvaluationTrust>;
+}
+
+const realDeps: LastEvaluatedDeps = {
+  upstream: async (repoDir) =>
+    (await resolveDatastoreForRepo(repoDir)).serveUpstream?.serverUrl,
+  principal: async (serverUrl) =>
+    (await new FileServerCredentialRepository().get(serverUrl))?.principalId,
+  trust: async (repoDir, repos, ownPrincipal) =>
+    v3EvaluationTrust(
+      v3DatastoreFor(
+        repoDir,
+        await v3LocationOf(await resolveDatastoreForRepo(repoDir)),
+      ),
+      repos,
+      ownPrincipal,
+    ),
+};
+
+/** The advice for an evaluation set aside, by why it was. */
+function adviceFor(error: unknown, knowsMember: boolean): string {
+  if (error instanceof UserError && error.code === EVALUATION_OTHER_WRITER) {
+    return knowsMember
+      ? `${error.message} Evaluate it from this checkout to replay your own.`
+      : `${error.message} This checkout cannot tell which writes are yours: a token from the environment names no member, so only serve's own evaluations replay.`;
+  }
+  return `Could not check who wrote the last evaluation: ${
+    error instanceof Error ? error.message : String(error)
+  }`;
+}
+
 /**
  * Whether a run may use its last evaluation. `read` loads it through the trust
- * it is given. Any checkout that is not written through serve answers true
- * without reading; a read that cannot vouch for the evaluation answers false.
+ * it is given. A checkout not written through serve answers true without
+ * reading; a read that cannot vouch for the evaluation answers false, and says
+ * so in both output modes.
  */
 export async function lastEvaluatedStands(
   repoDir: string,
-  repos: Parameters<typeof v3EvaluationTrust>[1],
+  repos: EvaluationRepos,
+  outputMode: "log" | "json",
   read: (trust: EvaluationTrust) => Promise<unknown>,
+  deps: LastEvaluatedDeps = realDeps,
 ): Promise<boolean> {
-  const resolution = await resolveDatastoreForRepo(repoDir);
-  if (resolution.serveUpstream === undefined) return true;
+  const upstream = await deps.upstream(repoDir);
+  if (upstream === undefined) return true;
+  let knowsMember = false;
   try {
-    const credential = await new FileServerCredentialRepository().get(
-      resolution.serveUpstream.serverUrl,
-    );
-    await read(v3EvaluationTrust(
-      v3DatastoreFor(repoDir, await v3LocationOf(resolution)),
-      repos,
-      // Unknown is not unset: "" matches only serve's own records and takes
-      // the checkout's strict path. A token from the environment names no one.
-      credential?.principalId ?? "",
-    ));
+    const principal = await deps.principal(upstream) ?? "";
+    knowsMember = principal !== "";
+    // Unknown is not unset: "" matches only serve's own records and takes
+    // the checkout's strict path.
+    await read(await deps.trust(repoDir, repos, principal));
     return true;
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    // The warning does not reach --json output, so a script sees the event.
-    console.error(JSON.stringify({
-      event: "last_evaluated_set_aside",
-      reason,
-    }));
-    getSwampLogger(["cli", "last-evaluated"]).warn(
-      "Evaluating again instead of replaying the last evaluation; stored inputs are not replayed, so pass them with --input: {reason}",
-      { reason },
-    );
+    const advice = adviceFor(error, knowsMember);
+    if (outputMode === "json") {
+      console.error(JSON.stringify({
+        event: "last_evaluated_set_aside",
+        inputsReplayed: false,
+        reason: advice,
+      }));
+    } else {
+      getSwampLogger(["cli", "last-evaluated"]).warn(
+        "Evaluating again instead of replaying the last evaluation; its stored inputs are not replayed, so pass them with --input. {advice}",
+        { advice },
+      );
+    }
     return false;
   }
 }

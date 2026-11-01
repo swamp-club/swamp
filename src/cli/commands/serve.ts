@@ -4089,6 +4089,7 @@ export const serveCommand = new Command()
     // Only serve's own evaluations run with --last-evaluated on a v3
     // datastore, which team members' clients forward to (swamp-club#3922).
     if (v3Location !== undefined) {
+      repoContext.takesForwardedRunRecords = true;
       repoContext.evaluationTrust = v3EvaluationTrust(
         v3DatastoreFor(resolvedRepoDir, v3Location),
         repoContext,

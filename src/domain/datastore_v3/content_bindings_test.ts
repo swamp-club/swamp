@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals } from "@std/assert";
-import type { Step } from "../workflows/step.ts";
 import type { WaitOutcome } from "../workflows/signal_wait_records.ts";
 import {
   StepRun,
@@ -29,11 +28,8 @@ import {
   identityRefusal,
   isCanonicalRunLogFile,
   judgeRunRecord,
-  omittedWait,
   runIdentityRefusal,
   type RunRecordContext,
-  type StepKind,
-  storedStepOf,
 } from "./content_bindings.ts";
 import type { Intent } from "./intent.ts";
 
@@ -196,13 +192,11 @@ function run(
   } as WorkflowRunData;
 }
 
-const NOW = new Date("2026-10-26T12:00:00.000Z");
 const STARTED = "2026-10-26T11:00:00.000Z";
 
 function judge(
   before: WorkflowRunData | undefined,
   after: WorkflowRunData,
-  kinds: Record<string, StepKind> = { gate: "approval", wait: "signal" },
   extra: Partial<RunRecordContext> = {},
 ) {
   return judgeRunRecord({
@@ -210,11 +204,6 @@ function judge(
     runId: RUN,
     before,
     after,
-    stepKind: (_job, s) => kinds[s.stepName] ?? "other",
-    definitionSteps: () => undefined,
-    maySkip: () => true,
-    isServeInstance: (id) => id === "serve-1",
-    now: NOW,
     ...extra,
   });
 }
@@ -243,12 +232,12 @@ Deno.test("judgeRunRecord: a run's first record may not claim a triggering princ
     ).refusal !== undefined,
   );
   assert(
-    judge(undefined, run([], { allowedVaults: ["prod"] }), {}, {
+    judge(undefined, run([], { allowedVaults: ["prod"] }), {
       workflowVaults: ["dev"],
     }).refusal !== undefined,
   );
   assertEquals(
-    judge(undefined, run([], { allowedVaults: ["dev"] }), {}, {
+    judge(undefined, run([], { allowedVaults: ["dev"] }), {
       workflowVaults: ["dev", "prod"],
     }).refusal,
     undefined,
@@ -291,7 +280,6 @@ Deno.test("judgeRunRecord: a log file outside the run's own, or a serve instance
       undefined,
       run([], {
         logFile: `.swamp/workflow-runs/${WORKFLOW}/workflow-run-${RUN}.log`,
-        instanceId: "laptop-7",
         pid: 41,
       }),
     ).refusal,
@@ -299,107 +287,41 @@ Deno.test("judgeRunRecord: a log file outside the run's own, or a serve instance
   );
 });
 
-Deno.test("judgeRunRecord: a run serve started keeps its process and instance, a local run's may change", () => {
+Deno.test("judgeRunRecord: a run serve drives takes no forwarded record, whichever team node holds it (swamp-club#4245)", () => {
   const principal = {
-    kind: "user" as const,
+    kind: "user",
     id: "ana",
     membership: { localGroups: [], idpGroups: [], collectives: [] },
-  };
-  const served = run([], { pid: 10, triggeringPrincipal: principal });
-  assert(judge(served, { ...served, pid: 11 }).refusal !== undefined);
-  const local = run([], { pid: 10 });
-  assertEquals(judge(local, { ...local, pid: 11 }).refusal, undefined);
-});
-
-Deno.test("judgeRunRecord: reaching a gate is reported; deciding or completing it without a held decision is refused", () => {
-  const reached = judge(
-    run([step("gate", { status: "running" })]),
-    run([step("gate", { status: "waiting_approval", startedAt: STARTED })]),
-  );
-  assertEquals(reached.refusal, undefined);
-  const waiting = run([
-    step("gate", { status: "waiting_approval", startedAt: STARTED }),
-  ]);
+  } as WorkflowRunData["triggeringPrincipal"];
+  const steps = [step("deploy", { status: "running" })];
+  const forged = [step("deploy", { status: "succeeded" })];
+  // By its principal, and by an instance no node here need know of.
   assert(
     judge(
-      waiting,
-      run([step("gate", { status: "succeeded", startedAt: STARTED })]),
+      run(steps, { triggeringPrincipal: principal }),
+      run(forged, { triggeringPrincipal: principal }),
     ).refusal !== undefined,
   );
   assert(
     judge(
-      waiting,
-      run([
-        step("gate", {
-          status: "waiting_approval",
-          startedAt: STARTED,
-          approvalDecision: DECIDED,
-        }),
-      ]),
+      run(steps, { instanceId: "old-leader" }),
+      run(forged, { instanceId: "old-leader" }),
     ).refusal !== undefined,
   );
-});
-
-Deno.test("judgeRunRecord: a gate decided before, settled by a cancel, or past its deadline completes on the record alone", () => {
-  const decided = run([
-    step("gate", {
-      status: "waiting_approval",
-      startedAt: STARTED,
-      approvalDecision: DECIDED,
-    }),
-  ]);
+  // Nor can a record take a run over, or a member-driven one be refused.
+  assert(
+    judge(run(steps), run(forged, { instanceId: "old-leader" })).refusal !==
+      undefined,
+  );
+  assertEquals(judge(run(steps), run(forged)).refusal, undefined);
   assertEquals(
-    judge(
-      decided,
-      run([
-        step("gate", {
-          status: "succeeded",
-          startedAt: STARTED,
-          approvalDecision: DECIDED,
-        }),
-      ]),
-    ).refusal,
+    judge(run(steps, { pid: 1 }), run(forged, { pid: 2 })).refusal,
     undefined,
   );
-  const waiting = run([
-    step("gate", { status: "waiting_approval", startedAt: STARTED }),
-  ], { status: "suspended" });
-  assertEquals(
-    judge(
-      waiting,
-      run([
-        step("gate", {
-          status: "failed",
-          startedAt: STARTED,
-          settledByAbort: true,
-        }),
-      ], { status: "cancelled" }),
-    ).refusal,
-    undefined,
-  );
-  const timedOut = (timeout: number) =>
-    judge(
-      run([
-        step("gate", {
-          status: "waiting_approval",
-          startedAt: STARTED,
-          approvalTimeout: timeout,
-        }),
-      ]),
-      run([
-        step("gate", {
-          status: "failed",
-          startedAt: STARTED,
-          approvalTimeout: timeout,
-        }),
-      ]),
-    );
-  // An hour waited: a 60s deadline has passed, a day's has not.
-  assertEquals(timedOut(60).refusal, undefined);
-  assert(timedOut(86_400).refusal !== undefined);
 });
 
-Deno.test("judgeRunRecord: a waiting gate's prompt, timeout and start are frozen", () => {
+Deno.test("judgeRunRecord: a waiting gate's prompt, timeout, start and child link are frozen", () => {
+  const nestedRun = { workflowId: OTHER, workflowName: "child", runId: ID };
   const waiting = run([
     step("gate", {
       status: "waiting_approval",
@@ -413,6 +335,7 @@ Deno.test("judgeRunRecord: a waiting gate's prompt, timeout and start are frozen
       { approvalPrompt: "Deploy to production?" },
       { approvalTimeout: 6 },
       { startedAt: "2026-10-26T11:59:00.000Z" },
+      { nestedRun },
     ]
   ) {
     const after = run([
@@ -426,42 +349,6 @@ Deno.test("judgeRunRecord: a waiting gate's prompt, timeout and start are frozen
     ]);
     assert(judge(waiting, after).refusal !== undefined, JSON.stringify(change));
   }
-});
-
-Deno.test("judgeRunRecord: a nested-call step's wait ends as succeeded only when its stored child did", () => {
-  const nestedRun = { workflowId: OTHER, workflowName: "child", runId: ID };
-  const end = (status: WorkflowRunData["status"] | undefined) =>
-    judge(
-      run([step("call", { status: "waiting_approval", nestedRun })]),
-      run([step("call", { status: "succeeded", nestedRun })]),
-      { call: "unknown" },
-      {
-        heldChild: () =>
-          status === undefined ? undefined : { status, decisions: [] },
-      },
-    );
-  assertEquals(end("succeeded").refusal, undefined);
-  assert(end("suspended").refusal !== undefined);
-  assert(end(undefined).refusal !== undefined);
-});
-
-Deno.test("judgeRunRecord: a wait's outcome is refused without a stored outcome; registering it is reported", () => {
-  const registered = judge(
-    run([step("wait", { status: "running" })]),
-    run([step("wait", { status: "waiting_signal", wait: { key: "k" } })]),
-  );
-  assertEquals(registered.refusal, undefined);
-  const signalled = judge(
-    run([step("wait", { status: "waiting_signal", wait: { key: "k" } })]),
-    run([
-      step("wait", {
-        status: "succeeded",
-        wait: { key: "k" },
-        output: { type: "wait_for_signal", payload: { ok: true } },
-      }),
-    ]),
-  );
-  assert(signalled.refusal !== undefined);
 });
 
 Deno.test("judgeRunRecord: what the record adds for serve to authorise is returned", () => {
@@ -493,325 +380,74 @@ Deno.test("judgeRunRecord: what the record adds for serve to authorise is return
   const same = judge(before, before);
   assert(!same.inputsChanged);
   assertEquals(same.addedOutputs, []);
-  assertEquals(same.refusal, undefined);
-});
-
-Deno.test("judgeRunRecord: a gate the stored workflow no longer names cannot be reopened, or have its prompt dropped, to settle it undecided", () => {
-  const waiting = run([
-    step("gate", {
-      status: "waiting_approval",
-      startedAt: STARTED,
-      approvalPrompt: "Deploy?",
-    }),
-  ]);
-  // First commit of the attack: move the gate back to running.
-  const reopened = run([
-    step("gate", {
-      status: "running",
-      startedAt: STARTED,
-      approvalPrompt: "Deploy?",
-    }),
-  ]);
-  assert(judge(waiting, reopened, { gate: "unknown" }).refusal !== undefined);
-  // Dropping the prompt in the same move is refused outright.
-  assert(
-    judge(
-      waiting,
-      run([step("gate", { status: "running", startedAt: STARTED })]),
-      { gate: "unknown" },
-    ).refusal !== undefined,
-  );
-  // Second commit: still a gate by its prompt, so completing it is refused.
-  assert(
-    judge(
-      reopened,
-      run([
-        step("gate", {
-          status: "succeeded",
-          startedAt: STARTED,
-          approvalPrompt: "Deploy?",
-        }),
-      ]),
-      { gate: "unknown" },
-    ).refusal !== undefined,
-  );
-});
-
-Deno.test("judgeRunRecord: a gate the run skips without waiting on it is reported; skipping a waiting or decided gate is refused", () => {
-  assertEquals(
-    judge(
-      run([step("gate", { status: "pending" })]),
-      run([step("gate", { status: "skipped" })]),
-    ).refusal,
-    undefined,
-  );
-  assertEquals(
-    judge(undefined, run([step("gate", { status: "skipped" })])).refusal,
-    undefined,
-  );
-  assert(
-    judge(
-      run([step("gate", { status: "waiting_approval", startedAt: STARTED })]),
-      run([step("gate", { status: "skipped", startedAt: STARTED })]),
-    ).refusal !== undefined,
-  );
-  assert(
-    judge(
-      run([step("gate", { status: "pending", approvalDecision: DECIDED })]),
-      run([step("gate", { status: "skipped", approvalDecision: DECIDED })]),
-    ).refusal !== undefined,
-  );
-});
-
-Deno.test("judgeRunRecord: a waiting gate or wait retyped in the stored workflow still cannot settle", () => {
-  assert(
-    judge(
-      run([step("gate", { status: "waiting_approval", startedAt: STARTED })]),
-      run([step("gate", { status: "succeeded", startedAt: STARTED })]),
-      { gate: "other" },
-    ).refusal !== undefined,
-  );
-  assert(
-    judge(
-      run([step("wait", { status: "waiting_signal", wait: { key: "k" } })]),
-      run([step("wait", { status: "succeeded", wait: { key: "k" } })]),
-      { wait: "other" },
-    ).refusal !== undefined,
-  );
-});
-
-Deno.test("judgeRunRecord: a waiting step cannot be dropped, renamed, or given a child run to end its wait unjudged", () => {
-  const waiting = run([
-    step("gate", { status: "waiting_approval", startedAt: STARTED }),
-  ]);
-  assert(judge(waiting, run([])).refusal !== undefined);
-  assert(
-    judge(
-      waiting,
-      run([step("renamed", { status: "succeeded", startedAt: STARTED })]),
-    ).refusal !== undefined,
-  );
-  const nestedRun = { workflowId: OTHER, workflowName: "child", runId: ID };
-  // Retyped, then given a child run while it waits.
-  assert(
-    judge(
-      waiting,
-      run([
-        step("gate", {
-          status: "waiting_approval",
-          startedAt: STARTED,
-          nestedRun,
-        }),
-      ]),
-      { gate: "other" },
-    ).refusal !== undefined,
-  );
-  // Nor in the record that completes it.
-  assert(
-    judge(
-      waiting,
-      run([
-        step("gate", { status: "succeeded", startedAt: STARTED, nestedRun }),
-      ]),
-      { gate: "other" },
-    ).refusal !== undefined,
-  );
-});
-
-Deno.test("judgeRunRecord: a signal wait moved back out of waiting is refused, and an approval gate never waits on a child run", () => {
-  assert(
-    judge(
-      run([step("wait", { status: "waiting_signal", wait: { key: "k" } })]),
-      run([step("wait", { status: "pending", wait: { key: "k" } })]),
-    ).refusal !== undefined,
-  );
-  const nestedRun = { workflowId: OTHER, workflowName: "child", runId: ID };
-  assert(
-    judge(
-      run([step("gate", { status: "running", startedAt: STARTED })]),
-      run([
-        step("gate", {
-          status: "waiting_approval",
-          startedAt: STARTED,
-          nestedRun,
-        }),
-      ]),
-    ).refusal !== undefined,
-  );
 });
 
 const DENIED = { ...DECIDED, approved: false };
 
-Deno.test("judgeRunRecord: a denial fails its gate; skipping or completing a denied gate, waiting or settled, is refused", () => {
-  const denied = (status: StepRunData["status"]) =>
-    run([
-      step("gate", {
-        status,
-        startedAt: STARTED,
-        approvalPrompt: "Deploy?",
-        approvalDecision: DENIED,
-      }),
-    ]);
-  for (
-    const [from, to] of [
-      ["waiting_approval", "skipped"],
-      ["failed", "skipped"],
-      ["failed", "succeeded"],
-      // Re-opened with its decision kept, then settled.
-      ["pending", "skipped"],
-      ["running", "skipped"],
-      ["running", "succeeded"],
-    ] as const
-  ) {
+Deno.test("judgeRunRecord: a record never creates or changes a decision, whatever the step or its status", () => {
+  const gate = (fields: Partial<StepRunData>) =>
+    run([step("gate", { startedAt: STARTED, ...fields })]);
+  const waiting = gate({ status: "waiting_approval" });
+  for (const status of ["waiting_approval", "succeeded", "failed"] as const) {
     assert(
-      judge(denied(from), denied(to)).refusal !== undefined,
-      `${from} -> ${to}`,
-    );
-  }
-  // What a run does with a denial is reported.
-  assertEquals(
-    judge(denied("waiting_approval"), denied("failed")).refusal,
-    undefined,
-  );
-  assertEquals(
-    judge(denied("failed"), denied("waiting_approval")).refusal,
-    undefined,
-  );
-});
-
-Deno.test("judgeRunRecord: a decided gate retyped in the stored workflow, or linked to a child run, still cannot settle against its decision", () => {
-  const nestedRun = { workflowId: OTHER, workflowName: "child", runId: ID };
-  const denied = (
-    status: StepRunData["status"],
-    fields: Partial<StepRunData> = {},
-  ) =>
-    run([
-      step("gate", {
-        status,
-        startedAt: STARTED,
-        approvalPrompt: "Deploy?",
-        approvalDecision: DENIED,
-        ...fields,
-      }),
-    ]);
-  for (const to of ["succeeded", "skipped"] as const) {
-    assert(
-      judge(denied("failed"), denied(to), { gate: "other" }).refusal !==
+      judge(waiting, gate({ status, approvalDecision: DECIDED })).refusal !==
         undefined,
-      `retyped: failed -> ${to}`,
-    );
-    assert(
-      judge(
-        denied("failed", { nestedRun }),
-        denied(to, { nestedRun }),
-        { gate: "other" },
-      ).refusal !== undefined,
-      `retyped and linked: failed -> ${to}`,
+      status,
     );
   }
-  // The link itself decides nothing, and a denied gate still fails with run.
-  const linked = judge(denied("failed"), denied("failed", { nestedRun }), {
-    gate: "other",
-  });
-  assertEquals(linked.refusal, undefined);
+  assert(
+    judge(undefined, gate({ status: "succeeded", approvalDecision: DECIDED }))
+      .refusal !== undefined,
+  );
+  assert(
+    judge(
+      gate({ status: "failed", approvalDecision: DENIED }),
+      gate({ status: "failed", approvalDecision: DECIDED }),
+    ).refusal !== undefined,
+  );
+  // One serve holds may stay on the record as it runs on.
   assertEquals(
     judge(
-      denied("waiting_approval", { nestedRun }),
-      denied("failed", { nestedRun }),
-      { gate: "other" },
+      gate({ status: "waiting_approval", approvalDecision: DECIDED }),
+      gate({ status: "succeeded", approvalDecision: DECIDED }),
     ).refusal,
     undefined,
   );
 });
 
-Deno.test("judgeRunRecord: a decided step cannot be dropped or renamed, so a later record cannot re-add it undecided", () => {
-  const decided = run([
+Deno.test("judgeRunRecord: only a retry clears a decision, and a decided step stays in the record", () => {
+  const denied = run([
     step("gate", {
       status: "failed",
       startedAt: STARTED,
-      approvalPrompt: "Deploy?",
       approvalDecision: DENIED,
     }),
   ]);
-  assert(judge(decided, run([])).refusal !== undefined);
+  assert(
+    judge(denied, run([step("gate", { status: "failed" })])).refusal !==
+      undefined,
+  );
+  assert(
+    judge(denied, run([step("gate", { status: "succeeded" })])).refusal !==
+      undefined,
+  );
+  assertEquals(
+    judge(denied, run([step("gate", { status: "pending" })])).refusal,
+    undefined,
+  );
+  assert(judge(denied, run([])).refusal !== undefined);
   assert(
     judge(
-      decided,
-      run([
-        step("renamed", {
-          status: "failed",
-          startedAt: STARTED,
-          approvalDecision: DENIED,
-        }),
-      ]),
+      denied,
+      run([step("renamed", { status: "failed", approvalDecision: DENIED })]),
     ).refusal !== undefined,
   );
-  // An undecided settled step may still leave the record.
+  // An undecided step may leave the record.
   assertEquals(
     judge(
       run([step("gate", { status: "failed", startedAt: STARTED })]),
       run([]),
-    )
-      .refusal,
-    undefined,
-  );
-});
-
-Deno.test("judgeRunRecord: a job or run succeeded over a waiting or denied step is refused (swamp-club#4044)", () => {
-  const denied = step("gate", {
-    status: "failed",
-    startedAt: STARTED,
-    approvalDecision: DENIED,
-  });
-  const waiting = step("gate", {
-    status: "waiting_approval",
-    startedAt: STARTED,
-  });
-  for (const held of [denied, waiting]) {
-    assert(
-      judge(
-        run([held]),
-        {
-          ...run([held]),
-          jobs: [{ jobName: "main", status: "succeeded", steps: [held] }],
-        },
-      ).refusal !== undefined,
-    );
-    assert(
-      judge(run([held]), run([held], { status: "succeeded" })).refusal !==
-        undefined,
-    );
-  }
-  // A denial the stored step allows does not hold its job back.
-  const allowed = { ...denied, allowedFailure: true };
-  assertEquals(
-    judge(
-      run([allowed]),
-      {
-        ...run([allowed]),
-        status: "succeeded",
-        jobs: [{ jobName: "main", status: "succeeded", steps: [allowed] }],
-      },
     ).refusal,
-    undefined,
-  );
-});
-
-Deno.test("judgeRunRecord: allowing a denial's failure is the stored step's to say", () => {
-  const denied = step("gate", {
-    status: "failed",
-    startedAt: STARTED,
-    approvalDecision: DENIED,
-  });
-  const allowed = { ...denied, allowedFailure: true };
-  assert(judge(run([denied]), run([allowed])).refusal !== undefined);
-  assertEquals(
-    judge(run([denied]), run([allowed]), undefined, {
-      definitionSteps: () =>
-        [{ name: "gate", allowFailure: true }] as unknown as ReadonlyArray<
-          Step
-        >,
-    }).refusal,
     undefined,
   );
 });
@@ -825,9 +461,8 @@ Deno.test("judgeRunRecord: a nested step may hold only a decision its linked chi
     step("call", { status: "failed", nestedRun, approvalDecision: DENIED }),
   ]);
   const judged = (decisions: readonly unknown[] | undefined) =>
-    judge(waiting, rejected, { call: "other" }, {
-      heldChild: () =>
-        decisions === undefined ? undefined : { status: "failed", decisions },
+    judge(waiting, rejected, {
+      heldChild: () => decisions === undefined ? undefined : { decisions },
     });
   assertEquals(judged([DENIED]).refusal, undefined);
   assert(judged([DECIDED]).refusal !== undefined);
@@ -835,15 +470,16 @@ Deno.test("judgeRunRecord: a nested step may hold only a decision its linked chi
   assert(judged(undefined).refusal !== undefined);
 });
 
-Deno.test("judgeRunRecord: a duplicate step key is refused, so it cannot shadow a waiting or decided step (swamp-club#4046)", () => {
-  const waiting = step("gate", {
-    status: "waiting_approval",
+Deno.test("judgeRunRecord: a duplicate step key is refused, so a record has one reading (swamp-club#4046)", () => {
+  const decided = step("gate", {
+    status: "failed",
     startedAt: STARTED,
+    approvalDecision: DENIED,
   });
   assert(
     judge(
-      run([waiting]),
-      run([waiting, step("gate", { status: "succeeded" })]),
+      run([decided]),
+      run([decided, step("gate", { status: "succeeded" })]),
     ).refusal !== undefined,
   );
   // The same step name in another job is another step.
@@ -859,313 +495,30 @@ Deno.test("judgeRunRecord: a duplicate step key is refused, so it cannot shadow 
   );
 });
 
-Deno.test("judgeRunRecord: a decided gate's status never changes outside a retry ", () => {
-  const decided = (status: StepRunData["status"]) =>
-    run([
-      step("gate", {
-        status,
-        startedAt: STARTED,
-        approvalDecision: DENIED,
-      }),
-    ]);
-  assert(judge(decided("failed"), decided("unknown")).refusal !== undefined);
-  assert(judge(decided("failed"), decided("running")).refusal !== undefined);
-});
-
-Deno.test("judgeRunRecord: only a retry of an ended run clears a decision, and the re-opened gate must wait again", () => {
-  const denied = run([
-    step("gate", {
-      status: "failed",
-      startedAt: STARTED,
-      approvalDecision: DENIED,
-    }),
-  ], { status: "failed" });
-  const reopened = run([
-    step("gate", { status: "pending", resetByResume: true }),
-  ]);
-  assert(
-    judge(denied, run([step("gate", { status: "failed" })])).refusal !==
-      undefined,
-  );
-  assert(
-    judge(denied, run([step("gate", { status: "pending" })])).refusal !==
-      undefined,
-  );
-  assertEquals(judge(denied, reopened).refusal, undefined);
-  // A run still going has nothing to retry.
-  assert(
-    judge({ ...denied, status: "running" }, reopened).refusal !== undefined,
-  );
-  // It may wait again, but neither skip the denial nor lose its mark.
-  assertEquals(
-    judge(reopened, run([step("gate", { status: "running" })])).refusal,
-    undefined,
-  );
-  assert(
-    judge(reopened, run([step("gate", { status: "skipped" })]), undefined, {
-      maySkip: () => false,
-    }).refusal !== undefined,
-  );
-  assert(
-    judge(reopened, run([step("gate", { status: "pending" })])).refusal !==
-      undefined,
-  );
-  // Nor shed it by going back through running.
-  assert(
-    judge(
-      run([step("gate", { status: "running" })]),
-      run([step("gate", { status: "pending" })]),
-    ).refusal !== undefined,
-  );
-  assert(
-    judge(
-      run([step("gate", { status: "running" })]),
-      run([step("gate", { status: "succeeded" })]),
-    ).refusal !== undefined,
-  );
-});
-
-Deno.test("judgeRunRecord: a gate or signal wait is skipped only when its stored workflow gives it something to skip it", () => {
-  const noGuard = { maySkip: () => false };
-  for (const name of ["gate", "wait"]) {
-    assert(
-      judge(
-        run([step(name)]),
-        run([step(name, { status: "skipped" })]),
-        undefined,
-        noGuard,
-      ).refusal !== undefined,
-      name,
-    );
-    assertEquals(
-      judge(run([step(name)]), run([step(name, { status: "skipped" })]))
-        .refusal,
-      undefined,
-      name,
-    );
-  }
-  // A cancel settles a gate it never started.
-  assertEquals(
-    judge(
-      run([step("gate")]),
-      run([step("gate", { status: "skipped", settledByAbort: true })], {
-        status: "cancelled",
-      }),
-      undefined,
-      noGuard,
-    ).refusal,
-    undefined,
-  );
-});
-
-Deno.test("judgeRunRecord: a job or run cannot succeed over what an abort settled", () => {
-  const settled = step("gate", { status: "skipped", settledByAbort: true });
-  assert(
-    judge(run([settled]), run([settled], { status: "succeeded" })).refusal !==
-      undefined,
-  );
-});
-
-Deno.test("judgeRunRecord: a nested step succeeds only as its child did, whichever way it left its wait or whatever it holds", () => {
-  const nestedRun = { workflowId: OTHER, workflowName: "child", runId: ID };
-  const waiting = run([
-    step("call", { status: "waiting_approval", nestedRun }),
-  ]);
-  const suspended = {
-    heldChild: () => ({ status: "suspended" as const, decisions: [DECIDED] }),
-  };
-  const kinds = { call: "nested" as StepKind };
-  // Out of the wait in a first commit.
-  for (const status of ["running", "pending", "unknown"] as const) {
-    assert(
-      judge(
-        waiting,
-        run([step("call", { status, nestedRun })]),
-        kinds,
-        suspended,
-      ).refusal !== undefined,
-      status,
-    );
-  }
-  // From anywhere else, and with no link at all.
-  assert(
-    judge(
-      run([step("call", { status: "running", nestedRun })]),
-      run([step("call", { status: "succeeded", nestedRun })]),
-      kinds,
-      suspended,
-    ).refusal !== undefined,
-  );
-  assert(
-    judge(
-      run([step("call", { status: "running" })]),
-      run([step("call", { status: "succeeded" })]),
-      kinds,
-    ).refusal !== undefined,
-  );
-  // Copying an approval from a child with another gate waiting.
-  assert(
-    judge(
-      waiting,
-      run([
-        step("call", {
-          status: "succeeded",
-          nestedRun,
-          approvalDecision: DECIDED,
-        }),
-      ]),
-      kinds,
-      suspended,
-    ).refusal !== undefined,
-  );
-});
-
-Deno.test("judgeRunRecord: a signal step reaches succeeded only by its stored outcome, whichever way it got there", () => {
-  for (
-    const before of [
-      step("wait", { status: "running" }),
-      step("wait", { status: "pending", resetByResume: true }),
-    ]
-  ) {
-    assert(
-      judge(run([before]), run([step("wait", { status: "succeeded" })]))
-        .refusal !== undefined,
-    );
-  }
-  assert(
-    judge(undefined, run([step("wait", { status: "succeeded" })])).refusal !==
-      undefined,
-  );
-});
-
-Deno.test("judgeRunRecord: a re-opened gate with a guard or dependency reports its skip; without one it must wait", () => {
-  const marked = run([step("gate", { resetByResume: true })]);
-  const skipped = run([step("gate", { status: "skipped" })]);
-  assert(
-    judge(marked, skipped, undefined, { maySkip: () => false }).refusal !==
-      undefined,
-  );
-  assertEquals(
-    judge(marked, skipped, undefined, { maySkip: () => true }).refusal,
-    undefined,
-  );
-  assertEquals(
-    judge(marked, run([step("gate", { status: "failed" })])).refusal,
-    undefined,
-  );
-});
-
-Deno.test("judgeRunRecord: an allowance is the stored step's to set at any status, so setting it before a failure gains nothing", () => {
-  const waiting = { status: "waiting_approval" as const, startedAt: STARTED };
-  assert(
-    judge(
-      run([step("gate", waiting)]),
-      run([step("gate", { ...waiting, allowedFailure: true })]),
-    ).refusal !== undefined,
-  );
-  assert(
-    judge(
-      run([step("deploy", { status: "running" })]),
-      run([step("deploy", { status: "running", allowedFailure: true })]),
-    ).refusal !== undefined,
-  );
-});
-
-Deno.test("judgeRunRecord: a job or run succeeds only once every step has finished", () => {
-  for (const status of ["pending", "running", "unknown"] as const) {
-    const left = run([step("gate", { status })]);
-    left.jobs[0].status = "succeeded";
-    assert(judge(undefined, left).refusal !== undefined, status);
-    assert(
-      judge(undefined, run([step("gate", { status })], { status: "succeeded" }))
-        .refusal !== undefined,
-      status,
-    );
-  }
-});
-
-Deno.test("judgeRunRecord: a record cannot open a wait serve already holds an outcome for", () => {
-  const held = {
-    heldOutcome: () =>
-      ({ kind: "accepted", waitId: WAIT_ID }) as unknown as WaitOutcome,
-  };
-  const opening = run([
-    step("wait", { status: "waiting_signal", wait: openWait }),
-  ]);
-  const before = run([step("wait", { status: "running" })]);
-  assert(judge(before, opening, undefined, held).refusal !== undefined);
-  assertEquals(judge(before, opening).refusal, undefined);
-  // A wait already open stays open once its signal arrives.
-  assertEquals(judge(opening, opening, undefined, held).refusal, undefined);
-});
-
-Deno.test("judgeRunRecord: what a step expands from is frozen, and never overrides its stored name", () => {
-  assert(
-    judge(
-      run([step("gate")]),
-      run([step("gate", { forEachTemplate: "build" })]),
-    ).refusal !== undefined,
-  );
-  const stored = [
-    { name: "gate" },
-    { name: "build", allowFailure: true },
-    { name: "each", forEach: { in: "x" } },
-  ] as unknown as Step[];
-  assertEquals(
-    storedStepOf(stored, { stepName: "gate", forEachTemplate: "build" })?.name,
-    "gate",
-  );
-  assertEquals(
-    storedStepOf(stored, { stepName: "x", forEachTemplate: "build" }),
-    undefined,
-  );
-  assertEquals(
-    storedStepOf(stored, { stepName: "each-0", forEachTemplate: "each" })?.name,
-    "each",
-  );
-});
-
-Deno.test("judgeRunRecord: a job or run cannot succeed by leaving a stored gate out", () => {
-  const storedWaits = [
-    { jobName: "main", stepName: "gate", expands: false },
-    { jobName: "main", stepName: "each", expands: true },
+Deno.test("judgeRunRecord: what a member reports of a run they drive is out of scope (access-control.md, the threat model)", () => {
+  const reports: [StepRunData, StepRunData, Partial<WorkflowRunData>][] = [
+    [step("gate"), step("gate", { status: "skipped" }), {}],
+    [
+      step("gate", { status: "waiting_approval", startedAt: STARTED }),
+      step("gate", { status: "succeeded", startedAt: STARTED }),
+      { status: "succeeded" },
+    ],
+    [
+      step("deploy", { status: "running" }),
+      step("deploy", { status: "failed", allowedFailure: true }),
+      { status: "succeeded" },
+    ],
+    [
+      step("wait", { status: "waiting_signal", wait: { key: "k" } }),
+      step("wait", { status: "succeeded", wait: { key: "k" } }),
+      {},
+    ],
   ];
-  const left = {
-    ...run([step("deploy", { status: "succeeded" })], { status: "succeeded" }),
-  };
-  assert(
-    judge(undefined, left, undefined, { storedWaits }).refusal !== undefined,
-  );
-  const job = run([step("deploy", { status: "succeeded" })]);
-  job.jobs[0].status = "succeeded";
-  assert(
-    judge(undefined, job, undefined, { storedWaits }).refusal !== undefined,
-  );
-  assertEquals(
-    omittedWait(run([step("gate", { status: "succeeded" })]), storedWaits),
-    undefined,
-  );
-});
-
-Deno.test("judgeRunRecord: a held outcome applies only to the wait the prior record shows open on that step", () => {
-  const output = { type: "wait_for_signal", payload: { ok: true } };
-  const held = {
-    heldOutcome: () =>
-      ({
-        kind: "accepted",
-        waitId: WAIT_ID,
-        payload: { ok: true },
-      }) as unknown as WaitOutcome,
-  };
-  for (const prior of ["pending", "running"] as const) {
-    assert(
-      judge(
-        run([step("wait", { status: prior })]),
-        run([step("wait", { status: "succeeded", wait: openWait, output })]),
-        undefined,
-        held,
-      ).refusal !== undefined,
-      prior,
+  for (const [from, to, fields] of reports) {
+    assertEquals(
+      judge(run([from]), run([to], fields)).refusal,
+      undefined,
+      to.stepName,
     );
   }
 });
@@ -1178,8 +531,8 @@ const openWait = {
   deadline: "2026-10-27T00:00:00.000Z",
 };
 
-Deno.test("judgeRunRecord: a signal's outcome must be the one serve stores, applied as a run applies it", () => {
-  const outcome: WaitOutcome = {
+Deno.test("judgeRunRecord: a signal's outcome on a record must be the one serve stores, applied as a run applies it", () => {
+  const outcome = {
     kind: "accepted",
     waitId: WAIT_ID,
     workflowId: WORKFLOW,
@@ -1203,7 +556,7 @@ Deno.test("judgeRunRecord: a signal's outcome must be the one serve stores, appl
     step("wait", { status: "waiting_signal", wait: openWait }),
   ]);
   const judged = (held: WaitOutcome | undefined, after: StepRunData) =>
-    judge(before, run([after]), undefined, { heldOutcome: () => held });
+    judge(before, run([after]), { heldOutcome: () => held });
   assertEquals(judged(outcome, settled).refusal, undefined);
   assert(judged(undefined, settled).refusal !== undefined);
   assert(
@@ -1212,45 +565,11 @@ Deno.test("judgeRunRecord: a signal's outcome must be the one serve stores, appl
       output: { type: "wait_for_signal", payload: { ok: false } },
     }).refusal !== undefined,
   );
-});
-
-Deno.test("judgeRunRecord: a signal wait fails on its record's deadline, a stored non-signal outcome or a cancel only", () => {
-  const before = (deadline: string) =>
-    run([
-      step("wait", {
-        status: "waiting_signal",
-        wait: { ...openWait, deadline },
-      }),
-    ]);
-  const failed = (deadline: string) =>
-    run([
-      step("wait", {
-        status: "failed",
-        error: "timed out",
-        wait: { ...openWait, deadline },
-      }),
-    ]);
-  const past = "2026-10-26T11:00:00.000Z";
-  const ahead = "2026-10-27T00:00:00.000Z";
-  assertEquals(judge(before(past), failed(past)).refusal, undefined);
-  assert(judge(before(ahead), failed(ahead)).refusal !== undefined);
-  assertEquals(
-    judge(before(ahead), failed(ahead), undefined, {
-      heldOutcome: () =>
-        ({ kind: "timed_out", waitId: WAIT_ID }) as unknown as WaitOutcome,
-    }).refusal,
-    undefined,
-  );
-  // The deadline is frozen while the step waits.
+  // A receipt alone, with no output, is a decision too.
   assert(
-    judge(
-      before(ahead),
-      run([
-        step("wait", {
-          status: "waiting_signal",
-          wait: { ...openWait, deadline: past },
-        }),
-      ]),
-    ).refusal !== undefined,
+    judged(undefined, {
+      ...step("wait", { status: "failed" }),
+      wait: settled.wait,
+    }).refusal !== undefined,
   );
 });

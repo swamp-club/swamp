@@ -122,7 +122,7 @@ async function openingOwners(): Promise<string[]> {
  * createLock.
  */
 const GUARDED_PINNED = [
-  "src/cli/last_evaluated_trust.ts:lastEvaluatedStands",
+  "src/cli/last_evaluated_trust.ts:realDeps",
   "src/cli/commands/datastore_catalog_pull.ts:datastoreCatalogPullCommand",
   // swamp-club#3279: v3 opens (the commit log, the writer lock). Each is
   // handed a config resolveDatastoreForRepo or requireInitializedRepo* has

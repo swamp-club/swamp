@@ -3640,38 +3640,3 @@ Deno.test("WorkflowRun.unknownStepsIfOrphaned: names what interruptOrphaned then
   }
   assertEquals(checked, 6 * 9 * 343);
 });
-
-Deno.test("WorkflowRun.resetForResumeFrom: a gate that held a decision is marked re-opened, so a record cannot skip past it (swamp-club#4245)", () => {
-  const run = WorkflowRun.fromData({
-    id: "33333333-4444-4555-8666-777777777777",
-    workflowId: "44444444-5555-4666-8777-888888888888",
-    workflowName: "deploy",
-    status: "failed",
-    tags: {},
-    jobs: [{
-      jobName: "main",
-      status: "failed",
-      steps: [
-        {
-          stepName: "gate",
-          status: "failed",
-          approvalDecision: {
-            approved: false,
-            decidedBy: "user:ana",
-            decidedAt: "2026-10-26T00:00:00.000Z",
-          },
-        },
-        { stepName: "other", status: "failed" },
-      ],
-    }],
-  });
-  run.resetForResumeFrom([
-    { jobName: "main", stepName: "gate" },
-    { jobName: "main", stepName: "other" },
-  ]);
-  const steps = run.toData().jobs[0].steps;
-  assertEquals(steps[0].status, "pending");
-  assertEquals(steps[0].approvalDecision, undefined);
-  assertEquals(steps[0].resetByResume, true);
-  assertEquals(steps[1].resetByResume, undefined);
-});

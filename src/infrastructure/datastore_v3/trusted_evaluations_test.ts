@@ -130,6 +130,6 @@ Deno.test("v3EvaluationTrust: a checkout trusts serve's and its own member's eva
   await assertRejects(
     () => trustOver("user:bob", { own }).trust.definition(TYPE, "web"),
     UserError,
-    "not made on this server",
+    "Another member wrote",
   );
 });

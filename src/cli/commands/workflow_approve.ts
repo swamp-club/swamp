@@ -87,6 +87,10 @@ export function renderApproveResult(
   if (remote?.serveResuming) {
     cliCtx.logger.info`Serve is resuming run ${data.runId} automatically`;
   }
+  if (data.ownerResumes === true) {
+    cliCtx.logger
+      .info`Serve does not resume a run a member drives: the run's owner resumes ${data.runId}`;
+  }
   if (cliCtx.verbosity === "quiet") return;
   const target = remote ? formatCommandTarget({ server: remote.server }) : "";
   if (!remote?.serveResuming) {

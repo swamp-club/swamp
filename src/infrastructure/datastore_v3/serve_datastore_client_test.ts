@@ -1262,3 +1262,25 @@ Deno.test("ServeDatastoreClient: every request names the lease ops its copy unde
     "lease-ops",
   );
 });
+
+Deno.test("ServeDatastoreClient.waitOutcome: reads serve's outcome; none, or a serve too old to know the route, is undefined", async () => {
+  const stored = { kind: "timed_out", waitId: "w" };
+  const { client, requests } = clientWith(() =>
+    Response.json({ outcome: stored })
+  );
+  assertEquals(await client.waitOutcome("w/x", signal()), stored);
+  assert(
+    new URL(requests[0].url).pathname.endsWith("/signal-outcomes/w%2Fx"),
+  );
+  for (const status of [404, 405]) {
+    const { client: none } = clientWith(() => new Response("{}", { status }));
+    assertEquals(await none.waitOutcome("w", signal()), undefined);
+  }
+});
+
+Deno.test("ServeDatastoreClient.waitOutcome: any other answer is an error, never a read of no outcome", async () => {
+  const { client } = clientWith(() =>
+    Response.json({ code: "internal", message: "broken" }, { status: 500 })
+  );
+  await assertRejects(() => client.waitOutcome("w", signal()));
+});

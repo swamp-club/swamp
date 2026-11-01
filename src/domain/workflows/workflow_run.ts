@@ -2226,11 +2226,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
             stepRunKey({ jobName: job.jobName, stepName: step.stepName }),
           )
         ) {
-          // A gate that held a decision is re-opened in the record's sight:
-          // the mark keeps it waiting for a fresh one (swamp-club#4245).
-          const decided = step.approvalDecision !== undefined;
           step.resetToPending();
-          if (decided) step.markResetByResume();
           jobNeedsReset = true;
         }
       }

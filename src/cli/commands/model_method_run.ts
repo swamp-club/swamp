@@ -280,7 +280,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
     )
     .option(
       "--last-evaluated",
-      "Skip CEL evaluation, use previously evaluated definition. In a serve-mode checkout, an evaluation serve or you did not write is set aside and evaluated again, without its stored inputs",
+      "Skip CEL evaluation, use previously evaluated definition. In a serve-mode checkout, an evaluation written by another member is not used: the run evaluates again, without its stored inputs",
       { default: false },
     )
     .option("--input <value:string>", "Input values (key=value or JSON)", {
@@ -423,15 +423,20 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
         // commit while it runs (swamp-club#4120).
         watchV3ServeFeeds();
         const lastEvaluated = options.lastEvaluated === true &&
-          await lastEvaluatedStands(repoDir, repoContext, async (trust) => {
-            const found = await findDefinitionByIdOrName(
-              repoContext.definitionRepo,
-              modelIdOrName,
-            );
-            if (found !== null) {
-              await trust.definition(found.type, found.definition.name);
-            }
-          });
+          await lastEvaluatedStands(
+            repoDir,
+            repoContext,
+            ctx.outputMode === "json" ? "json" : "log",
+            async (trust) => {
+              const found = await findDefinitionByIdOrName(
+                repoContext.definitionRepo,
+                modelIdOrName,
+              );
+              if (found !== null) {
+                await trust.definition(found.type, found.definition.name);
+              }
+            },
+          );
         const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
         try {
           runTracker.reapStaleRuns(DEFAULT_STALE_TTL_MS);
