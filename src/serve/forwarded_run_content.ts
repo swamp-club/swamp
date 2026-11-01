@@ -36,9 +36,12 @@ import type { ContentRefusal } from "../domain/datastore_v3/commit_authorization
 import {
   type HeldChildRun,
   judgeRunRecord,
+  omittedWait,
   runIdentityRefusal,
   type RunRecordJudgement,
   type StepKind,
+  storedStepOf,
+  type StoredWait,
 } from "../domain/datastore_v3/content_bindings.ts";
 import type { PutOp } from "../domain/datastore_v3/op.ts";
 import { partitionOf } from "../domain/datastore_v3/partition_key.ts";
@@ -167,13 +170,23 @@ export async function checkRunRecord(
       ctx.instanceId !== undefined && id === ctx.instanceId,
     maySkip: (jobName, step) => {
       const job = workflow?.jobs.find((j) => j.name === jobName);
-      const defined = job?.steps.find((s) =>
-        s.name === (step.forEachTemplate ?? step.stepName)
-      );
+      const defined = storedStepOf(job?.steps, step);
       return (job?.dependsOn.length ?? 0) > 0 ||
         defined?.guard !== undefined ||
         (defined?.dependsOn.length ?? 0) > 0;
     },
+    dependencyUnmet: (jobName, step) => {
+      const job = workflow?.jobs.find((j) => j.name === jobName);
+      const defined = storedStepOf(job?.steps, step);
+      const steps = after.data.jobs.find((j) => j.jobName === jobName)?.steps;
+      return (defined?.dependsOn ?? []).some((dependency) =>
+        steps?.some((s) =>
+          s.stepName === dependency.step && s.status !== "succeeded" &&
+          s.status !== "pending" && s.status !== "running"
+        ) === true
+      );
+    },
+    storedWaits: workflow === null ? [] : storedWaitsOf(workflow),
     heldChild: (jobName, step) =>
       held.children.get(heldKey(jobName, step.stepName)),
     heldOutcome: (waitId) => held.outcomes.get(waitId.toLowerCase()),
@@ -243,8 +256,10 @@ async function heldByServe(
     for (const step of job.steps) {
       const prior = priors?.find((s) => s.stepName === step.stepName);
       if (prior?.status === step.status) continue;
-      const defined = workflow?.jobs.find((j) => j.name === job.jobName)?.steps
-        .find((s) => s.name === (step.forEachTemplate ?? step.stepName));
+      const defined = storedStepOf(
+        workflow?.jobs.find((j) => j.name === job.jobName)?.steps,
+        step,
+      );
       if (
         step.nestedRun !== undefined ||
         defined?.task.data.type === "workflow"
@@ -314,6 +329,18 @@ async function heldChildOf(
   if (record.kind !== "present") return undefined;
   const child = WorkflowRunSchema.safeParse(parseRecord(record.bytes));
   if (!child.success) return undefined;
+  // A child that succeeded must have settled its own stored gates: a forged
+  // child of the right workflow could otherwise just leave them out.
+  const childWorkflow = await findWorkflowById(
+    context.deps.ctx.repoContext.workflowRepo,
+    child.data.workflowId,
+  );
+  if (
+    child.data.status === "succeeded" && (childWorkflow === null ||
+      omittedWait(child.data, storedWaitsOf(childWorkflow)) !== undefined)
+  ) {
+    return undefined;
+  }
   const parent = parseParentRunLink(child.data.parentRun);
   if (
     parent?.kind !== "valid" ||
@@ -430,6 +457,22 @@ async function additionsRefusal(
   return undefined;
 }
 
+/** The gates and signal waits a workflow stores. */
+function storedWaitsOf(workflow: Workflow): StoredWait[] {
+  return workflow.jobs.flatMap((job) =>
+    job.steps.flatMap((step) =>
+      step.task.data.type === "manual_approval" ||
+        step.task.data.type === "wait_for_signal"
+        ? [{
+          jobName: job.name,
+          stepName: step.name,
+          expands: step.forEach !== undefined,
+        }]
+        : []
+    )
+  );
+}
+
 /** What a run's step is, by the stored workflow's step of its name. */
 function stepKindOf(
   workflow: Workflow | null,
@@ -437,10 +480,7 @@ function stepKindOf(
   step: StepRunData,
 ): StepKind {
   const job = workflow?.jobs.find((candidate) => candidate.name === jobName);
-  const defined = job?.steps.find((s) => s.name === step.stepName) ??
-    (step.forEachTemplate === undefined
-      ? undefined
-      : job?.steps.find((s) => s.name === step.forEachTemplate));
+  const defined = storedStepOf(job?.steps, step);
   if (defined === undefined) return "unknown";
   switch (defined.task.data.type) {
     case "manual_approval":

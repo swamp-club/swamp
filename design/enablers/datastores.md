@@ -6695,14 +6695,22 @@ to the same write. The checks the handlers share are one implementation
      or signal wait is skipped only when the stored workflow gives it something
      to skip it (its guard or dependencies, or its job's), or when an abort
      settled it unstarted. A gate a retry re-opened keeps its mark while
-     pending, cannot go from running back to pending, and is not skipped past
-     the decision it dropped. A failure's `allowedFailure` is the stored step's
+     pending, cannot go from running back to pending, and skips only when a
+     stored dependency failed in the record. Left pending when its job ends, it
+     may fail. A signal outcome applies only to the wait the prior record shows
+     open on that step. What a record's step expands from is frozen and never
+     overrides a stored step of its name. A failure's `allowedFailure` is the stored step's
      to set. **What this cannot judge:** a record's guard result. On a gate
      with a guard or dependencies, a member can report it skipped; a run-only
      caller driving their own run can always do that. An unguarded gate cannot
      be skipped.
   5. No job or run is `succeeded` over a step that waits, failed without an
      allowance, or stands settled by an abort.
+     Nor can one succeed by leaving out a gate or signal wait the stored
+     workflow holds, unless it expands by forEach; a child counts as succeeded
+     only under the same test against its own workflow. This reads the workflow
+     as stored now, so one edited to add a gate during a run refuses that run's
+     success.
   6. A duplicate (job, step) key is refused.
   7. Inputs, deferred and inherited expressions it adds are authorised as run
      inputs, vault references as vault reads, and step outputs must name what
@@ -6719,6 +6727,11 @@ before the forwarded lock, as serve's handlers make theirs before they save;
 under the lock serve re-decides access, a run record's additions among it, and
 checks that no record the content was judged against moved. A signal outcome
 is not a record, so its presence is rechecked under the lock on its own.
+
+**Known limit.** A retry whose preparation fails restores the run from a
+snapshot that still holds the cleared decision. That record is refused, since
+serve no longer holds the decision, and the run stays `running` until it is
+recovered or cancelled.
 
 **Run control in a serve-mode checkout (swamp-club#4245).** `workflow approve`,
 `reject` and `signal` go to serve's handlers, as `--server` does

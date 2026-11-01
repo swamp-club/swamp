@@ -87,17 +87,19 @@ export function v3EvaluationTrust(
     readonly workflowRepo: Pick<WorkflowRepository, "findByName">;
   },
   /**
-   * A principal whose forwarded evaluations count as this reader's own: a
-   * serve-mode checkout trusts serve's and its member's, never another
-   * member's (swamp-club#4245). Serve passes none.
+   * Set by a serve-mode checkout, and to "" when its member is unknown: it
+   * trusts serve's evaluations and this principal's, never another member's,
+   * and any other writer's record refuses instead of being passed over
+   * (swamp-club#4245). Serve passes none.
    */
   ownPrincipal?: string,
 ): EvaluationTrust {
   /**
    * The trusted bytes at the first key holding serve's own record, or null
-   * when no key holds a record. A key holding another writer's record is
-   * passed over, so a forwarded evaluation cannot hide serve's own; when
-   * only such records exist the evaluation is refused.
+   * when no key holds a record. On serve a key holding another writer's record
+   * is passed over, so a forwarded evaluation cannot hide serve's own; when
+   * only such records exist the evaluation is refused. A checkout stops at
+   * such a key: it reads through its repository, which could read that key.
    */
   const trusted = async (
     partition: PartitionKey,

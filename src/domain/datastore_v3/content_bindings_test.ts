@@ -29,9 +29,11 @@ import {
   identityRefusal,
   isCanonicalRunLogFile,
   judgeRunRecord,
+  omittedWait,
   runIdentityRefusal,
   type RunRecordContext,
   type StepKind,
+  storedStepOf,
 } from "./content_bindings.ts";
 import type { Intent } from "./intent.ts";
 
@@ -1033,6 +1035,93 @@ Deno.test("judgeRunRecord: a signal step reaches succeeded only by its stored ou
     judge(undefined, run([step("wait", { status: "succeeded" })])).refusal !==
       undefined,
   );
+});
+
+Deno.test("judgeRunRecord: a re-opened gate fails or skips only as a real failed retry does", () => {
+  const marked = run([step("gate", { resetByResume: true })]);
+  const skipped = run([
+    step("gate", { status: "skipped", skipReason: { kind: "dependency" } }),
+  ]);
+  assert(
+    judge(marked, skipped, undefined, { dependencyUnmet: () => false })
+      .refusal !== undefined,
+  );
+  assertEquals(
+    judge(marked, skipped, undefined, { dependencyUnmet: () => true }).refusal,
+    undefined,
+  );
+  assertEquals(
+    judge(marked, run([step("gate", { status: "failed" })])).refusal,
+    undefined,
+  );
+});
+
+Deno.test("judgeRunRecord: what a step expands from is frozen, and never overrides its stored name", () => {
+  assert(
+    judge(
+      run([step("gate")]),
+      run([step("gate", { forEachTemplate: "build" })]),
+    ).refusal !== undefined,
+  );
+  const stored = [
+    { name: "gate" },
+    { name: "build", allowFailure: true },
+    { name: "each", forEach: { in: "x" } },
+  ] as unknown as Step[];
+  assertEquals(
+    storedStepOf(stored, { stepName: "gate", forEachTemplate: "build" })?.name,
+    "gate",
+  );
+  assertEquals(
+    storedStepOf(stored, { stepName: "x", forEachTemplate: "build" }),
+    undefined,
+  );
+  assertEquals(
+    storedStepOf(stored, { stepName: "each-0", forEachTemplate: "each" })?.name,
+    "each",
+  );
+});
+
+Deno.test("judgeRunRecord: a job or run cannot succeed by leaving a stored gate out", () => {
+  const storedWaits = [
+    { jobName: "main", stepName: "gate", expands: false },
+    { jobName: "main", stepName: "each", expands: true },
+  ];
+  const left = {
+    ...run([step("deploy", { status: "succeeded" })], { status: "succeeded" }),
+  };
+  assert(
+    judge(undefined, left, undefined, { storedWaits }).refusal !== undefined,
+  );
+  const job = run([step("deploy", { status: "succeeded" })]);
+  job.jobs[0].status = "succeeded";
+  assert(
+    judge(undefined, job, undefined, { storedWaits }).refusal !== undefined,
+  );
+  assertEquals(omittedWait(run([step("gate")]), storedWaits), undefined);
+});
+
+Deno.test("judgeRunRecord: a held outcome applies only to the wait the prior record shows open on that step", () => {
+  const output = { type: "wait_for_signal", payload: { ok: true } };
+  const held = {
+    heldOutcome: () =>
+      ({
+        kind: "accepted",
+        waitId: WAIT_ID,
+        payload: { ok: true },
+      }) as unknown as WaitOutcome,
+  };
+  for (const prior of ["pending", "running"] as const) {
+    assert(
+      judge(
+        run([step("wait", { status: prior })]),
+        run([step("wait", { status: "succeeded", wait: openWait, output })]),
+        undefined,
+        held,
+      ).refusal !== undefined,
+      prior,
+    );
+  }
 });
 
 const WAIT_ID = "55555555-6666-4777-8888-999999999999";

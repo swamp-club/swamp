@@ -27,6 +27,7 @@
  * @module
  */
 
+import { UserError } from "../domain/errors.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
   type EvaluationTrust,
@@ -55,17 +56,23 @@ export async function lastEvaluatedStands(
     await read(v3EvaluationTrust(
       v3DatastoreFor(repoDir, await v3LocationOf(resolution)),
       repos,
-      credential?.principalId,
+      // Unknown is not unset: "" matches only serve's own records and takes
+      // the checkout's strict path. A token from the environment names no one.
+      credential?.principalId ?? "",
     ));
     return true;
   } catch (error) {
-    getSwampLogger(["cli", "last-evaluated"]).warn(
-      "Evaluating again: another member wrote the last evaluation, or it could not be checked. Run the evaluate command to save your own.",
-    );
-    getSwampLogger(["cli", "last-evaluated"]).debug(
-      "Last evaluation set aside: {reason}",
-      { reason: error instanceof Error ? error.message : String(error) },
-    );
+    const logger = getSwampLogger(["cli", "last-evaluated"]);
+    if (error instanceof UserError && error.code === "evaluation_not_trusted") {
+      logger.warn(
+        "Evaluating again instead of replaying the last evaluation: serve did not write it, and this checkout could not match its writer to your saved login (a token from the environment names no one). Stored inputs are not replayed; pass them again.",
+      );
+    } else {
+      logger.warn(
+        "Evaluating again: could not check who wrote the last evaluation: {reason}",
+        { reason: error instanceof Error ? error.message : String(error) },
+      );
+    }
     return false;
   }
 }
