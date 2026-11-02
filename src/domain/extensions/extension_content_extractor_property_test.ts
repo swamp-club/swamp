@@ -93,6 +93,19 @@ const noiseArb = fc.string({
 const escapeFor = (quote: string) => (s: string) =>
   s.replace(/\\/g, "\\\\").replaceAll(quote, `\\${quote}`);
 
+// Deleting a terminator can join its neighbours into a new one; a spaced one cannot.
+const blockComment = (s: string) => `/* ${s.replaceAll("*/", "* /")} */`;
+
+Deno.test("blockComment: closes only at its own terminator", () => {
+  fc.assert(
+    fc.property(noiseArb, (s) => {
+      const comment = blockComment(s);
+      assertEquals(comment.indexOf("*/"), comment.length - 2);
+    }),
+    { examples: [["**//{"]] },
+  );
+});
+
 /**
  * Well-formed literals holding noise, each placed where the scanner can
  * classify it: strings with escaped quotes, templates with escaped dollars,
@@ -103,7 +116,7 @@ const literalStatementArb = fc.oneof(
   noiseArb.map((s) => `log('${escapeFor("'")(s)}');`),
   noiseArb.map((s) => `log(\`${escapeFor("`")(s).replaceAll("$", "\\$")}\`);`),
   noiseArb.map((s) => `// ${s}`),
-  noiseArb.map((s) => `/* ${s.replaceAll("*/", "")} */`),
+  noiseArb.map(blockComment),
   noiseArb.map((s) =>
     `const re = /x${s.replace(/[^\w ]/g, (c) => `\\${c}`)}/g;`
   ),
