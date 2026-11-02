@@ -40,7 +40,10 @@ import type { WorkflowRun } from "./workflow_run.ts";
 /** What {@link settleOrphanedNestedRun} reads, and the one run it writes. */
 export interface OrphanedNestedRunDeps
   extends Pick<NestedRunLinkDeps, "workflowRepo" | "signalWaits"> {
-  runRepo: Pick<WorkflowRunRepository, "findById" | "save">;
+  runRepo: Pick<
+    WorkflowRunRepository,
+    "findById" | "save" | "recordsAreForwarded"
+  >;
   /** The run's own evaluated snapshot, which it is settled against. */
   findEvaluatedWorkflow?: EvaluatedWorkflowLookup;
   runTracker?: Pick<RunTrackerRepository, "complete">;
@@ -122,6 +125,7 @@ export async function settleOrphanedNestedRun(
     ...deps,
     runRepo: fetchMissing
       ? {
+        recordsAreForwarded: deps.runRepo.recordsAreForwarded,
         findById: async (workflowId, runId) => {
           const found = await deps.runRepo.findById(workflowId, runId);
           if (found) return found;

@@ -215,6 +215,11 @@ export interface RunRecordContext {
     jobName: string,
     step: StepRunData,
   ) => HeldChildRun | undefined;
+  /** Whether the stored workflow's step of this name calls a child workflow. */
+  readonly storedStepIsNested?: (
+    jobName: string,
+    step: StepRunData,
+  ) => boolean;
 }
 
 /**
@@ -389,6 +394,13 @@ function judgeStep(
   prior: StepRunData | undefined,
   step: StepRunData,
 ): string | undefined {
+  // A retry clears what a waiting step held; it never gives it a new child.
+  if (
+    prior?.status === "waiting_approval" && step.status === "pending" &&
+    step.nestedRun !== undefined && !same(prior.nestedRun, step.nestedRun)
+  ) {
+    return "it changes a waiting step's child run";
+  }
   // An approver decides on what a gate shows, and serve acts on its child link.
   if (prior?.status === "waiting_approval" && step.status !== "pending") {
     for (
@@ -427,7 +439,11 @@ function decisionRefusal(
   if (prior?.approvalDecision !== undefined) {
     return "it changes an approval decision";
   }
-  const held = context.heldChild?.(jobName, step)?.decisions ?? [];
+  // A child's decision belongs on the step that calls the child: on a gate it
+  // would read as an approval of something its approver never saw.
+  const held = context.storedStepIsNested?.(jobName, step) === true
+    ? context.heldChild?.(jobName, step)?.decisions ?? []
+    : [];
   return held.some((decision) => same(decision, step.approvalDecision))
     ? undefined
     : "it records an approval decision serve does not hold";

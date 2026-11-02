@@ -110,7 +110,7 @@ export function renderApproveResult(
   const parent = data.awaitingParent;
   if (parent) {
     writeOutput(
-      remote
+      remote && data.ownerResumes !== true
         ? `Once it finishes, resume the parent run unless serve resumes it automatically: ${
           parentResumeCommand(parent, remote)
         }`

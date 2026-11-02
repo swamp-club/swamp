@@ -151,6 +151,13 @@ export interface WorkflowRunRepository {
   ): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]>;
 
   /**
+   * Whether a member can forward this repository's run records, so what a
+   * record says is that member's report (swamp-club#4245). A record's fields
+   * then never stand in for a link a child does not hold.
+   */
+  recordsAreForwarded?: boolean;
+
+  /**
    * Brings whatever status index {@link findGlobalByStatus} filters by in
    * line with the run records, for a caller that must not miss a run the
    * index has wrong. Reads only records that changed since they were

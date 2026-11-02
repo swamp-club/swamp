@@ -27,7 +27,10 @@
  * @module
  */
 
+import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
+import { ModelType } from "../domain/models/model_type.ts";
 import { UserError } from "../domain/errors.ts";
+import type { EvaluatedDefinitionCache } from "../infrastructure/persistence/yaml_evaluated_definition_repository.ts";
 import {
   EVALUATION_OTHER_WRITER,
   type EvaluationTrust,
@@ -40,7 +43,7 @@ import { resolveDatastoreForRepo, v3LocationOf } from "./repo_context.ts";
 
 type EvaluationRepos = Parameters<typeof v3EvaluationTrust>[1];
 
-/** What {@link lastEvaluatedStands} reaches out to; tests replace it. */
+/** What {@link checkLastEvaluation} reaches out to; tests replace it. */
 export interface LastEvaluatedDeps {
   /** The checkout's serve upstream address, undefined when it has none. */
   upstream(repoDir: string): Promise<string | undefined>;
@@ -156,4 +159,36 @@ export async function checkLastEvaluation<T>(
     }
     return { stands: false };
   }
+}
+
+/**
+ * Reads a behavior's last evaluation through `trust`. With a type, as `@type
+ * method name` names one, the name need not have a behavior yet: the run creates
+ * it, so an evaluation found by name alone would replay unchecked. None of that
+ * type and name reads as no evaluation. Without a type, undefined is an unknown
+ * name, which the run reports.
+ */
+export async function lastEvaluatedDefinition(
+  trust: EvaluationTrust,
+  definitionRepo: Parameters<typeof findDefinitionByIdOrName>[0],
+  modelIdOrName: string,
+  direct: { typeArg?: string; definitionName?: string },
+): Promise<EvaluatedDefinitionCache | null | undefined> {
+  if (direct.typeArg !== undefined && direct.definitionName !== undefined) {
+    const named = await trust.definition(
+      ModelType.create(direct.typeArg),
+      direct.definitionName,
+    );
+    // The @ marks direct execution; repo-local types register without it.
+    return named ?? (direct.typeArg.startsWith("@")
+      ? await trust.definition(
+        ModelType.create(direct.typeArg.slice(1)),
+        direct.definitionName,
+      )
+      : null);
+  }
+  const found = await findDefinitionByIdOrName(definitionRepo, modelIdOrName);
+  return found === null
+    ? undefined
+    : await trust.definition(found.type, found.definition.name);
 }

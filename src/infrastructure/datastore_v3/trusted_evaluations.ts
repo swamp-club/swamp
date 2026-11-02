@@ -102,7 +102,7 @@ export function v3EvaluationTrust(
    * when no key holds a record. On serve a key holding another writer's record
    * is passed over, so a forwarded evaluation cannot hide serve's own; when
    * only such records exist the evaluation is refused. A checkout stops at
-   * such a key: it reads through its repository, which could read that key.
+   * such a key and sets the replay aside.
    */
   const trusted = async (
     partition: PartitionKey,
@@ -129,8 +129,8 @@ export function v3EvaluationTrust(
         (ownPrincipal === undefined || record.writer !== ownPrincipal)
       ) {
         untrusted ??= record.writer === null ? "unknown" : "forwarded";
-        // A checkout reads the evaluation through its repository, not these
-        // bytes, so a key it passes over could be the one read.
+        // A checkout stops here: any other writer's evaluation sets the run's
+        // replay aside, rather than serve's rule of preferring its own.
         if (ownPrincipal !== undefined) break;
         continue;
       }

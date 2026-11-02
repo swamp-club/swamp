@@ -1585,6 +1585,8 @@ runner against their will.
 - the step, job and run statuses, outputs and timings a member reports for a run
   they drive;
 - splitting such a report across commits.
+- `initiatedBy` and `triggerSource`, which are the member's report: the commit
+  stamp says who wrote the record.
 
 So a member-driven run's record can show a gate passed with no decision on it, or
 a nested step succeeded with no child. That is what it means: the member reported
@@ -1602,7 +1604,9 @@ outcomes a member wrote, and a wait exists for someone else to signal. Approval 
 are unaffected: `approve` and `reject` go to serve's handlers. Use `--server`, a
 trigger or a schedule.
 
-**Limits of the marker.** On a v3 serve, a run a CLI drove directly against the
+**Limits of the marker.** When a member-driven parent is cancelled through serve, a
+child that does not link back is not cancelled with it: its owner cancels it.
+On a v3 serve, a run a CLI drove directly against the
 datastore also counts as member-driven, so its owner resumes it. A v2 datastore
 has no forwarded records, so serve still acts on its runs as before. Bookkeeping
 serve does on any run's state (interrupting a run whose owner died, superseding a

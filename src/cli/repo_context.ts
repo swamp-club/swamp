@@ -1360,6 +1360,7 @@ export async function requireInitializedRepoReadOnly(
   // pulls its namespace when it opens, and this path neither syncs nor holds
   // the lock. The store is given without the save hook `attachSignalWaits`
   // installs, so the context writes no wait record.
+  markForwardedRunRecords(repoContext, v3);
   if (!isCustomDatastoreConfig(datastoreConfig) || v3 !== undefined) {
     repoContext.signalWaits = resolveSignalWaitSupport(
       datastoreConfig,
@@ -1753,6 +1754,7 @@ export function requireInitializedRepo(
       ...v3Factory,
       ...factoryConfig,
     });
+    markForwardedRunRecords(repoContext, v3);
     attachSignalWaits(
       repoContext,
       resolveSignalWaitSupport(datastoreConfig, syncService, {
@@ -1982,6 +1984,7 @@ export async function requireInitializedRepoUnlocked(
     ...v3Factory,
     ...factoryConfig,
   });
+  markForwardedRunRecords(repoContext, v3);
   attachSignalWaits(
     repoContext,
     resolveSignalWaitSupport(datastoreConfig, syncService, {
@@ -2601,6 +2604,19 @@ export function resolveRetentionWatermarks(
     `the control-plane store of the "${config.type}" datastore cannot create a record atomically (putIfAbsent)`,
   );
   return new ControlPlaneRetentionWatermarkRepository(remote.store);
+}
+
+/**
+ * Marks a checkout written through serve: other members forward run records it
+ * reads, so a record's fields are their report (swamp-club#4245).
+ */
+function markForwardedRunRecords(
+  repoContext: Pick<RepositoryContext, "workflowRunRepo">,
+  v3: V3DatastoreConfig | undefined,
+): void {
+  if (v3 !== undefined && serveUpstreamAt(v3.path) !== undefined) {
+    repoContext.workflowRunRepo.recordsAreForwarded = true;
+  }
 }
 
 /**

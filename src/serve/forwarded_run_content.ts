@@ -168,6 +168,14 @@ export async function checkRunRecord(
     after: after.data,
     workflowVaults: workflow?.vaults,
     heldChild: (jobName, step) => children.get(heldKey(jobName, step.stepName)),
+    storedStepIsNested: (jobName, step) => {
+      const steps = workflow?.jobs.find((job) => job.name === jobName)?.steps;
+      const stored = steps?.find((s) => s.name === step.stepName) ??
+        steps?.find((s) =>
+          s.name === step.forEachTemplate && s.forEach !== undefined
+        );
+      return stored?.task.data.type === "workflow";
+    },
   });
   if (judgement.refusal !== undefined) return refused(op, judgement.refusal);
 

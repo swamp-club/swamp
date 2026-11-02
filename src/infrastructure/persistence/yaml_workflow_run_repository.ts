@@ -260,6 +260,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
    * the save, so a hook that must never block one catches its own errors,
    * as the wait hook does (`attachSignalWaits`).
    */
+  recordsAreForwarded?: boolean;
+
   beforeSave?: (run: WorkflowRun) => Promise<void>;
 
   /** Run index snapshots kept between reads (swamp-club#3443). */

@@ -28,11 +28,18 @@
  * that names secrets, and evaluations serve would run.
  */
 
+import { NestedRunLink } from "../src/domain/workflows/nested_run_link.ts";
+import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import {
   createWorkflowId,
   createWorkflowRunId,
 } from "../src/domain/workflows/workflow_id.ts";
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { stringify as stringifyYaml } from "@std/yaml";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
@@ -1911,6 +1918,156 @@ Deno.test({
           "absent",
         );
         assertEquals((await waits.store.listRegistrations()).length, 0);
+      },
+      undefined,
+      MANAGED,
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "forwarded content: a forged child link does not let a cancel reach a run in another workflow (swamp-club#4245)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const member = [
+      grant({
+        actions: ["read", "write", "run"],
+        resource: { kind: "workflow", pattern: WORKFLOW },
+      }),
+    ];
+    await withServer(
+      member,
+      async (server) => {
+        server.ctx.repoContext.workflowRunRepo.recordsAreForwarded = true;
+        const victimWorkflow = WorkflowEntity.create({
+          name: "victim",
+          jobs: [
+            Job.create({
+              name: "main",
+              steps: [
+                Step.create({
+                  name: "gate",
+                  task: StepTask.manualApproval("Go?"),
+                }),
+              ],
+            }),
+          ],
+        });
+        await saveWorkflow(server, victimWorkflow);
+        const victim = WorkflowRun.create(
+          victimWorkflow,
+          undefined,
+          "user:alice",
+        );
+        victim.start(1, "team-node");
+        const job = victim.getJob("main")!;
+        job.start();
+        const gate = job.getStep("gate")!;
+        gate.start();
+        gate.waitForApproval();
+        victim.suspend();
+        await runInRootUnitOfWork(
+          server.ctx.repoContext,
+          { flush: undefined },
+          () =>
+            server.ctx.repoContext.workflowRunRepo.save(
+              victimWorkflow.id,
+              victim,
+            ),
+        );
+        const parent = crypto.randomUUID();
+        const started = await forwardRun(
+          server,
+          runRecord(parent, {
+            status: "suspended",
+            initiatedBy: "user:alice",
+            jobs: [{
+              jobName: "main",
+              status: "running",
+              steps: [{
+                stepName: "call",
+                status: "waiting_approval",
+                startedAt: "2020-01-01T00:00:00.000Z",
+                nestedRun: {
+                  workflowId: victimWorkflow.id,
+                  workflowName: "victim",
+                  runId: victim.id,
+                },
+              }],
+            }],
+          }),
+        );
+        assertEquals(started.status, 200, JSON.stringify(started.json));
+        await server.v3.readModel.catchUp(new AbortController().signal);
+        const link = new NestedRunLink({
+          runRepo: server.ctx.repoContext.workflowRunRepo,
+          workflowRepo: server.ctx.repoContext.workflowRepo,
+        });
+        const forged = await server.ctx.repoContext.workflowRunRepo.findById(
+          createWorkflowId(WORKFLOW),
+          createWorkflowRunId(parent),
+        );
+        assert(forged !== null);
+        const [wait] = forged.findNestedWaits();
+        assertEquals((await link.resolveChild(forged, wait)).kind, "broken");
+      },
+      undefined,
+      MANAGED,
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "forwarded content: a vault reference a record adds needs read on that vault, whatever else the caller holds (swamp-club#4245)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const withReference = (runId: string) =>
+      runRecord(runId, {
+        writtenReferences: [{
+          path: ["token"],
+          occurrence: 0,
+          vaultName: "prod",
+          key: "api",
+          encoding: "raw",
+          dataOrigin: false,
+        }],
+      });
+    const runs = grant({
+      actions: ["read", "run"],
+      resource: { kind: "workflow", pattern: "*" },
+    });
+    await withServer(
+      [runs],
+      async (server) => {
+        const refused = await forwardRun(
+          server,
+          withReference(crypto.randomUUID()),
+        );
+        assertEquals(refused.status, 403, JSON.stringify(refused.json));
+        assertEquals(refused.json.reason, "content-refused");
+        assertStringIncludes(String(refused.json.message), "vault:prod");
+      },
+      undefined,
+      MANAGED,
+    );
+    await withServer(
+      [
+        runs,
+        grant({
+          actions: ["read"],
+          resource: { kind: "vault", pattern: "*" },
+        }),
+      ],
+      async (server) => {
+        const landed = await forwardRun(
+          server,
+          withReference(crypto.randomUUID()),
+        );
+        assertEquals(landed.status, 200, JSON.stringify(landed.json));
       },
       undefined,
       MANAGED,

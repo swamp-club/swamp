@@ -120,6 +120,19 @@ function runPut(kind: "run.create" | "run.update", body: unknown) {
   });
 }
 
+/** `c`, whose stored workflow of this run is `workflow`. */
+function withStoredWorkflow(
+  c: ContentCheckContext,
+  workflow: Workflow,
+): ContentCheckContext {
+  (c.deps.ctx.repoContext as unknown as { workflowRepo: unknown })
+    .workflowRepo = {
+      findById: () => Promise.resolve(workflow),
+      findByName: () => Promise.resolve(workflow),
+    };
+  return c;
+}
+
 Deno.test("checkRunRecord: a record naming a host log path, or a serve instance, is refused before any decision", async () => {
   for (
     const fields of [{ logFile: "/etc/passwd" }, { instanceId: "serve-1" }]
@@ -225,6 +238,19 @@ Deno.test("checkRunRecord: a nested step's decision is its child's, when that ch
     workflowName: "child",
     runId: childRun,
   };
+  const stepOf = (task: StepTask) =>
+    Workflow.create({
+      id: WORKFLOW,
+      name: "deploy",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [Step.create({ name: "call", task })],
+        }),
+      ],
+    });
+  const calling = stepOf(StepTask.workflow("child"));
+  const gated = stepOf(StepTask.manualApproval("Go?"));
   const parent = (step: Record<string, unknown>) =>
     record({
       jobs: [{
@@ -257,12 +283,18 @@ Deno.test("checkRunRecord: a nested step's decision is its child's, when that ch
   );
   const childKey =
     `workflow-runs/${childWorkflow}/workflow-run-${childRun}.yaml`;
-  const judged = async (child: Uint8Array | undefined) =>
+  const judged = async (
+    child: Uint8Array | undefined,
+    stored: Workflow = calling,
+  ) =>
     await checkRunRecord(
-      context({
-        [KEY]: yaml(parent({ status: "waiting_approval" })),
-        ...(child === undefined ? {} : { [childKey]: child }),
-      }, ["run", "read"]).context,
+      withStoredWorkflow(
+        context({
+          [KEY]: yaml(parent({ status: "waiting_approval" })),
+          ...(child === undefined ? {} : { [childKey]: child }),
+        }, ["run", "read"]).context,
+        stored,
+      ),
       op,
     );
   assertEquals(await judged(childRecord(RUN, decision)), undefined);
@@ -273,6 +305,8 @@ Deno.test("checkRunRecord: a nested step's decision is its child's, when that ch
       undefined,
   );
   assert(await judged(undefined) !== undefined);
+  // On a step the stored workflow makes a gate, the same decision is refused.
+  assert(await judged(childRecord(RUN, decision), gated) !== undefined);
 });
 
 Deno.test("checkRunRecord: a first record's parent must be a run that has not finished", async () => {

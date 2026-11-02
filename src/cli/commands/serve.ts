@@ -4090,6 +4090,7 @@ export const serveCommand = new Command()
     // datastore, which team members' clients forward to (swamp-club#3922).
     if (v3Location !== undefined) {
       repoContext.takesForwardedRunRecords = true;
+      repoContext.workflowRunRepo.recordsAreForwarded = true;
       repoContext.evaluationTrust = v3EvaluationTrust(
         v3DatastoreFor(resolvedRepoDir, v3Location),
         repoContext,

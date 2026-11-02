@@ -460,6 +460,7 @@ Deno.test("judgeRunRecord: a nested step may hold only a decision its linked chi
   ]);
   const judged = (decisions: readonly unknown[] | undefined) =>
     judge(waiting, rejected, {
+      storedStepIsNested: () => true,
       heldChild: () => decisions === undefined ? undefined : { decisions },
     });
   assertEquals(judged([DENIED]).refusal, undefined);
@@ -570,4 +571,56 @@ Deno.test("judgeRunRecord: a run a member drives names no signal wait and carrie
     judge(held, run([step("wait", { status: "pending" })])).refusal,
     undefined,
   );
+});
+
+Deno.test("judgeRunRecord: a child's decision is accepted only on a step the stored workflow calls a child from, and a link cannot change on the way back to pending (swamp-club#4245)", () => {
+  const nestedRun = { workflowId: OTHER, workflowName: "child", runId: ID };
+  const held = { heldChild: () => ({ decisions: [DENIED] }) };
+  const waiting = run([
+    step("gate", { status: "waiting_approval", nestedRun }),
+  ]);
+  const decided = run([
+    step("gate", { status: "failed", nestedRun, approvalDecision: DENIED }),
+  ]);
+  assert(
+    judge(waiting, decided, { ...held, storedStepIsNested: () => false })
+      .refusal !== undefined,
+  );
+  assertEquals(
+    judge(waiting, decided, { ...held, storedStepIsNested: () => true })
+      .refusal,
+    undefined,
+  );
+  const gate = run([
+    step("gate", { status: "waiting_approval", startedAt: STARTED }),
+  ]);
+  assert(
+    judge(gate, run([step("gate", { status: "pending", nestedRun })]))
+      .refusal !== undefined,
+  );
+  assertEquals(
+    judge(gate, run([step("gate", { status: "pending" })])).refusal,
+    undefined,
+  );
+});
+
+Deno.test("judgeRunRecord: a record cannot name a prior owner that is a serve instance", () => {
+  const owner = { pid: 1, instanceId: "old-leader" };
+  assert(
+    judge(run([]), run([], { ownerBeforeResume: owner })).refusal !== undefined,
+  );
+});
+
+Deno.test("judgeRunRecord: deferred expressions and workflow artifacts a record adds are handed to serve to authorise", () => {
+  const before = run([]);
+  const judged = judge(
+    before,
+    run([], {
+      deferredExpressions: [{ expression: "e" }],
+      workflowDataArtifacts: [{ name: "a" }],
+    } as unknown as Partial<WorkflowRunData>),
+  );
+  assertEquals(judged.refusal, undefined);
+  assertEquals(judged.addedDeferred, [{ expression: "e" }]);
+  assertEquals(judged.addedOutputs[0].dataArtifacts, [{ name: "a" }]);
 });

@@ -620,7 +620,10 @@ export async function ownerResumesRun(
   ctx: ConnectionContext,
   outcome: ApprovalOutcome,
 ): Promise<boolean> {
-  if (ctx.repoContext.takesForwardedRunRecords !== true) return false;
+  if (
+    ctx.repoContext.takesForwardedRunRecords !== true ||
+    !outcome.allGatesDecided
+  ) return false;
   const workflow = await ctx.repoContext.workflowRepo.findByName(
     outcome.workflowName,
   );

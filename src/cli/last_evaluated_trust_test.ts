@@ -25,6 +25,7 @@ import {
 } from "../infrastructure/datastore_v3/trusted_evaluations.ts";
 import {
   checkLastEvaluation,
+  lastEvaluatedDefinition,
   type LastEvaluatedDeps,
 } from "./last_evaluated_trust.ts";
 
@@ -240,4 +241,33 @@ Deno.test("checkLastEvaluation: in log mode it prints no JSON", async () => {
   );
   assertEquals(check, { stands: false });
   assertEquals(written, []);
+});
+
+Deno.test("lastEvaluatedDefinition: with a type, a name no behavior has reads as no evaluation, never as an unknown name to fall through (swamp-club#4245)", async () => {
+  const asked: string[] = [];
+  const trust = {
+    definition: (type: { normalized: string }, name: string) => {
+      asked.push(`${type.normalized}/${name}`);
+      return Promise.resolve(null);
+    },
+  } as unknown as EvaluationTrust;
+  const repo = {
+    findById: () => Promise.resolve(null),
+    findByName: () => Promise.resolve(null),
+    findAllGlobal: () => Promise.resolve([]),
+    findByNameGlobal: () => Promise.resolve(null),
+  } as unknown as Parameters<typeof lastEvaluatedDefinition>[1];
+  assertEquals(
+    await lastEvaluatedDefinition(trust, repo, "@acme/web", {
+      typeArg: "@acme/web",
+      definitionName: "web",
+    }),
+    null,
+  );
+  assertEquals(asked.length, 2);
+  // No type and no such name: the run reports the unknown name.
+  assertEquals(
+    await lastEvaluatedDefinition(trust, repo, "nope", {}),
+    undefined,
+  );
 });

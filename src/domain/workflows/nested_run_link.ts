@@ -45,7 +45,7 @@ const logger = getSwampLogger(["workflow", "nested-run"]);
 
 /** What NestedRunLink reads. It never writes. */
 export interface NestedRunLinkDeps {
-  runRepo: Pick<WorkflowRunRepository, "findById">;
+  runRepo: Pick<WorkflowRunRepository, "findById" | "recordsAreForwarded">;
   workflowRepo: Pick<WorkflowRepository, "findById">;
   /**
    * Where signal wait records are kept. With it a child's wait is asked of
@@ -227,7 +227,8 @@ export class NestedRunLink {
    * no parentRun at all is still accepted when the fields such a save keeps
    * agree with this parent: no trigger source of its own, the parent's
    * initiator, and a start no earlier than the waiting step's. A malformed
-   * or mismatched parentRun is never accepted.
+   * or mismatched parentRun is never accepted. Where records are forwarded the
+   * parent's fields are a member's report, so only a child that links back is.
    *
    * A child whose record cannot be read is reported as unreadable, never
    * thrown: the cause is logged, since a parse error quotes the record.
@@ -284,6 +285,7 @@ export class NestedRunLink {
     if (linksBack) return { kind: "resolved", child };
     if (
       sameChild && back === undefined &&
+      this.deps.runRepo.recordsAreForwarded !== true &&
       startedByWaitingStep(parent, wait, child)
     ) {
       return { kind: "resolved", child, backLinkDropped: true };

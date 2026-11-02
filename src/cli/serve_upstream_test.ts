@@ -415,3 +415,8 @@ Deno.test("serveUpstreamAppliesTo: a decision on a run goes to serve; the rest o
     assertEquals(serveUpstreamRunsLocally(["workflow", local]), true);
   }
 });
+
+Deno.test("serveUpstreamAppliesTo: workflow waits goes to serve, whose waits are the ones a checkout can signal (swamp-club#4245)", () => {
+  assertEquals(serveUpstreamAppliesTo(["workflow", "waits"]), false);
+  assertEquals(serveUpstreamRunsLocally(["workflow", "waits"]), false);
+});

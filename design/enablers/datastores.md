@@ -5259,7 +5259,12 @@ able to remove an uncommitted copy.
   chunks. The moved records are not in the v3 datastore: bringing them in
   needs migrating records to v3 (Phase 6). For every other v3 case, `--repair`
   stays refused.
-- **Known limit.** A checkout that already has v3 state, is switched back to
+- **Links are not followed on a report.** Where records are forwarded (a v3 serve or
+a serve-mode checkout) a child is a parent's only if it links back. The path that
+accepts a child with no back-link on what the parent's record says, for one saved
+by an older binary, is off (`recordsAreForwarded`).
+
+**Known limit.** A checkout that already has v3 state, is switched back to
   a v2 `.swamp.yaml`, writes records, and then returns to v3 is not checked
   again. The check is for the first open only, so that later opens cost
   nothing. Like setup, it checks the default datastore directories, whatever
@@ -6671,8 +6676,8 @@ to the same write. The checks the handlers share are one implementation
      triggering principal or an instance as owner refuses the put, whichever
      team node holds it, and a record cannot name an instance as owner.
   2. A decision equals one serve holds: the step's own in the stored record, or,
-     on a nested step, one in the stored record of the child it links to when
-     that child links back. A record never creates or changes one. Only a retry
+     on a step the stored workflow calls a child from, one in the stored record of
+     the child it links to when that child links back. A record never creates or changes one. Only a retry
      clears one, back to `pending`, and a step holding one stays in the record.
      A run a member drives cannot wait for a signal, so a record names no new
      signal wait and carries no signal's outcome.

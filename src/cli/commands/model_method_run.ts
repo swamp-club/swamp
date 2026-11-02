@@ -17,7 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { checkLastEvaluation } from "../last_evaluated_trust.ts";
+import {
+  checkLastEvaluation,
+  lastEvaluatedDefinition,
+} from "../last_evaluated_trust.ts";
 import { Command } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
 import {
@@ -428,15 +431,13 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
             repoDir,
             repoContext,
             ctx.outputMode === "json" ? "json" : "log",
-            async (trust) => {
-              const found = await findDefinitionByIdOrName(
+            (trust) =>
+              lastEvaluatedDefinition(
+                trust,
                 repoContext.definitionRepo,
                 modelIdOrName,
-              );
-              return found === null
-                ? undefined
-                : await trust.definition(found.type, found.definition.name);
-            },
+                { typeArg, definitionName },
+              ),
           )
           : undefined;
         const lastEvaluated = evaluationCheck?.stands === true;
