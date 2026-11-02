@@ -1817,6 +1817,51 @@ Deno.test("ModelRegistry.refreshSources: a failed pass rejects its callers and d
   assertEquals(calls, 2);
 });
 
+Deno.test("ModelRegistry.refreshSources: force reaches the refresher, and an unforced call passes none", async () => {
+  const registry = new ModelRegistry();
+  const seen: Array<boolean | undefined> = [];
+  registry.setSourceRefresher((options) => {
+    seen.push(options?.force);
+    return Promise.resolve();
+  });
+
+  await registry.refreshSources(undefined, { force: true });
+  await registry.refreshSources();
+
+  assertEquals(seen, [true, undefined]);
+});
+
+for (const order of [["unforced", "forced"], ["forced", "unforced"]]) {
+  Deno.test(`ModelRegistry.refreshSources: a queued pass shared by ${order[0]} then ${order[1]} callers is forced, and the pass after it is not`, async () => {
+    const registry = new ModelRegistry();
+    const seen: Array<boolean | undefined> = [];
+    const releases: Array<() => void> = [];
+    registry.setSourceRefresher((options) => {
+      seen.push(options?.force);
+      return new Promise<void>((resolve) => releases.push(resolve));
+    });
+
+    const first = registry.refreshSources();
+    const queued = order.map((kind) =>
+      registry.refreshSources(
+        undefined,
+        kind === "forced" ? { force: true } : undefined,
+      )
+    );
+    releases[0]();
+    await first;
+    await waitFor(() => seen.length === 2, "the queued pass");
+    const after = registry.refreshSources();
+    releases[1]();
+    await Promise.all(queued);
+    await waitFor(() => seen.length === 3, "the pass after it");
+    releases[2]();
+    await after;
+
+    assertEquals(seen, [undefined, true, undefined]);
+  });
+}
+
 Deno.test("ModelRegistry.refreshSources: each pass runs through the given schedule", async () => {
   const registry = new ModelRegistry();
   const order: string[] = [];

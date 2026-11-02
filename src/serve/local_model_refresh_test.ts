@@ -26,11 +26,11 @@ import { refreshLocalModelsForRun } from "./local_model_refresh.ts";
 
 await initializeLogging({});
 
-Deno.test("refreshLocalModelsForRun: waits for a hot-reload in progress before checking sources", async () => {
+Deno.test("refreshLocalModelsForRun: waits for a hot-reload in progress before checking sources, without forcing a pass", async () => {
   const order: string[] = [];
   let releaseReload!: () => void;
-  modelRegistry.setSourceRefresher(() => {
-    order.push("refresh");
+  modelRegistry.setSourceRefresher((options) => {
+    order.push(options?.force ? "forced refresh" : "refresh");
     return Promise.resolve();
   });
   try {

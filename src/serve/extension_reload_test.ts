@@ -2194,11 +2194,13 @@ Deno.test("reloadPulledExtensions: a malformed row type fails only that row, not
   });
 });
 
-Deno.test("performServeReload: explicitly refreshes local source types before acknowledging", async () => {
+Deno.test("performServeReload: explicitly refreshes local source types before acknowledging, forcing the pass", async () => {
   const tmpDir = await Deno.makeTempDir();
   let refreshed = 0;
-  modelRegistry.setSourceRefresher(() => {
+  let forced: boolean | undefined;
+  modelRegistry.setSourceRefresher((options) => {
     refreshed++;
+    forced = options?.force;
     return Promise.resolve();
   });
   try {
@@ -2209,6 +2211,7 @@ Deno.test("performServeReload: explicitly refreshes local source types before ac
     );
     assertEquals(result.success, true);
     assertEquals(refreshed, 1);
+    assertEquals(forced, true);
   } finally {
     modelRegistry.setSourceRefresher(null);
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});

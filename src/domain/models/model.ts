@@ -682,6 +682,11 @@ function normalizedExtensionName(name: string): string | undefined {
   }
 }
 
+export interface SourceRefreshOptions {
+  /** runs a full pass even when no source file changed since the last one */
+  force?: boolean;
+}
+
 export class ModelRegistry {
   private models = new Map<string, ModelDefinition>();
   private lazyTypes = new Map<string, LazyModelEntry>();
@@ -703,39 +708,53 @@ export class ModelRegistry {
   private extensionAttacher: ((type: string) => Promise<void>) | null = null;
   private extensionsAttached = new Set<string>();
   private extensionAttachWarned = new Set<string>();
-  private sourceRefresher: (() => Promise<void>) | null = null;
+  private sourceRefresher:
+    | ((options?: SourceRefreshOptions) => Promise<void>)
+    | null = null;
   private sourceRefreshRunning: Promise<void> | null = null;
   private sourceRefreshQueued: Promise<void> | null = null;
+  private sourceRefreshForceQueued = false;
 
-  setSourceRefresher(refresher: (() => Promise<void>) | null): void {
+  setSourceRefresher(
+    refresher: ((options?: SourceRefreshOptions) => Promise<void>) | null,
+  ): void {
     this.sourceRefresher = refresher;
   }
 
   /**
-   * re-checks extension sources and swaps changed types for long-lived
-   * processes. Passes never overlap: a call waits for the next pass, which
-   * starts after it, and calls during one pass share that next pass.
+   * swaps changed types for long-lived processes. Passes never overlap: calls
+   * during one pass share the next one, which is forced if any caller forced.
    */
   refreshSources(
     schedule: (pass: () => Promise<void>) => Promise<void> = (pass) => pass(),
+    options?: SourceRefreshOptions,
   ): Promise<void> {
     const refresher = this.sourceRefresher;
     if (!refresher) return Promise.resolve();
-    if (this.sourceRefreshQueued) return this.sourceRefreshQueued;
-    const run = (): Promise<void> => {
-      const pass = schedule(refresher).finally(() => {
-        if (this.sourceRefreshRunning === pass) {
-          this.sourceRefreshRunning = null;
-        }
-      });
+    if (this.sourceRefreshQueued) {
+      if (options?.force) this.sourceRefreshForceQueued = true;
+      return this.sourceRefreshQueued;
+    }
+    const run = (force: boolean): Promise<void> => {
+      const pass = schedule(() => refresher(force ? { force } : undefined))
+        .finally(() => {
+          if (this.sourceRefreshRunning === pass) {
+            this.sourceRefreshRunning = null;
+          }
+        });
       this.sourceRefreshRunning = pass;
       return pass;
     };
     const running = this.sourceRefreshRunning;
-    if (!running) return run();
+    if (!running) return run(options?.force === true);
+    this.sourceRefreshForceQueued = options?.force === true;
+    // Consumed in this synchronous handoff, before schedule may wait, so a
+    // caller queueing for the pass after this one keeps its own force.
     const next = () => {
       this.sourceRefreshQueued = null;
-      return run();
+      const force = this.sourceRefreshForceQueued;
+      this.sourceRefreshForceQueued = false;
+      return run(force);
     };
     const queued = running.then(next, next);
     this.sourceRefreshQueued = queued;
