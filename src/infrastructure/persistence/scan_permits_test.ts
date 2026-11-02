@@ -20,12 +20,16 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
+  BULK_SCAN_SHARE,
   inTimeSlices,
+  inTimeSlicesFromNow,
   mapBounded,
   type ReleaseScanPermit,
   type ScanKind,
   ScanPermits,
   SEARCH_SCAN_SHARE,
+  sortInTimeSlices,
+  TimeSlice,
   withScanPermit,
 } from "./scan_permits.ts";
 
@@ -317,4 +321,184 @@ Deno.test("inTimeSlices: rejects with the reason at the next yield once its sign
   ).then(() => undefined, (error) => error);
   assertEquals(failure, reason);
   assertEquals(slices, 1);
+});
+
+Deno.test("ScanPermits: rejects a bulk share outside 1 to searchLimit", () => {
+  assertThrows(() => new ScanPermits(8, 6, 0), Error, "bulkLimit");
+  assertThrows(() => new ScanPermits(8, 6, 7), Error, "bulkLimit");
+  new ScanPermits(8, 6, 6);
+});
+
+Deno.test("ScanPermits: bulk scans hold at most their share, searches the rest of the search share, and lookups the remainder", async () => {
+  const permits = new ScanPermits(8, 6, 2);
+  const bulk = [0, 1, 2].map(() => track(permits, "bulk"));
+  await settle();
+  assertEquals(bulk.map((b) => b.release !== undefined), [true, true, false]);
+
+  const searches = [0, 1, 2, 3, 4].map(() => track(permits, "search"));
+  await settle();
+  assertEquals(searches.map((s) => s.release !== undefined), [
+    true,
+    true,
+    true,
+    true,
+    false,
+  ]);
+
+  const lookups = [0, 1].map(() => track(permits, "lookup"));
+  await settle();
+  assertEquals(lookups.every((l) => l.release !== undefined), true);
+  assertEquals(bulk[2].release, undefined);
+});
+
+Deno.test("ScanPermits: a search permit released while a bulk scan waits at its share goes to a search that asked later", async () => {
+  const permits = new ScanPermits(8, 6, 2);
+  const bulk = [0, 1].map(() => track(permits, "bulk"));
+  const searches = [0, 1, 2, 3].map(() => track(permits, "search"));
+  await settle();
+  const waitingBulk = track(permits, "bulk");
+  const waitingSearch = track(permits, "search");
+  await settle();
+  assertEquals(waitingBulk.release, undefined);
+  assertEquals(waitingSearch.release, undefined);
+
+  searches[0].release!();
+  await settle();
+  assertEquals(waitingSearch.release !== undefined, true);
+  assertEquals(waitingBulk.release, undefined);
+
+  bulk[0].release!();
+  await settle();
+  assertEquals(waitingBulk.release !== undefined, true);
+});
+
+Deno.test("withScanPermit: bulk scans across callers share BULK_SCAN_SHARE permits, and a search still gets one", async () => {
+  let started = 0;
+  let draining = false;
+  const releases: Array<() => void> = [];
+  const calls = Array.from(
+    { length: BULK_SCAN_SHARE + 2 },
+    () =>
+      withScanPermit("bulk", async () => {
+        started++;
+        if (!draining) {
+          await new Promise<void>((resolve) => releases.push(resolve));
+        }
+      }),
+  );
+  try {
+    await waitFor(() => started === BULK_SCAN_SHARE, "the bulk share");
+    await withScanPermit("search", () => Promise.resolve());
+    assertEquals(started, BULK_SCAN_SHARE);
+  } finally {
+    draining = true;
+    for (const release of releases.splice(0)) release();
+    while (started < BULK_SCAN_SHARE + 2) {
+      await waitFor(
+        () => releases.length > 0 || started === BULK_SCAN_SHARE + 2,
+        "the queued bulk scans",
+      );
+      for (const release of releases.splice(0)) release();
+    }
+    await Promise.allSettled(calls);
+  }
+});
+
+Deno.test("TimeSlice: is over once its slice is spent, and next yields a turn and rejects with the reason if aborted", async () => {
+  const controller = new AbortController();
+  const slice = new TimeSlice(controller.signal);
+  const spent = performance.now() + 10;
+  while (performance.now() < spent) {
+    // spin until the slice is spent
+  }
+  assertEquals(slice.over, true);
+  let turned = false;
+  setTimeout(() => turned = true, 0);
+  await slice.next();
+  assertEquals(turned, true);
+
+  const reason = new Error("cancelled");
+  const next = slice.next();
+  controller.abort(reason);
+  assertEquals(await next.then(() => undefined, (error) => error), reason);
+});
+
+Deno.test("sortInTimeSlices: sorts a copy stably across many runs, leaving the input as it was", async () => {
+  const items = Array.from(
+    { length: 5_000 },
+    (_, i) => ({ key: (i * 7919) % 13, i }),
+  );
+  const input = items.slice();
+  const sorted = await sortInTimeSlices(items, (a, b) => a.key - b.key);
+  assertEquals(items, input);
+  assertEquals(
+    sorted,
+    input.slice().sort((a, b) => a.key - b.key),
+  );
+});
+
+Deno.test("sortInTimeSlices: once its signal aborts, rejects with the reason at the next yield and compares no further", async () => {
+  const controller = new AbortController();
+  const reason = new Error("cancelled");
+  let compares = 0;
+  let comparesAtAbort = 0;
+  const items = Array.from({ length: 50_000 }, (_, i) => (i * 7919) % 50_000);
+  const failure = await sortInTimeSlices(
+    items,
+    (a, b) => {
+      compares++;
+      if (compares === 20_000) {
+        controller.abort(reason);
+        comparesAtAbort = compares;
+        const spent = performance.now() + 10;
+        while (performance.now() < spent) {
+          // spin until the slice is spent
+        }
+      }
+      return a - b;
+    },
+    controller.signal,
+  ).then(() => undefined, (error) => error);
+  assertEquals(failure, reason);
+  const settledCompares = compares;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assertEquals(compares, settledCompares);
+  assertEquals(comparesAtAbort, 20_000);
+});
+
+Deno.test("inTimeSlicesFromNow: returns nothing to await when the first slice finishes the work", () => {
+  let left = 3;
+  const pending = inTimeSlicesFromNow(
+    () => left > 0,
+    () => {
+      while (left > 0) left--;
+    },
+  );
+  assertEquals(pending, undefined);
+  assertEquals(left, 0);
+  assertEquals(inTimeSlicesFromNow(() => false, () => {}), undefined);
+});
+
+Deno.test("inTimeSlicesFromNow: runs the first slice at once, then yields before each further slice", async () => {
+  let left = 3;
+  let slices = 0;
+  let turns = 0;
+  const pending = inTimeSlicesFromNow(
+    () => left > 0,
+    () => {
+      slices++;
+      left--;
+    },
+  );
+  assertEquals(slices, 1);
+  const ticking = (async () => {
+    while (left > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      turns++;
+    }
+  })();
+  await pending;
+  await ticking;
+  assertEquals(slices, 3);
+  assertEquals(turns >= 1, true);
 });

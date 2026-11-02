@@ -206,6 +206,63 @@ Deno.test("modelOutputSearch: a limited search returns what the full scan return
   });
 });
 
+Deno.test("modelOutputSearch: limited searches running at once over one listing each return what their own full scan returns", async () => {
+  await withRepos(async (newRepo) => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(file(fc.boolean()), {
+          minLength: MIN_BATCH,
+          maxLength: 80,
+          size: "max",
+        }),
+        fc.array(search, { minLength: 2, maxLength: 4 }),
+        async (files, searches) => {
+          const repo = await newRepo();
+          await writeFiles(repo, files);
+          const inputs = searches.map(({ since, until }) => ({
+            since: since === undefined ? undefined : isoAt(since),
+            until: until === undefined ? undefined : isoAt(until),
+          }));
+
+          const expected: ModelOutputSearchItem[][] = [];
+          for (const [i, { limit, readable }] of searches.entries()) {
+            const allowed = new Set<string>(readable);
+            expected.push(
+              (await resultsOf(depsFor(repo, readable), inputs[i]))
+                .filter((item) => allowed.has(item.definitionId))
+                .slice(0, limit),
+            );
+          }
+
+          const limited = await Promise.all(
+            searches.map(({ limit, readable }, i) =>
+              resultsOf(
+                {
+                  ...depsFor(repo, readable),
+                  findAllOutputsGlobal: () =>
+                    Promise.reject(new Error("read every output")),
+                  findAllOutputsGlobalSince: () =>
+                    Promise.reject(new Error("read every output")),
+                  findOutputsNewestFirst: (window, selectReadable) =>
+                    repo.findGlobalNewestFirst(
+                      window,
+                      undefined,
+                      selectReadable,
+                    ),
+                },
+                { ...inputs[i], limit },
+              )
+            ),
+          );
+
+          assertEquals(limited, expected);
+        },
+      ),
+      { numRuns: 40 },
+    );
+  });
+});
+
 Deno.test("modelOutputSearch: without ties or names not in the output form, a limited search reads no more than one batch", async () => {
   await withRepos(async (newRepo) => {
     await fc.assert(

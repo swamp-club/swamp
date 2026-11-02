@@ -430,3 +430,28 @@ Deno.test("modelUsageSummary: an empty window is empty, without a definition sca
   assertEquals(data.models, []);
   assertEquals(scans, 0);
 });
+
+Deno.test("modelUsageSummary: over many outputs, each row's recent list is newest first with ties in walk order", async () => {
+  const candidates = Array.from({ length: 3_000 }, (_, i) =>
+    candidate({
+      id: `out-${i}`,
+      definitionId: i % 2 === 0 ? "def-a" : "def-b",
+      startedAt: new Date(Date.UTC(2026, 0, 1) + (i * 7919) % 50),
+    }));
+  const data = await summarize(makeDeps(candidates));
+  const newestFirst = candidates
+    .slice()
+    .sort((a, b) =>
+      b.output.startedAt.getTime() - a.output.startedAt.getTime()
+    );
+  for (const model of data.models) {
+    assertEquals(
+      model.recent.map((o) => o.id),
+      newestFirst
+        .filter(({ output }) => output.definitionId === model.definitionId)
+        .slice(0, 20)
+        .map(({ output }) => output.id),
+    );
+  }
+  assertEquals(data.totals.executions, 3_000);
+});
