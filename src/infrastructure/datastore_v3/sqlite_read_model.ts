@@ -224,6 +224,8 @@ export interface SqliteReadModelOptions {
   readonly rename?: (from: string, to: string) => Promise<void>;
   readonly syncDirectory?: (dir: string) => Promise<void>;
   readonly readDir?: (dir: string) => AsyncIterable<Deno.DirEntry>;
+  /** lets tests open two read models in one process as two processes */
+  readonly pid?: number;
   readonly syncFile?: (path: string) => Promise<void>;
   readonly atRiskCopyBytes?: number;
   readonly os?: typeof Deno.build.os;
@@ -399,6 +401,7 @@ export class SqliteReadModel implements ReadModel {
     }
     const state = ReadModelState.open(
       join(options.stateDir, READ_MODEL_STATE_FILE),
+      { pid: options.pid },
     );
     try {
       const catalog = options.catalog ??
@@ -454,11 +457,21 @@ export class SqliteReadModel implements ReadModel {
   catchUpUnlessComplete(
     signal: AbortSignal,
     lockWaitMs: number,
+    writerPid?: number,
   ): Promise<boolean> {
     if (this.#state.isComplete()) return Promise.resolve(false);
     return this.#exclusive(
       async () => {
         if (this.#state.isComplete()) return false;
+        // the live writer left it so mid-command: its files are the newest;
+        // a writer catches up in full when its command starts, so an older
+        // incomplete state never carries its pid
+        if (
+          writerPid !== undefined &&
+          this.#state.incompletePid() === writerPid
+        ) {
+          return false;
+        }
         await this.#counted(
           "swamp.datastore.v3.readmodel.catchup",
           async () => {
@@ -1792,7 +1805,7 @@ export class SqliteReadModel implements ReadModel {
   /**
    * on a case- or normalisation-insensitive filesystem VPC/1/raw reaches
    * vpc/1/raw: the file is another key's when a different key folding to its
-   * spelling has a present file or this commit decided one
+   * spelling, present or decided in this commit, reaches the same file
    */
   async #reachesAnotherKeysFile(
     namespace: string,
@@ -1810,9 +1823,39 @@ export class SqliteReadModel implements ReadModel {
     // No listed name matches a segment as the filesystem might fold it.
     if (onDisk === undefined) return true;
     const folded = foldSpelling(onDisk);
-    if (decided.hasOther(folded, key)) return true;
+    const others = decided.others(folded, key);
     for (const other of this.#state.presentKeysFoldedTo(namespace, folded)) {
-      if (other !== key) return true;
+      if (other !== key) others.push(other);
+    }
+    if (others.length === 0) return false;
+    return await this.#reachesSameFile(root, existing, others);
+  }
+
+  // the fold only finds candidates; the filesystem decides, so a root that
+  // keeps case apart reports no false alias
+  async #reachesSameFile(
+    root: string,
+    existing: string,
+    keys: readonly string[],
+  ): Promise<boolean> {
+    let file: Deno.FileInfo;
+    try {
+      file = await Deno.stat(existing);
+    } catch (error) {
+      // gone since the guard saw it: nothing left to alias
+      if (error instanceof Deno.errors.NotFound) return false;
+      return true;
+    }
+    // no inode on this platform: trust the fold
+    if (file.ino === null) return true;
+    for (const other of keys) {
+      try {
+        const info = await Deno.stat(join(root, ...other.split("/")));
+        if (info.ino === file.ino && info.dev === file.dev) return true;
+      } catch (error) {
+        // undecidable counts as an alias: skip the write, never stop the catch-up
+        if (!(error instanceof Deno.errors.NotFound)) return true;
+      }
     }
     return false;
   }
@@ -3418,11 +3461,12 @@ class FoldedKeys {
     this.#keys.set(folded, keys);
   }
 
-  hasOther(folded: string, key: string): boolean {
+  others(folded: string, key: string): string[] {
+    const others: string[] = [];
     for (const other of this.#keys.get(folded) ?? []) {
-      if (other !== key) return true;
+      if (other !== key) others.push(other);
     }
-    return false;
+    return others;
   }
 }
 
@@ -3437,7 +3481,9 @@ class PathCache {
   readonly #absent = new Map<string, readonly string[]>();
   readonly #existing = new Set<string>();
   /** kept for one page at most, and forgotten whenever a write adds a name */
-  readonly #listings = new Map<string, ListedNames>();
+  readonly #listings = new Map<string, ListedNames | "unchecked">();
+  /** warned about once each, across sections */
+  readonly #unlistable = new Set<string>();
 
   isDirectory(path: string): boolean {
     return this.#directories.has(path);
@@ -3506,17 +3552,36 @@ class PathCache {
   ): Promise<string | undefined> {
     let listed = this.#listings.get(dir);
     if (listed === undefined) {
-      const exact = new Set<string>();
-      const folded = new Map<string, string>();
+      listed = await this.#list(dir, readDir);
+      this.#listings.set(dir, listed);
+    }
+    if (listed === "unchecked" || listed.exact.has(segment)) return segment;
+    return listed.folded.get(foldSpelling(segment));
+  }
+
+  async #list(
+    dir: string,
+    readDir: (dir: string) => AsyncIterable<Deno.DirEntry>,
+  ): Promise<ListedNames | "unchecked"> {
+    const exact = new Set<string>();
+    const folded = new Map<string, string>();
+    try {
       for await (const entry of readDir(dir)) {
         exact.add(entry.name);
         folded.set(foldSpelling(entry.name), entry.name);
       }
-      listed = { exact, folded };
-      this.#listings.set(dir, listed);
+    } catch (error) {
+      // a gone directory holds no alias; an unlistable one cannot be checked
+      if (error instanceof Deno.errors.NotFound) return "unchecked";
+      if (!(error instanceof Deno.errors.PermissionDenied)) throw error;
+      if (!this.#unlistable.has(dir)) {
+        this.#unlistable.add(dir);
+        logger
+          .warn`The directory ${dir} cannot be listed, so the spellings of the keys under it are not checked against other keys' files: ${error}`;
+      }
+      return "unchecked";
     }
-    if (listed.exact.has(segment)) return segment;
-    return listed.folded.get(foldSpelling(segment));
+    return { exact, folded };
   }
 
   forgetListings(): void {

@@ -1238,26 +1238,27 @@ async function canonicalPath(path: string): Promise<string> {
 async function anotherProcessWritesCheckout(
   repoDir: string,
   datastorePath: string,
-): Promise<boolean> {
+): Promise<WriterCheckoutRecord | undefined> {
   const recorded = await readWriterCheckout(datastorePath);
   if (
     recorded === undefined || recorded.repoDir !== await canonicalPath(repoDir)
   ) {
-    return false;
+    return undefined;
   }
   const local = await localProcess();
   // This process's own sidecar, known by the fence it wrote it with: never
   // judged by liveness, which may not place this process when its boot id
   // cannot be read.
-  if (isOwnWriterCheckout(datastorePath, recorded, local)) return false;
+  if (isOwnWriterCheckout(datastorePath, recorded, local)) return undefined;
   // Judged before the lease is read: a gone writer's sidecar costs no read
   // of the lease's records.
-  if (!mayBeAnotherWriter(recorded, local)) return false;
+  if (!mayBeAnotherWriter(recorded, local)) return undefined;
   const holder = await v3WriterLeaseHolder(datastorePath);
-  if (holder === null) return false;
-  return recorded.fence === undefined
+  if (holder === null) return undefined;
+  const writes = recorded.fence === undefined
     ? legacyWriterWritesCheckout(recorded, holder)
     : holder.fence === recorded.fence;
+  return writes ? recorded : undefined;
 }
 
 function isOwnWriterCheckout(
@@ -1370,7 +1371,7 @@ export async function v3RepositoryFactoryConfig(
   // checkout: that writer keeps it current
   if (
     !writer && v3ReplicatesAt(config.path) &&
-    await anotherProcessWritesCheckout(repoDir, config.path)
+    await anotherProcessWritesCheckout(repoDir, config.path) !== undefined
   ) {
     currentCopies.add(handleKey(repoDir, config));
   } else if (!writer) {
@@ -1414,16 +1415,22 @@ export async function v3RepositoryFactoryConfig(
         .warn`Recovering ${repoDir} after an interrupted v3 writer failed; the next command retries: ${error}`;
     }
   }
+  const otherWriter = writer && caughtUpWriters.has(handle)
+    ? undefined
+    : await anotherProcessWritesCheckout(repoDir, config.path);
   if (writer && caughtUpWriters.has(handle)) {
     // Caught up when this process's first context opened.
-  } else if (!await anotherProcessWritesCheckout(repoDir, config.path)) {
+  } else if (otherWriter === undefined) {
     await handle.catchUp();
     if (writer) caughtUpWriters.add(handle);
   } else {
     // the writer's files are newest only once the read model is complete; until
     // then a catch-up is in progress or cut short, so wait for it, bounded by
     // the lock timeout, and finish it if cut short
-    await handle.catchUpUnlessComplete(resolveLockTimeoutMs());
+    await handle.catchUpUnlessComplete(
+      resolveLockTimeoutMs(),
+      otherWriter.pid,
+    );
   }
   const unreadableContent = unreadableContentLookup(repoDir, handle.readModel);
   return {

@@ -54,6 +54,7 @@ import {
 } from "./sqlite_commit_store.ts";
 import {
   CATALOG_V3_FILE,
+  READ_MODEL_STATE_FILE,
   SqliteReadModel,
   type SqliteReadModelOptions,
 } from "./sqlite_read_model.ts";
@@ -751,6 +752,11 @@ async function foldsSpellings(dir: string): Promise<boolean> {
   }
 }
 
+// case-sensitive APFS still folds normalization, so this checks case alone
+function foldsCase(dir: string): Promise<boolean> {
+  return reachesAs(dir, "oracle-case", "ORACLE-CASE");
+}
+
 /**
  * Whether the filesystem holding `dir` reaches a file under the decomposed
  * spelling of its name. NTFS folds case but not normalization, so this is
@@ -1392,3 +1398,156 @@ Deno.test("SqliteReadModel: recordsChanged is told the keys each applied page wr
     }
   });
 });
+
+Deno.test({
+  name:
+    "SqliteReadModel: in list mode a directory that cannot be listed does not stop the catch-up; the key is checked by its own spelling (swamp-club#4277)",
+  // chmod 300 has no meaning on Windows
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    await withEnv(async (env) => {
+      const path = env.contentPath("", "locked", 1);
+      await writeLocal(path, "on disk");
+      const locked = dirname(dirname(path));
+      await env.append(1, "", [await savePut("locked", 1)]);
+      await env.append(2, "", [await savePut("other", 1)]);
+      const readModel = env.open({ spellingFolding: "list", netReplay: false });
+      // deletable and enterable, but not listable
+      await Deno.chmod(locked, 0o300);
+      try {
+        const warnings = await readModelWarnings(async () => {
+          await readModel.catchUp(signal());
+        });
+        assertEquals(await readOrAbsent(path), "locked@1");
+        assertEquals(
+          await readOrAbsent(env.contentPath("", "other", 1)),
+          "other@1",
+        );
+        assert(
+          warnings.some((message) =>
+            message.includes(locked) && message.includes("cannot be listed")
+          ),
+          `no unlistable-directory warning in ${JSON.stringify(warnings)}`,
+        );
+      } finally {
+        await Deno.chmod(locked, 0o755);
+        await readModel.close();
+      }
+    });
+  },
+});
+
+Deno.test("SqliteReadModel: in list mode a directory removed before it is listed does not stop the catch-up (swamp-club#4277)", async () => {
+  await withEnv(async (env) => {
+    const path = env.contentPath("", "gone", 1);
+    await writeLocal(path, "on disk");
+    await env.append(1, "", [await savePut("gone", 1)]);
+    await env.append(2, "", [await savePut("other", 1)]);
+    const vanished = dirname(path);
+    const readModel = env.open({
+      spellingFolding: "list",
+      netReplay: false,
+      // gone between the key guard's walk and its listing
+      readDir: (dir) => {
+        if (dir === vanished) {
+          return {
+            [Symbol.asyncIterator]: () => ({
+              next: () =>
+                Promise.reject(new Deno.errors.NotFound(`readdir '${dir}'`)),
+            }),
+          };
+        }
+        return Deno.readDir(dir);
+      },
+    });
+    try {
+      await readModel.catchUp(signal());
+      assertEquals(await readOrAbsent(path), "gone@1");
+      assertEquals(
+        await readOrAbsent(env.contentPath("", "other", 1)),
+        "other@1",
+      );
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel: in list mode on a root that keeps case-variant keys apart, a replay restores each key's own file and reports no alias (swamp-club#4277)", async () => {
+  await withEnv(async (env) => {
+    const root = v3CacheRoot(env.repoDir, "");
+    // only a filesystem that keeps both spellings apart holds both files
+    if (await foldsCase(root)) return;
+    await env.append(1, "", [await savePut("vpc", 1), versionOp("vpc", 1)]);
+    await env.append(2, "", [await savePut("VPC", 1), versionOp("VPC", 1)]);
+    const first = env.open({ spellingFolding: "list", netReplay: false });
+    try {
+      await first.catchUp(signal());
+    } finally {
+      await first.close();
+    }
+    // stands in for a writer killed mid-command
+    await Deno.writeTextFile(env.contentPath("", "VPC", 1), "dirty");
+    await Deno.remove(
+      join(readModelStateDir(env.repoDir), READ_MODEL_STATE_FILE),
+    );
+    const again = env.open({ spellingFolding: "list", netReplay: false });
+    try {
+      const attributes = await catchUpAttributes(again);
+      assertEquals(attributes[ALIASED], undefined);
+      assertEquals(await readOrAbsent(env.contentPath("", "VPC", 1)), "VPC@1");
+      assertEquals(await readOrAbsent(env.contentPath("", "vpc", 1)), "vpc@1");
+    } finally {
+      await again.close();
+    }
+  });
+});
+
+for (const [owner, alias] of [["vpcσ", "vpcς"], ["ſvpc", "svpc"]]) {
+  for (const spellingFolding of FORCED_MODES) {
+    const mode = spellingFolding ?? "probed";
+    Deno.test(`SqliteReadModel: a put of ${alias}, which a case-insensitive filesystem folds with ${owner} though lower-casing does not, does not overwrite ${owner}'s file (${mode}, swamp-club#4277)`, async () => {
+      await withEnv(async (env) => {
+        await env.append(1, "", [
+          await savePut(owner, 1),
+          versionOp(owner, 1),
+        ]);
+        await env.append(2, "", [await savePut(alias, 1, "forged")]);
+        const readModel = env.open({ spellingFolding, netReplay: false });
+        try {
+          const attributes = await catchUpAttributes(readModel);
+          const folds = await reachesAs(
+            v3CacheRoot(env.repoDir, ""),
+            owner,
+            alias,
+          );
+          assertEquals(
+            await readOrAbsent(env.contentPath("", owner, 1)),
+            `${owner}@1`,
+          );
+          assertEquals(attributes[ALIASED], folds ? 1 : undefined);
+        } finally {
+          await readModel.close();
+        }
+      });
+    });
+  }
+}
+
+async function reachesAs(
+  dir: string,
+  name: string,
+  as: string,
+): Promise<boolean> {
+  await Deno.mkdir(dir, { recursive: true });
+  await Deno.writeTextFile(join(dir, name), "");
+  try {
+    await Deno.lstat(join(dir, as));
+    return true;
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+    return false;
+  } finally {
+    await Deno.remove(join(dir, name));
+  }
+}
