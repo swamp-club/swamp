@@ -87,7 +87,8 @@ import {
 await initializeLogging({});
 
 function isLocalOnly(rel: string): boolean {
-  return rel.endsWith(".runs-index.json") || rel.endsWith(".log");
+  return rel.endsWith(".runs-index.json") || rel.endsWith(".runs-index.lock") ||
+    rel.endsWith(".log");
 }
 
 async function catchUp(env: V3Env): Promise<void> {

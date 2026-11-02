@@ -3307,10 +3307,10 @@ therefore costs a stat per record and one record read, not a read of every
 record (swamp-club#3407). A record another writer replaced is still corrected,
 as a rebuild would have corrected it. The stats are made even when the counts
 agree again by the time the queue is reached, as they usually do since a save
-writes its record before its entry: index updates are queued only within one
-process, so a save in another process can overwrite an entry with the status
-and fingerprint of an earlier write of its record, leaving the count unchanged,
-and the next read that sees a mismatch corrects it (swamp-club#3452; the race
+writes its record before its entry: a save writes its record before it takes
+the index lock, so a save in another process can overwrite an entry with the
+status and fingerprint of an earlier write of its record, leaving the count
+unchanged, and the next read that sees a mismatch corrects it (swamp-club#3452; the race
 itself is swamp-club#3455). A replacement that leaves the count unchanged
 otherwise waits for `swamp run doctor` (`verifyIndexes`), or for a read of
 that run. An index of another schema version is rebuilt from every record
@@ -3328,8 +3328,18 @@ both 256 KiB and twice the `compactedBytes` its header records, it compacts
 the index in the same queue slot: one line per live run. The bound lives in
 the file, so a new CLI process or a restarted serve compacts at most once per
 doubling. A repair or rebuild, which has read every entry already, writes the
-compacted form. The file is decoded 1 MiB at a time and parsed in 4 ms slices
-of the event loop. A line that does not parse, as from a torn append, marks
+compacted form. Every change to the index (an append, a compaction, a repair
+or a rebuild) runs in the index queue, which serializes it within the process
+and holds an exclusive OS lock on `.runs-index.lock` beside the index across
+processes: a compaction replaces the file by rename, and without the lock a
+line another process appended after the compaction read would be lost, leaving
+a run's status stale with the count unchanged. Where the lock file cannot be
+made, as in a read-only checkout, the change runs unlocked, since the index
+cannot be replaced there either. When a workflow's last run is removed, the
+lock's holder removes the lock file with the index, so the emptied directory
+can go; a process holds the lock only once the path still names the file it
+locked, and otherwise locks the new one. Readers take no lock. The file is
+decoded 1 MiB at a time and parsed in 4 ms slices of the event loop. A line that does not parse, as from a torn append, marks
 the index stale, and the repair rewrites it once it has checked every record's
 fingerprint. A file whose first line, within 4 KiB, is not a version 5 header
 is an older index: it is reported stale without being decoded and rebuilt

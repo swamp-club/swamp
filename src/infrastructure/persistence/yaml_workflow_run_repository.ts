@@ -51,6 +51,7 @@ import {
   readRunIndex,
   readRunIndexHeader,
   type RecordFingerprint,
+  removeRunIndexFiles,
   type RunIndexLine,
   statRecord,
   withIndexQueue,
@@ -989,7 +990,11 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     }
 
     const localDir = this.getLocalIndexDir(workflowId);
-    await deleteRunIndex(localDir);
+    if (localDir === dir) {
+      await deleteRunIndex(localDir);
+    } else {
+      await withIndexQueue(localDir, () => removeRunIndexFiles(localDir));
+    }
 
     // run logs are written repo-local whichever datastore holds the records, so
     // remove them here too when the records live elsewhere
@@ -2011,12 +2016,13 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     this.runIndexCache.delete(workflowId);
     await withIndexQueue(indexDir, async () => {
       try {
+        if (countYamlRunFiles(await listDirEntries(runsDir)) === 0) {
+          await removeRunIndexFiles(indexDir);
+          return;
+        }
         const header = await readRunIndexHeader(indexDir);
         if (header === null) return;
-        if (
-          header.version !== INDEX_SCHEMA_VERSION ||
-          countYamlRunFiles(await listDirEntries(runsDir)) === 0
-        ) {
+        if (header.version !== INDEX_SCHEMA_VERSION) {
           await deleteRunIndex(indexDir);
           return;
         }

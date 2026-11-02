@@ -34,7 +34,10 @@ import { flushDatastoreSync } from "../src/infrastructure/persistence/datastore_
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import { runInRootUnitOfWork } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
-import { RUNS_INDEX_FILENAME } from "../src/infrastructure/persistence/workflow_run_index.ts";
+import {
+  RUNS_INDEX_FILENAME,
+  RUNS_INDEX_LOCK_FILENAME,
+} from "../src/infrastructure/persistence/workflow_run_index.ts";
 import {
   MATERIALISED_SUBDIRS,
   REPO_LOCAL_STREAM_SUBDIRS,
@@ -164,7 +167,8 @@ export async function withV3RowRepos(
 
 export function isCheckoutLocal(rel: string): boolean {
   const name = rel.split("/").at(-1) ?? "";
-  return name === RUNS_INDEX_FILENAME || name.endsWith(".log") ||
+  return name === RUNS_INDEX_FILENAME || name === RUNS_INDEX_LOCK_FILENAME ||
+    name.endsWith(".log") ||
     /^_catalog\.db(-journal|-wal|-shm)?$/.test(name);
 }
 

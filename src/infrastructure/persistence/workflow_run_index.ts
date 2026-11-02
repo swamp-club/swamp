@@ -19,12 +19,14 @@
 
 import { join, resolve } from "@std/path";
 import { atomicWriteTextFile } from "./atomic_write.ts";
+import { markErrorPaths } from "../../domain/errors.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { chunkEnd } from "./ndjson_chunks.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { inTimeSlices } from "./scan_permits.ts";
 
 export const RUNS_INDEX_FILENAME = ".runs-index.json";
+export const RUNS_INDEX_LOCK_FILENAME = ".runs-index.lock";
 
 // Bump when WorkflowRunIndexEntry gains or removes fields so that
 // old on-disk indices are rebuilt instead of serving stale data.
@@ -521,9 +523,88 @@ export function indexQueueGeneration(
 }
 
 /**
- * serializes read-modify-write of an index per directory in this process; a
- * failed fn does not hold up later ones, and fn must not queue on the same
- * directory
+ * the index is replaced by rename, so other processes are held off by a lock
+ * on a file that never is; where the lock file cannot be made the index cannot
+ * be replaced either, since its atomic write stages a file beside it
+ */
+async function withIndexFileLock<T>(
+  workflowRunsDir: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  let lock: Deno.FsFile | undefined;
+  try {
+    lock = await acquireIndexFileLock(workflowRunsDir);
+  } catch (error) {
+    getSwampLogger(["workflow-runs", "index"])
+      .debug`Changing the run index of ${workflowRunsDir} without its lock: ${error}`;
+  }
+  try {
+    return await fn();
+  } finally {
+    lock?.close();
+  }
+}
+
+const LOCK_ATTEMPTS = 5;
+
+/**
+ * its holder may remove the lock file, so a lock is held only once its path
+ * still names the file locked; a waiter on a removed file tries a new one
+ */
+async function acquireIndexFileLock(
+  workflowRunsDir: string,
+): Promise<Deno.FsFile> {
+  const path = join(workflowRunsDir, RUNS_INDEX_LOCK_FILENAME);
+  for (let attempt = 1;; attempt++) {
+    await Deno.mkdir(workflowRunsDir, { recursive: true });
+    const lock = await Deno.open(path, {
+      read: true,
+      write: true,
+      create: true,
+    });
+    try {
+      await lock.lock(true);
+      const held = await lock.stat();
+      const named = await Deno.stat(path).catch((error) => {
+        if (error instanceof Deno.errors.NotFound) return null;
+        throw error;
+      });
+      if (named !== null && (held.ino === null || named.ino === held.ino)) {
+        return lock;
+      }
+    } catch (error) {
+      lock.close();
+      throw error;
+    }
+    lock.close();
+    if (attempt === LOCK_ATTEMPTS) {
+      throw markErrorPaths(
+        new Error(`the lock file ${path} kept being replaced`),
+        [path],
+      );
+    }
+  }
+}
+
+/**
+ * runs inside the index queue, for a directory left with no runs: the lock file
+ * goes with the index, removed by its holder
+ */
+export async function removeRunIndexFiles(
+  workflowRunsDir: string,
+): Promise<void> {
+  await deleteRunIndex(workflowRunsDir);
+  try {
+    await Deno.remove(join(workflowRunsDir, RUNS_INDEX_LOCK_FILENAME));
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+}
+
+/**
+ * serializes read-modify-write of an index per directory, in this process by
+ * queue and across processes by file lock; a failed fn does not hold up later
+ * ones, and fn must not queue on the same directory
  */
 export async function withIndexQueue<T>(
   workflowRunsDir: string,
@@ -531,7 +612,9 @@ export async function withIndexQueue<T>(
 ): Promise<T> {
   const key = getIndexPath(resolve(workflowRunsDir));
   // A queued tail never rejects, so `fn` runs whatever happened before it.
-  const run = (indexQueues.get(key) ?? Promise.resolve()).then(fn);
+  const run = (indexQueues.get(key) ?? Promise.resolve()).then(() =>
+    withIndexFileLock(workflowRunsDir, fn)
+  );
   const tail = run.then(() => {}, () => {});
   indexQueues.set(key, tail);
   try {

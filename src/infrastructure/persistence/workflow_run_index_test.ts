@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
+import { exists } from "@std/fs";
 import { join, relative } from "@std/path";
 import {
   appendRunIndexLines,
@@ -35,8 +36,10 @@ import {
   readRunIndex,
   readRunIndexHeader,
   removeRunIndexes,
+  removeRunIndexFiles,
   removeStaleRunIndexes,
   RUNS_INDEX_FILENAME,
+  RUNS_INDEX_LOCK_FILENAME,
   statRecord,
   withIndexQueue,
   type WorkflowRunIndex,
@@ -234,40 +237,127 @@ Deno.test("readRunIndex: reads current schema version", async () => {
 });
 
 Deno.test("withIndexQueue: runs queued functions for one directory one at a time, in order", async () => {
-  const dir = `/queue-test-${crypto.randomUUID()}`;
-  const events: string[] = [];
-  let release!: () => void;
-  const held = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  await withTempDir(async (dir) => {
+    const events: string[] = [];
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
 
-  const first = withIndexQueue(dir, async () => {
-    events.push("first:start");
-    await held;
-    events.push("first:end");
-  });
-  const second = withIndexQueue(dir, () => {
-    events.push("second");
-    return Promise.resolve("done");
-  });
-  release();
+    const first = withIndexQueue(dir, async () => {
+      events.push("first:start");
+      await held;
+      events.push("first:end");
+    });
+    const second = withIndexQueue(dir, () => {
+      events.push("second");
+      return Promise.resolve("done");
+    });
+    release();
 
-  assertEquals(await second, "done");
-  await first;
-  assertEquals(events, ["first:start", "first:end", "second"]);
+    assertEquals(await second, "done");
+    await first;
+    assertEquals(events, ["first:start", "first:end", "second"]);
+  });
 });
 
 Deno.test("withIndexQueue: a failed function rejects its caller and does not hold up the next", async () => {
-  const dir = `/queue-test-${crypto.randomUUID()}`;
+  await withTempDir(async (dir) => {
+    const failed = withIndexQueue(
+      dir,
+      () => Promise.reject(new Error("index write failed")),
+    );
+    const next = withIndexQueue(dir, () => Promise.resolve("ran"));
 
-  const failed = withIndexQueue(
-    dir,
-    () => Promise.reject(new Error("index write failed")),
-  );
-  const next = withIndexQueue(dir, () => Promise.resolve("ran"));
+    await assertRejects(() => failed, Error, "index write failed");
+    assertEquals(await next, "ran");
+  });
+});
 
-  await assertRejects(() => failed, Error, "index write failed");
-  assertEquals(await next, "ran");
+Deno.test("withIndexQueue: a compaction waits for another holder of the index lock, so a line it appends is kept", async () => {
+  await withTempDir(async (dir) => {
+    await writeRunIndex(dir, { "run-1": SAMPLE_INDEX["run-1"] });
+    // A second open of the lock file contends as another process would.
+    const other = await Deno.open(join(dir, RUNS_INDEX_LOCK_FILENAME), {
+      read: true,
+      write: true,
+      create: true,
+    });
+    let compacted: Promise<void> | undefined;
+    let started = false;
+    try {
+      await other.lock(true);
+      compacted = withIndexQueue(dir, async () => {
+        started = true;
+        await compactRunIndex(dir);
+      });
+      const appended = await appendRunIndexLines(
+        dir,
+        [{ id: "run-2", entry: SAMPLE_INDEX["run-2"] }],
+        { create: false },
+      );
+      assertEquals(appended.kind, "appended");
+      assertEquals(started, false);
+    } finally {
+      other.close();
+    }
+    await compacted;
+
+    assertEquals(started, true);
+    const result = await readRunIndex(dir);
+    assertEquals(result?.entries, SAMPLE_INDEX);
+  });
+});
+
+Deno.test("withIndexQueue: a waiter whose lock file its holder removed locks a new one", async () => {
+  await withTempDir(async (dir) => {
+    const lockPath = join(dir, RUNS_INDEX_LOCK_FILENAME);
+    const other = await Deno.open(lockPath, {
+      read: true,
+      write: true,
+      create: true,
+    });
+    let queued: Promise<boolean> | undefined;
+    try {
+      await other.lock(true);
+      queued = withIndexQueue(dir, async () => {
+        const named = await Deno.stat(lockPath);
+        return named.isFile;
+      });
+      await removeRunIndexFiles(dir);
+    } finally {
+      other.close();
+    }
+
+    assertEquals(await queued, true);
+  });
+});
+
+Deno.test("removeRunIndexFiles: removes the index and its lock file, and is a no-op where neither exists", async () => {
+  await withTempDir(async (dir) => {
+    await withIndexQueue(dir, () => writeRunIndex(dir, SAMPLE_INDEX));
+    assertEquals(await exists(join(dir, RUNS_INDEX_LOCK_FILENAME)), true);
+
+    await withIndexQueue(dir, () => removeRunIndexFiles(dir));
+
+    assertEquals(await exists(getIndexPath(dir)), false);
+    assertEquals(await exists(join(dir, RUNS_INDEX_LOCK_FILENAME)), false);
+    await removeRunIndexFiles(join(dir, "absent"));
+  });
+});
+
+Deno.test("withIndexQueue: runs the function unlocked where the lock file cannot be made", async () => {
+  await withTempDir(async (dir) => {
+    const file = join(dir, "not-a-directory");
+    await Deno.writeTextFile(file, "");
+
+    const result = await withIndexQueue(
+      join(file, "runs"),
+      () => Promise.resolve("ran"),
+    );
+
+    assertEquals(result, "ran");
+  });
 });
 
 Deno.test("indexQueueGeneration: identifies the queue tail across equivalent paths and clears it after failure", async () => {
