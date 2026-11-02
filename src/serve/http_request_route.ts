@@ -102,8 +102,8 @@ export async function handleHttpRequest(
     authMode: deps.ctx.authConfig.mode,
     authenticate: deps.authenticate,
     now: deps.now,
-    // a read the socket answered had no per-principal rate; the in-flight cap
-    // below bounds memory instead
+    // a read the socket answered had no per-principal rate; the slot cap below
+    // bounds the replies a caller holds in memory instead
     limitPrincipalRate: false,
   });
   if (caller instanceof Response) return caller;
@@ -137,8 +137,8 @@ export async function handleHttpRequest(
   const notLeader = followerHttpRefusal(validated.type, deps.ctx.followerGate);
   if (notLeader !== undefined) return notLeader;
 
-  // stands in for the per-socket request cap a WebSocket gives its caller; a
-  // caller over it is sent back to the socket, which answered it before
+  // a slot is held until the reply is read to its end or abandoned, so a caller
+  // holds at most MAX_ACTIVE_REQUESTS unread replies; over it, the socket answers
   const slot = caller.token === undefined
     ? `anonymous:${sourceIp}`
     : caller.principal;
@@ -158,11 +158,13 @@ export async function handleHttpRequest(
     text,
     deps.ctx,
     deps.dispatch ?? handleMessage,
-    () => releaseInFlight(slot),
   );
   const gzip = acceptsGzip(req);
   return new Response(
-    gzip ? body.pipeThrough(new CompressionStream("gzip")) : body,
+    holdingSlotUntilRead(
+      gzip ? body.pipeThrough(new CompressionStream("gzip")) : body,
+      () => releaseInFlight(slot),
+    ),
     {
       status: 200,
       headers: {
@@ -179,7 +181,6 @@ function replyStream(
   requestText: string,
   ctx: ConnectionContext,
   dispatch: typeof handleMessage,
-  release: () => void,
 ): ReadableStream<Uint8Array<ArrayBuffer>> {
   const reply = new HttpReplySocket();
   const socket = reply as unknown as WebSocket;
@@ -221,7 +222,6 @@ function replyStream(
         );
       } finally {
         reply.close();
-        release();
         if (!cancelled) controller.close();
       }
     },
@@ -230,6 +230,45 @@ function replyStream(
       reply.close(1001, "client disconnected");
     },
   });
+}
+
+/**
+ * the outermost stream, pulled one chunk per read: its end is seen only after
+ * every earlier chunk went to the response writer, and a disconnect cancels it
+ */
+function holdingSlotUntilRead(
+  inner: ReadableStream<Uint8Array<ArrayBuffer>>,
+  release: () => void,
+): ReadableStream<Uint8Array<ArrayBuffer>> {
+  const reader = inner.getReader();
+  let released = false;
+  const releaseOnce = () => {
+    if (released) return;
+    released = true;
+    release();
+  };
+  return new ReadableStream<Uint8Array<ArrayBuffer>>({
+    async pull(controller) {
+      let chunk: ReadableStreamReadResult<Uint8Array<ArrayBuffer>>;
+      try {
+        chunk = await reader.read();
+      } catch (error) {
+        releaseOnce();
+        controller.error(error);
+        return;
+      }
+      if (chunk.done) {
+        releaseOnce();
+        controller.close();
+        return;
+      }
+      controller.enqueue(chunk.value);
+    },
+    async cancel(reason) {
+      releaseOnce();
+      await reader.cancel(reason);
+    },
+  }, { highWaterMark: 0 });
 }
 
 function releaseInFlight(slot: string): void {

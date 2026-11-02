@@ -413,3 +413,83 @@ Deno.test("handleHttpRequest: reads are not held to the per-principal request ra
     assertEquals(response.status, 200, `request ${i}`);
   }
 });
+
+Deno.test("handleHttpRequest: a reply that is not read keeps its slot until it is read to the end", async () => {
+  const principalId = `user:${crypto.randomUUID()}`;
+  const routeDeps = deps(ctxOf("token"), {
+    authenticate: () => Promise.resolve(tokenFor(principalId)),
+    dispatch: (socket, _ctx, _active, event) => {
+      const { id } = JSON.parse(String(event.data));
+      send(socket, {
+        type: "data.get",
+        id,
+        payload: { data: { content: "x".repeat(1024) } },
+      });
+      return Promise.resolve();
+    },
+  });
+  const unread: Response[] = [];
+  for (let i = 0; i < MAX_ACTIVE_REQUESTS; i++) {
+    unread.push(
+      await handleHttpRequest(post(dataGet(`u${i}`)), uniqueIp(), routeDeps),
+    );
+  }
+
+  const refused = await handleHttpRequest(
+    post(dataGet("over")),
+    uniqueIp(),
+    routeDeps,
+  );
+  assertEquals(refused.status, 429);
+  assertEquals((await refused.json()).code, "use_websocket");
+
+  for (const response of unread) {
+    const [reply] = await linesOf(response);
+    assertEquals(reply.type, "data.get");
+  }
+  const after = await handleHttpRequest(
+    post(dataGet("after")),
+    uniqueIp(),
+    routeDeps,
+  );
+  assertEquals(after.status, 200);
+  await after.body?.cancel();
+});
+
+Deno.test("handleHttpRequest: a gzip reply also keeps its slot until it is read", async () => {
+  const principalId = `user:${crypto.randomUUID()}`;
+  const routeDeps = deps(ctxOf("token"), {
+    authenticate: () => Promise.resolve(tokenFor(principalId)),
+    dispatch: (socket, _ctx, _active, event) => {
+      const { id } = JSON.parse(String(event.data));
+      send(socket, { type: "data.get", id, payload: { data: {} } });
+      return Promise.resolve();
+    },
+  });
+  const unread: Response[] = [];
+  for (let i = 0; i < MAX_ACTIVE_REQUESTS; i++) {
+    unread.push(
+      await handleHttpRequest(
+        post(dataGet(`g${i}`), { "accept-encoding": "gzip" }),
+        uniqueIp(),
+        routeDeps,
+      ),
+    );
+  }
+
+  const refused = await handleHttpRequest(
+    post(dataGet("over"), { "accept-encoding": "gzip" }),
+    uniqueIp(),
+    routeDeps,
+  );
+  assertEquals(refused.status, 429);
+
+  for (const response of unread) await response.body?.cancel();
+  const after = await handleHttpRequest(
+    post(dataGet("after")),
+    uniqueIp(),
+    routeDeps,
+  );
+  assertEquals(after.status, 200);
+  await after.body?.cancel();
+});
