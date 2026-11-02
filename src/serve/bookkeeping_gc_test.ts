@@ -365,6 +365,42 @@ Deno.test("reapEndedBookkeepingRecords: stops between batches once stopping", as
   assertEquals(result.batches, 1);
 });
 
+Deno.test("reapEndedBookkeepingRecords: stopping while listing reads no more bodies and deletes nothing", async () => {
+  const h = harness({
+    leases: ["a", "b", "c"].map((id) => leaseRecord(id, "completed", OLD)),
+    dispatches: [dispatchRecord("x", "dispatched", OLD)],
+    tokens: [tokenRecord("t", {
+      state: "revoked",
+      expiresAt: OLD,
+      revokedAt: OLD,
+    })],
+    workerTokenNames: [],
+  });
+  let bodyReads = 0;
+  const getContent = h.deps.repo.getContent;
+  const deps: BookkeepingGcDeps = {
+    ...h.deps,
+    repo: {
+      ...h.deps.repo,
+      getContent: (...args: Parameters<typeof getContent>) => {
+        bodyReads++;
+        return getContent(...args);
+      },
+    },
+  };
+  const result = await reapEndedBookkeepingRecords(
+    deps,
+    GRACE,
+    () => bodyReads >= 1,
+  );
+  assertEquals(bodyReads, 1);
+  assertEquals(h.predicates.length, 1);
+  assertStringIncludes(h.predicates[0], "swamp/step-lease");
+  assertEquals(h.events, []);
+  assertEquals(result.leasesDeleted, 0);
+  assertEquals(result.batches, 0);
+});
+
 Deno.test("reapEndedBookkeepingRecords: an unreadable or corrupt record is skipped, the rest are still reaped", async () => {
   const h = harness({
     leases: [

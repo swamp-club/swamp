@@ -99,6 +99,45 @@ Deno.test("WorkerGcService: start after dispose is a no-op", async () => {
   assertEquals(true, true);
 });
 
+Deno.test("WorkerGcService: the first sweep runs after the initial delay, not the interval", async () => {
+  let pruneCount = 0;
+  let reapCount = 0;
+  const svc = new WorkerGcService(makeDeps({
+    intervalMs: 60 * 60 * 1000,
+    initialDelayMs: 10,
+    runPrune: () => {
+      pruneCount++;
+      return Promise.resolve(EMPTY_RESULT);
+    },
+    reapBookkeeping: () => {
+      reapCount++;
+      return Promise.resolve(EMPTY_REAP);
+    },
+  }));
+  svc.start();
+  await waitFor(() => reapCount >= 1, "first sweep after the initial delay");
+  // Dispose drains the running tick; the next one waits the full hour.
+  await svc.dispose();
+  assertEquals(pruneCount, 1);
+  assertEquals(reapCount, 1);
+});
+
+Deno.test("WorkerGcService: start after dispose schedules nothing with an initial delay", async () => {
+  let pruneCount = 0;
+  const svc = new WorkerGcService(makeDeps({
+    initialDelayMs: 1,
+    runPrune: () => {
+      pruneCount++;
+      return Promise.resolve(EMPTY_RESULT);
+    },
+  }));
+  await svc.dispose();
+  svc.start();
+  await waitFor(() => true, "brief pause after start");
+  await svc.dispose();
+  assertEquals(pruneCount, 0);
+});
+
 Deno.test("WorkerGcService: sweep error does not crash the service", async () => {
   let callCount = 0;
   const deps = makeDeps({

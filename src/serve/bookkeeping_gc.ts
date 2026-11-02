@@ -269,10 +269,12 @@ async function enrollmentTokenKind(
   };
 }
 
+// listing a backlog reads every body and shutdown waits on it, so stopping returns nothing
 async function listCandidates(
   deps: BookkeepingGcDeps,
   gracePeriodMs: number,
   nowMs: number,
+  isStopping: () => boolean,
 ): Promise<{ candidates: ReapCandidate[]; unreadable: number }> {
   const candidates: ReapCandidate[] = [];
   let unreadable = 0;
@@ -282,8 +284,10 @@ async function listCandidates(
     ? [...BOOKKEEPING_KINDS, tokenKind]
     : BOOKKEEPING_KINDS;
   for (const spec of kinds) {
+    if (isStopping()) return { candidates: [], unreadable };
     const records = await deps.query(spec.predicate(deps.repo.namespace));
     for (const record of records) {
+      if (isStopping()) return { candidates: [], unreadable };
       const attrs = await readAttributes(deps, spec.modelType, record);
       if (attrs === null) {
         unreadable++;
@@ -382,6 +386,7 @@ export async function reapEndedBookkeepingRecords(
     deps,
     gracePeriodMs,
     nowMs,
+    isStopping,
   );
   const batchSize = Math.max(1, deps.batchSize ?? DEFAULT_REAP_BATCH_SIZE);
 
