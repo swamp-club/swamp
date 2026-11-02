@@ -1338,7 +1338,6 @@ function countingStats() {
   };
 }
 
-// a save's write: a new file renamed over the old one, as atomicWriteTextFile
 async function replaceDefinition(
   path: string,
   id: string,
@@ -1535,7 +1534,6 @@ Deno.test("DefinitionIdIndex: concurrent misses share one pass over the kept fil
       assertEquals(verifySpans(spans).length, 1);
     });
     for (let i = 0; i < 5; i++) {
-      // one stat when first listed, one by the pass
       assertEquals(stats.of(join(typeDir, `d${i}.yaml`)), 2);
     }
   });
@@ -1744,5 +1742,29 @@ Deno.test("DefinitionIdIndex.findByName: a kept file read at lookup that declare
       assertEquals(verifySpans(spans).length, 0);
     });
     assertEquals(await owners(index, first), []);
+  });
+});
+
+Deno.test("DefinitionIdIndex: a clock stepped back runs the sweep at once rather than waiting out the step", async () => {
+  await withTempDir(async (dir) => {
+    let skew = 0;
+    const { auto, index } = fixture(dir, {
+      now: () => Date.now() + 60_000 + skew,
+    });
+    const typeDir = join(auto, "test", "a");
+    await writeDefinition(join(typeDir, "a.yaml"), crypto.randomUUID(), "a");
+    await index.begin();
+    await writeDefinition(join(typeDir, "b.yaml"), crypto.randomUUID(), "b");
+
+    skew -= 10_000;
+    await withCapturedSpans(async (spans) => {
+      await index.begin();
+      assertEquals(
+        verifySpans(spans).map((s) =>
+          s.attributes["definition_index.verify_trigger"]
+        ),
+        ["sweep"],
+      );
+    });
   });
 });

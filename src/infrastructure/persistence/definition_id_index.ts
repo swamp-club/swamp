@@ -165,11 +165,9 @@ type VerifyTrigger = "sweep" | "miss";
 const MAX_JOIN_LINKS = 8;
 
 /**
- * keeps each file's location and owner fields, answering a lookup by id from
- * them while the file's lstat holds; a regular <name>.yaml listed again is kept
- * without a stat, so a change to it waits for a lookup by id that misses or for
- * the reverify interval, and an in-place overwrite also for its directory's
- * stat to move; until then it fails open
+ * answers a lookup by id from each file's stored owner fields while its lstat
+ * holds; a relist keeps a <name>.yaml without a stat, so a change to it is seen
+ * at a lookup by id that misses or at the reverify interval, failing open
  */
 export class DefinitionIdIndex
   implements DefinitionOwnerIndex, DefinitionNameIndex, DefinitionIdLookup {
@@ -574,10 +572,8 @@ export class DefinitionIdIndex
     return parsed;
   }
 
-  /**
-   * re-reads a file whose stat moved, or that is a symlink now and was not when
-   * listed, and indexes it under what it declares; true when it read
-   */
+  // a file swapped for a symlink since it was listed is read as one, so its
+  // target must stay contained in the repo
   async #refresh(
     path: string,
     segments: readonly string[],
@@ -609,7 +605,9 @@ export class DefinitionIdIndex
       this.#sweptAt = now;
       return;
     }
-    if (now - this.#sweptAt < this.#reverifyIntervalMs) return;
+    // a clock stepped back sweeps at once rather than waiting out the step
+    const elapsed = now - this.#sweptAt;
+    if (elapsed >= 0 && elapsed < this.#reverifyIntervalMs) return;
     if (this.#hasUnverified()) {
       const verified = await this.#verify("sweep", signal);
       counts.filesVerified += verified.verified;

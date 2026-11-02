@@ -232,6 +232,7 @@ async function assertMatchesScan(
           let skew = 0;
           const index = new DefinitionIdIndex(repo, {
             now: () => Date.now() + clockAhead + skew,
+            reverifyIntervalMs: REVERIFY_INTERVAL_MS,
           });
           const declared = new Map<string, string | undefined>();
           for (const op of ops) {
@@ -306,10 +307,8 @@ Deno.test("DefinitionIdIndex: answers as a scan does while every stat is too rec
 });
 
 Deno.test("DefinitionIdIndex: a regular file overwritten in place to declare another id is not an owner of it until its directory changes", async () => {
-  // Left to the next listing of its directory, then found by a lookup by id
-  // that misses or by the sweep; it fails open until then, see
-  // DefinitionIdIndex. If this starts failing because it is seen at once, the
-  // documented limit can be dropped.
+  // The documented limit, which fails open; if this starts failing because the
+  // change is seen at once, the limit can be dropped.
   const dir = await Deno.makeTempDir();
   try {
     const roots = [
