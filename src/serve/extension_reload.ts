@@ -864,10 +864,12 @@ async function runServeReload(
   let localRefreshFailed = false;
 
   try {
-    // a source reload must update local validators and dispatch bundles even
-    // when a separate CLI already indexed the new source into SQLite
+    // forced: an unchanged file listing proves nothing when a separate CLI
+    // indexed the source into SQLite or serve's last pass failed to bundle it
     try {
-      await modelRegistry.refreshSources(withExtensionMutation);
+      await modelRegistry.refreshSources(withExtensionMutation, {
+        force: true,
+      });
     } catch (err) {
       localRefreshFailed = true;
       errors.push(

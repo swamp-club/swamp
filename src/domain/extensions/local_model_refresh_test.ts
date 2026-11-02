@@ -624,6 +624,89 @@ Deno.test("createLocalModelRefresher: a pass that throws is tried again on the n
   });
 });
 
+Deno.test("createLocalModelRefresher: a forced call runs a pass while nothing changed, and a later call does not", async () => {
+  await withRepo(async ({ loader, modelsDir }) => {
+    let passes = 0;
+    const refresh = createLocalModelRefresher(loader, modelsDir, [], () => {
+      passes++;
+      return Promise.resolve(NO_DIRS);
+    });
+
+    await refresh();
+    await refresh({ force: true });
+    await refresh();
+
+    assertEquals(passes, 2);
+  }, async ({ modelsDir, type }) => {
+    await Deno.writeTextFile(
+      join(modelsDir, "a.ts"),
+      modelCode(type("a"), "v1"),
+    );
+  });
+});
+
+Deno.test("createLocalModelRefresher: a forced call reconciles a source another CLI indexed after a pass failed to bundle it", async () => {
+  await withRepo(
+    async ({ behaviorsDir, loader, modelsDir, reindexElsewhere, type }) => {
+      const refresh = createLocalModelRefresher(
+        loader,
+        modelsDir,
+        [],
+        () =>
+          Promise.resolve({ localDirs: [behaviorsDir], additionalDirs: [] }),
+      );
+      await refresh();
+      await Deno.writeTextFile(
+        join(modelsDir, "a.ts"),
+        modelCode(type("a"), "v2"),
+      );
+      bundleFails = true;
+      await refresh();
+      assertEquals((await loaded(type("a")))?.methods.run.description, "v1");
+      bundleFails = false;
+      await reindexElsewhere();
+
+      await refresh({ force: true });
+
+      assertEquals((await loaded(type("a")))?.methods.run.description, "v2");
+    },
+    async ({ modelsDir, type }) => {
+      await Deno.writeTextFile(
+        join(modelsDir, "a.ts"),
+        modelCode(type("a"), "v1"),
+      );
+    },
+  );
+});
+
+Deno.test("createLocalModelRefresher: a forced call retries a source whose bundle failed once the bundler recovers", async () => {
+  await withRepo(async ({ behaviorsDir, loader, modelsDir, type }) => {
+    const refresh = createLocalModelRefresher(
+      loader,
+      modelsDir,
+      [],
+      () => Promise.resolve({ localDirs: [behaviorsDir], additionalDirs: [] }),
+    );
+    await refresh();
+    await Deno.writeTextFile(
+      join(modelsDir, "a.ts"),
+      modelCode(type("a"), "v2"),
+    );
+    bundleFails = true;
+    await refresh();
+    bundleFails = false;
+
+    await refresh({ force: true });
+
+    assertEquals((await loaded(type("a")))?.methods.run.description, "v2");
+  }, async ({ modelsDir, type }) => {
+    await Deno.writeTextFile(
+      join(modelsDir, "a.ts"),
+      modelCode(type("a"), "v1"),
+    );
+  });
+});
+
 Deno.test("refreshLocalModels: a deleted local add-on detaches its members", async () => {
   await withRepo(async ({ modelsDir, refresh, type }) => {
     assertEquals((await loaded(type("b")))?.methods.extra?.description, "a1");

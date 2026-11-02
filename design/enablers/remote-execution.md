@@ -2029,7 +2029,9 @@ file serve was started with (`--config`, or `.swamp/serve.yaml`) and refreshes
 the extension trust list. It also finishes the serialized refresh of repo-local
 behavior types before acknowledging success. This refresh replaces the loaded
 definitions and their worker bundle factories, including when only an imported
-helper changed (swamp-club#4214). A failed local refresh is reported only after
+helper changed (swamp-club#4214). It is forced past the unchanged-files check
+the per-run refresh makes, so it runs even when serve's last pass saw the same
+files (swamp-club#4309). A failed local refresh is reported only after
 the rest of the reload has refreshed pulled extensions and serve configuration.
 
 The reload after an extension change made through serve is narrower. The
@@ -2188,7 +2190,11 @@ reload through `swamp serve reload`.
 Unlike a CLI command, serve does not retry a failed source on every run: the
 snapshot is recorded once the pass ends, so the next pass waits for another
 edit. A pass that throws (a lockfile caught mid-write, a busy catalog) records
-nothing, so the next run tries again.
+nothing, so the next run tries again. An explicit `swamp serve reload` is the
+operator asking serve to catch up, so it forces the pass past the snapshot
+check: it retries a source whose bundle failed and reconciles rows another
+process indexed, even when no file changed since serve's last pass
+(swamp-club#4309). When runs and a reload share one queued pass, it is forced.
 
 Serve takes the first snapshot at startup, right after it indexes the
 registries, so the first run does not pay for a full pass.

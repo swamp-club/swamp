@@ -25,7 +25,7 @@
 
 import { getLogger } from "@logtape/logtape";
 import { join } from "@std/path";
-import { modelRegistry } from "../models/model.ts";
+import { modelRegistry, type SourceRefreshOptions } from "../models/model.ts";
 import type {
   ExtensionLoader,
   SourceRefreshChanges,
@@ -37,19 +37,19 @@ const logger = getLogger(["swamp", "model", "refresh"]);
 /**
  * a check is a walk and a stat per file while a pass rehashes every source; a
  * throwing pass leaves the snapshot so the next call retries; a source that
- * fails to load is not retried until it changes
+ * fails to load is not retried until it changes, unless the call is forced
  */
 export function createLocalModelRefresher(
   loader: ExtensionLoader,
   dir: string,
   watchDirs: string[],
   passDirs: () => Promise<LocalModelDirs>,
-): () => Promise<void> {
+): (options?: SourceRefreshOptions) => Promise<void> {
   let lastSnapshot: string | undefined;
-  return async () => {
+  return async (options) => {
     // Taken before the pass, so an edit made while it runs is seen next time.
     const snapshot = await snapshotSourceFiles([dir, ...watchDirs]);
-    if (snapshot === lastSnapshot) return;
+    if (!options?.force && snapshot === lastSnapshot) return;
     await refreshLocalModels(loader, dir, await passDirs());
     lastSnapshot = snapshot;
   };
