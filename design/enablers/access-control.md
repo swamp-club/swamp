@@ -1670,9 +1670,13 @@ workflow. A run is guarded when its stored record is serve-driven or holds an
 approval decision; a record serve cannot read counts as guarded. This covers a
 forwarded `run.delete` or `run-snapshot.delete` and `workflow delete` through serve,
 and the refusal is audited. A member still deletes their own undecided member-driven
-run with `write`. Serve's retention and `run gc` are unchanged: `run gc` still lets a
-caller with `write` on data remove a finished run that held a decision, which is the
-remaining limit, since a record forwarded afterwards cannot carry a decision.
+run with `write`. A `run gc` through serve that sets its own cut-off (`--older-than`)
+needs `admin` on every workflow, since it chooses which records go; a dry run does not.
+Serve's automatic retention, and a `run gc` on the configured policy, are unchanged:
+they still need only `write` on data and remove finished runs past the policy,
+guarded or not. That is the remaining limit, bounded by the policy the admin set. On
+a serve that takes no forwarded records none of this applies, as nothing can replace
+a deleted record.
 
 **Limits of the marker.** When a member-driven parent is cancelled through serve, a
 child that does not link back is not cancelled with it: its owner cancels it.
