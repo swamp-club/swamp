@@ -975,7 +975,7 @@ stops waiting for is aborted, and a replacement that ends after that releases
 the sidecar it took rather than keep it (swamp-club#3961). A replacement asked
 for while one runs is not dropped: it runs once the running one settles
 (swamp-club#3565). The closing sync gets what serve's shutdown deadline (the
-drain timeout plus 23 s, see `design/primitives/serve.md`) has left when it
+drain timeout plus 22 s, see `design/primitives/serve.md`) has left when it
 starts, at least 0.5 s, and the writer lease release at most 5 s of it; a
 release that misses leaves the lease to its TTL. A sync waits for one already
 running on the same datastore, a probe's for instance, and that wait counts
