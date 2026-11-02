@@ -1821,7 +1821,11 @@ acknowledgement, is left out, so the next check sees it as new.
     a snapshot when a lineage starts and then at most once per UTC day, on
     the first compaction tick past midnight (a sidecar's startup tick
     included). A listing that fails or prints something unexpected leaves
-    the snapshot unknown, and an unknown snapshot is never a new one;
+    the snapshot unknown, and an unknown snapshot is never a new one. Nor is
+    one above the acknowledged TXID: Litestream can snapshot past what the
+    writer has acknowledged, and a restore at that TXID would not read it,
+    so it counts once the writer reaches it (`snapshotReadAt`) instead of
+    on every tick until then;
   - **idle exit:** a sidecar about to idle out lists the snapshots once
     more and checks only if one of the other triggers holds. New
     acknowledgements alone never start a check there, so a developer's run

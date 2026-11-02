@@ -33,8 +33,10 @@
  * @module
  */
 
-import type { ReplicaVerification } from "../../../domain/datastore_v3/replica_verification.ts";
-import { normalizeTxid } from "../../../domain/datastore_v3/published_lineage.ts";
+import {
+  type ReplicaVerification,
+  snapshotReadAt,
+} from "../../../domain/datastore_v3/replica_verification.ts";
 import {
   restoreAndCheck,
   V3RestoredDatabaseCorruptError,
@@ -59,24 +61,6 @@ const VERDICT_ERROR_CHARS = 400;
  * that stalls past it records nothing, so an idle sidecar can still stop.
  */
 export const VERIFY_DEADLINE_MS = 30 * 60 * 1000;
-
-/**
- * The snapshot a restore at `txid` reads through, as a verdict records it:
- * only one at or below that TXID. A newer one, written after the writer's
- * last acknowledgement, is read only by later restores, so the verdict
- * leaves it out and the next check sees it as new.
- */
-function coveredSnapshot(
-  snapshotTxid: string | undefined,
-  txid: string,
-): { snapshotTxid?: string } {
-  const snapshot = normalizeTxid(snapshotTxid);
-  const restored = normalizeTxid(txid);
-  return snapshot !== undefined && restored !== undefined &&
-      snapshot <= restored
-    ? { snapshotTxid: snapshot }
-    : {};
-}
 
 function shortened(message: string): string {
   return message.length <= VERDICT_ERROR_CHARS
@@ -123,7 +107,8 @@ export async function verifyReplica(
   // trusts only when this user owns it and nobody else can write to it: the
   // restored file holds what `commits.db` beside it holds.
   const temp = verifyTempPath(paths);
-  const snapshot = coveredSnapshot(request.snapshotTxid, copy.txid);
+  const read = snapshotReadAt(request.snapshotTxid, copy.txid);
+  const snapshot = read !== undefined ? { snapshotTxid: read } : {};
   try {
     let verdict: ReplicaVerification;
     try {

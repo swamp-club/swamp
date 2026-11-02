@@ -24,6 +24,7 @@ import {
   type ReplicaVerification,
   type ReplicaVerifyObservation,
   shouldVerifyReplica,
+  snapshotReadAt,
 } from "./replica_verification.ts";
 
 const BACKSTOP = 4 * 60 * 60 * 1000;
@@ -200,6 +201,50 @@ Deno.test("shouldVerifyReplica: a sidecar does not retry its own check before th
       observe({ lastAttempt: attempt, nowMs: CHECKED_AT_MS + BACKSTOP }),
     ),
     true,
+  );
+});
+
+Deno.test("snapshotReadAt: only a snapshot at or below the restored TXID", () => {
+  assertEquals(snapshotReadAt("5", "0000000000000010"), "0000000000000005");
+  assertEquals(snapshotReadAt("10", "10"), "0000000000000010");
+  assertEquals(snapshotReadAt("12", "10"), undefined);
+  assertEquals(snapshotReadAt(undefined, "10"), undefined);
+  assertEquals(snapshotReadAt("12", undefined), undefined);
+});
+
+Deno.test("shouldVerifyReplica: a snapshot written ahead of the acknowledged TXID is checked once the writer passes it", () => {
+  // Checked at 0x10 while the replica already held a snapshot at 0x12: the
+  // restore did not read it, so neither the verdict nor the attempt has it.
+  const attempt = {
+    startedAtMs: CHECKED_AT_MS,
+    snapshotTxid: snapshotReadAt("12", "10"),
+  };
+  const last = verdict({
+    txid: "10",
+    snapshotTxid: snapshotReadAt("12", "10"),
+  });
+  assertEquals(
+    shouldVerifyReplica(
+      observe({
+        last,
+        lastAttempt: attempt,
+        acknowledgedTxid: "20",
+        snapshotTxid: "12",
+        nowMs: CHECKED_AT_MS + 15 * 60_000,
+      }),
+    ),
+    true,
+  );
+});
+
+Deno.test("shouldVerifyReplica: a snapshot ahead of the acknowledged TXID is not new yet", () => {
+  // Litestream snapshotted past what the writer has acknowledged: checking
+  // now would not read it, so it waits rather than checking every tick.
+  assertEquals(
+    shouldVerifyReplica(
+      observe({ ...moved, snapshotTxid: "0000000000000012" }),
+    ),
+    false,
   );
 });
 

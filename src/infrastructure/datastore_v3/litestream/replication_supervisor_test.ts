@@ -38,7 +38,10 @@ import {
   writeCopyState,
   writeReplicaVerification,
 } from "./replication_files.ts";
-import { REPLICA_VERIFY_BACKSTOP_MS } from "../../../domain/datastore_v3/replica_verification.ts";
+import {
+  REPLICA_VERIFY_BACKSTOP_MS,
+  snapshotReadAt,
+} from "../../../domain/datastore_v3/replica_verification.ts";
 
 const UNIX = Deno.build.os !== "windows";
 
@@ -482,8 +485,9 @@ function recordingVerify(
       txid: copy!.txid,
       checkedAt: new Date(h.now()).toISOString(),
       ok: true,
-      ...(request.snapshotTxid !== undefined
-        ? { snapshotTxid: request.snapshotTxid }
+      // As the real check records it: only a snapshot it read through.
+      ...(snapshotReadAt(request.snapshotTxid, copy!.txid) !== undefined
+        ? { snapshotTxid: snapshotReadAt(request.snapshotTxid, copy!.txid) }
         : {}),
     });
   };
@@ -562,6 +566,23 @@ Deno.test({
       // The new lineage, then the snapshot written at hour 1.
       assertEquals(restores.length, 2);
       assertEquals(restores[1].snapshotTxid, txidOf(50));
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "runReplicationSupervisor: a snapshot written ahead of the acknowledged TXID is checked once the writer passes it, not at the backstop (swamp-club#4261)",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      // The replica's snapshot is at TXID 71 throughout; the writer reaches
+      // it after about 70 minutes.
+      const { restores } = await serveDay(dir, 3, () => txidOf(71));
+      // The new lineage (which did not read that snapshot), then the check
+      // that does, well before the 4-hour backstop.
+      assertEquals(restores.length, 2);
+      assertEquals(restores[1].snapshotTxid, txidOf(71));
     });
   },
 });

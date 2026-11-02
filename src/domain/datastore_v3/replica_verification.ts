@@ -66,10 +66,32 @@ export interface ReplicaVerification {
   readonly snapshotTxid?: string;
 }
 
+/**
+ * The snapshot a restore at `txid` reads through, by its max TXID: the
+ * replica's newest, `snapshotTxid`, only when it is at or below `txid`. A
+ * newer one was written after the writer's last acknowledgement and is
+ * read only by later restores, so neither a verdict nor a sidecar's own
+ * attempt records it, and the next decision still sees it as new.
+ */
+export function snapshotReadAt(
+  snapshotTxid: string | undefined,
+  txid: string | undefined,
+): string | undefined {
+  const snapshot = normalizeTxid(snapshotTxid);
+  const restored = normalizeTxid(txid);
+  return snapshot !== undefined && restored !== undefined &&
+      snapshot <= restored
+    ? snapshot
+    : undefined;
+}
+
 /** A check this sidecar started, whatever it ended with. */
 export interface ReplicaVerifyAttempt {
   readonly startedAtMs: number;
-  /** The snapshot marker known when it started, if one was. */
+  /**
+   * The snapshot it read through ({@link snapshotReadAt}), if one was
+   * known.
+   */
   readonly snapshotTxid: string | undefined;
 }
 
@@ -86,7 +108,8 @@ export interface ReplicaVerifyObservation {
   readonly last: ReplicaVerification | undefined;
   /**
    * The newest snapshot on the replica, by its max TXID, or undefined when
-   * it is not known. An unknown snapshot is never a new one.
+   * it is not known. An unknown snapshot is never a new one, and neither is
+   * one above the acknowledged TXID until the writer reaches it.
    */
   readonly snapshotTxid: string | undefined;
   /** The last check this sidecar started, if it started one. */
@@ -119,9 +142,9 @@ export function shouldVerifyReplica(o: ReplicaVerifyObservation): boolean {
   if (last !== undefined && normalizeTxid(last.txid) === acknowledged) {
     return false;
   }
-  const marker = o.snapshotTxid === undefined
-    ? undefined
-    : normalizeTxid(o.snapshotTxid);
+  // Only a snapshot a restore at the acknowledged TXID reads through: one
+  // written ahead of it is new only once the writer passes it.
+  const marker = snapshotReadAt(o.snapshotTxid, acknowledged);
   const newSnapshotSince = (seen: string | undefined): boolean =>
     marker !== undefined &&
     (seen === undefined || normalizeTxid(seen) !== marker);

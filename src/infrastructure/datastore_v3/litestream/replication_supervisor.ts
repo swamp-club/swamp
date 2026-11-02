@@ -43,6 +43,7 @@ import {
   type ReplicaVerification,
   type ReplicaVerifyAttempt,
   shouldVerifyReplica,
+  snapshotReadAt,
 } from "../../../domain/datastore_v3/replica_verification.ts";
 import { normalizeTxid } from "../../../domain/datastore_v3/published_lineage.ts";
 import {
@@ -458,7 +459,12 @@ class ReplicaCheck {
       backstopMs: this.options.verifyIntervalMs ?? REPLICA_VERIFY_BACKSTOP_MS,
     });
     if (!due) return;
-    this.#lastAttempt = { startedAtMs: now, snapshotTxid };
+    // Only a snapshot this check reads through: a newer one is still new
+    // to the next decision.
+    this.#lastAttempt = {
+      startedAtMs: now,
+      snapshotTxid: snapshotReadAt(snapshotTxid, acknowledgedTxid),
+    };
     this.#track(
       verify({
         paths: this.paths,
