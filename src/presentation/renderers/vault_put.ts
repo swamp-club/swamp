@@ -79,7 +79,6 @@ export function createVaultPutRenderer(
   }
 }
 
-/** Renders cancellation when user declines the prompt. */
 export function renderVaultPutCancelled(mode: OutputMode): void {
   if (mode === "json") {
     console.log(JSON.stringify({ cancelled: true }, null, 2));

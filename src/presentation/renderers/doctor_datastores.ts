@@ -50,15 +50,9 @@ import type { OutputMode } from "../output/output.ts";
 const PEER_DELETED_LOOKS_UNPUSHED =
   "A file a peer deleted before your datastore extension recorded such deletes looks the same, and uploading it restores it for everyone";
 
-/** What to do with files a real repair left unpushed. */
 const UNINDEXABLE_ADVICE =
   "The datastore could not index the files still listed, so repeating the repair does not clear them. Copy them out of the datastore cache and remove them.";
 
-// ============================================================================
-// Doctor datastores renderer (detection)
-// ============================================================================
-
-/** The per-kind lines of `doctor datastores --retention` in log mode. */
 export function retentionDetailLines(summary: RetentionCheckSummary): string[] {
   const lines: string[] = [
     "",
@@ -139,10 +133,6 @@ export function retentionDetailLines(summary: RetentionCheckSummary): string[] {
   return lines;
 }
 
-/**
- * The entries of a failed v3 content check in log mode, each with how to
- * repair it (swamp-club#3617).
- */
 export function v3ContentDetailLines(summary: V3ContentSummary): string[] {
   const lines: string[] = [];
   const more = (total: number, shown: number) => {
@@ -191,10 +181,6 @@ export function v3ContentDetailLines(summary: V3ContentSummary): string[] {
   return lines;
 }
 
-/**
- * The entries of a failed unreadable_versions check in log mode
- * (swamp-club#3955).
- */
 export function unreadableVersionsDetailLines(
   summary: UnreadableVersionsSummary,
 ): string[] {
@@ -230,9 +216,8 @@ export function unreadableVersionsDetailLines(
 }
 
 /**
- * Up to `shown.length` paths, indented, and how many more there are. The
- * extension builds these from file names on disk, so control characters (an
- * escape sequence among them) are escaped (swamp-club#4112).
+ * paths come from file names on disk, so control characters (an escape sequence
+ * among them) are escaped
  */
 function pathLines(
   shown: readonly string[],
@@ -248,11 +233,6 @@ function pathLines(
   return lines;
 }
 
-/**
- * The lines of a `repairUnpushedFiles` summary in log mode: files still to
- * upload, then local versions the remote does not hold, which are never
- * uploaded.
- */
 export function unpushedFilesDetailLines(
   summary: UnpushedFilesSummary,
 ): string[] {
@@ -337,7 +317,6 @@ class LogDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
 
         writeOutput(`\nDatastore type: ${bold(data.datastoreType)}`);
 
-        // Render health findings
         for (const finding of data.healthFindings) {
           if (finding.passed) {
             writeOutput(`${green("✓")} ${finding.message}`);
@@ -347,7 +326,6 @@ class LogDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
           }
         }
 
-        // Render contamination details when present
         if (data.contaminationFinding) {
           const cf = data.contaminationFinding;
           writeOutput(
@@ -370,7 +348,7 @@ class LogDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
           );
         }
 
-        // Advisory: never fails the scan (swamp-club#4112).
+        // advisory: never fails the scan
         if (data.unpushedFilesFinding) {
           const uf = data.unpushedFilesFinding;
           if (uf.error !== undefined) {
@@ -398,7 +376,6 @@ class LogDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
           }
         }
 
-        // Render catalog shortfall details when present
         if (data.catalogCompletenessFinding) {
           const cc = data.catalogCompletenessFinding;
           writeOutput(`\n${red("Catalog index incomplete:")}`);
@@ -432,7 +409,7 @@ class LogDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
           writeOutput(v3ContentDetailLines(data.v3ContentFinding).join("\n"));
         }
 
-        // Render vault mismatch advisory (yellow, does not cause failure)
+        // advisory: yellow and does not cause failure
         if (data.vaultMismatchFindings.length > 0) {
           writeOutput(
             `\n${yellow("⚠")} ${
@@ -524,11 +501,6 @@ export function createDoctorDatastoresRenderer(
   }
 }
 
-// ============================================================================
-// Repair --json document (swamp-club#4011)
-// ============================================================================
-
-/** A v2 repair stage's key in the `--repair --json` document. */
 export type DatastoreRepairStage =
   | "unmigrated"
   | "unreadableVersions"
@@ -538,11 +510,9 @@ export type DatastoreRepairStage =
   | "contamination";
 
 /**
- * The one JSON document `doctor datastores --repair --json` prints. Each v2
- * repair stage's json renderer records its result object under the stage's
- * key, and the command prints the report once; a stage that did not run is
- * null. Printing per stage gave several documents back to back
- * (swamp-club#4011).
+ * each stage's json renderer records its result under the stage key and the
+ * command prints the report once, so --json yields one document; a stage that
+ * did not run is null
  */
 export class DatastoreRepairJsonReport {
   readonly #stages: Record<
@@ -564,8 +534,8 @@ export class DatastoreRepairJsonReport {
   }
 
   /**
-   * A warning about the run rather than a stage. The logger is silent under
-   * --json, so this is the only place such a warning reaches a script.
+   * a warning about the run rather than a stage; the logger is silent under
+   * --json, so this is the only way such a warning reaches a script
    */
   warn(message: string): void {
     this.#warnings.push(message);
@@ -582,10 +552,6 @@ export class DatastoreRepairJsonReport {
     ));
   }
 }
-
-// ============================================================================
-// Repair renderer
-// ============================================================================
 
 export type RepairDatastoresStatus = "pass" | "fail" | "preview";
 
@@ -739,10 +705,6 @@ export function createRepairDatastoresRenderer(
   }
 }
 
-// ============================================================================
-// Unpushed cache files repair renderer (swamp-club#4112)
-// ============================================================================
-
 export type UnpushedFilesRepairStatus =
   | "pass"
   | "fail"
@@ -754,7 +716,6 @@ export interface UnpushedFilesRepairRenderer {
   readonly overallStatus: UnpushedFilesRepairStatus;
 }
 
-/** A repair that left files it should have uploaded failed. */
 function repairedStatus(
   summary: UnpushedFilesSummary,
 ): UnpushedFilesRepairStatus {
@@ -887,8 +848,8 @@ class JsonUnpushedFilesRepairRenderer implements UnpushedFilesRepairRenderer {
 }
 
 /**
- * Shows a preview's failed unpushed files check in log mode. The json report
- * records it already, and the contamination preview follows it.
+ * the json report already records the failed check, and the contamination
+ * preview follows it
  */
 export function renderUnpushedFilesCheckFailure(
   mode: OutputMode,
@@ -908,10 +869,6 @@ export function createUnpushedFilesRepairRenderer(
       return new LogUnpushedFilesRepairRenderer();
   }
 }
-
-// ============================================================================
-// Unmigrated data repair renderer
-// ============================================================================
 
 export type UnmigratedDataRepairStatus = "pass" | "fail" | "preview";
 
@@ -1020,10 +977,6 @@ export function createUnmigratedDataRepairRenderer(
   }
 }
 
-// ============================================================================
-// Unreadable data versions repair renderer (swamp-club#3955)
-// ============================================================================
-
 export type UnreadableVersionsRepairStatus = "pass" | "fail" | "preview";
 
 export interface UnreadableVersionsRepairRenderer {
@@ -1031,7 +984,6 @@ export interface UnreadableVersionsRepairRenderer {
   readonly overallStatus: UnreadableVersionsRepairStatus;
 }
 
-/** One record's line: what goes, and what is latest after. */
 function unreadableRecordLine(
   record: UnreadableRecordRepair,
   verb: { remove: string; reset: string },
@@ -1184,10 +1136,6 @@ export function createUnreadableVersionsRepairRenderer(
   }
 }
 
-// ============================================================================
-// Catalog index repair renderer
-// ============================================================================
-
 export type CatalogIndexRepairStatus = "pass" | "fail" | "preview";
 
 export interface CatalogIndexRepairRenderer {
@@ -1195,7 +1143,6 @@ export interface CatalogIndexRepairRenderer {
   readonly overallStatus: CatalogIndexRepairStatus;
 }
 
-/** Shown after any repair that drops the catalog database. */
 const FOREIGN_ROWS_NOTICE =
   "Rebuilding the index also clears rows pulled from other namespaces " +
   "(they describe data that is not on local disk, so the rebuild cannot " +
@@ -1304,10 +1251,6 @@ export function createCatalogIndexRepairRenderer(
   }
 }
 
-// ============================================================================
-// Catalog duplicate is_latest repair
-// ============================================================================
-
 export type CatalogDuplicateLatestRepairStatus = "pass" | "fail" | "preview";
 
 export interface CatalogDuplicateLatestRepairRenderer {
@@ -1411,10 +1354,6 @@ export function createCatalogDuplicateLatestRepairRenderer(
       return new LogCatalogDuplicateLatestRepairRenderer();
   }
 }
-
-// ============================================================================
-// Repair: a v3 datastore's lost format marker (swamp-club#3617)
-// ============================================================================
 
 export type DatastoreFormatMarkerRepairStatus = "pass" | "fail" | "preview";
 

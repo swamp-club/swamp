@@ -56,16 +56,10 @@ function formatDurationSec(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-/**
- * Callback type for fetching history run detail data for the preview pane.
- */
 export type HistoryPreviewFetcher = (
   item: WorkflowHistorySearchItem,
 ) => Promise<WorkflowRunView>;
 
-/**
- * Filters runs by a query string (case-insensitive match on workflowName, runId, or status).
- */
 function filterRuns(
   items: WorkflowHistorySearchItem[],
   query: string,
@@ -198,11 +192,6 @@ export function createWorkflowHistorySearchRenderer(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Rendering callbacks for the SearchPicker
-// ---------------------------------------------------------------------------
-
-/** Single-line result for the results list. */
 function renderHistoryResultLine(
   item: WorkflowHistorySearchItem,
 ): React.ReactElement {
@@ -234,7 +223,6 @@ function renderHistoryResultLine(
   );
 }
 
-/** Preview content for a workflow history run. */
 function renderHistoryPreview(
   item: WorkflowHistorySearchItem,
   detail: WorkflowRunView | undefined,
@@ -243,7 +231,6 @@ function renderHistoryPreview(
 ): React.ReactElement {
   const innerWidth = Math.max(10, width - 1);
   if (!detail) {
-    // Immediate content from the search item
     const statusColor = STATUS_COLORS[item.status] ?? "white";
     const dateStr = item.startedAt
       ? new Date(item.startedAt).toLocaleString()
@@ -306,7 +293,6 @@ function renderHistoryPreview(
     );
   }
 
-  // Full detail from fetchPreview
   const statusColor = STATUS_COLORS[detail.status] ?? "white";
   const durationStr = detail.duration !== undefined
     ? formatDurationSec(detail.duration)
@@ -370,7 +356,6 @@ function renderHistoryPreview(
   );
 }
 
-/** Plain-text scrollback output for a selected workflow history run. */
 function renderHistoryScrollback(
   item: WorkflowHistorySearchItem,
   detail: WorkflowRunView | undefined,

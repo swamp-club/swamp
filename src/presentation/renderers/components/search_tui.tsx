@@ -23,13 +23,6 @@ import { Fzf, type FzfResultItem } from "fzf";
 import { suppressInkTtyErrors } from "../../output/ink_lifecycle.ts";
 import { useScrollableList } from "../../output/hooks/mod.ts";
 
-/**
- * Props for the generic SearchTUI component.
- *
- * Each search command provides its own `selector` (for fzf matching) and
- * `renderItem` (for per-item display), while the chrome (search bar, count,
- * scroll indicators, keyboard navigation, help text) is shared.
- */
 export interface SearchTUIProps<T> {
   items: T[];
   initialQuery: string;
@@ -41,10 +34,6 @@ export interface SearchTUIProps<T> {
   onCancel: () => void;
 }
 
-/**
- * Generic fuzzy-search TUI component shared by all search commands.
- * Uses fzf for matching and useScrollableList for pagination.
- */
 export function SearchTUI<T>(
   props: SearchTUIProps<T>,
 ): React.ReactElement {
@@ -123,7 +112,6 @@ export function SearchTUI<T>(
       return;
     }
 
-    // Handle regular character input
     if (input && !key.ctrl && !key.meta) {
       setQuery((q) => q + input);
     }
@@ -183,10 +171,6 @@ export function SearchTUI<T>(
   );
 }
 
-/**
- * Launches a SearchTUI inside an Ink render context and returns the selected
- * item (or `undefined` if the user cancelled).
- */
 export function renderInteractiveSearch<T>(
   items: T[],
   initialQuery: string,

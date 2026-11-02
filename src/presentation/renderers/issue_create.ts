@@ -109,7 +109,6 @@ export function createIssueCreateRenderer(
   }
 }
 
-/** Data structure for issue editor cancelled output. */
 export interface IssueCancelledData {
   type: "bug" | "feature" | "security" | "ripple" | "edit";
   reason: "empty" | "cancelled";
@@ -143,23 +142,14 @@ export function renderIssueCancelled(
   }
 }
 
-// ---- Redaction notice rendering ----
-
-/**
- * Pre-submission redaction notice: one labelled field (title/body for
- * submissions and edits, unlabelled for ripples) with its redaction result.
- */
 export interface RedactionNoticeField {
   label?: "title" | "body";
   result: RedactionResult;
 }
 
 /**
- * Renders what redaction changed before content leaves the machine, so the
- * reporter can tell a harmless redaction from a destroyed finding. Log mode
- * prints the summary plus one "line N: <original> -> <redacted>" entry per
- * change; json mode emits the structured detail on stderr (stdout carries
- * the command's primary JSON). No-op when nothing was redacted.
+ * json mode emits the structured detail on stderr because stdout carries the
+ * command's primary JSON; no-op when nothing was redacted
  */
 export function renderRedactionNotice(
   summary: RedactionSummary,
@@ -193,11 +183,6 @@ export function renderRedactionNotice(
   }
 }
 
-/**
- * Renders the notice that redaction was deliberately skipped, via
- * --no-redact or by answering w at the redaction prompt, so the choice is
- * visible and auditable in both modes.
- */
 export function renderRedactionSkipped(
   mode: OutputMode,
   source: "flag" | "prompt" = "flag",
@@ -212,8 +197,6 @@ export function renderRedactionSkipped(
       : "Redaction skipped (--no-redact); content submitted as written.",
   );
 }
-
-// ---- Ripple (comment) rendering ----
 
 class LogIssueCommentRenderer implements Renderer<IssueCommentEvent> {
   handlers(): EventHandlers<IssueCommentEvent> {
@@ -270,14 +253,11 @@ export function createIssueCommentRenderer(
   }
 }
 
-// ---- Extension-scoped rendering ----
-
 export interface ExtensionRepositoryHandoffData {
   result: Extract<RepositoryDispatchResult, { kind: "handoff" }>;
   extensionName: string;
 }
 
-/** Renders the completed `dispatchRepositoryReport` result. */
 export function renderExtensionRepositoryHandoff(
   data: ExtensionRepositoryHandoffData,
   mode: OutputMode,
@@ -339,7 +319,6 @@ export function renderExtensionRepositoryHandoff(
     return;
   }
 
-  // Variant "issue"
   if (result.method === "gh") {
     logger.info(
       "Filed issue #{number} at {url} via the gh CLI.",

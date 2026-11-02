@@ -195,8 +195,8 @@ Deno.test("renderJson: empty attributes produce empty content object", () => {
 });
 
 Deno.test("renderQueryResultsMarkdown: renders more list rows than fit in a spread call", () => {
-  // Math.max(...rows.map(...)) threw RangeError above ~125k rows, and data
-  // query is unlimited by default (swamp-club#2565).
+  // spreading rows into Math.max throws RangeError on very large results, and
+  // data query is unlimited by default
   const count = 150_000;
   const rows = Array.from({ length: count }, (_, i) => [i]);
   rows[count - 1] = [1, 2, 3];
@@ -323,7 +323,7 @@ Deno.test("renderQueryResultsTerminal: base64 content survives log output unchan
 });
 
 Deno.test("renderQueryResultsTerminal: a multi-megabyte scalar is written unchanged", () => {
-  // One line this long overflows marked's stack (swamp-club#3253).
+  // a single line this long overflows marked's stack
   const content = "A".repeat(14_000_000);
   const output = renderQueryResultsTerminal({
     predicate: 'name == "screenshot"',

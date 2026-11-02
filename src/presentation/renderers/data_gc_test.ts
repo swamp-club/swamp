@@ -88,8 +88,6 @@ Deno.test("renderDataGcPreview: json mode with no version-gc work reports zeroes
 });
 
 Deno.test("renderDataGcPreview: log mode omits version-gc line when empty", () => {
-  // Should not throw; the log-mode branch writes via the logger (not console.log),
-  // so we just verify nothing was written to console.log.
   const out = captureStdout(() =>
     renderDataGcPreview({
       items: [
@@ -107,8 +105,6 @@ Deno.test("renderDataGcPreview: log mode omits version-gc line when empty", () =
 });
 
 Deno.test("renderDataGcPreview: log mode includes version-gc data when present", () => {
-  // Log mode routes through the logger — this test just asserts the call doesn't
-  // throw with a populated versionGcItems array.
   renderDataGcPreview({
     items: [],
     versionGcItems: [
@@ -215,7 +211,6 @@ Deno.test("renderDataGcPreview: json output is valid JSON", () => {
       ],
     }, "json")
   );
-  // Should parse; and the raw output should include the versionGc payload key.
   JSON.parse(out);
   assertStringIncludes(out, "versionGcData");
 });

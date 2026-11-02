@@ -34,43 +34,30 @@ import {
 } from "../../domain/update/download_progress.ts";
 import { type SwampColor, swampColor } from "../swamp_colors.ts";
 
-/** How often a progress line is written when stderr is not a terminal. */
 const PROGRESS_LINE_INTERVAL_MS = 10_000;
-/** The span the download speed is averaged over. */
 const SPEED_WINDOW_MS = 5_000;
-/** The widest the progress bar is drawn. */
 const BAR_MAX_COLUMNS = 30;
-/** Below this the bar is left out rather than drawn too short to read. */
 const BAR_MIN_COLUMNS = 10;
 
-/** The live spinner, as the renderer drives it. */
 export interface ProgressSpinner {
   update(message: string): void;
-  /** Clears the spinner's row. */
   stop(): void;
-  /** Leaves `line` in place of the spinner and moves to a fresh row. */
   finish(line: string): void;
 }
 
-/** Where the log renderer shows download progress. */
 export interface UpdateCheckRendererOptions {
-  /** The live spinner on a terminal; its message becomes the progress. */
   spinner?: ProgressSpinner | null;
-  /** True when stderr is a terminal, so the spinner shows progress. */
   stderrIsTerminal?: boolean;
-  /** Writes one line to stderr; used when there is no terminal. */
   writeStderr?: (line: string) => void;
   /**
-   * `-q`: no progress or retry lines on stderr. The spinner, which only
-   * draws on a terminal and leaves nothing behind, is unaffected.
+   * `-q`: no progress or retry lines on stderr; the spinner only draws on a
+   * terminal and leaves nothing behind
    */
   quiet?: boolean;
   now?: () => number;
-  /** The terminal's width; replaced in tests. */
   columns?: () => number;
 }
 
-/** The terminal's width, or 80 when it cannot be read. */
 function terminalColumns(): number {
   try {
     return Deno.consoleSize().columns;
@@ -79,18 +66,15 @@ function terminalColumns(): number {
   }
 }
 
-/** A run of text drawn in one swamp color, or plain. */
 interface Segment {
   readonly text: string;
   readonly color?: SwampColor;
 }
 
 /**
- * Draws `segments` in at most `width` columns, cutting the text with an
- * ellipsis when it is too long. The spinner redraws by clearing only its
- * current row, so a wrapped line would leave copies of itself behind. The
- * width is measured on the plain text and colors are added after, so an
- * escape sequence is never counted or cut.
+ * cuts with an ellipsis because the spinner clears only its current row, so a
+ * wrapped line would leave copies; width is measured on plain text so escapes
+ * are never cut
  */
 function fitSegments(segments: readonly Segment[], width: number): string {
   const paint = (s: Segment, text: string) =>
@@ -109,10 +93,6 @@ function fitSegments(segments: readonly Segment[], width: number): string {
   return `${out}\u2026`;
 }
 
-/**
- * A progress bar `columns` wide, filled to `fraction`, with a half cell at
- * the head so it moves in half steps.
- */
 function barSegments(fraction: number, columns: number): Segment[] {
   const halves = Math.floor(Math.min(1, Math.max(0, fraction)) * columns * 2);
   const full = Math.floor(halves / 2);
@@ -124,11 +104,6 @@ function barSegments(fraction: number, columns: number): Segment[] {
   ];
 }
 
-/**
- * Puts a bar of `fraction` in front of `tail`, as wide as fits in `width`
- * up to BAR_MAX_COLUMNS, or leaves it out when fewer than BAR_MIN_COLUMNS
- * are free.
- */
 function withBar(
   fraction: number,
   tail: readonly Segment[],
@@ -140,10 +115,6 @@ function withBar(
   return [...barSegments(fraction, columns), { text: " " }, ...tail];
 }
 
-/**
- * Formats seconds at a fixed width (`m:ss`, or `h:mm:ss` from an hour), so a
- * live line does not jitter as the value counts down.
- */
 function formatClock(seconds: number): string {
   const total = Math.max(0, Math.ceil(seconds));
   const h = Math.floor(total / 3600);
@@ -154,16 +125,10 @@ function formatClock(seconds: number): string {
 
 export interface UpdateCheckRenderer extends Renderer<UpdateCheckEvent> {
   readonly updated: boolean;
-  /** The version installed by this run, when it updated. */
   readonly newVersion: string | null;
-  /** True when the user cancelled the update; the binary is unchanged. */
   readonly cancelled: boolean;
 }
 
-/**
- * Turns download progress into a line, with a speed averaged over the last
- * few seconds: plain text for logs, or a colored bar for the terminal.
- */
 class DownloadProgressFormatter {
   private samples: { at: number; bytes: number }[] = [];
   private startedAt: number | null = null;
@@ -172,7 +137,6 @@ class DownloadProgressFormatter {
 
   constructor(private readonly now: () => number) {}
 
-  /** Records `progress`; returns bytes per second, or null until known. */
   private record(progress: DownloadProgress): number | null {
     const at = this.now();
     this.startedAt ??= at;
@@ -193,7 +157,6 @@ class DownloadProgressFormatter {
     return ((progress.receivedBytes - first.bytes) * 1000) / elapsedMs;
   }
 
-  /** One plain line, for stderr when it is not a terminal. */
   format(progress: DownloadProgress): string {
     const perSecond = this.record(progress);
     const received = formatBytes(progress.receivedBytes);
@@ -211,11 +174,6 @@ class DownloadProgressFormatter {
     return parts.join(" ");
   }
 
-  /**
-   * The live line for the spinner, at most `width` columns: a bar with the
-   * percentage, bytes, speed and time left when the size is known, or the
-   * bytes received and speed when it is not.
-   */
   formatLive(progress: DownloadProgress, width: number): string {
     const perSecond = this.record(progress);
     const received = formatBytes(progress.receivedBytes);
@@ -247,10 +205,8 @@ class DownloadProgressFormatter {
   }
 
   /**
-   * The line left on the terminal once `newVersion` is installed: a check,
-   * the new version, and the full bar, size and download time as far as the
-   * download reported them. The time ends at the last progress event, so the
-   * checksum and install that follow are not counted.
+   * the time ends at the last progress event, so the checksum and install are
+   * not counted
    */
   formatFinished(newVersion: string, width: number): string {
     const check: Segment = { text: "\u2713 ", color: "green" };
@@ -308,12 +264,6 @@ class LogUpdateCheckRenderer implements UpdateCheckRenderer {
     this.progress = new DownloadProgressFormatter(this.now);
   }
 
-  /**
-   * On a terminal the spinner shows `message` live. Elsewhere (agents, CI,
-   * pipes) a line goes to stderr at most every few seconds, or at once when
-   * `force` is set, so a long download is visibly alive — unless `-q` asked
-   * for no commentary on stderr (see postCommandNoticesAllowed).
-   */
   private show(message: string, force: boolean): void {
     if (this.stderrIsTerminal) {
       this.spinner?.update(fitSegments([{ text: message }], this.liveWidth()));
@@ -326,17 +276,11 @@ class LogUpdateCheckRenderer implements UpdateCheckRenderer {
     this.writeStderr(message);
   }
 
-  /** Two columns go to the spinner frame and the space after it. */
   private liveWidth(): number {
     return this.columns() - 2;
   }
 
-  /**
-   * Ends the live progress before anything else is written, so the next
-   * output starts on its own row: an installed update leaves a final line
-   * with the new version, anything else clears the row. Under `-q` the row
-   * is always cleared, so the spinner leaves nothing behind.
-   */
+  /** under `-q` the row is always cleared, so the spinner leaves nothing behind */
   private settleSpinner(newVersion: string | null): void {
     if (newVersion !== null && this.stderrIsTerminal && !this.quiet) {
       this.spinner?.finish(
@@ -449,10 +393,8 @@ export function createUpdateCheckRenderer(
 }
 
 /**
- * Renders a cancelled update (the user pressed Ctrl+C). Log mode prints a
- * plain line, as other commands do for a cancel the user chose. JSON mode
- * writes the error document to stderr with `code: "cancelled"`, so a script
- * can tell a cancel from a failure without relying on the exit code alone.
+ * json mode writes the error document to stderr with `code: "cancelled"`, so a
+ * script can tell a cancel from a failure without the exit code
  */
 export function renderUpdateCancelled(
   mode: OutputMode,

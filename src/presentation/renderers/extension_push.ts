@@ -74,11 +74,9 @@ export type AcceptedReviewWarning = Omit<
 export type AcceptedSafetyWarning = Omit<SafetyIssue, "remediation">;
 
 /**
- * The safety and review warnings, and the dependency trust warnings with a
- * cause, the pusher waived with `--yes` or `--force`. Recorded in the
- * dry-run and push summaries so a reviewer can see exactly what was
- * accepted. Advisory warnings (the other dependency trust warnings, version
- * drift, upgrade entries) never gate a push and are not part of the record.
+ * safety, review and cause-bearing dependency trust warnings the pusher waived
+ * with --yes or --force, recorded in dry-run and push summaries. Advisory
+ * warnings never gate a push and are not recorded.
  */
 export interface AcceptedWarnings {
   /**
@@ -90,52 +88,35 @@ export interface AcceptedWarnings {
   review: AcceptedReviewWarning[];
 }
 
-/** How many warnings the record holds, across every family. */
 export function acceptedWarningCount(warnings: AcceptedWarnings): number {
   return (warnings.dependencyTrust?.length ?? 0) + warnings.safety.length +
     warnings.review.length;
 }
 
-/** The flag that waived safety and review warnings on a run. */
 export type WarningsWaiver = "--yes" | "--force";
 
-/**
- * What a run waived and with which flag. The log summary names the flag in
- * its header; the JSON summary carries only the record, under
- * `acceptedWarnings`.
- */
 export interface WarningsAcceptance {
   warnings: AcceptedWarnings;
   waivedBy: WarningsWaiver;
 }
 
-/** Summary data for a completed dry run. */
 export interface ExtensionPushDryRunData {
   name: string;
   version: string;
   archiveSize: number;
   visibility: ExtensionPushResolvedData["visibility"];
-  /** The content hash the review report is keyed by. */
   contentHash: string | undefined;
-  /** Each registry check's verdict, in the order the push runs them. */
   registryChecks: RegistryCheckResult[];
-  /** Every HTTP call the run made; empty when none was made. */
   apiCalls: ApiCallRecord[];
-  /** Present only when a flag waived at least one warning. */
   accepted?: WarningsAcceptance;
-  /** The declared acceptances and the unresolved warnings. */
   report?: FindingsReport;
 }
 
-/** Per-run inputs for the stream handlers. */
 export interface ExtensionPushHandlerOptions {
-  /** Present only when a flag waived at least one warning. */
   accepted?: WarningsAcceptance;
-  /** The declared acceptances and the unresolved warnings. */
   report?: FindingsReport;
 }
 
-/** Extended renderer with methods for the prepare-phase outputs. */
 export interface ExtensionPushRenderer extends Renderer<ExtensionPushEvent> {
   renderResolved(data: ExtensionPushResolvedData): void;
   renderDependencyTrustWarnings(warnings: DependencyTrustIssue[]): void;
@@ -167,13 +148,6 @@ export interface ExtensionPushRenderer extends Renderer<ExtensionPushEvent> {
   ): EventHandlers<ExtensionPushEvent>;
 }
 
-/**
- * Where the renderer prints paths from: the directory the author ran the
- * command in, the repo directory the resolved file names are relative to,
- * and the directory holding the manifest. Files under the repo or the
- * manifest's directory are the pushed content, which prints relative to
- * `cwd` (see {@link displayPath}).
- */
 export interface ExtensionPushRenderPaths {
   cwd: string;
   repoDir: string;
@@ -194,7 +168,6 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-/** `name@version`, interpolated as one value so it prints as one quoted token. */
 function nameAtVersion(data: { name: string; version: string }): string {
   return `${data.name}@${data.version}`;
 }
@@ -214,7 +187,6 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
 
   constructor(private readonly paths: ExtensionPushRenderPaths) {}
 
-  /** An absolute path as the author can open it from where they ran push. */
   private display(path: string): string {
     return displayPath(path, this.paths.cwd, [
       this.paths.repoDir,
@@ -222,7 +194,6 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     ]);
   }
 
-  /** How the findings report prints its paths. */
   private reportPaths(): FindingsReportPaths {
     return {
       manifestDir: this.paths.manifestDir,
@@ -230,18 +201,15 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     };
   }
 
-  /** A resolved file name (repo-relative) as the author can open it. */
   private resolvedFile(fileName: string): string {
     return this.display(resolve(this.paths.repoDir, fileName));
   }
 
-  /** A finding's `file:line`, its file as the author can open it. */
   private where(finding: { file: string; line?: number }): string {
     const file = this.display(finding.file);
     return finding.line !== undefined ? `${file}:${finding.line}` : file;
   }
 
-  /** Prints free text one line per log line, verbatim. */
   private textBlock(level: LogLevelName, text: string, indent: string): void {
     logTextBlock(this.logger, level, text, indent);
   }
@@ -661,7 +629,6 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
   }
 }
 
-/** How a `--json` run ended, carried as the document's `status`. */
 export type ExtensionPushJsonStatus =
   | "dry_run"
   | "pushed"
@@ -670,10 +637,8 @@ export type ExtensionPushJsonStatus =
   | "cancelled";
 
 /**
- * The `--json` renderer writes one document per run. Every render call
- * before the end of the run records its part (the resolved extension, each
- * warning family); the call that ends the run (dry run, push completed or
- * failed, a blocked prepare) writes the document with those parts as fields.
+ * one document per run: each render call records its part, and the call that
+ * ends the run writes the document with those parts as fields
  */
 class JsonExtensionPushRenderer implements ExtensionPushRenderer {
   private resolved: ExtensionPushResolvedData | undefined;
@@ -710,7 +675,6 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
     this.emit("blocked", { errors: { [family]: errors } });
   }
 
-  /** The resolved extension with every file name absolute. */
   renderResolved(data: ExtensionPushResolvedData): void {
     const abs = (fileName: string) => resolve(this.paths.repoDir, fileName);
     this.resolved = {
@@ -859,7 +823,6 @@ export function createExtensionPushRenderer(
   }
 }
 
-/** Renders cancellation message when user declines a prompt. */
 export function renderExtensionPushCancelled(mode: OutputMode): void {
   if (mode === "json") {
     console.log(JSON.stringify({ status: "cancelled" }));

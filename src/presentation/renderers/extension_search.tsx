@@ -141,10 +141,6 @@ export function createExtensionSearchRenderer(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Rendering callbacks for the SearchPicker
-// ---------------------------------------------------------------------------
-
 const DESCRIPTION_MAX = 60;
 
 function versionLabel(item: ExtensionSearchItem): string {

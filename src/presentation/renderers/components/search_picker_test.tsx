@@ -34,9 +34,8 @@ function tick(ms = 50): Promise<void> {
 }
 
 /**
- * Minimal component that mirrors the SearchPicker's action-key logic in
- * isolation, avoiding the full fzf/layout/preview stack so we can directly
- * observe what useInput receives for Ctrl+letter bytes.
+ * mirrors the SearchPicker's action-key logic without the fzf/layout/preview
+ * stack, to observe what useInput receives for Ctrl+letter bytes
  */
 function ActionKeyProbe(props: {
   actions: ActionDef[];
@@ -90,7 +89,6 @@ Deno.test({
     );
 
     await tick();
-    // Ctrl+r = byte 0x12
     stdin.write("\x12");
     await tick();
 
@@ -98,7 +96,6 @@ Deno.test({
     assertEquals(firedInput, "r");
     assertEquals(chars.length, 0);
 
-    // Verify the query didn't get the character
     const frame = lastFrame() ?? "";
     assertStringIncludes(frame, "query:");
   },
@@ -152,7 +149,6 @@ function renderPicker(
   );
 }
 
-/** Presses Enter once the picker has drawn, and returns what it selected. */
 async function enter(
   picker: ReturnType<typeof renderPicker>,
   selected: string[],
@@ -321,11 +317,10 @@ Deno.test({
     for (let i = 0; i < LONG_PREVIEW_ROWS; i++) {
       if ((picker.lastFrame() ?? "").includes(last)) break;
       const frames = picker.frames.length;
-      picker.stdin.write("\x04"); // Ctrl-d
+      picker.stdin.write("\x04");
       await waitFor(() => picker.frames.length > frames, "a scrolled frame");
     }
     assertStringIncludes(picker.lastFrame() ?? "", last);
-    // Counted at the width the preview renders at.
     assertEquals(widths.counted.at(-1), widths.preview.at(-1));
   },
 });
@@ -341,7 +336,7 @@ Deno.test({
       "the preview to draw",
     );
     const before = picker.lastFrame();
-    picker.stdin.write("\x04"); // Ctrl-d
+    picker.stdin.write("\x04");
     picker.stdin.write("a");
     await waitFor(
       () => (picker.lastFrame() ?? "").includes("a▏"),

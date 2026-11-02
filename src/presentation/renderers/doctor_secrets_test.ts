@@ -89,7 +89,6 @@ Deno.test("doctor_secrets log renderer: fails and emits remediation on a leak", 
   assertStringIncludes(out, "apiKey");
   assertStringIncludes(out, "swamp vault put my-vault apiKey");
   assertStringIncludes(out, "vault.get('my-vault', 'apiKey')");
-  // Unresolved definitions are surfaced as advisory warnings.
   assertStringIncludes(out, "could not be assessed");
   assertStringIncludes(out, "orphan");
 });

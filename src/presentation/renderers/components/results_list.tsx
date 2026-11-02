@@ -25,24 +25,13 @@ import type { ScrollMetrics } from "./hooks/mod.ts";
 const INDENT = "  ";
 
 export interface ResultsListProps<T> {
-  /** Visible items in the current scroll window. */
   visibleItems: T[];
-  /** Index of the selected item in the full list (not the visible window). */
   selectedIndex: number;
-  /** Scroll metrics for "more above/below" indicators. */
   scrollMetrics: ScrollMetrics;
-  /** Render callback for a single result line. */
   renderLine: (item: T) => React.ReactElement;
-  /** Maximum width for each result line (characters). */
   width: number;
 }
 
-/**
- * Scrollable single-column result list with reverse-video selection and
- * "... N more above/below" indicators.
- *
- * Reusable for any selection list — not coupled to search.
- */
 export function ResultsList<T>(
   props: ResultsListProps<T>,
 ): React.ReactElement {
@@ -87,10 +76,7 @@ export function ResultsList<T>(
   );
 }
 
-/**
- * Wrapper to call the generic renderLine callback. This exists as a separate
- * component so that the generic `T` flows through correctly.
- */
+/** a separate component so the generic T flows through the renderLine callback */
 function ResultLineWrapper<T>(
   props: { renderLine: (item: T) => React.ReactElement; item: T },
 ): React.ReactElement {

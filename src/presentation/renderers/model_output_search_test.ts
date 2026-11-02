@@ -28,7 +28,6 @@ import type { ModelOutputSearchItem } from "../../libswamp/models/output_search.
 const LEGACY = { itemLabel: "outputs", commandName: undefined };
 
 Deno.test("outputSearchPickerLabels: both legacy pickers keep their labels and default title", () => {
-  // No commandName, so the picker titles itself "outputs search" as before.
   assertEquals(outputSearchPickerLabels("model", "output"), LEGACY);
   assertEquals(outputSearchPickerLabels("model", "history"), LEGACY);
 });

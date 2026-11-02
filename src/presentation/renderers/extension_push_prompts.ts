@@ -20,27 +20,22 @@
 import { placeExistingVersion } from "../../domain/extensions/extension_publish_checks.ts";
 
 /**
- * The wording of the interactive `swamp extension push` prompts. Each prompt
- * says what every answer does, so nobody finds out by being dropped back at
- * the shell. Kept as pure functions so the exact text is unit-tested.
+ * each prompt says what every answer does, so nobody finds out by being dropped
+ * back at the shell
  */
 
-/** A yes/no prompt: lines printed above it, then the question. */
 export interface ConfirmationPromptText {
   details: string[];
   question: string;
 }
 
-/** What the person can do when the version is on a lower channel. */
 export type ExistingVersionAction = "promote" | "bump" | "stop";
 
-/** A numbered choice: lines printed above it, then one entry per action. */
 export interface ChoicePromptText {
   details: string[];
   choices: Array<{ action: ExistingVersionAction; label: string }>;
 }
 
-/** The last prompt before the push publishes. */
 export function finalPushPrompt(input: {
   name: string;
   version: string;
@@ -67,7 +62,6 @@ export function bumpVersionPrompt(input: {
   bumpedVersion: string;
   existingChannel: string;
   requestedChannel: string;
-  /** Set when the existing version is yanked. */
   yank?: { reason?: string };
 }): ConfirmationPromptText {
   const where = input.yank

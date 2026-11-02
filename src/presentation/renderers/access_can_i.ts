@@ -52,11 +52,8 @@ export interface AccessCanIResult {
   query?: { action: string; resource: string; method?: string };
   /** The server's approval policy; undefined for servers that predate it. */
   approveRequiresExplicitGrant?: boolean;
-  /** The server's signal policy; undefined for servers that predate it. */
   signalRequiresExplicitGrant?: boolean;
-  /** The server's tag policy; undefined for servers that predate it. */
   tagRequiresExplicitGrant?: boolean;
-  /** The run-time vault decision; undefined for servers that predate it. */
   runVaultAccess?: RunVaultAccessReport;
 }
 

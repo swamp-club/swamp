@@ -29,18 +29,9 @@ function isWouldBlock(err: unknown): boolean {
 }
 
 /**
- * Suppresses WouldBlock errors from Deno's Node.js compat TTY layer
- * that occur during ink's stdin cleanup. This works around a Deno bug
- * where EAGAIN on non-blocking TTY reads crashes the process instead
- * of being retried.
- *
- * Installs handlers on three error surfaces:
- * - process.stdin "error" event (Node.js stream errors)
- * - globalThis "unhandledrejection" (async function rejections)
- * - globalThis "error" (uncaught exceptions)
- *
- * Call before `render()`, and call the returned cleanup function
- * after the ink selection callback fires.
+ * works around a Deno bug where EAGAIN on non-blocking TTY reads during ink's
+ * stdin cleanup crashes instead of retrying; suppresses WouldBlock on stdin
+ * error, unhandledrejection and error.
  */
 export function suppressInkTtyErrors(): () => void {
   const onStdinError = (err: Error) => {

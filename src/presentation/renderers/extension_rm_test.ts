@@ -24,7 +24,6 @@ import type { ExtensionRmData } from "../../libswamp/extensions/rm.ts";
 
 await initializeLogging({});
 
-/** Captures everything written through console.log/info/warn. */
 function captureConsole(fn: () => void): string {
   const original = {
     log: console.log,

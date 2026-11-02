@@ -139,7 +139,6 @@ Deno.test("doctor_extensions json renderer: emits all five registry keys on fail
 
   const parsed = JSON.parse(out);
   assertEquals(parsed.overallStatus, "fail");
-  // All five keys still present even though only one registry failed.
   const keys = Object.keys(parsed.registries).sort();
   assertEquals(keys, ["datastore", "model", "report", "vault", "webhook"]);
   assertEquals(parsed.registries.model.status, "fail");
@@ -155,31 +154,23 @@ Deno.test("doctor_extensions log renderer: tracks overallStatus across completio
 });
 
 Deno.test("doctor_extensions log renderer: emits one failure bullet per file", async () => {
-  // Capture writeOutput by spying on console (writeOutput funnels through
-  // LogTape; we assert the rendered handlers don't throw and overallStatus
-  // tracks correctly. Bullet rendering itself is verified by integration tests).
+  // writeOutput funnels through LogTape, so assert only that the handlers do
+  // not throw and overallStatus tracks the report
   const r = createDoctorExtensionsRenderer("log");
   const handlers = r.handlers();
-  // No-op for kind-started.
   await handlers["kind-started"]({ kind: "kind-started", registry: "model" });
-  // kind-completed for a failing model row should not throw.
   await handlers["kind-completed"]({
     kind: "kind-completed",
     result: failResult("model"),
   });
-  // completed sets overallStatus.
   await handlers.completed({ kind: "completed", report: buildFailReport() });
   assertEquals(r.overallStatus, "fail");
 });
 
 Deno.test("doctor_extensions json renderer: stable key ordering", async () => {
-  // Even if the input report has registries in a different order, the JSON
-  // output respects DOCTOR_REGISTRY_ORDER.
   const out = await captureStdout(async () => {
     const r = createDoctorExtensionsRenderer("json");
     const handlers = r.handlers();
-    // Build a report with registries inserted in reverse order — output
-    // should still be model, vault, datastore, report, webhook.
     const reversed: DoctorExtensionsReport = {
       overallStatus: "pass",
       registries: {
@@ -197,7 +188,6 @@ Deno.test("doctor_extensions json renderer: stable key ordering", async () => {
     await handlers.completed({ kind: "completed", report: reversed });
   });
 
-  // Find the order of keys in the printed JSON string.
   const startOfRegistries = out.indexOf('"registries"');
   const slice = out.slice(startOfRegistries);
   const modelIdx = slice.indexOf('"model"');
@@ -213,10 +203,6 @@ Deno.test("doctor_extensions json renderer: stable key ordering", async () => {
 });
 
 Deno.test("doctor_extensions log renderer: no implicit fold — renders every row it receives", async () => {
-  // The renderer must not absorb or rename ExtensionKind values. It
-  // expects exactly the four DoctorRegistryName values from the service.
-  // Asserting this contract by checking it does not throw on any single
-  // valid registry row and overallStatus tracks the report it sees.
   const r = createDoctorExtensionsRenderer("log");
   const handlers = r.handlers();
   for (
@@ -232,7 +218,6 @@ Deno.test("doctor_extensions log renderer: no implicit fold — renders every ro
       result: passResult(registry),
     });
   }
-  // overallStatus only updates on `completed`.
   assertEquals(r.overallStatus, "pass");
 });
 
@@ -300,8 +285,6 @@ Deno.test(
         warnings: [],
         memberCollisions: [],
       };
-      // Drive the kind-completed events first so the registry headers
-      // get rendered, then completed.
       for (
         const reg of [
           "model",
@@ -318,7 +301,6 @@ Deno.test(
       await handlers.completed({ kind: "completed", report });
     });
 
-    // Warnings section appears with the orphan path.
     if (!out.includes("orphan.ts")) {
       throw new Error(`expected orphan path in output, got: ${out}`);
     }
@@ -327,7 +309,6 @@ Deno.test(
         `expected 'warnings, not failures' framing in output, got: ${out}`,
       );
     }
-    // Overall status remains PASS.
     if (!out.includes("OVERALL: PASS")) {
       throw new Error(`expected OVERALL: PASS, got: ${out}`);
     }
@@ -387,8 +368,6 @@ Deno.test("doctor_extensions log renderer: lists member collisions with their wi
     "not registered: /repo/.swamp/pulled-extensions/@x/y/models/p.ts",
   );
   assertStringIncludes(out, "wins: the base behavior");
-  // Collision warnings are summarised above, not repeated; other warnings
-  // keep their category tag.
   assertStringIncludes(out, "1 warning(s)");
   assertStringIncludes(
     out,

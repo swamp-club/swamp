@@ -75,14 +75,11 @@ interface ImageToken {
   text: string;
 }
 
-/** What an untrusted link prints in place of a target it refuses. */
 export const LINK_REMOVED = "(link removed)";
 
 /**
- * The target an untrusted link may print: the parsed URL, so a look-alike
- * host shows as punycode and the path is encoded. Undefined for anything but
- * an `https:` URL without a username or password, which could disguise where
- * it leads.
+ * the parsed URL, so a look-alike host shows as punycode; https only and no
+ * credentials, which could disguise where it leads.
  */
 function safeHref(href: string): string | undefined {
   try {
@@ -97,10 +94,9 @@ function safeHref(href: string): string | undefined {
 }
 
 /**
- * What a bare `www.` or email autolink prints, or undefined when the link is
- * not one. A `www.` site prints in its parsed form, so a look-alike host
- * shows as punycode as any other link's does. An address is printed only
- * when it is plain ASCII, since `mailto:` gives a host no punycode form.
+ * a bare www or email autolink prints parsed, so a look-alike host shows as
+ * punycode; an address prints only if plain ASCII, since mailto has no punycode
+ * form.
  */
 function bareAutolinkText(token: LinkToken): string | undefined {
   if (token.href === `mailto:${token.text}`) {
@@ -121,11 +117,8 @@ function bareAutolinkText(token: LinkToken): string | undefined {
 }
 
 /**
- * A terminal renderer whose links always print their target. marked-terminal
- * turns a link into an OSC 8 hyperlink where the terminal supports one, which
- * shows only the link text and so can disguise where it leads. Autolinks and
- * reference links reach the same hook; images print their target the same
- * way.
+ * links always print their target: an OSC 8 hyperlink shows only the link text
+ * and can disguise where it leads.
  */
 function visibleLinkRenderer(rendererOptions: Record<string, unknown>) {
   // deno-lint-ignore no-explicit-any
@@ -139,9 +132,8 @@ function visibleLinkRenderer(rendererOptions: Record<string, unknown>) {
   ): string {
     const text = this.parser.parseInline(token.tokens);
     const target = safeHref(token.href);
-    // A bare `www.` or email autolink: its text is its whole target, so
-    // printing the text hides nothing, and prose that names a site or an
-    // address reads as written.
+    // a bare www or email autolink is its own target, so printing the text
+    // hides nothing
     if (target === undefined) {
       const bare = bareAutolinkText(token);
       if (bare !== undefined) return bare;
@@ -169,11 +161,6 @@ function visibleLinkRenderer(rendererOptions: Record<string, unknown>) {
   return renderer;
 }
 
-/**
- * Renders markdown that someone else wrote, such as a Swamp Club inbox
- * message, for the terminal. Same as renderMarkdownToTerminal, except that
- * every link shows its target as text, whatever the terminal supports.
- */
 export function renderUntrustedMarkdownToTerminal(
   markdown: string,
   options?: WidthOptions,

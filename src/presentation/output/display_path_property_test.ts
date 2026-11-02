@@ -17,10 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Properties of displayPath (swamp-club#3017): the printed path always opens
-// the same file from cwd, and it is relative exactly when the file is under
-// cwd, or under a pushed-content root and sharing an ancestor below the
-// filesystem root with cwd.
+// the printed path always opens the same file from cwd, and is relative exactly
+// when the file is under cwd, or under a pushed-content root sharing an
+// ancestor below the filesystem root with cwd
 
 import { assert, assertEquals } from "@std/assert";
 import { isAbsolute, join, resolve, SEPARATOR } from "@std/path";
@@ -45,7 +44,6 @@ Deno.test("displayPath: resolving the printed path from cwd yields the file", ()
   );
 });
 
-/** Whether `segs` starts with every segment of `prefix`. */
 function startsWith(segs: string[], prefix: string[]): boolean {
   return prefix.every((s, i) => segs[i] === s);
 }

@@ -49,9 +49,7 @@ export interface ModelMethodRunRenderOpts {
   modelName: string;
   methodName: string;
   quiet?: boolean;
-  /** Also frame reports whose markdown is empty. */
   verbose?: boolean;
-  /** The CLI spelling the run was reached through; defaults to `model`. */
   surface?: CommandSurface;
 }
 

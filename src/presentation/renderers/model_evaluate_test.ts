@@ -38,7 +38,6 @@ const item: ModelEvaluateItemData = {
 
 const all: ModelEvaluateAllData = { items: [item], total: 2, evaluated: 1 };
 
-/** The message part of each LogTape record the console sink prints. */
 function render(
   data: ModelEvaluateItemData | ModelEvaluateAllData,
   surface?: CommandSurface,

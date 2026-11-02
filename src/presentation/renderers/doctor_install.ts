@@ -48,7 +48,6 @@ function isPrivilegedScheduler(type: SchedulerTypeLabel | undefined): boolean {
   return type === "daemon" || type === "systemd-system" || type === "cron-root";
 }
 
-/** The command that re-registers the autoupdate scheduler by hand. */
 export function schedulerRepairCommand(
   type: SchedulerTypeLabel | undefined,
 ): string {

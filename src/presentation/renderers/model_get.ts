@@ -44,12 +44,6 @@ interface JsonSchemaObject {
   required?: string[];
 }
 
-/**
- * Formats a JSON Schema `type` field into a human-readable string.
- * Handles both single types (`"string"`) and nullable/union arrays
- * (`["string", "null"]`) produced by `zodToJsonSchema` for optional
- * or nullable Zod types.
- */
 export function formatSchemaType(
   type: string | string[] | undefined,
 ): string | undefined {
@@ -60,9 +54,6 @@ export function formatSchemaType(
   return type;
 }
 
-/**
- * Formats JSON Schema properties as human-readable attribute lines.
- */
 export function formatSchemaAttributes(
   schema: object,
   indent: string,
@@ -86,10 +77,6 @@ export function formatSchemaAttributes(
   });
 }
 
-/**
- * Formats a method's kind as a dimmed suffix, e.g. ` (read)` or
- * ` (read, inferred)`; empty when the method has no kind.
- */
 export function formatMethodKind(method: MethodDescribeData): string {
   if (!method.kind) return "";
   const label = method.kindSource === "inferred"
@@ -98,9 +85,6 @@ export function formatMethodKind(method: MethodDescribeData): string {
   return ` ${dim(`(${label})`)}`;
 }
 
-/**
- * Formats method descriptions as human-readable lines.
- */
 export function formatMethodLines(methods: MethodDescribeData[]): string[] {
   const lines: string[] = [];
   for (const method of methods) {
@@ -122,9 +106,6 @@ export function formatMethodLines(methods: MethodDescribeData[]): string[] {
   return lines;
 }
 
-/**
- * Formats a record as indented key: value lines.
- */
 function formatRecord(
   record: Record<string, unknown>,
   indent: string,
@@ -289,7 +270,6 @@ export function createModelGetRenderer(
   }
 }
 
-/** Standalone render function for use by un-migrated search commands. */
 export function renderModelGet(
   data: ModelGetData,
   mode: OutputMode,

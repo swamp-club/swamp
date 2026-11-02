@@ -27,13 +27,9 @@ const MAX_VISIBLE = 8;
 export interface AutocompleteDropdownProps {
   items: CompletionItem[];
   selectedIndex: number;
-  /** Column offset to position the dropdown relative to the cursor. */
   offsetLeft: number;
 }
 
-/**
- * Renders a dropdown list of autocomplete suggestions.
- */
 export function AutocompleteDropdown(
   props: AutocompleteDropdownProps,
 ): React.ReactElement | null {
@@ -49,7 +45,6 @@ export function AutocompleteDropdown(
   );
   const visibleItems = items.slice(visibleStart, visibleStart + MAX_VISIBLE);
 
-  // Find max label width for alignment
   const maxLabelWidth = Math.max(...visibleItems.map((i) => i.label.length));
   const boxWidth = Math.max(
     maxLabelWidth + 2 + (visibleItems.some((i) => i.detail) ? 16 : 0),

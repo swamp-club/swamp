@@ -152,8 +152,6 @@ Deno.test("accessCheckRenderer json: verdict is deny when deny grant comes first
   assertEquals(parsed.matchingGrants.length, 2);
 });
 
-// --- approval policy ---
-
 function captureLog(result: AccessCheckResult): string[] {
   const renderer = createAccessCheckRenderer("log");
   const output: string[] = [];
@@ -256,8 +254,6 @@ Deno.test("accessCheckRenderer json: omits the approval policy for a local check
   assertEquals("approveRequiresExplicitGrant" in parsed, false);
 });
 
-// --- signal policy ---
-
 const impliedSignal = makeResult({
   action: "signal",
   decisions: [{
@@ -285,7 +281,6 @@ Deno.test("accessCheckRenderer log: states the policy when the server requires a
     ...impliedSignal,
     decisions: [],
     signalRequiresExplicitGrant: true,
-    // The approve setting says nothing about a signal check.
     approveRequiresExplicitGrant: false,
   });
   assertStringIncludes(output[0], "DENY (implicit)");
@@ -376,8 +371,6 @@ Deno.test("runVaultAccessLines: a refusal that is not about scoping names its ru
   );
 });
 
-// --- tag policy (swamp-club#3085) ---
-
 const impliedTag = makeResult({
   action: "tag",
   decisions: [{
@@ -401,7 +394,6 @@ Deno.test("accessCheckRenderer log: states the policy when the server requires a
     ...impliedTag,
     decisions: [],
     tagRequiresExplicitGrant: true,
-    // The run settings say nothing about a tag check.
     approveRequiresExplicitGrant: true,
     signalRequiresExplicitGrant: true,
   });

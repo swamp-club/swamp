@@ -246,7 +246,6 @@ Deno.test("JsonModelSearchRenderer: gracefully handles fetchPreview failure", as
 });
 
 Deno.test("modelSearchPickerLabels: the legacy picker keeps its labels and default title", () => {
-  // No commandName, so the picker titles itself "models search" as before.
   assertEquals(modelSearchPickerLabels("model"), {
     itemLabel: "models",
     commandName: undefined,

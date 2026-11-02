@@ -19,13 +19,11 @@
 
 import { isAbsolute, normalize, parse, relative, SEPARATOR } from "@std/path";
 
-/** The first path segment below the root, compared case-insensitively on Windows. */
 function topSegment(path: string, root: string): string {
   const segment = path.slice(root.length).split(SEPARATOR)[0];
   return SEPARATOR === "\\" ? segment.toLowerCase() : segment;
 }
 
-/** Whether `path` is `dir` or below it. */
 function isWithin(path: string, dir: string): boolean {
   const rel = relative(dir, path);
   return rel === "" ||
@@ -33,15 +31,9 @@ function isWithin(path: string, dir: string): boolean {
 }
 
 /**
- * The form of `path` an author can open from `cwd`. A file under `cwd`
- * prints relative to it. A file under one of `roots` (the extension and the
- * repo being pushed) also prints relative to `cwd` when the two share an
- * ancestor below the filesystem root, so a sibling extension reads
- * `../other/manifest.yaml`. Anything else prints absolute: a file outside
- * the pushed content (the review report under the temp dir), one that
- * shares only the root with `cwd`, or one on another Windows drive. A path
- * that is not absolute is returned unchanged; callers resolve repo-relative
- * names first.
+ * relative to cwd for files under cwd or sharing an ancestor with it below the
+ * filesystem root; otherwise absolute. Non-absolute paths are returned
+ * unchanged.
  */
 export function displayPath(
   path: string,

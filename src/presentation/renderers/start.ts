@@ -29,25 +29,15 @@ import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 
-/** Output for `swamp start` and `swamp start status`. */
 export interface StartRenderer {
   prepareHandlers(): EventHandlers<StartPrepareEvent>;
   workspaceOpened(path: string, created: boolean): void;
-  /**
-   * The page is up at `url`. `dashboard` is set for `swamp dashboard`, whose
-   * page is one repo's dashboard rather than the start page.
-   */
   pageReady(url: string, opened: boolean, dashboard?: boolean): void;
   launchedEnd(displayName: string): void;
-  /**
-   * The server stopped. `dashboard` is set when it served one repo's
-   * dashboard (`swamp dashboard`), which is what to run again.
-   */
   paused(dashboard?: boolean): void;
   /**
-   * `workspaceName` is the `--workspace` filter, when one was given; it
-   * changes the empty-result line from "no workspaces yet" to "no workspace
-   * by that name".
+   * `workspaceName` is the `--workspace` filter; when given, an empty result
+   * says no workspace by that name
    */
   inspection(data: StartInspection, workspaceName?: string): void;
 }
@@ -188,9 +178,6 @@ class LogStartRenderer implements StartRenderer {
   }
 }
 
-/**
- * A task's created time for people: `2026-10-12 14:05`, in local time.
- */
 export function formatCreated(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
@@ -200,7 +187,6 @@ export function formatCreated(iso: string): string {
   }:${pad(d.getMinutes())}`;
 }
 
-/** The line under a task in `swamp start status`: when created, and where it is. */
 export function taskDetail(task: StartTaskSummary): string {
   const state = task.step === "launched"
     ? `launched with ${task.harnessDisplayName ?? task.harness}`
@@ -210,7 +196,6 @@ export function taskDetail(task: StartTaskSummary): string {
   return `created ${formatCreated(task.createdAt)} · ${state}`;
 }
 
-/** Indents each line of a multi-line message under a status line. */
 function indentLines(text: string): string {
   return text.split("\n").map((line) => `    ${line}`).join("\n");
 }
@@ -244,10 +229,6 @@ export function createStartRenderer(mode: OutputMode): StartRenderer {
   }
 }
 
-/**
- * The line above the page's URL: what was opened, or that it should be.
- * `swamp dashboard` names the repo's dashboard, never `swamp start`.
- */
 export function pageReadyLine(
   opened: boolean,
   dashboard: boolean,

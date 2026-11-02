@@ -133,8 +133,8 @@ Deno.test(
     );
 
     assertEquals(renderer.passed(), true);
-    // A missing factor costs points but fails no check: `status` follows
-    // the exit code, `allPassed` reports the rubric (swamp-club#3464).
+    // a missing factor costs points but fails no check: status follows the exit
+    // code, allPassed reports the rubric
     const doc = JSON.parse(logs[0]);
     assertEquals(doc.status, "passed");
     assertEquals(doc.allPassed, false);
@@ -212,8 +212,6 @@ Deno.test(
     );
   },
 );
-
-// ── Findings report ───────────────────────────────────────────────────
 
 function capture(run: () => void): string[] {
   const logs: string[] = [];
@@ -440,7 +438,6 @@ Deno.test("createExtensionQualityRenderer: a bundle failure prints each compilat
   assert(thrown instanceof UserError);
   const text = log.join("\n");
   assertStringIncludes(text, "Bundle compilation failed:");
-  // Paths print openable from cwd, the way push prints them.
   assertStringIncludes(text, "models");
   assertEquals(text.includes(manifestDir + "/models"), false);
   assertStringIncludes(text, 'Module not found "file:///ext/lib/gone.ts".');
@@ -890,7 +887,6 @@ Deno.test("createExtensionQualityRenderer: an unaudited dependency is marked ? w
       cwd: manifestDir,
     }).completed(event)
   ).join("\n");
-  // Each interpolation renders quoted: the mark, then the dependency.
   assertStringIncludes(log, '"?" "leftpad"@"1.3.0"');
   assertStringIncludes(log, `MIT, not audited: ${reason}`);
   const notAuditedAt = log.indexOf(

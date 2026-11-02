@@ -29,7 +29,6 @@ import {
 
 Deno.test("renderMarkdownToTerminal - renders heading", () => {
   const result = renderMarkdownToTerminal("# Hello World");
-  // Should contain the text (formatting may vary with NO_COLOR)
   assertStringIncludes(result, "Hello World");
 });
 
@@ -151,7 +150,6 @@ Deno.test("renderUntrustedMarkdownToTerminal: a message body removes the link fr
       "<b>@stack72</b> can you check http://example.com/build-log before we ship?",
     ),
   );
-  // Printed as text, never as a link.
   assertStringIncludes(
     result,
     `http://example.com/build-log ${LINK_REMOVED}`,

@@ -36,9 +36,6 @@ import { renderInteractivePicker } from "./components/search_picker.tsx";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 import { createSearchListRenderer } from "./search_result_list.ts";
 
-/**
- * Filters workflows by a query string (case-insensitive match on name, id, or description).
- */
 function filterWorkflows(
   items: WorkflowSearchItem[],
   query: string,
@@ -53,17 +50,11 @@ function filterWorkflows(
   );
 }
 
-/**
- * Detail data for the preview pane — the raw YAML file content.
- */
 export interface WorkflowPreviewDetail {
   yaml: string;
   name: string;
 }
 
-/**
- * Callback type for fetching workflow YAML for the preview pane.
- */
 export type WorkflowPreviewFetcher = (
   item: WorkflowSearchItem,
 ) => Promise<WorkflowPreviewDetail>;
@@ -185,11 +176,6 @@ export function createWorkflowSearchRenderer(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Rendering callbacks for the SearchPicker
-// ---------------------------------------------------------------------------
-
-/** Single-line result for the results list. */
 function renderWorkflowResultLine(
   item: WorkflowSearchItem,
 ): React.ReactElement {
@@ -202,7 +188,6 @@ function renderWorkflowResultLine(
   );
 }
 
-/** Preview content for a workflow — shows YAML when available. */
 function renderWorkflowPreview(
   item: WorkflowSearchItem,
   detail: WorkflowPreviewDetail | undefined,
@@ -211,7 +196,6 @@ function renderWorkflowPreview(
 ): React.ReactElement {
   const innerWidth = Math.max(10, width - 1);
   if (!detail) {
-    // Immediate content from the search item
     const lines: React.ReactElement[] = [
       <Text key="name" bold wrap="truncate-end">{item.name}</Text>,
     ];
@@ -249,7 +233,6 @@ function renderWorkflowPreview(
   );
 }
 
-/** Plain-text scrollback output — rendered YAML. */
 function renderWorkflowScrollback(
   item: WorkflowSearchItem,
   detail: WorkflowPreviewDetail | undefined,

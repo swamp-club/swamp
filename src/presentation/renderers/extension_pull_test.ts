@@ -25,7 +25,6 @@ import type { InstallResult } from "../../libswamp/extensions/pull.ts";
 
 await initializeLogging({});
 
-/** Captures everything written through console.log/info/warn. */
 function captureConsole(fn: () => void): string {
   const original = {
     log: console.log,

@@ -24,18 +24,15 @@ import type {
 import type { UnoptedPrereleaseNotice } from "../../libswamp/extensions/pull.ts";
 
 /**
- * The wording of what `swamp extension pull` says before it replaces an
- * installed extension. Kept as pure functions so the exact text is
- * unit-tested; the renderer logs these lines unchanged.
+ * pure functions so the exact text is unit-tested; the renderer logs these
+ * lines unchanged
  */
 
-/** A yes/no prompt: lines printed above it, then the question. */
 export interface ConfirmationPromptText {
   details: string[];
   question: string;
 }
 
-/** "2026.10.01.1 (beta, following stable)": a version and its channels. */
 function describeSide(side: ExtensionIdentity): string {
   const published = side.publishedChannel ?? "channel unknown";
   const following = side.channel !== null &&
@@ -45,17 +42,12 @@ function describeSide(side: ExtensionIdentity): string {
   return `${side.version} (${published}${following})`;
 }
 
-/** A version and the channel it is published on, when known. */
 function shortSide(side: ExtensionIdentity): string {
   return side.publishedChannel
     ? `${side.version} (${side.publishedChannel})`
     : side.version;
 }
 
-/**
- * The two lines naming the extension, what is installed and what is
- * coming, then how they relate.
- */
 export function replacementSummary(r: ExtensionReplacement): string[] {
   const installed = r.current
     ? `installed ${describeSide(r.current)}`
@@ -89,10 +81,6 @@ export function replacementSummary(r: ExtensionReplacement): string[] {
   return [headline, relation];
 }
 
-/**
- * The line warning that a beta or rc release is being installed while the
- * extension follows stable, and how to follow its channel instead.
- */
 export function unoptedPrereleaseWarning(
   notice: UnoptedPrereleaseNotice,
 ): string {
@@ -106,7 +94,6 @@ export function unoptedPrereleaseWarning(
     `Run swamp extension pull ${name} --channel ${publishedChannel} to follow ${publishedChannel}.`;
 }
 
-/** The overwrite prompt, saying what each answer does. */
 export function overwritePrompt(
   replacement: ExtensionReplacement | undefined,
   hasSkillDirs: boolean,

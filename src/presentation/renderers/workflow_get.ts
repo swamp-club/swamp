@@ -77,7 +77,6 @@ export function createWorkflowGetRenderer(
   }
 }
 
-/** Standalone render function for use by un-migrated search commands. */
 export function renderWorkflowGet(
   data: WorkflowGetData,
   mode: OutputMode,

@@ -28,9 +28,6 @@ import {
   writeOutput,
 } from "../../infrastructure/logging/logger.ts";
 
-/**
- * Formats a byte size into a human-readable string.
- */
 function formatSize(bytes?: number): string {
   if (bytes === undefined) return "unknown";
   if (bytes < 1024) return `${bytes}B`;
@@ -38,7 +35,6 @@ function formatSize(bytes?: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-/** Options for rendering a data get read. */
 export interface DataGetRenderOptions {
   /**
    * Target arguments (` --server …` / ` --repo-dir …`) appended to every
@@ -48,11 +44,6 @@ export interface DataGetRenderOptions {
   commandTarget?: string;
 }
 
-/**
- * Appends `commandTarget` to every query the read names: its replacement
- * query, its latest-run query, each alternative's, and where they appear
- * inside the warnings.
- */
 export function withCommandTarget(
   data: DataGetData,
   commandTarget: string | undefined,
@@ -159,7 +150,6 @@ class JsonDataGetRenderer implements Renderer<DataGetEvent> {
       completed: (e) => {
         const data = withCommandTarget(e.data, this.options.commandTarget);
         const jsonOutput: Record<string, unknown> = { ...data };
-        // Parse JSON content inline for structured output
         if (
           data.content && data.contentType === "application/json" &&
           data.contentEncoding !== "base64"
@@ -191,7 +181,6 @@ export function createDataGetRenderer(
   }
 }
 
-/** Standalone render function for use by un-migrated search commands. */
 export function renderDataGet(
   data: DataGetData,
   mode: OutputMode,

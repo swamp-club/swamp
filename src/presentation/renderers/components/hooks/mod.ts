@@ -26,8 +26,6 @@ export {
   usePreviewScroll,
 } from "./use_preview_scroll.ts";
 
-// Re-export shared hooks from the existing output/hooks location for
-// co-located access within renderers/components/.
 export {
   type ScrollMetrics,
   useScrollableList,

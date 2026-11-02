@@ -327,8 +327,6 @@ Deno.test("JsonModelValidateRenderer - includes the entries of a failed Expressi
   }
 });
 
-// --- Surfaces (swamp-club#3331) ---
-
 async function renderAllLines(surface?: CommandSurface): Promise<string[]> {
   const lines: string[] = [];
   const originalLog = console.log;
@@ -405,7 +403,6 @@ async function renderEnvVarWarning(surface?: CommandSurface): Promise<string> {
           modelName: "my-model",
           type: "aws/ec2",
           validations: [{ name: "schema", passed: true }],
-          // libswamp marks the data with the warning's model spelling.
           warnings: [markModelWording({
             name: warning.name,
             message: warning.message,

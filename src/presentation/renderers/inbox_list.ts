@@ -37,14 +37,12 @@ const UNREAD_MARKER = "●";
  */
 const MAX_TITLE_PAD = 48;
 
-/** The local calendar date of an ISO 8601 timestamp, as YYYY-MM-DD. */
 export function localDate(iso: string): string {
   const d = new Date(iso);
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-/** The stderr warning for entries left out of a page, if any were. */
 export function droppedWarning(dropped: number): string | undefined {
   if (dropped <= 0) return undefined;
   return dropped === 1
@@ -85,7 +83,6 @@ function listLines(view: InboxListView): string[] {
   return lines;
 }
 
-/** The line naming the command that lists the page older than this one. */
 export function olderPageLine(nextCursor: string, all: boolean): string {
   return `${yellow("To see older:")}  swamp inbox${
     all ? " --all" : ""

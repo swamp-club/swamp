@@ -84,10 +84,8 @@ export function renderAuthTokenList(
     return;
   }
 
-  // A fingerprint identifies a key from its secret; the prefix, shared by
-  // every collective token bar two characters, cannot. Servers that report
-  // fingerprints get that column in the prefix's place; the rest keep the
-  // table exactly as it was. --json keeps both.
+  // a fingerprint identifies a key; the shared prefix cannot. Show the
+  // fingerprint column when the server reports it; --json keeps both.
   const showFingerprint = data.tokens.some((token) => token.fingerprint);
   const headers = [
     "NAME",

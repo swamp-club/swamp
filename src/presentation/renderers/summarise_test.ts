@@ -90,18 +90,13 @@ Deno.test("renderMethodExecutions: error line aligns dynamically with short meth
     );
 
     const plain = logs.map(stripAnsiCode);
-    // Find the method row and the error row
     const methodRow = plain.find((l) => l.includes("run"));
     const errorRow = plain.find((l) => l.includes("last error"));
     assertEquals(methodRow !== undefined, true, "should have method row");
     assertEquals(errorRow !== undefined, true, "should have error row");
 
-    // Both should start with 4-space indent and the error text should start
-    // at the same column as the status indicators on the method row
     const methodIndent = methodRow!.indexOf("run");
     const methodStatusCol = methodRow!.indexOf("\u2717");
-    // The error row uses "".padEnd(maxMethod + 3) after 4 spaces of indent,
-    // so its content starts at the same column as the status column
     const errorContentCol = errorRow!.indexOf("last error");
     assertEquals(
       errorContentCol,
@@ -200,7 +195,6 @@ Deno.test("renderMethodExecutions: error line aligns with longest method name", 
     );
     assertEquals(errorRow !== undefined, true, "should have error row");
 
-    // Status indicators should all start at the same column
     const longMethodStatusCol = longMethodRow!.indexOf("\u2713");
     const shortMethodStatusCol = shortMethodRow!.indexOf("\u2717");
     const errorContentCol = errorRow!.indexOf("last error");
@@ -248,7 +242,6 @@ Deno.test("SummariseRenderer: no_activity does not write to console output", asy
       }]),
       renderer.handlers(),
     );
-    // no_activity messages go through the logger, not writeOutput/console.log
     assertEquals(logs.length, 0);
   } finally {
     console.log = originalLog;
@@ -335,9 +328,7 @@ Deno.test("LogSummariseRenderer: verbose mode does not show last error line", as
     );
 
     const combined = stripAnsiCode(logs.join("\n"));
-    // Verbose mode shows per-run detail, not the "last error:" summary line
     assertEquals(combined.includes("last error:"), false);
-    // But it shows the error inline with the run detail
     assertEquals(combined.includes("Timeout exceeded"), true);
   } finally {
     console.log = originalLog;
@@ -402,7 +393,6 @@ Deno.test("LogSummariseRenderer: compact mode shows last error for failed workfl
     );
 
     const combined = stripAnsiCode(logs.join("\n"));
-    // Should show the last error from the failed step
     assertEquals(
       combined.includes('last error: "Compilation failed: missing import"'),
       true,

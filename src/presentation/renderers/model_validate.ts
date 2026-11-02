@@ -217,10 +217,9 @@ class LogModelValidateRenderer implements ModelValidateRenderer {
 }
 
 /**
- * `data` with its validation errors and warning messages in the spelling of
- * `surface` (swamp-club#3437): under `swamp model …`, the model words each one
- * carries. The shape is unchanged. A `--server` reply has no markers, so it
- * reads as the server wrote it.
+ * errors and warning messages in the spelling of surface; the shape is
+ * unchanged. A --server reply has no markers, so it reads as the server wrote
+ * it.
  */
 function inSurfaceWords<
   T extends {
@@ -249,7 +248,6 @@ function inSurfaceWords<
   };
 }
 
-/** `data`, whole or per-model, in the spelling of `surface`. */
 function validateDataInSurfaceWords(
   data: ModelValidateData | ModelValidateAllData,
   surface: CommandSurface,

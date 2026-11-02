@@ -20,7 +20,6 @@
 import type { WhoamiCollectiveEntitlement } from "../../libswamp/auth/whoami.ts";
 import { bold, dim } from "@std/fmt/colors";
 
-/** A running trial, as days left and the date it ends. */
 function runningTrial(
   trial: NonNullable<WhoamiCollectiveEntitlement["trial"]>,
 ): string {
@@ -34,19 +33,9 @@ function runningTrial(
 }
 
 /**
- * One collective's standing, named as the web names it, or empty when there
- * is nothing to say.
- *
- * A collective on a plan shows the plan, and a paid one its billing status.
- * It is never told it is on a free trial — the same rule the web surface
- * applies to its trial banner; `--json` keeps the trial for billing triage.
- *
- * "Free" is not a plan, so a free collective shows where it stands instead:
- * its running trial, then "covered" when the registry allows it private
- * extensions, then an ended trial. A free collective with no running trial is
- * allowed only through another collective its owner belongs to, so "allowed"
- * here means covered — and covered outranks the ended trial, which would read
- * as a lapse. A superseded or license-ended trial arrives as `trial: null`.
+ * a collective on a plan shows the plan, a paid one its billing status; never
+ * told it is on a free trial (--json keeps it); a free collective shows its
+ * running trial, then covered, then an ended trial
  */
 export function standing(entitlement: WhoamiCollectiveEntitlement): string {
   if (entitlement.plan !== undefined && entitlement.plan !== "free") {
@@ -62,7 +51,6 @@ export function standing(entitlement: WhoamiCollectiveEntitlement): string {
   return "";
 }
 
-/** The per-collective block: slugs aligned, then each one's standing. */
 export function collectiveLines(
   entitlements: WhoamiCollectiveEntitlement[],
 ): string[] {

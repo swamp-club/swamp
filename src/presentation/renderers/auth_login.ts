@@ -29,30 +29,21 @@ import { UserError } from "../../domain/errors.ts";
 import { Spinner } from "../spinner.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 
-// ─── Card rendering helpers ───────────────────────────────────────────
-
 interface CardRow {
   label: string;
   value: string;
 }
 
-/** Strip ANSI escape codes to get visible character length. */
 function stripAnsi(str: string): string {
   // deno-lint-ignore no-control-regex
   return str.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
-/** Mask an API key, showing prefix and last 4 chars. */
 function maskApiKey(key: string): string {
   if (key.length <= 16) return key.slice(0, 8) + dim("•••");
   return key.slice(0, 12) + dim("•••") + key.slice(-4);
 }
 
-/**
- * Render a box-drawn card with a header and grouped rows.
- * Uses double-line box drawing for the outer frame and a
- * single-line divider between header and body.
- */
 function renderCard(
   header: string,
   groups: CardRow[][],
@@ -68,23 +59,18 @@ function renderCard(
 
   const lines: string[] = [];
 
-  // Top border
   lines.push(green(`  ╔${"═".repeat(contentWidth)}╗`));
 
-  // Header
   const headerPad = " ".repeat(contentWidth - headerTextWidth - 2);
   lines.push(
     green("  ║") + `  ${header}${headerPad}` + green("║"),
   );
 
-  // Divider
   lines.push(green(`  ╠${"═".repeat(contentWidth)}╣`));
 
-  // Body groups
   for (let gi = 0; gi < groups.length; gi++) {
     const group = groups[gi];
 
-    // Spacer before each group
     lines.push(green("  ║") + " ".repeat(contentWidth) + green("║"));
 
     for (const row of group) {
@@ -99,7 +85,6 @@ function renderCard(
       );
     }
 
-    // Spacer after last group
     if (gi === groups.length - 1) {
       lines.push(
         green("  ║") + " ".repeat(contentWidth) + green("║"),
@@ -107,7 +92,6 @@ function renderCard(
     }
   }
 
-  // Bottom border
   lines.push(green(`  ╚${"═".repeat(contentWidth)}╝`));
 
   return lines;
@@ -135,7 +119,6 @@ function renderDeviceVerification(
 }
 
 function renderAuthLoginSuccess(data: AuthLoginData): void {
-  // Identity rows
   const identity: CardRow[] = [
     { label: "User", value: bold(`@${data.username}`) },
   ];
@@ -146,7 +129,6 @@ function renderAuthLoginSuccess(data: AuthLoginData): void {
     identity.push({ label: "Email", value: data.email });
   }
 
-  // Session rows
   const session: CardRow[] = [
     { label: "Server", value: data.serverUrl },
     { label: "Key", value: maskApiKey(data.apiKey) },
@@ -159,8 +141,6 @@ function renderAuthLoginSuccess(data: AuthLoginData): void {
 
   writeOutput(lines.join("\n"));
 }
-
-// ─── Next-steps rendering ─────────────────────────────────────────────
 
 export interface AuthLoginNextStepsOptions {
   isFirstLogin: boolean;
@@ -186,8 +166,6 @@ function renderNextSteps(): void {
   }
   writeOutput(lines.join("\n"));
 }
-
-// ─── Renderers ────────────────────────────────────────────────────────
 
 class LogAuthLoginRenderer implements Renderer<AuthLoginEvent> {
   private spinner: Spinner | null = null;
@@ -278,7 +256,6 @@ class JsonAuthLoginRenderer implements Renderer<AuthLoginEvent> {
   }
 }
 
-/** Create the appropriate auth login renderer for the given output mode. */
 export function createAuthLoginRenderer(
   mode: OutputMode,
   showSpinner: boolean,

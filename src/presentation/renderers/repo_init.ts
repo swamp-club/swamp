@@ -34,10 +34,6 @@ import { createExtensionInstallRenderer } from "./extension_install.ts";
 import { join } from "@std/path";
 import { bold, dim, yellow } from "@std/fmt/colors";
 
-/**
- * Renders a `tools` array for the human-readable status line. Empty list
- * renders as `none` so output is never ambiguous.
- */
 function formatToolsList(tools: readonly string[]): string {
   return tools.length === 0 ? "none" : tools.join(", ");
 }
@@ -110,15 +106,6 @@ function renderToolGuidance(tool: string): void {
   writeOutput(`  ${bold(guidance.command)}`);
 }
 
-/**
- * On-disk paths that swamp's scaffolding writes for each tool. Used to tell
- * the user which files were left behind when a tool is dropped from the
- * enrolled list.
- *
- * Some paths are shared (`.agents/skills/` for amp/opencode/codex/copilot),
- * so the renderer subtracts paths that are still in use by another
- * remaining tool before warning the user — see {@link orphanedPathsFor}.
- */
 const TOOL_CLEANUP_PATHS: Partial<Record<string, readonly string[]>> = {
   amp: [".amp/", ".agents/skills/"],
   claude: [".claude/"],
@@ -132,10 +119,8 @@ const TOOL_CLEANUP_PATHS: Partial<Record<string, readonly string[]>> = {
 };
 
 /**
- * Returns the on-disk paths a dropped tool wrote that aren't still in use by
- * another remaining tool. Empty when every path is shared (no orphans —
- * suppress the note entirely so we don't tell the user to delete files
- * still in use by another enrolled tool).
+ * empty when every path is shared, so the note is suppressed rather than
+ * telling the user to delete files another enrolled tool still uses
  */
 function orphanedPathsFor(
   dropped: string,
@@ -395,12 +380,9 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
 
 class JsonRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
   handlers(): EventHandlers<RepoUpgradeEvent> {
-    // JSON mode must emit exactly ONE top-level JSON object per
-    // invocation — downstream parsers that read stdout as a single
-    // document break otherwise. Capture the install pass's summary
-    // and fold it into the upgrade's final `completed` object rather
-    // than delegating to JsonExtensionInstallRenderer (which would
-    // console.log its own JSON mid-stream).
+    // json mode emits exactly one top-level object, so fold the install summary
+    // into the final completed object instead of delegating to the json install
+    // renderer, which prints its own
     let extensionInstall: ExtensionInstallData | undefined;
     return {
       upgrading: () => {},
@@ -422,12 +404,6 @@ class JsonRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
   }
 }
 
-/**
- * Routes a single `ExtensionInstallEvent` to the matching handler on
- * the delegate install renderer. Keeping the dispatch in one place
- * ensures the log and JSON upgrade renderers stay in lockstep with any
- * future event kinds added to `ExtensionInstallEvent`.
- */
 function dispatchInstallEvent(
   handlers: EventHandlers<ExtensionInstallEvent>,
   event: ExtensionInstallEvent,

@@ -122,12 +122,8 @@ Deno.test("renderAuditLog: log mode includes header row", () => {
 
 Deno.test("renderAuditLog: log mode includes date in timestamp", () => {
   const output = captureLogs(() => renderAuditLog(sampleData, "log"));
-  // The formatter uses local time, so just check that it has MM-DD format
-  // (two digits, dash, two digits pattern somewhere)
   assertEquals(output.match(/\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}/) !== null, true);
 });
-
-// ── renderAuditLogHeader tests ─────────────────────────────────────────
 
 Deno.test("renderAuditLogHeader: log mode prints column headers", () => {
   const output = captureLogs(() => renderAuditLogHeader("log"));
@@ -141,8 +137,6 @@ Deno.test("renderAuditLogHeader: json mode prints nothing", () => {
   const output = captureLogs(() => renderAuditLogHeader("json"));
   assertEquals(output, "");
 });
-
-// ── renderAuditEvent tests ────────────────────────────────────────────
 
 Deno.test("renderAuditEvent: log mode prints event row", () => {
   const event = {

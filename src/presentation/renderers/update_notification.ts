@@ -20,10 +20,7 @@
 import { bold, yellow } from "@std/fmt/colors";
 import type { UpdateNotification } from "../../domain/update/update_notification_service.ts";
 
-/**
- * Renders a one-line update notification banner to stderr.
- * Uses stderr so it never corrupts piped stdout.
- */
+/** writes to stderr so it never corrupts piped stdout */
 export function renderUpdateNotification(
   notification: UpdateNotification,
 ): void {

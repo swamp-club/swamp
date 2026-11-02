@@ -21,9 +21,8 @@ import { yellow } from "@std/fmt/colors";
 import type { InboxNotice } from "../../domain/inbox/inbox_policy.ts";
 
 /**
- * The notice's text is pinned in design/surfaces/inbox.md, and the `swamp`
- * skill quotes its second line, so the three change together
- * (integration/inbox_notice_text_test.ts).
+ * the notice text is pinned in design/surfaces/inbox.md and the swamp skill
+ * quotes its second line, so the three change together
  */
 export const INBOX_NOTICE_SINGLE_LINE =
   "ℹ A new message from Swamp Club is waiting for you.";
@@ -32,25 +31,16 @@ export const INBOX_NOTICE_READ_LABEL = "To read it:";
 
 export const INBOX_NOTICE_READ_COMMAND = "swamp inbox read";
 
-/** The second line, uncoloured. */
 export const INBOX_NOTICE_READ_LINE =
   `  ${INBOX_NOTICE_READ_LABEL}  ${INBOX_NOTICE_READ_COMMAND}`;
 
-/**
- * The first line: singular for one unread message, plural for more. The
- * plural says unread, not new: the count includes messages announced before.
- * The policy only shows a notice with at least one unread message.
- */
+/** the plural says unread, not new: the count includes messages announced before */
 export function inboxNoticeFirstLine(unread: number): string {
   return unread > 1
     ? `ℹ ${unread} unread messages from Swamp Club are waiting for you.`
     : INBOX_NOTICE_SINGLE_LINE;
 }
 
-/**
- * Writes the post-command inbox notice to stderr, after a blank line as the
- * update banner is. Only the label is coloured, as `To approve:` is.
- */
 export function renderInboxNotice(
   notice: InboxNotice,
   write: (line: string) => void = (line) => console.error(line),

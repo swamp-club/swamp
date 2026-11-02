@@ -46,7 +46,6 @@ Deno.test("command surface: nouns for the behavior surface follow the glossary",
   assertEquals(surfaceMethodNoun("behavior"), "method");
 });
 
-/** The env-var warning the application layer produces. */
 const ENV_VAR_WARNING = ValidationWarning.envVarUsage([]);
 
 Deno.test("env-var warning: the model surface prints the model spelling", () => {

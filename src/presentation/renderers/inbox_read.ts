@@ -34,7 +34,6 @@ import { droppedWarning, localDate } from "./inbox_list.ts";
 const NOT_MARKED_WARNING =
   "Swamp Club did not confirm this message as read, so it is still unread.";
 
-/** One message as plain text, for output that is not a terminal. */
 function plainMessageLines(message: InboxMessageView): string[] {
   const lines = [
     `${message.kind} · ${localDate(message.createdAt)}`,
@@ -127,7 +126,6 @@ class JsonInboxReadRenderer implements Renderer<InboxReadNextEvent> {
   }
 }
 
-/** Renders `swamp inbox read`, which is never interactive. */
 export function createInboxReadRenderer(
   mode: OutputMode,
 ): Renderer<InboxReadNextEvent> {

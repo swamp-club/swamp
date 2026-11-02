@@ -214,7 +214,6 @@ export function createTypeDescribeRenderer(
   }
 }
 
-/** Standalone render function for use by un-migrated search commands. */
 export function renderTypeDescribe(
   data: TypeDescribeData,
   mode: OutputMode,

@@ -46,15 +46,6 @@ const INITIAL_STATE: QueryState = {
   limited: false,
 };
 
-/**
- * Hook that debounces query execution and manages result state.
- *
- * On each change to predicate or select, waits `debounceMs` then:
- * 1. Aborts the previous in-flight query
- * 2. Creates a fresh AbortController + LibSwampContext
- * 3. Invokes the dataQuery() generator and consumes events
- * 4. Updates state on completion or error
- */
 export function useDebouncedQuery(
   predicate: string,
   select: string | undefined,
@@ -75,7 +66,6 @@ export function useDebouncedQuery(
     const generation = ++generationRef.current;
 
     const timer = setTimeout(async () => {
-      // Abort any in-flight query
       controllerRef.current?.abort();
       const controller = new AbortController();
       controllerRef.current = controller;
@@ -95,7 +85,6 @@ export function useDebouncedQuery(
         let completed = false;
 
         for await (const event of stream) {
-          // Stale generation — stop processing
           if (generationRef.current !== generation) break;
 
           switch (event.kind) {
@@ -138,7 +127,7 @@ export function useDebouncedQuery(
         if (
           err instanceof DOMException && err.name === "AbortError"
         ) {
-          return; // Cancelled, ignore
+          return;
         }
         if (generationRef.current === generation) {
           setState((prev) => ({
@@ -156,7 +145,6 @@ export function useDebouncedQuery(
     };
   }, [predicate, select, debounceMs, limit]);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       controllerRef.current?.abort();

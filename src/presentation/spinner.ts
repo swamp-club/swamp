@@ -22,18 +22,11 @@ import { swampColor } from "./swamp_colors.ts";
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const INTERVAL_MS = 80;
 
-/** Where the spinner draws; replaced in tests. */
 export interface SpinnerOptions {
-  /** Writes raw text to stderr. */
   write?: (text: string) => void;
-  /** True when stderr is a terminal; the spinner draws nothing otherwise. */
   isTerminal?: () => boolean;
 }
 
-/**
- * Animated terminal spinner that writes to stderr.
- * No-ops when stderr is not a TTY.
- */
 export class Spinner {
   #intervalId: ReturnType<typeof setInterval> | undefined;
   #frameIndex = 0;
@@ -65,15 +58,10 @@ export class Spinner {
     this.#message = message;
   }
 
-  /** Stops and clears the spinner's row. */
   stop(): void {
     this.#settle("");
   }
 
-  /**
-   * Stops and leaves `line` in place of the spinner, followed by a newline,
-   * so whatever is written next starts on a fresh row.
-   */
   finish(line: string): void {
     this.#settle(`${line}\n`);
   }

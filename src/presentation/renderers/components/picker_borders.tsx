@@ -21,14 +21,11 @@
 import React from "react";
 import { Box, Text } from "ink";
 
-const H = "\u2500"; // ─
-const V = "\u2502"; // │
-const TT = "\u252C"; // ┬
-const BT = "\u2534"; // ┴
+const H = "\u2500";
+const V = "\u2502";
+const TT = "\u252C";
+const BT = "\u2534";
 
-/**
- * Renders a full-height vertical divider line between results and preview.
- */
 function VerticalDivider(
   props: { height: number },
 ): React.ReactElement {
@@ -42,10 +39,6 @@ function VerticalDivider(
   );
 }
 
-/**
- * Top branding line matching the workflow run tree style:
- * ─swamp──────────────────── report search ──
- */
 export function BrandLine(
   props: { width: number; commandName: string },
 ): React.ReactElement {
@@ -64,10 +57,6 @@ export function BrandLine(
   );
 }
 
-/**
- * Horizontal separator spanning full width, optionally with a junction
- * character at a specific position for the vertical divider.
- */
 function Separator(
   props: { width: number; junction?: { position: number; char: string } },
 ): React.ReactElement {
@@ -84,36 +73,17 @@ function Separator(
 }
 
 export interface BorderedSplitLayoutProps {
-  /** Total width. */
   width: number;
-  /** Width of the results pane. */
   resultsWidth: number;
-  /** Width of the preview pane. */
   previewWidth: number;
-  /** Height of the content area (results and preview rows). */
   contentHeight: number;
-  /** Command name shown on the branding line (e.g., "report search"). */
   commandName: string;
-  /** The search prompt content. */
   promptContent: React.ReactElement;
-  /** The results list content. */
   resultsContent: React.ReactElement;
-  /** The preview pane content. */
   previewContent: React.ReactElement;
-  /** The help bar content. */
   helpContent: React.ReactElement;
 }
 
-/**
- * Split layout with clean separator lines:
- *
- * ─swamp──────────────── report search ──
- * > query                         8 / 213
- * ───────────────────┬────────────────────
- *  results           │ preview
- * ───────────────────┴────────────────────
- * ↑/↓ navigate  Enter select  Esc cancel
- */
 export function BorderedSplitLayout(
   props: BorderedSplitLayoutProps,
 ): React.ReactElement {
@@ -128,7 +98,6 @@ export function BorderedSplitLayout(
     helpContent,
   } = props;
 
-  // Position of the vertical divider in the separator lines
   const dividerPos = resultsWidth;
 
   return (
@@ -179,36 +148,16 @@ export function BorderedSplitLayout(
 }
 
 export interface StackedLayoutProps {
-  /** Total width. */
   width: number;
-  /** Height for the results section. */
   resultsHeight: number;
-  /** Height for the preview section. */
   previewHeight: number;
-  /** Command name shown on the branding line. */
   commandName: string;
-  /** The search prompt content. */
   promptContent: React.ReactElement;
-  /** The results list content. */
   resultsContent: React.ReactElement;
-  /** The preview pane content. */
   previewContent: React.ReactElement;
-  /** The help bar content. */
   helpContent: React.ReactElement;
 }
 
-/**
- * Stacked layout: results above, preview below, separated by lines.
- *
- * ─swamp──────────────── report search ──
- * > query                         8 / 213
- * ────────────────────────────────────────
- *  results
- * ────────────────────────────────────────
- *  preview
- * ────────────────────────────────────────
- * ↑/↓ navigate  Enter select  Esc cancel
- */
 export function StackedLayout(
   props: StackedLayoutProps,
 ): React.ReactElement {

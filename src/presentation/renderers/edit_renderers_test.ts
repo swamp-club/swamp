@@ -93,9 +93,8 @@ const completedWithWarning = {
 };
 
 Deno.test("model edit renderer: json mode carries warnings to the caller", () => {
-  // Every command must support both output modes, so a warning that only
-  // reached the logger would be invisible to a --json caller
-  // (swamp-club#2412).
+  // every command supports both output modes, so a warning that only reached
+  // the logger would be invisible to a --json caller
   const logs: string[] = [];
   const originalLog = console.log;
   console.log = (message: string) => logs.push(message);

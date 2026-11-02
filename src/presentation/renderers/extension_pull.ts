@@ -33,7 +33,6 @@ import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 
-/** Extended renderer interface with conflict rendering support. */
 export interface ExtensionPullRenderer extends Renderer<ExtensionPullEvent> {
   /**
    * Lists conflicting paths. `skillDirs` is the subset of `conflicts`
@@ -50,11 +49,9 @@ export interface ExtensionPullRenderer extends Renderer<ExtensionPullEvent> {
    * the install result carries the same facts.
    */
   renderReplacement(replacement: ExtensionReplacement): void;
-  /** Warns that a beta or rc release is installed without opting in. */
   renderUnoptedPrerelease(notice: UnoptedPrereleaseNotice): void;
 }
 
-/** The replacement as JSON fields, named as the lockfile names them. */
 function replacementFields(r: ExtensionReplacement) {
   return {
     name: r.name,
@@ -165,7 +162,6 @@ function renderInstallResultLog(result: InstallResult): void {
 }
 
 function renderInstallResultJson(result: InstallResult): void {
-  // Resolved info, and what it replaced
   console.log(JSON.stringify(
     {
       name: result.name,
@@ -181,7 +177,6 @@ function renderInstallResultJson(result: InstallResult): void {
     2,
   ));
 
-  // Integrity
   console.log(JSON.stringify(
     {
       integrity: result.integrityStatus,
@@ -243,7 +238,6 @@ function renderInstallResultJson(result: InstallResult): void {
     ));
   }
 
-  // Pull success
   console.log(JSON.stringify(
     {
       name: result.name,
@@ -407,7 +401,6 @@ export function createExtensionPullRenderer(
   }
 }
 
-/** Renders cancellation when user declines the prompt. */
 export function renderExtensionPullCancelled(mode: OutputMode): void {
   if (mode === "json") {
     console.log(JSON.stringify({ status: "cancelled" }));

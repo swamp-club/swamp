@@ -94,9 +94,7 @@ Deno.test("renderError logs UserError message directly to stderr without LogTape
     assertEquals(logs.length, 1);
     assertStringIncludes(logs[0], "Error:");
     assertStringIncludes(logs[0], "Model not found");
-    // Should not contain stack trace lines
     assertEquals(logs[0].includes("    at "), false);
-    // Should not contain LogTape formatting (level prefix, category)
     assertEquals(logs[0].includes("FTL"), false);
   } finally {
     console.error = originalError;
@@ -145,7 +143,6 @@ Deno.test("renderError logs Cliffy ValidationError missing argument without stac
 
     assertEquals(logs.length, 1);
     assertStringIncludes(logs[0], "Missing argument(s): extension");
-    // Should not contain stack trace lines
     assertEquals(logs[0].includes("    at "), false);
   } finally {
     console.error = originalError;
@@ -176,8 +173,6 @@ Deno.test("renderError suppresses Cliffy Command dump on ValidationError (issue 
       logs[0],
       'Unknown option "--inputs". Did you mean option "--input"?',
     );
-    // The bug was a 300-line dump of Cliffy internals — none of these markers
-    // should leak into user-facing output.
     assertEquals(logs[0].includes("Command {"), false);
     assertEquals(logs[0].includes("settings:"), false);
     assertEquals(logs[0].includes("[Circular"), false);
@@ -210,9 +205,7 @@ Deno.test("renderError: json mode emits clean JSON for ValidationError (issue #1
       parsed.error,
       'Unknown option "--inputs". Did you mean option "--input"?',
     );
-    // ValidationError should never produce a stack in JSON output.
     assertEquals(parsed.stack, undefined);
-    // And the raw payload must not leak.
     assertEquals(stderrLogs[0].includes("Command {"), false);
     assertEquals(stderrLogs[0].includes("[Circular"), false);
   } finally {
@@ -230,19 +223,13 @@ Deno.test("renderError: UserError goes to console.error directly, system errors 
     renderError(new UserError("user error"));
     renderError(new Error("system error"));
 
-    // Both should have logged (UserError direct, system via LogTape fatal)
     assertEquals(logs.length, 2);
-    // UserError: direct console.error, no LogTape formatting
     assertStringIncludes(logs[0], "user error");
     assertEquals(logs[0].includes("FTL"), false);
   } finally {
     console.error = originalError;
   }
 });
-
-// ============================================================================
-// JSON stdout output tests
-// ============================================================================
 
 Deno.test("renderError: json mode is single-emitter (stderr JSON, no stdout)", () => {
   const stdoutLogs: string[] = [];
@@ -259,8 +246,6 @@ Deno.test("renderError: json mode is single-emitter (stderr JSON, no stdout)", (
     const parsed = JSON.parse(stderrLogs[0]);
     assertEquals(parsed.error, "Model not found");
     assertEquals(parsed.stack, undefined);
-    // Single-emission contract: in JSON mode renderError writes to
-    // stderr only — stdout stays clean for success data.
     assertEquals(stdoutLogs.length, 0);
   } finally {
     console.log = originalLog;
@@ -330,8 +315,6 @@ Deno.test("renderError: json mode surfaces UserError code field", () => {
 });
 
 Deno.test("renderError: json mode surfaces a `code` property from any error", () => {
-  // Errors thrown from libswamp paths often carry a `code` via duck typing
-  // rather than via UserError (e.g. cancellations, validation failures).
   const stderrLogs: string[] = [];
   const originalLog = console.log;
   const originalError = console.error;
@@ -385,11 +368,6 @@ Deno.test("renderError: no outputMode does not write to stdout", () => {
   }
 });
 
-// ============================================================================
-// buildErrorJson tests
-// ============================================================================
-
-/** A refused stale edit of workflow `deploy`, as a root unit throws it. */
 function staleEdit(): PartitionsRefusedError {
   return new PartitionsRefusedError([{
     partition: partitionOf({
@@ -479,16 +457,6 @@ Deno.test("buildErrorJson: omits code field when not present", () => {
   assertEquals(result.code, undefined);
 });
 
-// =============================================================
-// Plan v4 step 11 — DuplicateTypeUserError JSON shape
-// =============================================================
-//
-// Pinned shape: log mode emits a single-line message; JSON mode emits
-// the same message PLUS a structured `duplicateType` object so jq /
-// AI agents / CI scripts can read the collision details without
-// re-parsing the message. This test pins both the structural shape
-// and the parity (same fields available across modes).
-
 Deno.test(
   "buildErrorJson: DuplicateTypeUserError emits structured duplicateType field (W2 plan v4 step 11)",
   () => {
@@ -511,7 +479,6 @@ Deno.test(
 
     const result = buildErrorJson(err);
 
-    // Default UserError treatment: message present, no stack trace.
     assertStringIncludes(
       result.error as string,
       `Type "@scope/foo" (kind=model)`,
@@ -526,12 +493,10 @@ Deno.test(
     );
     assertEquals(result.stack, undefined);
 
-    // Structured field — pinned shape.
     const dup = result.duplicateType as Record<string, unknown>;
     assertEquals(dup.kind, "model");
     assertEquals(dup.type, "@scope/foo");
     assertEquals(dup.isGhostRow, false);
-    // Rollback outcome defaults to rolled-back.
     assertEquals(dup.rolledBack, true);
     assertEquals(dup.rollback, { status: "rolled-back" });
     const existing = dup.existing as Record<string, string>;
@@ -569,15 +534,11 @@ Deno.test(
       },
     });
 
-    // Log mode: the message line names both extensions and the
-    // colliding type — no need for a separate test since the
-    // top-level renderer logs `err.message` verbatim.
     assertStringIncludes(err.message, "@scopeA/aa@1.0.0");
     assertStringIncludes(err.message, "@scopeB/bb@2.0.0");
     assertStringIncludes(err.message, "@scope/parity");
     assertStringIncludes(err.message, "(kind=vault)");
 
-    // JSON mode: same fields available structurally.
     const result = buildErrorJson(err);
     const dup = result.duplicateType as Record<string, unknown>;
     assertEquals(dup.kind, "vault");
@@ -651,8 +612,6 @@ Deno.test(
     assertEquals(dup.isGhostRow, false);
     assertEquals(dup.rolledBack, false);
     assertEquals(dup.rollback, { status: "kept", kept });
-    // The whole object survives JSON serialization (priorVersion: null
-    // included), since the JSON renderer stringifies it.
     assertEquals(
       JSON.parse(JSON.stringify(result)).duplicateType.rollback,
       { status: "kept", kept },
@@ -693,10 +652,6 @@ Deno.test(
     assertEquals(dup.rollback, { status: "unsettled", lockfilePath });
   },
 );
-
-// ============================================================================
-// exitCodeForError tests
-// ============================================================================
 
 Deno.test("exitCodeForError: returns 75 for a write a serve follower refused (swamp-club#4096)", () => {
   assertEquals(exitCodeForError(new ServeNotLeaderError(undefined)), 75);
@@ -824,10 +779,6 @@ Deno.test("buildErrorJson: LockTimeoutError includes code field", () => {
   assertStringIncludes(result.error as string, "timed out after 60000ms");
 });
 
-// ============================================================================
-// tlsErrorHint tests (issue #1518)
-// ============================================================================
-
 Deno.test("tlsErrorHint: returns hint for UnknownIssuer error", () => {
   const hint = tlsErrorHint(
     "error sending request for url (https://fw.example.com/api/): client error (Connect): invalid peer certificate: UnknownIssuer",
@@ -906,11 +857,8 @@ Deno.test("renderError: no TLS hint for non-TLS errors", () => {
   }
 });
 
-// ============================================================================
-// platformCertStoreHint tests (swamp-club#2314)
-// ============================================================================
-
-// Verbatim from Deno 2.9.7: a global fetch() when the OS store read fails.
+// the message a global fetch() raises when the OS certificate store cannot be
+// read
 const RAW_CERT_STORE_MESSAGE =
   "Failed to load platform certificates: No such file or directory (os error 2)";
 
@@ -1131,7 +1079,6 @@ Deno.test("buildErrorJson: a refused signal carries the refusal, and the key's l
   );
 });
 
-/** Captures what `fn` writes with console.error. */
 function captureStderr(fn: () => void): string {
   const logs: string[] = [];
   const originalError = console.error;
@@ -1152,7 +1099,6 @@ Deno.test("renderError: a worded error prints the spelling of the command tree (
     renderError(error, "log", "behavior")
   );
   assertStringIncludes(underBehavior, "Behavior not found: x");
-  // Outside both trees, the surface defaults to behavior.
   assertStringIncludes(
     captureStderr(() => renderError(error, "log")),
     "Behavior not found: x",
@@ -1175,7 +1121,6 @@ Deno.test("buildErrorJson: the error text follows the surface and adds no fields
 });
 
 Deno.test("renderError: a libswamp not-found keeps its model spelling through userErrorFromSwampError", () => {
-  // The shape libswamp's behaviorNotFound returns.
   const swampError = markModelWording(
     { code: "not_found", message: "Behavior not found: my-server" },
     "Model not found: my-server",

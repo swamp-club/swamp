@@ -20,11 +20,9 @@
 import type { render } from "ink-testing-library";
 
 /**
- * Writes `keys` to stdin from inside the stdout write of the first frame that
- * satisfies `shows`, before React runs that render's effects. This is the
- * window a loaded machine opens between a frame appearing and Ink re-binding
- * the `useInput` handler, made deterministic: a component whose keys act on
- * state from an earlier render fails here every time.
+ * writes keys from inside the stdout write of the first frame that satisfies
+ * shows, before React runs that render's effects, making the window before Ink
+ * re-binds useInput deterministic
  */
 export function pressOnFrame(
   instance: ReturnType<typeof render>,

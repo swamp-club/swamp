@@ -23,7 +23,6 @@ import type { SwampError } from "../../libswamp/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { SearchRenderer } from "./search_renderer.ts";
 
-/** The event shape every search stream emits. */
 type SearchListEvent =
   | { kind: "resolving" }
   | { kind: "completed" }
@@ -31,30 +30,15 @@ type SearchListEvent =
 
 type CompletedOf<E extends SearchListEvent> = Extract<E, { kind: "completed" }>;
 
-/**
- * What a search command plugs into the non-interactive list: its own result
- * filter, the text each entry prints as, and the extras its picker shows.
- */
 export interface SearchListConfig<E extends SearchListEvent, T> {
-  /** Plural noun for the results, as the picker labels them. */
   itemLabel: string;
-  /** The results to list — the same items the command's JSON output holds. */
   items: (event: CompletedOf<E>) => T[];
-  /** The text one result prints as. */
   renderEntry: (item: T) => string;
-  /** A tip printed under the no-results line. */
   emptyHint?: (event: CompletedOf<E>) => string | undefined;
-  /** Runs after the list, for lines a listing ends with. */
   afterList?: (event: CompletedOf<E>) => void;
-  /** Turns a stream error into the error the command throws. */
   toError: (error: SwampError) => Error;
 }
 
-/**
- * Writes search results as a plain list: one entry per result with a blank
- * line between entries, then a count. Nothing reads stdin, so the command
- * ends as soon as the list is written.
- */
 export function writeSearchResultList<T>(
   items: T[],
   renderEntry: (item: T) => string,
@@ -72,9 +56,8 @@ export function writeSearchResultList<T>(
 }
 
 /**
- * A search renderer that prints a plain list instead of the interactive
- * picker. `swamp ... --server` uses it: a remote search never starts the
- * picker (swamp-club#3917).
+ * a plain-list search renderer for `--server`, since a remote search never
+ * starts the picker
  */
 export function createSearchListRenderer<E extends SearchListEvent, T>(
   config: SearchListConfig<E, T>,

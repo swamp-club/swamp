@@ -25,21 +25,17 @@ import type { IneffectiveRestriction } from "../../domain/access/serve_auth_conf
 import type { GrantFileCheckIssue } from "../../domain/access/grant_file_loader.ts";
 
 export interface ServeCheckConfigData {
-  /** True when every name resolved and serve would start. */
   readonly passed: boolean;
   readonly authMode: "none" | "token" | "oauth";
-  /** Set in oauth mode. */
   readonly oauthProvider?: string;
   readonly entries: readonly AccessListCheckEntry[];
   readonly allowedCollectives: readonly string[];
   readonly wouldStart: boolean;
   /**
-   * Why the auth settings would stop serve starting. An unusable token
-   * secrets key also sets `wouldStart` false and is reported in
-   * `tokenSecretsKey.error` instead.
+   * why the auth settings would stop serve starting; an unusable token secrets
+   * key is reported in tokenSecretsKey.error instead
    */
   readonly refusal?: string;
-  /** Set when serve.yaml has a token-secrets block. */
   readonly tokenSecretsKey?: TokenSecretsKeyCheck;
   /**
    * Advisory: restriction entries that restrict nothing as written, such as
@@ -53,12 +49,10 @@ export interface ServeCheckConfigData {
    * at startup.
    */
   readonly grantErrors?: readonly GrantFileCheckIssue[];
-  /** How many grant files the check read; set whenever grants were checked. */
   readonly grantFilesChecked?: number;
   /**
-   * Advisory: grant type spellings that match no type as written
-   * (swamp-club#3130), and grant sources absent where the check ran. They do
-   * not fail the check.
+   * advisory: grant type spellings that match no type as written, and grant
+   * sources absent where the check ran; they do not fail the check
    */
   readonly grantWarnings?: readonly GrantFileCheckIssue[];
 }
@@ -68,7 +62,6 @@ export interface TokenSecretsKeyCheck {
   readonly vault: string;
   readonly key: string;
   readonly status: "ok" | "failed";
-  /** Why the key is unusable; set when `status` is "failed". */
   readonly error?: string;
 }
 

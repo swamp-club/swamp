@@ -27,10 +27,6 @@ import { logTextBlock } from "./log_text_block.ts";
 
 await initializeLogging({});
 
-/**
- * Captures what LogTape's console sink and the JSON renderer write:
- * console.log, console.info, console.warn and console.error.
- */
 function capture(run: () => void | Promise<void>): Promise<string[]> {
   const logs: string[] = [];
   const original = {

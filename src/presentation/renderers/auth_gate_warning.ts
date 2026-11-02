@@ -20,21 +20,17 @@
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 
-/** The offline warning as fields on a JSON-mode document. */
 export interface AuthGateWarningFields {
   warning: string;
   authMode: "offline";
 }
 
-// The JSON-mode warning held until the run ends (swamp-club#2938).
 let pendingWarning: string | undefined;
 
 /**
- * Report that the auth gate let this run through unverified. Log mode warns
- * through the logger. JSON mode has no console log sink, and stderr must stay
- * one JSON document when the command fails, so the warning is held: a fatal
- * error takes it as fields on its own document (`takeAuthGateWarning`), and
- * any other run writes it as one JSON line to stderr when the process exits.
+ * JSON mode holds the warning so stderr stays one JSON document: a fatal error
+ * takes it as fields on its own document, any other run writes one JSON line at
+ * exit.
  */
 export function renderAuthGateWarning(
   mode: OutputMode,
@@ -53,10 +49,6 @@ export function renderAuthGateWarning(
   getSwampLogger(["swamp", "cli"]).warn`${message}`;
 }
 
-/**
- * Take the held JSON-mode warning for a fatal error document, so the exit
- * hook writes nothing. Returns `undefined` when no warning is held.
- */
 export function takeAuthGateWarning(): AuthGateWarningFields | undefined {
   const message = pendingWarning;
   pendingWarning = undefined;
@@ -65,7 +57,6 @@ export function takeAuthGateWarning(): AuthGateWarningFields | undefined {
     : { warning: message, authMode: "offline" };
 }
 
-/** Write the held JSON-mode warning as one JSON line, if one is held. */
 export function flushAuthGateWarning(
   writeStderr: (line: string) => void = (line) => console.error(line),
 ): void {

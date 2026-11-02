@@ -19,12 +19,6 @@
 
 import type { EventHandlers, StreamEvent } from "../libswamp/stream.ts";
 
-/**
- * A mode-specific object that translates libswamp event streams into
- * user-facing output. Each renderer produces `EventHandlers<E>` for
- * use with `consumeStream()`.
- */
 export interface Renderer<E extends StreamEvent> {
-  /** Returns exhaustiveness-checked handlers for consumeStream(). */
   handlers(): EventHandlers<E>;
 }

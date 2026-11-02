@@ -19,29 +19,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-/**
- * Return value from usePreviewScroll.
- */
 export interface PreviewScrollResult {
-  /** Current scroll offset (lines from top). */
   scrollOffset: number;
-  /** Scroll up by half a page. */
   scrollUp: () => void;
-  /** Scroll down by half a page. */
   scrollDown: () => void;
 }
 
-/**
- * React hook for managing scroll position within a preview pane.
- *
- * Provides half-page scrolling (Ctrl-u / Ctrl-d) and automatically resets
- * to the top when the content identity changes (tracked via `resetKey`).
- *
- * @param contentHeight - Total number of lines in the preview content.
- * @param viewportHeight - Number of lines visible in the preview pane.
- * @param resetKey - When this value changes, scroll resets to 0. Typically
- *   tied to the selected item identity.
- */
 export function usePreviewScroll(
   contentHeight: number,
   viewportHeight: number,
@@ -49,7 +32,6 @@ export function usePreviewScroll(
 ): PreviewScrollResult {
   const [scrollOffset, setScrollOffset] = useState(0);
 
-  // Reset to top when the selected item changes
   useEffect(() => {
     setScrollOffset(0);
   }, [resetKey]);
@@ -65,7 +47,6 @@ export function usePreviewScroll(
     setScrollOffset((prev) => Math.min(maxOffset, prev + halfPage));
   }, [halfPage, maxOffset]);
 
-  // Clamp current offset if content shrinks
   const clampedOffset = Math.min(scrollOffset, maxOffset);
 
   return {

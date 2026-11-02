@@ -107,7 +107,6 @@ function renderMethodExecutions(
           );
         }
       } else if (method.failed > 0) {
-        // Show the most recent error message in compact mode
         const lastFailed = [...method.runs]
           .reverse()
           .find((r) => r.status === "failed" && r.error);
@@ -188,12 +187,10 @@ function renderWorkflowRuns(
         }
       }
     } else if (group.failed > 0) {
-      // Show the most recent failed run's error in compact mode
       const lastFailedRun = [...group.runs]
         .reverse()
         .find((r) => r.status === "failed");
       if (lastFailedRun) {
-        // The step the run reports as failed, else the first with an error.
         const failed = lastFailedRun.steps.filter(
           (s) => s.status === "failed" && s.error,
         );

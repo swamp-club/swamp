@@ -23,14 +23,8 @@ import { Box, render, Text, useApp, useInput } from "ink";
 import type { OutputMode } from "../output/output.ts";
 import { suppressInkTtyErrors } from "../output/ink_lifecycle.ts";
 
-/**
- * Available actions after selecting a workflow from search.
- */
 export type WorkflowAction = "view" | "run";
 
-/**
- * Data for displaying workflow action selection.
- */
 export interface WorkflowActionSelectData {
   workflowName: string;
   workflowDescription?: string;
@@ -56,28 +50,17 @@ const ACTION_OPTIONS: ActionOption[] = [
   },
 ];
 
-/**
- * Renders workflow action selection in either interactive or JSON mode.
- *
- * @param data - The workflow data for action selection
- * @param mode - The output mode (interactive or json)
- * @returns A promise that resolves with the selected action, or undefined if cancelled
- */
 export async function renderWorkflowActionSelect(
   data: WorkflowActionSelectData,
   mode: OutputMode,
 ): Promise<WorkflowAction | undefined> {
   if (mode === "json") {
-    // In JSON mode, default to "view" behavior (no action selection)
     return "view";
   } else {
     return await renderInteractiveWorkflowActionSelect(data);
   }
 }
 
-/**
- * Renders an interactive workflow action selection UI.
- */
 function renderInteractiveWorkflowActionSelect(
   data: WorkflowActionSelectData,
 ): Promise<WorkflowAction | undefined> {
@@ -113,9 +96,6 @@ interface WorkflowActionSelectUIProps {
   onCancel: () => void;
 }
 
-/**
- * Interactive workflow action selection component.
- */
 export function WorkflowActionSelectUI(
   props: WorkflowActionSelectUIProps,
 ): React.ReactElement {

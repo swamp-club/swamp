@@ -60,13 +60,8 @@ import { platformCertStoreHint } from "../output/error_output.ts";
 export interface WorkflowRunRenderOpts {
   workflowName: string;
   quiet?: boolean;
-  /** Also frame reports whose markdown is empty. */
   verbose?: boolean;
   failOnSeverity?: AssertSeverity;
-  /**
-   * Appended to every follow-up command the renderer prints, so it targets
-   * the same server or repository (for example " --server ws://host:9000").
-   */
   commandTarget?: string;
 }
 
@@ -91,9 +86,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
   private verbose: boolean;
   private failOnSeverity: AssertSeverity;
   private commandTarget: string;
-  // Runs, nested ones included, whose wait for a signal was shown.
   private readonly runsWaitingForSignal = new Set<string>();
-  // The waits shown, so a suspension does not print one a second time.
   private readonly waitsShown = new Set<string>();
   // Whether any gate was shown in this stream. A remote stream carries
   // gates, and a nested run's signal wait only in the suspended event.
@@ -474,8 +467,8 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
         this.gateShown = true;
         if (!this.pipe) return;
         const name = this.getJobDisplayName(e.jobId);
-        // A nested workflow's gate is decided on the nested run, under its
-        // own workflow (swamp-club#2736).
+        // a nested workflow's gate is decided on the nested run, under its own
+        // workflow
         const gateWorkflow = e.workflowName ?? this.workflowName;
         writeOutput(
           this.pipe.waitingLine(
@@ -705,7 +698,6 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
         endSystemPipeOutput();
         if (!this.pipe) return;
 
-        // Render assert summary if any assert steps ran
         if (this.assertResults.length > 0) {
           const passed = this.assertResults.filter((r) => r.passed).length;
           const failed = this.assertResults.filter((r) => !r.passed && !r.error)
@@ -819,8 +811,8 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
         if (!this.pipe) return;
         writeBlankLine();
         if (e.nested) {
-          // Waiting on a nested run: its gate was shown when it was
-          // requested, under the nested workflow (swamp-club#2736).
+          // waiting on a nested run: its gate was shown when requested, under
+          // the nested workflow
           writeOutput(
             this.pipe.statusLine(
               "system",
@@ -841,8 +833,6 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
               `${yellow("Nested run:")}  ${
                 this.runsWaitingForSignal.has(e.nested.runId)
                   ? "signal its wait as shown above, then"
-                  // The wait is further down: the run that holds it is
-                  // resumed first, as shown with its signal command.
                   : deeperWait && !this.gateShown
                   ? "once the run it waits on finishes,"
                   : this.gateShown
@@ -865,9 +855,9 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           return;
         }
         if (waitsOnNestedRun(e)) {
-          // The step waits on a nested run this caller is not shown: there
-          // is no gate of this run to approve. A wait further down that the
-          // caller may read is still named (swamp-club#3110).
+          // the step waits on a nested run this caller is not shown, so there
+          // is no gate of this run to approve; a deeper wait the caller may
+          // read is still named
           writeOutput(
             this.pipe.statusLine(
               "system",
@@ -966,10 +956,6 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
     return this._failed;
   }
 
-  /**
-   * Beside a by-ID signal command, the command that signals the same wait by
-   * its workflow and key, when its step declared one (swamp-club#3214).
-   */
   private writeSignalByKey(
     name: string,
     workflowName: string,
@@ -991,13 +977,9 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
   }
 
   /**
-   * Shows the open waits of nested runs that a suspension names and this
-   * stream has not shown: every one of them for a run on a server, which is
-   * not sent a wait as it is requested, and for a resume that found a nested
-   * run still waiting (swamp-club#3110). A wait held further down than
-   * `directRunId`, the run the suspended step waits on, also gets the resume
-   * of the run that holds it, which has to come before any run above it.
-   * Returns whether such a wait was named.
+   * shows open nested waits a suspension names that this stream has not shown;
+   * a wait deeper than `directRunId` also gets the resume of the run holding
+   * it, which must come before any run above it
    */
   private writeNestedSignalWaits(
     waits: readonly NestedSignalWaitData[] | undefined,
@@ -1049,9 +1031,8 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
   }
 
   /**
-   * The command to run after a failed run: retry its failed steps, or, when
-   * no failed step is recorded, read its logs. A step stranded by a workflow
-   * change would fail a retry again, so that run points to a new run.
+   * a step stranded by a workflow change would fail a retry again, so that run
+   * points to a new run
    */
   private nextActionForFailedRun(run: WorkflowRunView): string[] {
     const failedSteps = run.jobs.flatMap((job) =>
@@ -1136,11 +1117,8 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
 }
 
 /**
- * Whether a suspension names a step that waits on a nested run and not a
- * gate of the run's own, with no `nested` to say so: the nested run is not
- * shown to this caller, or its link could not be read. A gate's prompt is
- * never empty, and a step waiting for a signal on a wait that cannot be
- * read shows as `waiting`, which a nested workflow step never does.
+ * a suspension with no `nested`, `wait` or prompt, whose step is not `waiting`,
+ * waits on a nested run the caller is not shown or whose link could not be read
  */
 function waitsOnNestedRun(
   e: Extract<WorkflowRunEvent, { kind: "suspended" }>,
@@ -1150,12 +1128,11 @@ function waitsOnNestedRun(
   }
   const step = e.run.jobs.find((job) => job.name === e.jobId)?.steps
     .find((s) => s.name === e.stepId);
-  // Without the step in the view there is nothing to go on: say it is a
-  // gate, as before.
+  // without the step in the view there is nothing to go on, so it is reported
+  // as a gate
   return step !== undefined && step.status !== "waiting";
 }
 
-/** A signal wait as the run's stream requested it. */
 interface RequestedWait {
   runId: string;
   workflowName?: string;
@@ -1166,7 +1143,6 @@ interface RequestedWait {
   key?: string;
 }
 
-/** True when every field of the holder line is a string. */
 function isWaitKeyHolder(value: unknown): value is WaitKeyHolder {
   if (typeof value !== "object" || value === null) return false;
   const holder = value as Record<string, unknown>;
@@ -1180,10 +1156,7 @@ function isWaitKeyHolder(value: unknown): value is WaitKeyHolder {
   ].every((field) => typeof holder[field] === "string");
 }
 
-/**
- * Names the open wait that holds the key a step was refused with
- * `wait_key_held` (swamp-club#3214). Every part can come from a server.
- */
+/** every part can come from a server, so each is escaped */
 function describeWaitKeyHolder(holder: WaitKeyHolder): string {
   return dim(
     `key ${escapeControlCharacters(holder.key)} is held by step ${
@@ -1194,7 +1167,6 @@ function describeWaitKeyHolder(holder: WaitKeyHolder): string {
   );
 }
 
-/** An approval gate as the run's stream requested it. */
 interface RequestedGate {
   runId: string;
   workflowName?: string;
@@ -1206,18 +1178,12 @@ interface RequestedGate {
 
 class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
   private _failed = false;
-  // Gates requested in this stream, nested runs' included, so a run that
-  // suspends on a nested run can name the gate to decide (swamp-club#2736).
+  // gates requested in this stream, nested runs' included, so a run suspended
+  // on a nested run can name the gate to decide
   private readonly _gates: RequestedGate[] = [];
-  // Signal waits requested in this stream, nested runs' included.
   private readonly _waits: RequestedWait[] = [];
-  // The holders of keys steps were refused with wait_key_held.
   private readonly _waitKeyHolders: WaitKeyHolder[] = [];
 
-  /**
-   * `waitKeyHolders` for the run's final output, only when a step was
-   * refused with a key some wait holds: otherwise the output is unchanged.
-   */
   private waitKeyHoldersField(): { waitKeyHolders?: WaitKeyHolder[] } {
     return this._waitKeyHolders.length > 0
       ? { waitKeyHolders: this._waitKeyHolders }
@@ -1336,20 +1302,18 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
         );
       },
       suspended: (e) => {
-        // On a nested wait, the gate to decide is the nested run's: the one
-        // requested by the run the step waits on, or else the latest gate
-        // requested deeper down. Without one in this stream (a resume that
-        // found the nested run suspended again), the waiting step is named.
+        // on a nested wait the gate to decide is the nested run's own, else the
+        // latest requested deeper down; with none in this stream, the waiting
+        // step is named
         const nested = e.nested;
         // What the nested run itself requested comes first, gate or wait,
         // so a sibling run's earlier gate is never named in its place.
         const ownGate = nested
           ? this._gates.findLast((g) => g.runId === nested.runId)
           : undefined;
-        // A run on a server is not sent a nested wait as it is requested:
-        // the suspension names it instead (swamp-club#3110). A wait is named
-        // only for a nested run with no gate to decide first, so a named
-        // wait comes before a gate another run requested earlier.
+        // a run on a server is not sent a nested wait as it is requested, so
+        // the suspension names it; a named wait is used only when the nested
+        // run has no gate to decide first
         const namedWaits = e.nestedSignalWaits ?? [];
         // A step can wait on a nested run this caller is not shown, which
         // leaves no `nested`: a wait further down is then all there is.
@@ -1367,8 +1331,6 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
         const gate = nested && !ownWait
           ? ownGate ?? this._gates.findLast((g) => g.runId !== e.run.id)
           : undefined;
-        // A run suspended on a signal wait, its own or a nested run's, names
-        // the wait to signal in place of a gate to approve.
         const requestedWait = (nested || hiddenNested) && !gate
           ? ownWait ?? this._waits.findLast((w) => w.runId !== e.run.id)
           : undefined;
@@ -1395,8 +1357,6 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
               : {}),
           }
           : undefined;
-        // Every step of this run still waiting for a signal, so a run with
-        // several waits, or a wait beside a gate, names them all.
         const signalWaits = e.run.jobs.flatMap((job) =>
           job.steps.flatMap((step) =>
             step.status === "waiting" && step.wait
@@ -1448,8 +1408,6 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
                 prompt: e.prompt,
                 timeout: e.timeout,
               },
-            // The nested run the step waits on, when the run suspended on a
-            // nested workflow rather than a gate of its own.
             ...waitsField,
             ...(e.nested ? { waitingOnNestedRun: e.nested } : {}),
             ...this.waitKeyHoldersField(),
@@ -1481,7 +1439,6 @@ export function createWorkflowRunRenderer(
   }
 }
 
-/** A run a server has started and the client has stopped following. */
 export interface WorkflowRunAcceptedData {
   runId: string;
   workflowName: string;
@@ -1489,11 +1446,6 @@ export interface WorkflowRunAcceptedData {
   detached: true;
 }
 
-/**
- * Reports a detached run (`swamp workflow run --detach`): the run's id, and in
- * log mode the commands that follow it up. `commandTarget` is appended to each
- * so it targets the same server.
- */
 export function renderWorkflowRunAccepted(
   run: { runId: string; workflowName: string },
   mode: OutputMode,

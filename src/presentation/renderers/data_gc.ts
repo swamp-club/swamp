@@ -106,7 +106,6 @@ export function createDataGcRenderer(
   }
 }
 
-/** Renders the preview of expired data before confirmation. */
 export function renderDataGcPreview(
   preview: DataGcPreview,
   mode: OutputMode,
@@ -148,7 +147,6 @@ export function renderDataGcPreview(
   }
 }
 
-/** Renders cancellation when user declines the prompt. */
 export function renderDataGcCancelled(mode: OutputMode): void {
   if (mode === "json") {
     console.log(JSON.stringify({ cancelled: true }, null, 2));

@@ -54,8 +54,6 @@ function captureOutput(fn: () => void): string[] {
   return lines;
 }
 
-// --- log mode: info-level (non-failure) renderers ---
-
 Deno.test("renderAutoResolveSearching: log mode shows Resolving", () => {
   const lines = captureOutput(() => {
     renderAutoResolveSearching("@acme/widget", "log");
@@ -181,8 +179,6 @@ Deno.test("renderAutoResolveInstalled: log mode shows Installed", () => {
   assertStringIncludes(output, "3 behaviors registered");
 });
 
-// --- log mode: hard-failure renderers must show "Error" ---
-
 Deno.test("renderAutoResolveNotFound: log mode shows Error not Warning", () => {
   const lines = captureOutput(() => {
     renderAutoResolveNotFound("@acme/widget", "log");
@@ -227,8 +223,8 @@ Deno.test("renderAutoResolveInstalledWithoutType: log mode names the newer versi
   );
   assertStringIncludes(output, "@acme/send@2026.09.24.1 is available");
   assertStringIncludes(output, "swamp extension update @acme/send");
-  // swamp-club#2476: an install that loaded cleanly is not "failed to
-  // load", and a destructive --force re-pull is not the fix.
+  // an install that loaded cleanly is not "failed to load", and a destructive
+  // --force re-pull is not the fix
   assertEquals(output.includes("failed to load"), false);
   assertEquals(output.includes("--force"), false);
 });
@@ -339,8 +335,6 @@ Deno.test("installBusyMessage: an unreadable lock file still explains the wait",
   );
 });
 
-// --- log mode: soft-failure renderers remain Warning ---
-
 Deno.test("renderAutoResolveCollectiveNotTrusted: log mode shows Warning", () => {
   const lines = captureOutput(() => {
     renderAutoResolveCollectiveNotTrusted("acme", "@acme/widget", "log");
@@ -359,8 +353,6 @@ Deno.test("renderAutoResolveNoStableVersion: log mode shows Warning", () => {
   assertStringIncludes(output, "Warning");
   assertStringIncludes(output, "no stable version");
 });
-
-// --- JSON mode: all failure renderers emit status: "failed" ---
 
 Deno.test("renderAutoResolveNotFound: json mode emits failed status", () => {
   const logs: string[] = [];
@@ -468,8 +460,6 @@ Deno.test("renderAutoResolveLegacyInstallation: json mode emits legacy paths", (
     console.log = origLog;
   }
 });
-
-// --- renderAutoResolveLocalSourceFailed ---
 
 Deno.test("renderAutoResolveLocalSourceFailed: log mode shows Error with doctor suggestion", () => {
   const lines = captureOutput(() => {

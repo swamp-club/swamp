@@ -81,12 +81,9 @@ class LogDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
             })`,
           );
         }
-        // Always surface the hydration count for extension datastores
-        // (filesystem datastores have no separate cache to hydrate, so
-        // filesPulled is structurally always 0 there and the line is
-        // meaningless). Showing 0 for extensions confirms hydration ran
-        // and lets the user distinguish "ran and found nothing" from
-        // "was skipped entirely".
+        // always show the hydration count for extension datastores: 0 confirms
+        // hydration ran rather than was skipped. Filesystem datastores have no
+        // cache to hydrate.
         if (data.type !== "filesystem") {
           lines.push(`  Hydrated: ${data.filesPulled} pulled`);
         }
@@ -130,11 +127,10 @@ class LogDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
 }
 
 /**
- * The error a setup error event throws. A refusal that carries the
- * datastore's own UserError (the format check, swamp-club#3189) rethrows it,
- * keeping its code for `--json`; other setup errors render as before. Only
- * `formatRefusal` in `libswamp/datastores/setup.ts` sets `cause` on a setup
- * error event; setting it on another event changes how that event renders.
+ * a refusal carrying the datastore's own UserError is rethrown, keeping its
+ * code for --json. Only formatRefusal in libswamp/datastores/setup.ts sets
+ * cause on a setup error event; setting it elsewhere changes how that event
+ * renders.
  */
 function setupError(error: SwampError): UserError {
   return error.cause instanceof UserError

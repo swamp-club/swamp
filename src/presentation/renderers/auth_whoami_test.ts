@@ -240,8 +240,6 @@ Deno.test("createAuthWhoamiRenderer - factory returns correct type per mode", ()
   assertEquals(typeof jsonRenderer.handlers, "function");
 });
 
-// --- entitlement rendering (issue #1544) ---
-
 function makeEntitledIdentity(
   entitlements: WhoamiCollectiveEntitlement[],
   plan?: string,
@@ -273,8 +271,6 @@ function captureLog(
 }
 
 Deno.test("LogAuthWhoamiRenderer - no entitlement renders the pre-entitlement output", () => {
-  // The compatibility guarantee: upgrading the CLI alone, against an older or
-  // self-hosted swamp-club, must not change a byte of this.
   const output = captureLog(
     makeIdentity({ collectives: ["org-a", "org-b"] }),
     "log",
@@ -323,8 +319,6 @@ Deno.test("LogAuthWhoamiRenderer - shows the plan roll-up and per-collective blo
 });
 
 Deno.test("LogAuthWhoamiRenderer - a paying collective is never shown a trial", () => {
-  // Same rule the web surface applies to its trial banner. The data is still
-  // in --json; only the display suppresses it.
   const output = captureLog(
     makeEntitledIdentity([
       {
@@ -402,8 +396,6 @@ Deno.test("LogAuthWhoamiRenderer - a member's withheld status renders no note", 
   assertStringIncludes(output, "Team");
   assertEquals(output.includes("active"), false);
 });
-
-// --- standing instead of "Free" (swamp-club#3463) ---
 
 const endedTrial = {
   state: "expired" as const,
@@ -512,7 +504,6 @@ Deno.test("LogAuthWhoamiRenderer - a covered collective is not shown its own end
 });
 
 Deno.test("LogAuthWhoamiRenderer - an older server's free collective with no trial is a bare slug", () => {
-  // No privateExtensions verdict, so nothing can say it is covered.
   const output = captureLog(
     makeEntitledIdentity([
       { slug: "erin", plan: "free", planName: "Free", trial: null },
@@ -629,8 +620,6 @@ Deno.test("JsonAuthWhoamiRenderer - omits entitlement keys when the server sent 
   assertEquals(parsed.collectives, ["org-a"]);
 });
 
-// --- effectiveServeUrl rendering ---
-
 Deno.test("LogAuthWhoamiRenderer - shows effective serve URL when set", () => {
   const output = captureLog(
     makeIdentity(),
@@ -707,8 +696,6 @@ Deno.test("JsonAuthWhoamiRenderer - omits effectiveServeUrl for an unparseable s
   assertEquals(output.includes("zz9"), false);
 });
 
-// --- key fingerprint rendering ---
-
 Deno.test("LogAuthWhoamiRenderer - shows the key fingerprint", () => {
   const output = captureLog(
     { ...makeIdentity(), fingerprint: "7cba95208c56e033" },
@@ -732,10 +719,6 @@ Deno.test("JsonAuthWhoamiRenderer - collective token includes the fingerprint", 
   );
   assertEquals(JSON.parse(output).fingerprint, "7cba95208c56e033");
 });
-
-// --- characterisation of whoami's standing output (swamp-club#3947) ---
-// Pinned before the standing helpers moved to collective_standing.ts and
-// rollUpPlanName to libswamp; the move must not change a byte of either mode.
 
 const adminEntitlements: WhoamiCollectiveEntitlement[] = [
   {

@@ -23,20 +23,16 @@ import type { OutputMode } from "./output.ts";
 
 export interface ServerExtensionChangeData {
   /**
-   * The serve instance's own reload after the change. Undefined when it
-   * did not reload: it runs without --hot-reload, or predates
-   * swamp-club#3594.
+   * the serve instance's own reload; undefined when it did not reload, because
+   * it runs without --hot-reload or predates reload reporting
    */
   serveReload?: ExtensionChangeServeReload;
-  /** The command that reloads the serve instance by hand. */
   reloadCommand: string;
 }
 
 /**
- * Says whether a serve instance runs an extension change made with
- * `--server` (pull, update, install, rm). JSON mode always prints its own
- * `serveReload` document: the reload outcome, or `null` with the reload
- * command when serve did not reload.
+ * JSON mode always prints serveReload: the reload outcome, or null with the
+ * reload command when serve did not reload
  */
 export function renderServerExtensionChange(
   data: ServerExtensionChangeData,

@@ -54,8 +54,6 @@ function captureRender(
   return output;
 }
 
-// ── Factory ─────────────────────────────────────────────────────────────
-
 Deno.test("createAccessCanIRenderer: returns renderer for log mode", () => {
   const renderer = createAccessCanIRenderer("log");
   assertEquals(typeof renderer.render, "function");
@@ -65,8 +63,6 @@ Deno.test("createAccessCanIRenderer: returns renderer for json mode", () => {
   const renderer = createAccessCanIRenderer("json");
   assertEquals(typeof renderer.render, "function");
 });
-
-// ── Log mode: specific check ────────────────────────────────────────────
 
 Deno.test("accessCanIRenderer log: specific check shows ALLOW with grant provenance", () => {
   const output = captureRender("log", {
@@ -112,8 +108,6 @@ Deno.test("accessCanIRenderer log: specific check lists all grants when multiple
   assertStringIncludes(output[4], "DENY");
   assertStringIncludes(output[4], "abc12345");
 });
-
-// ── Log mode: enumeration ───────────────────────────────────────────────
 
 Deno.test("accessCanIRenderer log: enumeration shows no grants message", () => {
   const output = captureRender("log", {
@@ -164,8 +158,6 @@ Deno.test("accessCanIRenderer log: enumeration shows deny marker for deny effect
   assertStringIncludes(output[1], "✗");
 });
 
-// ── JSON mode: specific check ───────────────────────────────────────────
-
 Deno.test("accessCanIRenderer json: specific check includes top-level effect", () => {
   const output = captureRender("json", {
     principal: "user:adam",
@@ -192,8 +184,6 @@ Deno.test("accessCanIRenderer json: specific check implicit deny sets effect to 
   assertEquals(parsed.resource, "access:*");
 });
 
-// ── JSON mode: enumeration ──────────────────────────────────────────────
-
 Deno.test("accessCanIRenderer json: enumeration outputs principal and decisions", () => {
   const output = captureRender("json", {
     principal: "user:adam",
@@ -204,8 +194,6 @@ Deno.test("accessCanIRenderer json: enumeration outputs principal and decisions"
   assertEquals(parsed.decisions.length, 2);
   assertEquals(parsed.effect, undefined);
 });
-
-// ── Deny-first verdict ─────────────────────────────────────────────────
 
 Deno.test("accessCanIRenderer log: specific check shows DENY when deny decision comes first", () => {
   const output = captureRender("log", {
@@ -233,8 +221,6 @@ Deno.test("accessCanIRenderer json: specific check verdict is deny when deny dec
   assertEquals(parsed.decisions.length, 2);
 });
 
-// ── Method echo ───────────────────────────────────────────────────────────
-
 Deno.test("accessCanIRenderer json: method is included in output when present in query", () => {
   const output = captureRender("json", {
     principal: "user:adam",
@@ -256,8 +242,6 @@ Deno.test("accessCanIRenderer json: method is omitted when not in query", () => 
   const parsed = JSON.parse(output.join(""));
   assertEquals(parsed.method, undefined);
 });
-
-// --- approval policy ---
 
 Deno.test("accessCanIRenderer log: enumeration marks implied approve rows and explains them", () => {
   const output = captureRender("log", {
@@ -396,7 +380,6 @@ Deno.test("accessCanIRenderer: a run-time vault decision is shown in log and jso
     runVaultAccess,
   };
   const lines = captureRender("log", result);
-  // A blank line, then a short tag; the reason stays in the JSON output.
   assertEquals(lines.slice(-2), [
     "",
     "In serve runs: DENY read vault erp (vault-scoped)",

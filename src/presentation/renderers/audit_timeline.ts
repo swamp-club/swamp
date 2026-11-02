@@ -31,9 +31,6 @@ import { getTerminalColumns } from "../output/terminal_size.ts";
 import type { AuditEntry } from "../../domain/audit/audit_entry.ts";
 import { auditEntryToData } from "../../domain/audit/audit_entry.ts";
 
-/**
- * Formats an ISO timestamp to a short time string (HH:MM:SS).
- */
 function formatTime(isoTimestamp: string): string {
   try {
     const date = new Date(isoTimestamp);
@@ -48,9 +45,6 @@ function formatTime(isoTimestamp: string): string {
   }
 }
 
-/**
- * Renders the formatted audit timeline table.
- */
 function renderTimelineTable(
   entries: readonly AuditEntry[],
   hoursAnalyzed: number,
@@ -68,10 +62,9 @@ function renderTimelineTable(
   }
 
   const cols = getTerminalColumns();
-  const prefixLen = 12 + 1 + 8 + 1; // time + space + source + space
+  const prefixLen = 12 + 1 + 8 + 1;
   const maxSummaryLen = Math.max(20, cols - prefixLen);
 
-  // Print header
   writeOutput(
     bold(
       `${"Time".padEnd(12)} ${"Source".padEnd(8)} ${"Summary"}`,
@@ -91,7 +84,6 @@ function renderTimelineTable(
 
     writeOutput(`${dim(time.padEnd(12))} ${source} ${summary}`);
 
-    // Show error details on a second line for failed commands
     if (entry.status === "error" && entry.error) {
       const exitCodeStr = entry.exitCode !== undefined
         ? `exit ${entry.exitCode}`

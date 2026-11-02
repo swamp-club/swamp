@@ -61,32 +61,8 @@ import {
 const logger = getSwampLogger(["error"]);
 
 /**
- * Builds the JSON error object for structured output.
- *
- * Default shape: `{ error: string, stack?: string, code?: string }`. The
- * `code` field is set when the underlying error carries a machine-
- * readable identifier (e.g. `UserError.code` or any error object
- * exposing a string `code` property — `SwampError`-like). Both `code`
- * and `stack` are optional; consumers must tolerate their presence or
- * absence.
- *
- * Specific {@link UserError} subclasses extend the default shape with
- * structured fields:
- *
- * - {@link DuplicateTypeUserError} adds a `duplicateType` object with
- *   `kind`, `type`, `existing`, and `conflicting` (per plan v4 step
- *   11). Lets `--json` consumers (jq, AI agents, CI scripts) read the
- *   collision details without re-parsing the message.
- * - {@link SignalRefusedUserError} adds `refusal` and, for a key no open
- *   wait holds, `lastWait`: the wait that last held the key, how it was
- *   settled and when.
- * - {@link RunPartlyCommittedError} adds `runs`, each `{workflowId, runId,
- *   acknowledgeUnknown}`: the workflow runs left running, to pass to
- *   `swamp workflow recover`, and whether a run's recovery needs
- *   `--acknowledge-unknown` for a step it was cut in (swamp-club#3882).
- * - {@link ConfigEditConflictError} adds `conflicts`, each `{kind, name?,
- *   key, changedBy?, changedAt?}`: the managed config another writer
- *   changed under a refused edit (swamp-club#4097).
+ * code and stack are optional, so consumers must tolerate their absence;
+ * specific UserError subclasses add structured fields.
  */
 export function buildErrorJson(
   err: Error,
@@ -127,8 +103,6 @@ export function buildErrorJson(
     if (err.pending) data.pending = { ...err.pending };
   }
   if (err instanceof RunPartlyCommittedError) {
-    // Whether each run's recovery needs --acknowledge-unknown
-    // (swamp-club#3882).
     data.runs = err.runs.map((run) => ({
       workflowId: run.workflowId,
       runId: run.runId,
@@ -158,70 +132,20 @@ export function buildErrorJson(
 }
 
 /**
- * Returns the process exit code for an error.
- *
- * - `75` (EX_TEMPFAIL) for `lock_timeout` — a temporary failure that
- *   callers should retry with backoff. Matched in any case: datastore
- *   extensions throw `LOCK_TIMEOUT`, and core only translates the ones
- *   raised through a lock it wrapped.
- * - `75` for an auth gate block a later run can clear (swamp-club refusing,
- *   unreachable or failing), so CI can retry it.
- * - `75` for `datastore_v3_replication_unconfirmed`: the command's commits
- *   are saved but a sync did not confirm them in the replica, and the next
- *   write replicates them.
- * - `75` for `datastore_v3_writer_busy`: another process holds the v3
- *   datastore's writer lease, and the command changed nothing
- *   (swamp-club#3564). `datastore_v3_writer_fenced` stays `1`: a command
- *   whose lease was taken over may have landed some of its commits, so a
- *   blind retry is not safe. So does `datastore_v3_commit_may_land`
- *   (swamp-club#3586): its change may still be committed by a later
- *   command.
- * - `75` for `datastore_v3_commit_unreachable`: a commit that could not
- *   reach the datastore's storage was given up, so nothing was committed
- *   and a retry is safe for the datastore (swamp-club#3759).
- *   `datastore_v3_run_partly_committed` stays `1` (swamp-club#3802): a
- *   checkpoint committed its workflow runs, which are left running, so a
- *   retry would start another run instead of settling them. So does
- *   `datastore_v3_commit_partly_committed`: part of the change had landed
- *   (a checkpoint's, or an earlier partition of the same commit), and a
- *   re-run can meet it, as a token of the same name, instead of redoing it.
- * - `75` for `datastore_v3_storage_unreachable` and
- *   `datastore_v3_catch_up_unreachable` (swamp-club#3802): the storage could
- *   not be reached while the command got ready to write, or while it
- *   brought the checkout up to date, so nothing was changed.
- * - `75` for `datastore_v3_serve_unreachable` (swamp-club#3985): the serve a
- *   datastore is written through could not be reached, and swamp refused
- *   the write rather than send it to the storage. A commit sent again
- *   carries the same txnId, so serve answers a retry of one that landed as
- *   a duplicate.
- * - `75` for `serve_not_leader` (swamp-club#4096): the serve node does not
- *   lead the datastore in team mode, and refused the write before taking
- *   it, so a retry, at the leader or once one is elected, is safe.
- * - `75` for `serve_follower_behind` (swamp-club#4254): a serve follower
- *   whose copy is behind the caller's refused a read while it catches up,
- *   and nothing was changed.
- * - `75` for `datastore_v3_offline_lease_required` and
- *   `datastore_v3_offline_config_edit` (swamp-club#4195): a serve-mode
- *   checkout working offline refused the work before it changed anything.
- * - `75` for `lease_record_not_removed` (swamp-club#4195): a forced release
- *   ended the lease, but serve could not remove its kept record, so a
- *   takeover may bring it back; forcing the release again removes it.
- * - `75` for `datastore_v3_copy_setup_raced` (swamp-club#4253): another
- *   command in the checkout is setting up its local copy of serve's
- *   datastore, and nothing changed.
- * - `1` for all other errors, including a missing or revoked credential.
+ * 75 (EX_TEMPFAIL) when nothing changed or a retry is safe, so callers can
+ * retry with backoff; 1 otherwise, including fenced, may-land and
+ * partly-committed datastore errors where a blind retry is unsafe.
  */
 export function exitCodeForError(error: unknown): number {
   const code = (error as { code?: unknown })?.code;
   if (typeof code === "string" && code.toLowerCase() === "lock_timeout") {
     return 75;
   }
-  // A block a later run can clear (swamp-club refusing, unreachable or
-  // failing) is a temporary failure too; a missing or revoked credential is
-  // not.
+  // a block a later run can clear is a temporary failure; a missing or revoked
+  // credential is not.
   if (error instanceof AuthGateBlockedError && error.temporary) return 75;
-  // Commits a sync could not confirm are saved, and the next write
-  // replicates them (swamp-club#3416): a temporary failure.
+  // commits a sync could not confirm are saved and the next write replicates
+  // them: a temporary failure
   if (code === V3_REPLICATION_UNCONFIRMED_CODE) return 75;
   // Writer lease contention: nothing changed, so a retry is safe.
   if (code === V3_WRITER_BUSY_CODE) return 75;
@@ -229,37 +153,33 @@ export function exitCodeForError(error: unknown): number {
   if (code === READ_MODEL_BUSY_CODE) return 75;
   // A commit given up because the storage was unreachable: nothing landed.
   if (code === COMMIT_UNREACHABLE_CODE) return 75;
-  // Cut off from the storage before writing, or while catching up: nothing
-  // changed (swamp-club#3802).
+  // cut off from the storage before writing, or while catching up: nothing
+  // changed
   if (code === V3_STORAGE_UNREACHABLE_CODE) return 75;
   if (code === CATCH_UP_UNREACHABLE_CODE) return 75;
-  // The serve the datastore is written through is unreachable: the write
-  // was refused, not sent to the storage (swamp-club#3985).
+  // the serve the datastore is written through is unreachable: the write was
+  // refused, not sent to the storage
   if (code === V3_SERVE_UNREACHABLE_CODE) return 75;
-  // A serve node that does not lead refused the write (swamp-club#4096).
+  // a serve node that does not lead refused the write
   if (code === SERVE_NOT_LEADER_CODE) return 75;
-  // A follower whose copy is behind the caller's refused a read: it is
-  // catching up, and nothing changed (swamp-club#4254).
+  // a follower whose copy is behind the caller's refused a read while it
+  // catches up; nothing changed
   if (code === SERVE_FOLLOWER_BEHIND_CODE) return 75;
-  // Refused offline before anything changed (swamp-club#4195): run again
-  // once serve is reachable, or with the behavior's lease taken online.
+  // refused offline before anything changed: run again once serve is reachable,
+  // or with the behavior's lease taken online
   if (code === OFFLINE_LEASE_REQUIRED_CODE) return 75;
   if (code === OFFLINE_CONFIG_EDIT_CODE) return 75;
   // A forced release whose kept record stayed: retrying finishes it.
   if (code === LEASE_RECORD_NOT_REMOVED_CODE) return 75;
-  // Another command is setting up the checkout's copy (swamp-club#4253).
+  // another command is setting up the checkout's copy; nothing changed
   if (code === V3_COPY_SETUP_RACED_CODE) return 75;
   return 1;
 }
 
 /**
- * Returns a TLS diagnostic hint if the error message indicates an
- * `UnknownIssuer` TLS failure, or `undefined` otherwise. Compiled Deno
- * binaries use `rustls-native-certs` / `deno_native_certs` which read
- * static keychain entries on macOS — they do not use the OS's full trust
- * evaluation (`SecTrustEvaluateWithError`), so roots distributed via
- * Apple's OTA trust updates are invisible. This hint guides users to the
- * existing `SSL_CERT_FILE` workaround.
+ * compiled binaries read only static macOS keychain entries, not full trust
+ * evaluation, so OTA-distributed roots are invisible; the hint points to the
+ * SSL_CERT_FILE workaround.
  */
 export function tlsErrorHint(message: string): string | undefined {
   if (
@@ -281,15 +201,9 @@ export function tlsErrorHint(message: string): string | undefined {
 }
 
 /**
- * Returns remediation guidance if the error message is Deno's failure to read
- * the OS certificate store, or `undefined` otherwise (swamp-club#2314).
- *
- * Deno reads the store when it builds the TLS root store for the first
- * request, so the failure reaches whichever network call ran first — as a raw
- * `Error` from `fetch()`, or embedded in a wrapping `UserError`. The remedy is
- * opt-in: falling back to the bundled roots silently would drop any corporate
- * root the operator installed in the OS store. Messages that already name the
- * remedy (from `createTlsHttpClient`) get no second copy.
+ * the remedy is opt-in: silently falling back to bundled roots would drop any
+ * corporate root in the OS store. Messages already naming the remedy get no
+ * second copy.
  */
 export function platformCertStoreHint(message: string): string | undefined {
   if (
@@ -312,11 +226,6 @@ export function platformCertStoreHint(message: string): string | undefined {
   ].join("\n");
 }
 
-/**
- * `err` with `message` as its message, for a spelling that differs from the
- * error's own (swamp-club#3437). The stack keeps its frames; only the first
- * line's message changes. `err` itself is left alone.
- */
 function inSpelling(err: Error, message: string): Error {
   if (message === err.message) return err;
   const shown = new Error(message, { cause: err.cause });
@@ -326,26 +235,15 @@ function inSpelling(err: Error, message: string): Error {
 }
 
 /**
- * Renders an error to the user.
- *
- * In JSON mode this is the SINGLE emitter for fatal output: it writes
- * the JSON error to stderr and does NOT call `logger.fatal`, so log-mode
- * sinks never produce a duplicate FTL line. In log mode it falls
- * through to LogTape — UserError / Cliffy ValidationError emit just the
- * message; other errors emit the full Error (stack trace included),
- * except an unreadable OS certificate store, which renders like a
- * UserError with its remedy hint.
- *
- * `surface` is the tree the command ran in: under `swamp model …` a message
- * marked with its model spelling prints that spelling (swamp-club#3437).
+ * in JSON mode this is the single emitter for fatal output and does not call
+ * logger.fatal, so log sinks never print a duplicate line.
  */
 export function renderError(
   error: unknown,
   outputMode?: OutputMode,
   surface: CommandSurface = "behavior",
 ): void {
-  // A refused stale config edit is the user's to resolve, not a crash
-  // (swamp-club#4097).
+  // a refused stale config edit is the user's to resolve, not a crash
   const err = configEditConflictOf(error) ??
     (error instanceof Error ? error : new Error(String(error)));
   const message = messageFor(err, surface);
@@ -362,8 +260,8 @@ export function renderError(
     if (hint) {
       json.hint = hint;
     }
-    // An offline auth gate warning rides on the error so stderr stays one
-    // JSON document (swamp-club#2938).
+    // an offline auth gate warning rides on the error so stderr stays one JSON
+    // document
     Object.assign(json, takeAuthGateWarning());
     // deno-lint-ignore no-console
     console.error(JSON.stringify(json, null, 2));

@@ -169,8 +169,6 @@ Deno.test("retentionDetailLines: says retention is not configured", () => {
   assertEquals(text.includes("workflowRuns"), false);
 });
 
-// --- swamp-club#3617: restoring a v3 datastore's lost format marker ---
-
 const MARKER_REPAIR = {
   datastorePath: "/data/v3",
   markerPath: "/data/v3/datastore-format.json",
@@ -339,8 +337,6 @@ Deno.test("createDoctorDatastoresRenderer: log mode fails on the v3 content find
   assertEquals(renderer.overallStatus, "fail");
 });
 
-// --- swamp-club#3690: moving aside a joining checkout's records ---
-
 const PRE_V3_PREVIEW = {
   swampDir: "/repo/.swamp",
   recordDirs: ["data", "outputs"],
@@ -489,8 +485,6 @@ Deno.test("DatastoreRepairJsonReport: log mode renderers leave the report empty 
     contamination: null,
   });
 });
-
-// --- swamp-club#3955: unreadable data versions ---
 
 const UNREADABLE: UnreadableVersionsSummary = {
   unreadableVersions: 3,
@@ -665,10 +659,6 @@ Deno.test("createUnreadableVersionsRepairRenderer: json mode records its stage i
     { status: "unreadable_versions_not_needed" },
   );
 });
-
-// ============================================================================
-// Unpushed cache files (swamp-club#4112)
-// ============================================================================
 
 function unpushed(
   overrides: Partial<UnpushedFilesSummary> = {},

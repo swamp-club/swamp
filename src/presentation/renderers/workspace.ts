@@ -56,7 +56,6 @@ function handlers<D>(
   };
 }
 
-/** A note for a workspace whose folder isn't a usable repo; "" when it is. */
 export function folderNote(folder: WorkspaceFolderState): string {
   switch (folder) {
     case "ok":
@@ -68,7 +67,6 @@ export function folderNote(folder: WorkspaceFolderState): string {
   }
 }
 
-/** The log lines of `swamp workspace list`. */
 export function workspaceListLines(
   workspaces: readonly WorkspaceSummary[],
 ): string[] {

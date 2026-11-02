@@ -31,7 +31,7 @@ class LogDataPruneRenderer implements Renderer<DataPruneEvent> {
   handlers(): EventHandlers<DataPruneEvent> {
     const logger = getSwampLogger(["data", "prune"]);
     return {
-      // Streams before the commit in log mode (swamp-club#3893).
+      // streams before the commit in log mode
       collecting: () => {
         logger.info`Looking for orphaned data to reclaim`;
       },
@@ -98,7 +98,6 @@ export function createDataPruneRenderer(
   }
 }
 
-/** Renders the preview of orphaned data before confirmation. */
 export function renderDataPrunePreview(
   preview: DataPrunePreview,
   mode: OutputMode,
@@ -134,7 +133,6 @@ export function renderDataPrunePreview(
   }
 }
 
-/** Renders cancellation when user declines the prompt. */
 export function renderDataPruneCancelled(mode: OutputMode): void {
   if (mode === "json") {
     console.log(JSON.stringify({ cancelled: true }, null, 2));
