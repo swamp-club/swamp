@@ -307,10 +307,9 @@ export class ScheduledExecutionService {
   }
 
   /**
-   * stops the watcher and scheduler, drops queued runs (their pending-run
-   * entries stay for the next boot to replay) and waits up to timeoutMs for
-   * in-flight runs; 0 returns at once. Call stop afterwards to abort what is
-   * left.
+   * stops the watcher and scheduler, drops queued runs (their pending-run entries
+   * stay for the next boot to replay) and waits up to timeoutMs for in-flight
+   * runs; 0 returns at once. Call stop afterwards to abort what is left.
    */
   async drain(timeoutMs: number): Promise<void> {
     this.draining = true;

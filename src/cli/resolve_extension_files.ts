@@ -227,10 +227,9 @@ export interface PlannedWorkflowFile {
 }
 
 /**
- * entries mapping to the same archive name (NFC-normalized, case-insensitive)
- * are rejected: push writes each workflow to
- * `extension/workflows/<archiveName>`, so a clash would silently drop all but
- * the last
+ * entries mapping to the same archive name (NFC-normalized, case-insensitive) are
+ * rejected: push writes each workflow to `extension/workflows/<archiveName>`, so
+ * a clash would silently drop all but the last
  */
 export function planWorkflowArchiveNames(
   entries: readonly WorkflowManifestEntry[],

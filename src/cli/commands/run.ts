@@ -191,9 +191,8 @@ export interface LocalRunDiagnosis {
 
 /**
  * a tracker row is stale when its heartbeat expired or its owner is a dead
- * process on this host. Recent records are found by scanning, older ones
- * through their workflow tracker row, so no run is stranded by its age or a
- * rename.
+ * process on this host. Recent records are found by scanning, older ones through
+ * their workflow tracker row, so no run is stranded by its age or a rename.
  */
 export async function diagnoseLocalRuns(
   tracker: RunTrackerStore,

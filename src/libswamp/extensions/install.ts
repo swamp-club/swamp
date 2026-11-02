@@ -88,10 +88,9 @@ export interface ExtensionInstallDeps {
   lockfilePath: string;
   repoDir: string;
   /**
-   * repo-relative because lockfile files[] paths are, and isSkillDirEntry
-   * compares them directly (InstallContext.skillsDirs is absolute); without it
-   * the tool=none skills path looks like a gen-2 path and the sweep would
-   * remove it
+   * repo-relative because lockfile files[] paths are, and isSkillDirEntry compares
+   * them directly (InstallContext.skillsDirs is absolute); without it the
+   * tool=none skills path looks like a gen-2 path and the sweep would remove it
    */
   skillsDirsRelative?: string[];
   /**

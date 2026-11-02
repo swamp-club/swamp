@@ -40,9 +40,8 @@ export const MODEL_SCOPED_DATA_ACCESSORS: ReadonlySet<string> = new Set([
 
 /**
  * together with MODEL_SCOPED_DATA_ACCESSORS this covers every
- * DATA_NAMESPACE_ACCESSORS entry;
- * integration/expression_accessors_rules_test.ts fails on an unclassified
- * accessor
+ * DATA_NAMESPACE_ACCESSORS entry; integration/expression_accessors_rules_test.ts
+ * fails on an unclassified accessor
  */
 export const CROSS_MODEL_DATA_ACCESSORS: ReadonlySet<string> = new Set([
   "query",

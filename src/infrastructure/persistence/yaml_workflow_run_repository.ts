@@ -1259,10 +1259,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
-   * the executor writes the log repo-local whichever datastore holds the
-   * record; a log beside the record covers the default datastore and migrated
-   * logs. Paths come from entry names, never logFile, which a peer could point
-   * anywhere
+   * the executor writes the log repo-local whichever datastore holds the record;
+   * a log beside the record covers the default datastore and migrated logs. Paths
+   * come from entry names, never logFile, which a peer could point anywhere
    */
   private async removeRunLogs(
     workflowId: WorkflowId,

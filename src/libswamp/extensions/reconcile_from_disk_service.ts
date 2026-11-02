@@ -274,10 +274,9 @@ export class ReconcileFromDiskService {
   }
 
   /**
-   * creates aggregates only for named extensions that have none; each is saved
-   * on its own, so a failure rolls back only that one. Skips unreachable-source
-   * pruning, which would delete rows of live sources mounted outside the repo
-   * root.
+   * creates aggregates only for named extensions that have none; each is saved on
+   * its own, so a failure rolls back only that one. Skips unreachable-source
+   * pruning, which would delete rows of live sources mounted outside the repo root.
    */
   async reconcileUncataloguedPulled(
     extensionNames: readonly string[],

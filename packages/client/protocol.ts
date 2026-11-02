@@ -418,10 +418,9 @@ export interface WorkflowResumePayload {
   runId?: string;
   from?: string;
   /**
-   * the job of the `from` step when its name is used in more than one job. Only
-   * send to a server whose `server.version` lists
-   * SERVE_CAPABILITY_RESUME_FROM_JOB; an older server resets the `from` step in
-   * every job that has it
+   * the job of the `from` step when its name is used in more than one job. Only send
+   * to a server whose `server.version` lists SERVE_CAPABILITY_RESUME_FROM_JOB; an
+   * older server resets the `from` step in every job that has it
    */
   fromJob?: string;
   inputs?: Record<string, unknown>;

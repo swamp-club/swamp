@@ -104,10 +104,9 @@ export interface WorkflowSignalData {
   runRecordAvailable: boolean;
   resumeCommand: string;
   /**
-   * true when a wait took the signal from where it was held. A step that took
-   * it as it opened its wait succeeded inside its run and no resume applies it;
-   * for a wait open already, `awaitingResume` says whether its run can be
-   * resumed.
+   * true when a wait took the signal from where it was held. A step that took it
+   * as it opened its wait succeeded inside its run and no resume applies it; for
+   * a wait open already, `awaitingResume` says whether its run can be resumed.
    */
   taken?: true;
   /**

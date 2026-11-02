@@ -338,10 +338,9 @@ export async function analyzeExtensionSafety(
       const lines = content.split("\n");
       const spans = directiveSpans(content, file);
       for (let i = 0; i < lines.length; i++) {
-        // Long-line and base64 scan the line as written so nothing hides behind
-        // a directive; only the long-line count discounts directive text.
-        // deno-command reads the tree, using text only when the file does not
-        // parse
+        // Long-line and base64 scan the line as written so nothing hides behind a
+        // directive; only the long-line count discounts directive text. deno-command
+        // reads the tree, using text only when the file does not parse
         const line = lines[i];
         const stripped = withoutDirective(line, spans.get(i + 1))
           .replace(/\s/g, "");

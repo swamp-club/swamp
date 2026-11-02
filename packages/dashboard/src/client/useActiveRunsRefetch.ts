@@ -25,10 +25,9 @@ import {
 } from "./resume_state.ts";
 
 /**
- * no visibility check needed: a hidden tab closes the health stream, so
- * `activeRuns` holds still, and the first snapshot after coming back is
- * compared with the runs from before, refetching once if a run started or
- * finished meanwhile
+ * no visibility check needed: a hidden tab closes the health stream, so `activeRuns`
+ * holds still, and the first snapshot after coming back is compared with the runs
+ * from before, refetching once if a run started or finished meanwhile
  */
 export function useActiveRunsRefetch(
   activeRuns: readonly ActiveRunRef[] | undefined,

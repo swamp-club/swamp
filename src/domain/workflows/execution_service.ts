@@ -1783,8 +1783,7 @@ export class DefaultStepExecutor implements StepExecutor {
     /**
      * only a repository-loaded definition is author-written; a just-created
      * direct-execution one is built from substituted task.inputs, and treating
-     * it as a provenance root would re-admit the injected text this gate
-     * refuses
+     * it as a provenance root would re-admit the injected text this gate refuses
      */
     let authoredFromDefinition: ReadonlySet<string> = new Set();
 
@@ -4419,10 +4418,9 @@ export class WorkflowExecutionService {
       requireCurrentRecord?: boolean;
       stepStopGraceMs?: number;
       /**
-       * the redactor and sensitive-value record the resume runs with, as run
-       * takes them; a seam for tests to hand a resume a typed registry, which
-       * restores stored references as references. Production callers pass
-       * nothing
+       * the redactor and sensitive-value record the resume runs with, as run takes
+       * them; a seam for tests to hand a resume a typed registry, which restores
+       * stored references as references. Production callers pass nothing
        */
       secretRedactor?: SecretRedactor;
       sensitiveValues?: RunSensitiveValues;

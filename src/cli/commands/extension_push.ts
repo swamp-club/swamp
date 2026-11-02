@@ -147,9 +147,8 @@ export type WarningsGateDecision =
 
 /**
  * --yes and --force waive warnings along with the push confirmation, and the
- * summary records the waiver. Dry run and --json proceed without a record; a
- * log run without a terminal reaches the prompt, whose error says to pass
- * --yes.
+ * summary records the waiver. Dry run and --json proceed without a record; a log
+ * run without a terminal reaches the prompt, whose error says to pass --yes.
  */
 export function resolveWarningsGate(input: {
   warningCount: number;

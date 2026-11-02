@@ -126,10 +126,9 @@ export class InstallExtensionService {
   }
 
   /**
-   * previous versions are kept until the catalog save decides: commits on
-   * success, rolls back on a type collision so an upgrade that collides keeps
-   * the previous version, and commits and reports the half-state on any other
-   * fault
+   * previous versions are kept until the catalog save decides: commits on success,
+   * rolls back on a type collision so an upgrade that collides keeps the previous
+   * version, and commits and reports the half-state on any other fault
    */
   private async indexInstalled(
     ref: ExtensionRef,

@@ -129,10 +129,9 @@ export function createAuthDeps(options: CreateAuthDepsOptions = {}): AuthDeps {
 }
 
 /**
- * reads collectiveEntitlements, never organizations (membership, which
- * extension push authorizes against). Returns undefined rather than an empty
- * array so renderers can tell no reported entitlement from everything being
- * free.
+ * reads collectiveEntitlements, never organizations (membership, which extension
+ * push authorizes against). Returns undefined rather than an empty array so
+ * renderers can tell no reported entitlement from everything being free.
  */
 export function entitlementsOf(
   response: WhoamiResponse,

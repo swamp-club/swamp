@@ -130,10 +130,9 @@ export interface ModelOutputSearchDeps {
     }>
   >;
   /**
-   * outputs started in window, read as asked for, newest first, leaving out
-   * what selectReadable refuses. With it, a limit search with no model stops
-   * reading once it holds its results. Optional: without it the search reads
-   * every output
+   * outputs started in window, read as asked for, newest first, leaving out what
+   * selectReadable refuses. With it, a limit search with no model stops reading
+   * once it holds its results. Optional: without it the search reads every output
    */
   findOutputsNewestFirst?(
     window: { since?: Date; until?: Date },

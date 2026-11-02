@@ -147,9 +147,8 @@ export interface MethodContext<TGlobalArgs = Record<string, unknown>> {
   methodName: string;
   /**
    * W3C Trace Context headers for this execution; pass them to subprocesses as
-   * TRACEPARENT/TRACESTATE or on outbound requests. Always this execution's
-   * own, even when methods run concurrently. Absent or empty when tracing is
-   * disabled.
+   * TRACEPARENT/TRACESTATE or on outbound requests. Always this execution's own,
+   * even when methods run concurrently. Absent or empty when tracing is disabled.
    */
   traceHeaders?: Readonly<Record<string, string>>;
   logger: Logger;

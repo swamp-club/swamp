@@ -49,10 +49,9 @@ import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.t
 type AnyOptions = any;
 
 /**
- * after a claim, direct storage writes are refused and go through serve.
- * Through a running serve it writes the claim under its lease; otherwise this
- * command takes the lease, so run it in serve's checkout while serve is
- * stopped.
+ * after a claim, direct storage writes are refused and go through serve. Through
+ * a running serve it writes the claim under its lease; otherwise this command
+ * takes the lease, so run it in serve's checkout while serve is stopped.
  */
 export const datastoreClaimCommand = withRemoteOptions(
   new Command()

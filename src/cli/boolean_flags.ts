@@ -18,10 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * flags that never take a value; code reading raw args before Cliffy parses
- * them uses this to know the next token is a command word or positional, not
- * the flag's value (else `swamp --log model get x` reads model as --log's
- * value).
+ * flags that never take a value; code reading raw args before Cliffy parses them
+ * uses this to know the next token is a command word or positional, not the
+ * flag's value (else `swamp --log model get x` reads model as --log's value).
  */
 export const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "--json",

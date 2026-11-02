@@ -127,10 +127,9 @@ class LogDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
 }
 
 /**
- * a refusal carrying the datastore's own UserError is rethrown, keeping its
- * code for --json. Only formatRefusal in libswamp/datastores/setup.ts sets
- * cause on a setup error event; setting it elsewhere changes how that event
- * renders.
+ * a refusal carrying the datastore's own UserError is rethrown, keeping its code
+ * for --json. Only formatRefusal in libswamp/datastores/setup.ts sets cause on a
+ * setup error event; setting it elsewhere changes how that event renders.
  */
 function setupError(error: SwampError): UserError {
   return error.cause instanceof UserError

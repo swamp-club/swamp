@@ -1036,10 +1036,9 @@ async function classifyConnectionError(
 }
 
 /**
- * every client shares the process-wide rustls root store; caCerts are added on
- * top, so --ca-cert does not avoid a failing store read, only
- * DENO_TLS_CA_STORE=mozilla does. create is injected so the failure path can be
- * tested
+ * every client shares the process-wide rustls root store; caCerts are added on top,
+ * so --ca-cert does not avoid a failing store read, only DENO_TLS_CA_STORE=mozilla
+ * does. create is injected so the failure path can be tested
  */
 export function createTlsHttpClient(
   options: Deno.CreateHttpClientOptions = {},

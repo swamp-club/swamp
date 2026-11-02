@@ -23,8 +23,7 @@ import { LockfileRepository } from "../../infrastructure/persistence/lockfile_re
 /**
  * gen-1 is extensions/<type>/…, gen-2 is the flat
  * .swamp/pulled-extensions/<type>/… where filenames collide across extensions,
- * current is the per-extension
- * .swamp/pulled-extensions/<@scope>/<name>/<type>/…
+ * current is the per-extension .swamp/pulled-extensions/<@scope>/<name>/<type>/…
  */
 export type ExtensionLayoutGeneration = "gen-1" | "gen-2" | "current";
 
@@ -126,9 +125,8 @@ export function isSkillDirEntryMulti(
 
 /**
  * null for skill paths (tracked as directories only, so no orphan detection
- * within) and legacy paths (extensionInstall migration handles those);
- * otherwise the longest prefix identifying one per-extension subtree or bundle
- * namespace
+ * within) and legacy paths (extensionInstall migration handles those); otherwise
+ * the longest prefix identifying one per-extension subtree or bundle namespace
  */
 export function extractTopLevelRoot(
   filePath: string,

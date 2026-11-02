@@ -20,8 +20,7 @@
 /**
  * mirrors the canonical ModelDefinition shapes so authors can anchor inference
  * with `satisfies` or defineModel; `methods` is a Record<string,
- * MethodDefinition> like the canonical, which resolves TS7006 under strict
- * mode.
+ * MethodDefinition> like the canonical, which resolves TS7006 under strict mode.
  */
 
 import type { z } from "zod";

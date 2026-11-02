@@ -39,9 +39,8 @@ export interface ExtensionListFreshnessDeps {
 
 /**
  * on registry failure the cache is stamped latestVersion: installedVersion to
- * suppress retries for 24h, and the entry gets unknown_offline with
- * latestVersion null, so JSON consumers can tell "didn't try" from "tried and
- * failed".
+ * suppress retries for 24h, and the entry gets unknown_offline with latestVersion
+ * null, so JSON consumers can tell "didn't try" from "tried and failed".
  */
 export async function enrichExtensionList(
   entries: ExtensionListEntry[],

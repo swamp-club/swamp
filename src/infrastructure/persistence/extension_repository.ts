@@ -184,8 +184,7 @@ export class ExtensionRepository {
   /**
    * pruneUnreachable false skips pruning out-of-root rows;
    * settlePulledTypeConflicts true clears later pulled claimants instead of
-   * rejecting them (reconcile only; installs still fail with
-   * DuplicateTypeError)
+   * rejecting them (reconcile only; installs still fail with DuplicateTypeError)
    */
   saveAll(
     extensions: readonly Extension[],

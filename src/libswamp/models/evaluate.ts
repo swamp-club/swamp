@@ -98,10 +98,9 @@ export interface ModelEvaluateInput {
    */
   include?: (entry: { definition: Definition; type: ModelType }) => boolean;
   /**
-   * saves only the evaluated definitions this accepts; others are returned
-   * unsaved with no output path. A later --last-evaluated run replays what is
-   * saved, so serve saves only what the caller may run. Absent, everything is
-   * saved
+   * saves only the evaluated definitions this accepts; others are returned unsaved
+   * with no output path. A later --last-evaluated run replays what is saved, so
+   * serve saves only what the caller may run. Absent, everything is saved
    */
   persist?: (entry: { definition: Definition; type: ModelType }) => boolean;
 }

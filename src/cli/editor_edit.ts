@@ -34,8 +34,7 @@ export interface EditedCopyHints {
 /**
  * when the save throws the copy is kept and the error names it with how to
  * retry, so nothing typed is lost; after a stale-edit conflict the retry is
- * refused until the current version is loaded, so the hint says to load it
- * first
+ * refused until the current version is loaded, so the hint says to load it first
  */
 export async function saveEditedCopy(
   edit: EditedCopy,

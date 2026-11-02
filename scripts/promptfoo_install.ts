@@ -18,10 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * optional dependencies are omitted except libsql's host binding, which
- * promptfoo eval needs. --no-save stops npm rewriting the lockfile; npm install
- * not npm ci, as ci refuses a lockfile lacking the host's platform-specific
- * entries
+ * optional dependencies are omitted except libsql's host binding, which promptfoo
+ * eval needs. --no-save stops npm rewriting the lockfile; npm install not npm ci,
+ * as ci refuses a lockfile lacking the host's platform-specific entries
  */
 
 import { join } from "@std/path";

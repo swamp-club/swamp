@@ -278,10 +278,9 @@ export interface GatedPullOptions {
 }
 
 /**
- * a poller never pulls ungated; it queues only after
- * POLLER_ESCALATE_AFTER_SKIPS skips, bounded by GATE_WAIT_TIMEOUT_MS.
- * runBoundedSync races a deadline so a hung pull cannot stall every mutation
- * and run
+ * a poller never pulls ungated; it queues only after POLLER_ESCALATE_AFTER_SKIPS
+ * skips, bounded by GATE_WAIT_TIMEOUT_MS. runBoundedSync races a deadline so a
+ * hung pull cannot stall every mutation and run
  */
 export async function gatedPull(
   gate: SyncGate | undefined,

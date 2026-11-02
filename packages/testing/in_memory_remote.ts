@@ -56,8 +56,7 @@ export interface InMemoryRemoteSemantics {
   /**
    * a pull, push or preparePush that read the remote first removes the
    * unchanged, unmarked local copy of each file a peer deleted; a pull does not
-   * count them. pullDeletes, when also set, decides what a pull removes
-   * instead.
+   * count them. pullDeletes, when also set, decides what a pull removes instead.
    */
   removesPeerDeletes: boolean;
   /**

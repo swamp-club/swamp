@@ -920,10 +920,9 @@ export async function configureStartupExtensions(
 }
 
 /**
- * true when the command runs against a remote serve: --server, or
- * SWAMP_SERVE_URL / SWAMP_SERVER_URL. serve itself never counts, and a
- * serverAddress in .swamp.yaml is not considered (such checkouts still resolve
- * at startup)
+ * true when the command runs against a remote serve: --server, or SWAMP_SERVE_URL
+ * / SWAMP_SERVER_URL. serve itself never counts, and a serverAddress in
+ * .swamp.yaml is not considered (such checkouts still resolve at startup)
  */
 /**
  * --detach asks serve to keep a run going, which only a run on serve can do, so

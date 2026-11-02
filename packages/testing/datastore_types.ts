@@ -266,10 +266,9 @@ export interface DatastoreProvider {
    */
   datastoreControlPlaneStore?(): DatastoreControlPlaneStore;
   /**
-   * only the literal `true` counts: it declares namespaced pull and push never
-   * move `_control/writer/` or `_control/lineage/`, and that
-   * datastoreControlPlaneStore() is writable. Without it swamp refuses to bind
-   * the lease.
+   * only the literal `true` counts: it declares namespaced pull and push never move
+   * `_control/writer/` or `_control/lineage/`, and that datastoreControlPlaneStore()
+   * is writable. Without it swamp refuses to bind the lease.
    */
   readonly datastoreWideLease?: boolean;
   /**

@@ -18,10 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * the lookup is split from the read so a caller that authorizes can resolve
- * once, authorize the owners, and hand the read that same reference: the read
- * acts on exactly what was authorized, never on a second lookup of the raw
- * string
+ * the lookup is split from the read so a caller that authorizes can resolve once,
+ * authorize the owners, and hand the read that same reference: the read acts on
+ * exactly what was authorized, never on a second lookup of the raw string
  */
 
 import type { Definition } from "../../domain/definitions/definition.ts";
